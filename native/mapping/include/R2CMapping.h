@@ -16,6 +16,9 @@ typedef struct {
     const char *const *grayPaths; // width*height bytes, read-only
     R2CMappingConnectivity connectivity; // optional diagnostic callback
     void *connectivityContext;
+    // Appended fields default to 0 when C callers zero-initialise (NaN also means unset).
+    double surfaceCellMeters; // <=0 or non-finite => default 0.2 m
+    double clipWest, clipSouth, clipEast, clipNorth; // local ENU metres; used only if all finite, east>west and north>south, else unused
 } R2CMappingInput;
 typedef struct {
     double *adjustment; size_t adjustmentCount; // shared solver result including exclusions as NaN cameras; final value -1/-2 = approximate plane (laser median/takeoff), header[7] = plane height, zero depth observations
@@ -26,6 +29,18 @@ int R2CMappingReconstruct(const R2CMappingInput *, R2CMappingProgress, void *, R
 void R2CMappingFree(R2CMappingResult *);
 int R2CMappingRender(const float *,int,int,double,double,double,const double *,size_t,const double *,
  int,int,const char *const *,double,double,double,int32_t *,char *,size_t);
+// Ortho fill for unknown cells. measured/fillOut: width*height floats; maskBits: (width*height+7)/8 bytes,
+// LSB-first (cell i = bit i%8 of byte i/8), set where fill was estimated. fillOut keeps measured values where finite,
+// holds estimated values where filled and NaN where empty. planeHeight non-finite = no global plane. stats (optional) = 6 doubles:
+// estimatedCells, known, estimated, empty fractions, elapsedMs, fillRadiusMeters. enabled=0 copies measured. Returns 1/0.
+int R2CMappingBuildOrthoFill(const float *measured,int width,int height,double cell,int enabled,double fillRadiusMeters,double planeHeight,
+ float *fillOut,uint8_t *maskBits,double *stats,char *,size_t);
+// Same as Render/PrepareProjection, but heights are sampled from fill where measured is NaN; measured alone drives
+// ray occlusion and measured-cell colours/seams stay identical to the non-fill entry points.
+int R2CMappingRenderFill(const float *,const float *,int,int,double,double,double,const double *,size_t,const double *,
+ int,int,const char *const *,double,double,double,int32_t *,char *,size_t);
+int R2CMappingPrepareProjectionFill(const float *,const float *,int,int,double,double,double,const double *,size_t,const double *,
+ int,int,const char *const *,R2CMappingProgress,void *,char *,size_t);
 int R2CMappingRefine(float *,int,int,double,char *,size_t);
 int R2CMappingFaces(const float *,int,int,int,const int32_t *,size_t,int32_t *,size_t,char *,size_t);
 int R2CMappingPrepareProjection(const float *,int,int,double,double,double,const double *,size_t,const double *,

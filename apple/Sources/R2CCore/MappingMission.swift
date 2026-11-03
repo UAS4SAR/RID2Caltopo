@@ -14,6 +14,34 @@ public struct MappingLaunchLocation: Sendable, Equatable {
     }
 }
 
+/// Shared mission-plan knobs. Saved missions that predate them read as 10 m / 0.2 m / fill on.
+public enum MappingMissionDefaults {
+    public static let standardCellMeters = 0.2
+    /// Standard, Fine, Coarse.
+    public static let surfaceCellOptions: [Double] = [0.2, 0.1, 0.4]
+    public static let minimumMarginMeters = 10.0
+    public static let maximumMarginMeters = 100.0
+    /// Half a photo width at plan height, at least 10 m, never above the 100 m planner limit.
+    public static func defaultMarginMeters(widthPixels: Double, gsdCmPerPixel: Double) -> Double {
+        let width = widthPixels * (gsdCmPerPixel / 100)
+        return width.isFinite ? min(maximumMarginMeters, max(minimumMarginMeters, 0.5 * width)) : minimumMarginMeters
+    }
+    public static func isValidCell(_ value: Double) -> Bool { surfaceCellOptions.contains { abs($0 - value) < 1e-9 } }
+    public static func cell(_ parameters: [String: Any]?) -> Double {
+        guard let value = (parameters?["surfaceCellMeters"] as? NSNumber)?.doubleValue else { return standardCellMeters }
+        return surfaceCellOptions.first { abs($0 - value) < 1e-9 } ?? standardCellMeters
+    }
+    public static func fillUnknown2D(_ parameters: [String: Any]?) -> Bool {
+        guard let value = parameters?["fillUnknown2DAreas"] as? NSNumber else { return true }
+        return value.boolValue
+    }
+    public static func margin(_ parameters: [String: Any]?) -> Double {
+        let value = (parameters?["marginMeters"] as? NSNumber)?.doubleValue ?? minimumMarginMeters
+        return min(maximumMarginMeters, max(0, value.isFinite ? value : minimumMarginMeters))
+    }
+    public static func cellLabel(_ cell: Double) -> String { cell < 0.15 ? "Fine" : cell > 0.3 ? "Coarse" : "Standard" }
+}
+
 /// A versioned transfer record. The station validates polygon topology before generating a flight template.
 public struct MappingMission: Identifiable, Sendable {
     public let id: UUID
@@ -50,7 +78,7 @@ public struct MappingMission: Identifiable, Sendable {
         return try json(cameraProfile: profile, desiredGsdCmPerPixel: desiredGsdCmPerPixel)
     }
 
-    public func json(cameraProfile: MappingResolution.Profile, desiredGsdCmPerPixel: Double? = nil, captureProfile: MappingProcessingPolicy.CaptureProfile? = nil, canopyHeightMeters: Double = 20, maximumObstacleHeightMeters: Double? = nil, clearanceMeters: Double = 15, maximumCaptureSpeedMetersPerSecond: Double? = nil, transitSpeedMetersPerSecond: Double? = nil) throws -> Data {
+    public func json(cameraProfile: MappingResolution.Profile, desiredGsdCmPerPixel: Double? = nil, captureProfile: MappingProcessingPolicy.CaptureProfile? = nil, canopyHeightMeters: Double = 20, maximumObstacleHeightMeters: Double? = nil, clearanceMeters: Double = 15, maximumCaptureSpeedMetersPerSecond: Double? = nil, transitSpeedMetersPerSecond: Double? = nil, marginMeters: Double? = nil, surfaceCellMeters: Double = MappingMissionDefaults.standardCellMeters, fillUnknown2DAreas: Bool = true) throws -> Data {
         if let speed=transitSpeedMetersPerSecond {
             guard speed.isFinite,(1...15).contains(speed) else { throw Failure("Enter a transit speed from \(DisplayUnits.current.length(1,decimals:2))/s to \(DisplayUnits.current.length(15,decimals:2))/s.") }
         }
@@ -75,7 +103,7 @@ public struct MappingMission: Identifiable, Sendable {
                 "diagonalFOVDegrees":camera.diagonalFOVDegrees],
             "parameters":["heightMeters":targetHeight, "desiredGroundResolutionCmPerPixel":targetGsd, "speedMetersPerSecond":thermal ? 2 : 4,
                 "forwardOverlapPercent":thermal ? 85 : 80, "sideOverlapPercent":thermal ? 80 : 70,
-                "directionDegrees":0, "marginMeters":10, "orthophotoResolutionCm":thermal ? 15 : min(5,targetGsd),
+                "directionDegrees":0, "orthophotoResolutionCm":thermal ? 15 : min(5,targetGsd),
                 "fastOrthophoto":!thermal]]
         if !thermal { var spec=value["cameraSpecifications"] as! [String:Any]; spec["captureResolutionMode"]=cameraProfile.captureResolutionMode; value["cameraSpecifications"]=spec }
         let capture = captureProfile ?? (cameraProfile.isVisibleWide ? MappingProcessingPolicy.brushTrees : MappingProcessingPolicy.openGround)
@@ -86,6 +114,10 @@ public struct MappingMission: Identifiable, Sendable {
             value["cameraSpecifications"] = specifications
         } else if capture != MappingProcessingPolicy.openGround { throw Failure("Crossed surveys require the visible-wide camera.") }
         var parameters = value["parameters"] as! [String:Any]
+        let margin = marginMeters ?? MappingMissionDefaults.defaultMarginMeters(widthPixels: camera.widthPixels, gsdCmPerPixel: targetGsd)
+        guard margin.isFinite, (0...MappingMissionDefaults.maximumMarginMeters).contains(margin) else { throw Failure("Edge overrun must be from \(DisplayUnits.current.length(0)) to \(DisplayUnits.current.length(MappingMissionDefaults.maximumMarginMeters)).") }
+        guard MappingMissionDefaults.isValidCell(surfaceCellMeters) else { throw Failure("Choose Fine, Standard or Coarse 3D surface detail.") }
+        parameters["marginMeters"] = margin; parameters["surfaceCellMeters"] = surfaceCellMeters; parameters["fillUnknown2DAreas"] = fillUnknown2DAreas
         if let speed=transitSpeedMetersPerSecond { parameters["transitSpeedMetersPerSecond"]=speed }
         if let speed=maximumCaptureSpeedMetersPerSecond { parameters["maximumCaptureSpeedMetersPerSecond"]=speed }
         guard clearanceMeters.isFinite, clearanceMeters > 0, clearanceMeters <= 500 else { throw Failure("Enter a positive clearance margin no greater than \(DisplayUnits.current.length(500)).") }

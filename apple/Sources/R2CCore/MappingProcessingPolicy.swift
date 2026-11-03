@@ -10,6 +10,8 @@ public enum MappingProcessingPolicy {
     public static let outputOverlapMeters = 5.0
     public static let meshSpacingMeters = 0.4
     public static let surfaceCellMeters = 0.2
+    /// Standard, Fine, Coarse. The model/surface storage term scales with 1/cell².
+    public static let surfaceCellOptions = MappingMissionDefaults.surfaceCellOptions
     public static let storageWarningFraction = 0.8
 
     public struct Pass: Codable, Equatable, Sendable {
@@ -168,11 +170,11 @@ public enum MappingProcessingPolicy {
             return Assessment(buckets: buckets)
         }
     }
-    public static func storage(photos: Int, width: Int, height: Int, areaSquareMeters: Double, pixelMeters: Double, regional: Bool) throws -> StorageEstimate {
+    public static func storage(photos: Int, width: Int, height: Int, areaSquareMeters: Double, pixelMeters: Double, regional: Bool, surfaceCellMeters: Double = MappingProcessingPolicy.surfaceCellMeters) throws -> StorageEstimate {
         guard (3...maximumPhotos).contains(photos), (1...12000).contains(width), (1...12000).contains(height),
-              areaSquareMeters.isFinite, areaSquareMeters > 0, pixelMeters.isFinite, pixelMeters > 0 else { throw MappingMission.Failure("Invalid storage estimate inputs.") }
+              areaSquareMeters.isFinite, areaSquareMeters > 0, pixelMeters.isFinite, pixelMeters > 0, MappingMissionDefaults.isValidCell(surfaceCellMeters) else { throw MappingMission.Failure("Invalid storage estimate inputs.") }
         let raster=ceil(areaSquareMeters/(pixelMeters*pixelMeters)*4*4/3)
-        let model=ceil(areaSquareMeters/(surfaceCellMeters*surfaceCellMeters)*64)
+        let model=ceil(areaSquareMeters/(surfaceCellMeters*surfaceCellMeters)*64) // Fine (0.1 m) is ~4x Standard (0.2 m)
         let raw=Double(min(photos,regionPhotos))*Double(width)*Double(height)*4
         let products=raster*2+model, temporary=raw+(regional ? (raster+model)*3:model)
         guard products+temporary < Double(Int64.max)/2 else { throw MappingMission.Failure("Mapping storage estimate is too large.") }

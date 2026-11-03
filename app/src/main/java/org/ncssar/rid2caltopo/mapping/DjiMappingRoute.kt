@@ -79,6 +79,12 @@ class DjiMappingRoute(val mission: JSONObject) {
     // Pilot 2's route checklist requires a longer interval than our old one-second policy.
     // Round down to a controller-friendly tenth so the 7x evidence grid exports 1.0 m/s.
     val minimumCaptureInterval = cameraProfile.minimumCaptureInterval
+    /** Edge overrun at each leg end, 0–100 m; a missing key means a saved legacy plan (10 m). */
+    val routeEndMarginMeters:Double = MappingMissionDefaults.margin(p)
+    private val margin:Double get() = routeEndMarginMeters
+    private fun obliqueEndExtension(pass:MappingCaptureProfile.Pass,opticalOffset:Double):Double=if(pass.pitchDegrees> -90)abs(opticalOffset) else 0.0
+    /** Largest extra along-track end margin from oblique passes (0 for nadir-only plans). */
+    val obliqueEndExtensionMeters:Double get()=passes.maxOf{obliqueEndExtension(it,height*referenceScale(it)*tan(Math.toRadians(90+it.pitchDegrees)))}
     private val captureSpeedLimit = (if(p.has("maximumCaptureSpeedMetersPerSecond"))p.getDouble("maximumCaptureSpeedMetersPerSecond") else p.getDouble("speedMetersPerSecond")).also {
         require(it.isFinite() && it in 1.0..15.0){"Maximum capture speed must be between 1 and 15 m/s."}
     }
@@ -154,12 +160,15 @@ class DjiMappingRoute(val mission: JSONObject) {
                 val pairs = hits.chunked(2).filter { it[1] - it[0] > 0.2 }
                 val ordered = if (column % 2 == 0) pairs else pairs.reversed()
                 ordered.forEach { ends ->
-                    val margin = p.getDouble("marginMeters").coerceIn(0.0, 100.0)
-                    val a = Point(x, ends[0] - margin); val b = Point(x, ends[1] + margin)
-                    val start=if(column%2==0)a else b;val end=if(column%2==0)b else a
+                    // Oblique views look ahead, so the leg's end (in flight direction) also extends by the optical-centre offset.
+                    val opticalOffset:Double=height*referenceScale(pass)*tan(tilt)
+                    val endExtension:Double=obliqueEndExtension(pass,opticalOffset)
+                    val forward=column%2==0
+                    val a = Point(x, ends[0] - margin - (if(forward)0.0 else endExtension)); val b = Point(x, ends[1] + margin + (if(forward)endExtension else 0.0))
+                    val start=if(forward)a else b;val end=if(forward)b else a
                     // Centre the optical ray on the assignment, including on reversed legs.
                     // These aircraft offsets can extend beyond the assignment; pilot clearance is required.
-                    val offset=height*referenceScale(pass)*tan(tilt)*(if(column%2==0)1 else -1)
+                    val offset=opticalOffset*(if(forward)1 else -1)
                     planned.add(Leg(unrotate(Point(start.x,start.y-offset)),unrotate(Point(end.x,end.y-offset)),passIndex))
                 }
             }
@@ -185,7 +194,7 @@ class DjiMappingRoute(val mission: JSONObject) {
         .put("captureWidthPixels",camera.getInt("widthPixels")).put("captureHeightPixels",camera.getInt("heightPixels"))
         .put("captureTrigger",if(distanceCapture)"multipleDistance" else "multipleTiming").put("photoEstimateIsUpperBound",true)
         .put("cameraHeadingPolicy",if(aircraftFirstHeading)"aircraft-first-v1" else "legacy-gimbal-first")
-        .put("routeEndMarginMeters",p.getDouble("marginMeters").coerceIn(0.0,100.0)).put("photoLimit",10000).put("withinPhotoLimit",photoEstimate<=10000)
+        .put("routeEndMarginMeters",routeEndMarginMeters).put("obliqueEndExtensionMeters",obliqueEndExtensionMeters).put("photoLimit",10000).put("withinPhotoLimit",photoEstimate<=10000)
         .put("flightEstimateIncludes","capture legs, connections and 4 s per leg; excludes takeoff, landing, launch transit, wind and reserve").put("estimatedPhotos", photoEstimate).put("estimatedFlightSeconds", durationEstimateSeconds)
         .put("transitSpeedMetersPerSecond", transitSpeed).put("speedMetersPerSecond", speed).put("captureIntervalSeconds", interval).put("waypointCount", legs.size * 2)
         .put("heightMeters", heightMeters).put("heightReference", "takeoff").put("returnHomeHeightMeters", returnHomeHeightMeters)

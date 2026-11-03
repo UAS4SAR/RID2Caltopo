@@ -17,10 +17,11 @@ private actor AppleMappingMissionPreviewWorker {
         guard try PilotCloudCredentialStore.load() != nil else { throw MappingMission.Failure("The app's DJI registration is unavailable. Install a complete app build.") }
     }
     func prepare(mission:MappingMission,camera:MappingResolution.Profile,gsd:Double,capture:MappingProcessingPolicy.CaptureProfile,
-                 canopy:Double,obstacle:Double?,clearance:Double,captureSpeed:Double,transitSpeed:Double) throws -> (MappingPlanningEstimate,MappingFlightRoute,Int64) {
+                 canopy:Double,obstacle:Double?,clearance:Double,captureSpeed:Double,transitSpeed:Double,
+                 marginMeters:Double?=nil,surfaceCellMeters:Double=MappingMissionDefaults.standardCellMeters,fillUnknown2DAreas:Bool=true) throws -> (MappingPlanningEstimate,MappingFlightRoute,Int64) {
         try Task.checkCancellation()
         if capture==MappingProcessingPolicy.brushTrees && obstacle==nil {throw MappingMission.Failure("Enter the maximum obstacle top above takeoff for brush/tree photo spacing and clearance.")}
-        let data=try mission.json(cameraProfile:camera,desiredGsdCmPerPixel:gsd,captureProfile:capture,canopyHeightMeters:canopy,maximumObstacleHeightMeters:obstacle,clearanceMeters:clearance,maximumCaptureSpeedMetersPerSecond:captureSpeed,transitSpeedMetersPerSecond:transitSpeed)
+        let data=try mission.json(cameraProfile:camera,desiredGsdCmPerPixel:gsd,captureProfile:capture,canopyHeightMeters:canopy,maximumObstacleHeightMeters:obstacle,clearanceMeters:clearance,maximumCaptureSpeedMetersPerSecond:captureSpeed,transitSpeedMetersPerSecond:transitSpeed,marginMeters:marginMeters,surfaceCellMeters:surfaceCellMeters,fillUnknown2DAreas:fillUnknown2DAreas)
         let root=try MappingMissionStore.applicationRoot()
         try FileManager.default.createDirectory(at:root,withIntermediateDirectories:true)
         let free=try MappingStorageBudget.freeBytes(root)
@@ -54,7 +55,11 @@ struct AppleMappingMissionView:View {
     @State private var transitSpeedText=DisplayUnits.current.number(DisplayUnits.current.lengthValue(4),decimals:2)
     @State private var transitSpeedMeters=4.0
     @State private var obstacle=""
+    @State private var marginText=""
+    @State private var surfaceCellMeters=MappingMissionDefaults.standardCellMeters
+    @State private var fillUnknown2DAreas=true
     private var obstacleMeters:Double?{obstacle.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty ? nil:units.lengthMeters(Double(obstacle) ?? .nan)}
+    private var marginMeters:Double?{marginText.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty ? nil:units.lengthMeters(Double(marginText) ?? .nan)}
     @State private var showDetails=false
     @State private var showConnection=false
     @State private var showSettings=false
@@ -108,6 +113,15 @@ struct AppleMappingMissionView:View {
             if let top=obstacleMeters,top.isFinite,top>=0,clearanceMeters.isFinite,clearanceMeters>0,let camera,let minimum=MappingResolution.gsdCmPerPixel(heightMeters:top+clearanceMeters,camera:camera.sensor) {
                 Text("Finest resolution at minimum flight height: \(units.resolution(minimum)) with this camera.")
             }
+            Text("Map reconstruction").font(.headline)
+            VStack(alignment:.leading){Text("Edge overrun (\(units.lengthUnit))").font(.caption);TextField("Edge overrun (\(units.lengthUnit))",text:$marginText).keyboardType(.decimalPad).textFieldStyle(.roundedBorder).accessibilityIdentifier("mapping-edge-overrun")}
+            Text("Blank uses half a photo width at plan height (at least \(units.length(10))). Extends capture legs past the assignment edge.")
+            Text("3D surface detail").font(.caption)
+            Picker("3D surface detail",selection:$surfaceCellMeters){Text("Standard").tag(0.2);Text("Fine").tag(0.1);Text("Coarse").tag(0.4)}.pickerStyle(.menu).accessibilityIdentifier("mapping-surface-detail")
+            Text(surfaceCellMeters < 0.15 ? "Fine: sharper 3D, may leave more unknown cells; ~4x surface memory, ~1.5–2x processing time." : surfaceCellMeters > 0.3 ? "Coarse: smoother 3D, fewer unknown cells; ~1/4 the surface memory and faster processing." : "Standard: balanced 3D detail, memory and processing time.")
+            Text("Fill unknown 2D areas").font(.caption)
+            Picker("Fill unknown 2D areas",selection:$fillUnknown2DAreas){Text("On · estimated heights, marked").tag(true);Text("Off · leave transparent").tag(false)}.pickerStyle(.menu).accessibilityIdentifier("mapping-fill-unknown")
+            Text(fillUnknown2DAreas ? "On: unknown cells inside photo coverage get estimated heights and are marked as estimated. The 3D model stays measured-only." : "Off: unknown cells stay transparent in the 2D map.")
             Text("Route estimate").font(.headline)
             if let route {
                 Text("Planned capture speed: \(units.length(route.speed,decimals:2))/s · Transit speed: \(units.length(route.transitSpeed,decimals:2))/s").accessibilityIdentifier("mapping-planned-speed")
@@ -153,7 +167,7 @@ struct AppleMappingMissionView:View {
                 Task {await MappingAircraftPreference.shared.save(model,revision:revision)}
             }
         }
-        .task(id:"\(selectedAircraft):\(selectedCamera):\(captureID):\(gsd):\(obstacle):\(clearanceMeters):\(captureSpeedMeters):\(transitSpeedMeters)"){await updateEstimate()}
+        .task(id:"\(selectedAircraft):\(selectedCamera):\(captureID):\(gsd):\(obstacle):\(clearanceMeters):\(captureSpeedMeters):\(transitSpeedMeters):\(marginText):\(surfaceCellMeters):\(fillUnknown2DAreas)"){await updateEstimate()}
         .task(id:showSettings){
             if !showSettings {
                 let configured=await AppleMappingMissionPreviewWorker.shared.credentialsAvailable()
@@ -169,7 +183,7 @@ struct AppleMappingMissionView:View {
     private func close(){if let onClose{onClose()}else{dismiss()}}
     private func prepare(){guard let camera,let gsd=gsdCm else{return};busy=true
         Task {
-        do{try await AppleLocalMappingModel.shared.save(mission:mission,profile:camera,gsd:gsd,capture:capture,canopy:canopyMeters ?? .nan,maximumObstacleHeightMeters:obstacleMeters,clearanceMeters:clearanceMeters,maximumCaptureSpeedMetersPerSecond:captureSpeedMeters,transitSpeedMetersPerSecond:transitSpeedMeters);showConnection=true}catch{self.error=error.localizedDescription};busy=false
+        do{try await AppleLocalMappingModel.shared.save(mission:mission,profile:camera,gsd:gsd,capture:capture,canopy:canopyMeters ?? .nan,maximumObstacleHeightMeters:obstacleMeters,clearanceMeters:clearanceMeters,maximumCaptureSpeedMetersPerSecond:captureSpeedMeters,transitSpeedMetersPerSecond:transitSpeedMeters,marginMeters:marginMeters,surfaceCellMeters:surfaceCellMeters,fillUnknown2DAreas:fillUnknown2DAreas);showConnection=true}catch{self.error=error.localizedDescription};busy=false
         }
     }
     private func updateEstimate()async{
@@ -177,7 +191,8 @@ struct AppleMappingMissionView:View {
         guard let camera else{return}
         do {
             let value=try await AppleMappingMissionPreviewWorker.shared.prepare(mission:mission,camera:camera,gsd:gsdCm ?? .nan,capture:capture,
-                canopy:canopyMeters ?? .nan,obstacle:obstacleMeters,clearance:clearanceMeters,captureSpeed:captureSpeedMeters,transitSpeed:transitSpeedMeters)
+                canopy:canopyMeters ?? .nan,obstacle:obstacleMeters,clearance:clearanceMeters,captureSpeed:captureSpeedMeters,transitSpeed:transitSpeedMeters,
+                marginMeters:marginMeters,surfaceCellMeters:surfaceCellMeters,fillUnknown2DAreas:fillUnknown2DAreas)
             try Task.checkCancellation();estimate=value.0;route=value.1;freeBytes=value.2
         }catch is CancellationError{}catch{if !Task.isCancelled {self.error=error.localizedDescription}}
     }
@@ -225,6 +240,7 @@ struct AppleMappingLayerInspector:View {
             Text("Zoom levels: \(layer.minZoom)–\(layer.maxZoom)")
             if let engine=layer.engine{Text(engine)}
             if let quality=layer.quality{Text(quality)}
+            if let estimated=layer.estimatedFillSummary{Text(estimated).accessibilityIdentifier("mapping-estimated-fill")}
             if layer.assignmentBoundary != nil {Toggle(softEdges ? "Target region · 5 m outer fade":"Full captured extent",isOn:$softEdges).onChange(of:softEdges){_,value in AppleMappingLayerStore.shared.setSoft(layer.id,enabled:value)}}
             if let onView {Button("View 2D map",action:onView).disabled(files?.hasTiles == false)}
             if layer.surfaceModel != nil{Button("View 3D surface"){surface=true}}

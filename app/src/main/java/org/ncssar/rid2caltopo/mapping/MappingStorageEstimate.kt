@@ -63,7 +63,9 @@ internal data class MappingStorageEstimate(val originals:Long,val temporary:Long
             val pixel=MappingGeometry.WORLD*scale/(256.0*(1 shl MappingGeometry.zoom(gsd,latitude)))
             val area=(xs.max()-xs.min()+width*gsd*2)*(ys.max()-ys.min()+height*gsd*2)
             val raster=ceil(area/(pixel*pixel)*4*4/3).toLong()
-            val model=ceil(area/(.2*.2)*64).toLong()
+            // Surface memory/model term scales with 1/cell²: Fine (0.1 m) is ~4x Standard (0.2 m); invalid values read as Standard.
+            val cell=MappingMissionDefaults.cell(mission.getJSONObject("parameters"))
+            val model=ceil(area/(cell*cell)*64).toLong()
             val regional=MappingRegionProcessor.needsRegions(mission,photos)
             val originals=photos*12L*1024*1024*2 // JPEG allowance plus controller intake copy on SD (no hard links).
             val raw=min(photos,MappingRegionPlan.LIMIT)*width.toLong()*height*4

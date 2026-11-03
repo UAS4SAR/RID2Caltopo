@@ -20,6 +20,9 @@ public struct MappingLayer: Codable, Identifiable, Sendable, Equatable {
     public let engine: String?
     public let regionCount: Int?
     public let surfaceModel: SurfaceModel?
+    /// Share of the assignment's 2D surface using estimated (not measured) heights; nil for older layers or when fill was off.
+    public let estimatedFillFraction: Double?
+    public let fillRadiusMeters: Double?
     public struct SurfaceModel: Codable, Sendable, Equatable {
         public let type: String
         public let path: String
@@ -27,6 +30,15 @@ public struct MappingLayer: Codable, Identifiable, Sendable, Equatable {
         public let meshSpacingMeters: Double?
     }
     public var id: String { layerId }
+    /// Inspector line, e.g. "Estimated (no measured depth): 12%". Nil when the layer has no fill fraction.
+    public var estimatedFillSummary: String? {
+        guard let fraction = estimatedFillFraction, fraction.isFinite, fraction >= 0 else { return nil }
+        return Self.estimatedFillSummary(fraction: fraction)
+    }
+    public static func estimatedFillSummary(fraction: Double) -> String {
+        let percent = fraction * 100
+        return "Estimated (no measured depth): " + (percent > 0 && percent < 1 ? "<1%" : "\(Int(percent.rounded()))%")
+    }
 
     public var cameraModeLabel: String? {
         switch profile {
@@ -78,7 +90,7 @@ public struct MappingLayer: Codable, Identifiable, Sendable, Equatable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case missionId, assignmentBoundary, engine, regionCount, surfaceModel
+        case missionId, assignmentBoundary, engine, regionCount, surfaceModel, estimatedFillFraction, fillRadiusMeters
         case type, version, tileScheme, layerId, incidentId, title, tileUrlTemplate, minZoom, maxZoom, bounds
         case profile, cameraProfileId, captureTimesLocal, captureTimeLocal, requestedResolutionCm, photoCount, processedAt, quality
     }
@@ -107,6 +119,8 @@ public struct MappingLayer: Codable, Identifiable, Sendable, Equatable {
         engine = try values.decodeIfPresent(String.self, forKey: .engine)
         regionCount = try values.decodeIfPresent(Int.self, forKey: .regionCount)
         surfaceModel = try values.decodeIfPresent(SurfaceModel.self, forKey: .surfaceModel)
+        estimatedFillFraction = try values.decodeIfPresent(Double.self, forKey: .estimatedFillFraction)
+        fillRadiusMeters = try values.decodeIfPresent(Double.self, forKey: .fillRadiusMeters)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -133,6 +147,8 @@ public struct MappingLayer: Codable, Identifiable, Sendable, Equatable {
         try values.encodeIfPresent(engine, forKey: .engine)
         try values.encodeIfPresent(regionCount, forKey: .regionCount)
         try values.encodeIfPresent(surfaceModel, forKey: .surfaceModel)
+        try values.encodeIfPresent(estimatedFillFraction, forKey: .estimatedFillFraction)
+        try values.encodeIfPresent(fillRadiusMeters, forKey: .fillRadiusMeters)
     }
 
     private static func cameraLocalLabel(_ value: String) -> String {

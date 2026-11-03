@@ -8,6 +8,8 @@ import org.json.JSONObject
 import java.io.StringWriter
 import java.time.Instant
 import java.util.UUID
+import kotlin.math.abs
+import kotlin.math.max
 
 data class MappingLaunchLocation(
     val latitude: Double,
@@ -18,6 +20,27 @@ data class MappingLaunchLocation(
     fun isUsable(): Boolean = latitude.isFinite() && latitude in -90.0..90.0 &&
         longitude.isFinite() && longitude in -180.0..180.0 &&
         horizontalAccuracyMeters.isFinite() && horizontalAccuracyMeters >= 0f && capturedAtMillis > 0L
+}
+
+/** Shared mission-plan knobs. Saved missions that predate them read as 10 m / 0.2 m / fill on. */
+object MappingMissionDefaults {
+    const val STANDARD_CELL_METERS=0.2
+    val surfaceCellOptions=listOf(0.2,0.1,0.4)
+    const val MINIMUM_MARGIN_METERS=10.0
+    const val MAXIMUM_MARGIN_METERS=100.0
+    /** Half a photo width at plan height, at least 10 m, never above the 100 m planner limit. */
+    fun defaultMarginMeters(widthPixels:Int,gsdCmPerPixel:Double):Double {
+        val width=widthPixels*(gsdCmPerPixel/100)
+        return if(width.isFinite()) max(MINIMUM_MARGIN_METERS,0.5*width).coerceAtMost(MAXIMUM_MARGIN_METERS) else MINIMUM_MARGIN_METERS
+    }
+    fun validCell(value:Double)=surfaceCellOptions.any{abs(it-value)<1e-9}
+    fun cell(parameters:JSONObject?):Double {
+        val value=parameters?.optDouble("surfaceCellMeters",STANDARD_CELL_METERS) ?: STANDARD_CELL_METERS
+        return surfaceCellOptions.firstOrNull{abs(it-value)<1e-9} ?: STANDARD_CELL_METERS
+    }
+    fun fillUnknown2D(parameters:JSONObject?)=parameters?.optBoolean("fillUnknown2DAreas",true) ?: true
+    fun margin(parameters:JSONObject?):Double =
+        (parameters?.optDouble("marginMeters",MINIMUM_MARGIN_METERS) ?: MINIMUM_MARGIN_METERS).let{if(it.isFinite())it else MINIMUM_MARGIN_METERS}.coerceIn(0.0,MAXIMUM_MARGIN_METERS)
 }
 
 /** Original CalTopo geometry is retained; the station performs the full topology check. */
@@ -44,7 +67,7 @@ class MappingMission(private val feature: JSONObject, val incidentId: String, va
     fun json(thermal: Boolean, desiredGsdCmPerPixel: Double? = null): JSONObject =
         json(MappingResolution.profiles.first { it.id == if (thermal) "m4td.thermal" else "m4td.visible.wide" }, desiredGsdCmPerPixel)
 
-    fun json(profile: MappingResolution.Profile, desiredGsdCmPerPixel: Double? = null, capture:MappingCaptureProfile.Profile=MappingCaptureProfile.nadir, canopyHeightMeters:Double=20.0, maximumObstacleHeightMeters:Double?=null, clearanceMeters:Double=15.0, maximumCaptureSpeedMetersPerSecond:Double?=null,transitSpeedMetersPerSecond:Double?=null): JSONObject = JSONObject().apply {
+    fun json(profile: MappingResolution.Profile, desiredGsdCmPerPixel: Double? = null, capture:MappingCaptureProfile.Profile=MappingCaptureProfile.nadir, canopyHeightMeters:Double=20.0, maximumObstacleHeightMeters:Double?=null, clearanceMeters:Double=15.0, maximumCaptureSpeedMetersPerSecond:Double?=null,transitSpeedMetersPerSecond:Double?=null,marginMeters:Double?=null,surfaceCellMeters:Double=MappingMissionDefaults.STANDARD_CELL_METERS,fillUnknown2DAreas:Boolean=true): JSONObject = JSONObject().apply {
         val camera = profile.sensor
         val thermal = profile.thermal
         require(capture==MappingCaptureProfile.nadir||profile.isVisibleWide){"Oblique comparisons require the visible-wide camera."}
@@ -97,7 +120,12 @@ class MappingMission(private val feature: JSONObject, val incidentId: String, va
                 put("maximumCaptureSpeedMetersPerSecond",speed)
             }
             put("forwardOverlapPercent", if (thermal) 85 else 80); put("sideOverlapPercent", if (thermal) 80 else 70)
-            put("directionDegrees", 0); put("marginMeters", 10)
+            put("directionDegrees", 0)
+            val margin=marginMeters ?: MappingMissionDefaults.defaultMarginMeters(camera.widthPixels,targetGsd)
+            require(margin.isFinite() && margin in 0.0..MappingMissionDefaults.MAXIMUM_MARGIN_METERS) { "Edge overrun must be from ${Units.current.length(0.0)} to ${Units.current.length(MappingMissionDefaults.MAXIMUM_MARGIN_METERS)}." }
+            put("marginMeters", margin)
+            require(MappingMissionDefaults.validCell(surfaceCellMeters)) { "Choose Fine, Standard or Coarse 3D surface detail." }
+            put("surfaceCellMeters", surfaceCellMeters); put("fillUnknown2DAreas", fillUnknown2DAreas)
             put("captureTrigger", "distance-v1")
             put("cameraHeadingPolicy", "aircraft-first-v1")
             put("orthophotoResolutionCm", if (thermal) 15 else minOf(5.0,targetGsd)); put("fastOrthophoto", !thermal)

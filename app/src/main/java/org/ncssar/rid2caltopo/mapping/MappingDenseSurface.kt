@@ -6,7 +6,7 @@ internal data class MappingSurface(val heights:FloatArray,val width:Int,val heig
 
 /** Dense matching, depth fusion and interpolation are shared with iOS in Reconstruction.cpp. */
 internal object MappingDenseSurface {
-    fun run(model:SurfaceAlignment,progress:(String,Double)->Unit,check:()->Unit):MappingSurface {
+    fun run(model:SurfaceAlignment,progress:(String,Double)->Unit,check:()->Unit,surfaceCellMeters:Double=0.0):MappingSurface {
         MappingSurfaceNative.requireAvailable()
         val n=model.frames.size
         val solution=DoubleArray(13+n*12+model.points.size)
@@ -20,7 +20,7 @@ internal object MappingDenseSurface {
         }
         val result=MappingSharedReconstruction.withSamples(model.frames,model.sampleWidth,model.sampleHeight,progress,check,.46){paths ->
             MappingSurfaceNative.reconstructStage(cameras,DoubleArray(n*3){Double.NaN},model.frames.map{it.pose.pitch}.toDoubleArray(),
-                model.sampleWidth,model.sampleHeight,model.intrinsic[0],paths,solution,MappingSharedReconstruction.callback(progress,check))
+                model.sampleWidth,model.sampleHeight,model.intrinsic[0],paths,solution,MappingSharedReconstruction.callback(progress,check),surfaceCellMeters)
         }
         if(result.adjustment.lastOrNull()?.let{it<0}==true){
             approximate=true

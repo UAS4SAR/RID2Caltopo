@@ -13,9 +13,28 @@ internal object MappingSurfaceNative {
         fun connectivity(round:Int,groups:IntArray,support:IntArray,exclusions:IntArray) {}
     }
     class Reconstruction(val adjustment:DoubleArray,val heights:FloatArray,val grid:DoubleArray,val statistics:IntArray)
-    external fun reconstructStage(cameras:DoubleArray,lasers:DoubleArray,pitch:DoubleArray,
+    /** Filled heights (measured where finite, estimated where filled, NaN where empty), 1-bit LSB-first estimated mask, and 6 stats:
+     *  estimatedCells, known/estimated/empty fractions, elapsedMs, fillRadiusMeters. */
+    class OrthoFill(val heights:FloatArray,val mask:ByteArray,val stats:DoubleArray) {
+        val estimatedCells get()=stats[0].toInt()
+        val fillRadiusMeters get()=stats[5]
+    }
+    /** surfaceCellMeters<=0 selects the native 0.2 m default; clip = west,south,east,north in the reconstruction's ENU frame (optional). */
+    @JvmOverloads fun reconstructStage(cameras:DoubleArray,lasers:DoubleArray,pitch:DoubleArray,
         width:Int,height:Int,focal:Double,paths:Array<String>,adjustment:DoubleArray,
-        progress:StageProgress):Reconstruction
+        progress:StageProgress,surfaceCellMeters:Double=0.0,clip:DoubleArray?=null):Reconstruction =
+        reconstructStageWithCell(cameras,lasers,pitch,width,height,focal,paths,adjustment,progress,surfaceCellMeters,clip)
+    private external fun reconstructStageWithCell(cameras:DoubleArray,lasers:DoubleArray,pitch:DoubleArray,
+        width:Int,height:Int,focal:Double,paths:Array<String>,adjustment:DoubleArray,
+        progress:StageProgress,surfaceCellMeters:Double,clip:DoubleArray?):Reconstruction
+    /** Never modifies [measured]. enabled=false copies measured values. planeHeight non-finite means no global plane. */
+    external fun buildOrthoFill(measured:FloatArray,width:Int,height:Int,cell:Double,enabled:Boolean,fillRadiusMeters:Double,planeHeight:Double):OrthoFill
+    /** Same as [render], but heights come from [fill] where [measured] is NaN; measured heights alone drive occlusion. */
+    external fun renderFill(measured:FloatArray,fill:FloatArray,gridWidth:Int,gridHeight:Int,gridX:Double,gridY:Double,cell:Double,
+        cameras:DoubleArray,intrinsics:DoubleArray,imageWidth:Int,imageHeight:Int,rawFiles:Array<String>,
+        tileX:Double,tileY:Double,step:Double,output:IntArray):Int
+    external fun prepareProjectionFill(measured:FloatArray,fill:FloatArray,gridWidth:Int,gridHeight:Int,gridX:Double,gridY:Double,cell:Double,
+        cameras:DoubleArray,intrinsics:DoubleArray,imageWidth:Int,imageHeight:Int,rawFiles:Array<String>,progress:Progress)
     external fun sampleRGBA(rgba:ByteArray,width:Int,height:Int,factor:Int):ByteArray
     // cameras: ENU centre xyz, row-major world-to-camera rotation (9), RTK sigma xyz.
     // A new JNI symbol prevents accidentally using the previous yaw-only runtime ABI.

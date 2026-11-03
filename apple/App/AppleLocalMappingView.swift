@@ -22,12 +22,15 @@ import R2CMapping
     private let queue=DispatchQueue(label:"org.ncssar.mapping",qos:.userInitiated)
     private var cancellation=MappingCancellation()
     private let libraryCache = LibraryIndexCache()
+    private var busyMissionID: String?
     private func store() throws -> MappingMissionStore {try MappingMissionStore(root:MappingMissionStore.applicationRoot())}
     func refresh(incident: String,newest: Bool,force: Bool = false) {
         if loading { return }
         let hasRows = !entries.isEmpty || libraryCache.hasIndex
         if hasRows { refreshing = true } else { loading = true }
-        let liveID = busy ? entries.first(where: { progress != nil })?.id : nil
+        let liveID = busy && progress != nil
+            ? (busyMissionID ?? entries.first(where: { $0.title == jobTitle })?.id)
+            : nil
         let liveStage = progress?.stage
         let liveProgress = progress?.fraction
         let registered = Set(AppleMappingLayerStore.shared.layers.map(\.id))
@@ -81,9 +84,9 @@ import R2CMapping
         }
     }
     func invalidateLibrary() { libraryCache.index = nil }
-    func save(mission: MappingMission,profile: MappingResolution.Profile,gsd: Double,capture: MappingProcessingPolicy.CaptureProfile,canopy: Double,maximumObstacleHeightMeters: Double? = nil,clearanceMeters:Double = 15,maximumCaptureSpeedMetersPerSecond:Double? = nil,transitSpeedMetersPerSecond:Double? = nil) async throws {
+    func save(mission: MappingMission,profile: MappingResolution.Profile,gsd: Double,capture: MappingProcessingPolicy.CaptureProfile,canopy: Double,maximumObstacleHeightMeters: Double? = nil,clearanceMeters:Double = 15,maximumCaptureSpeedMetersPerSecond:Double? = nil,transitSpeedMetersPerSecond:Double? = nil,marginMeters:Double? = nil,surfaceCellMeters:Double = MappingMissionDefaults.standardCellMeters,fillUnknown2DAreas:Bool = true) async throws {
         try await Task.detached(priority: .userInitiated) {
-        let store=try MappingMissionStore(root:MappingMissionStore.applicationRoot()),data=try mission.json(cameraProfile:profile,desiredGsdCmPerPixel:gsd,captureProfile:capture,canopyHeightMeters:canopy,maximumObstacleHeightMeters:maximumObstacleHeightMeters,clearanceMeters:clearanceMeters,maximumCaptureSpeedMetersPerSecond:maximumCaptureSpeedMetersPerSecond,transitSpeedMetersPerSecond:transitSpeedMetersPerSecond)
+        let store=try MappingMissionStore(root:MappingMissionStore.applicationRoot()),data=try mission.json(cameraProfile:profile,desiredGsdCmPerPixel:gsd,captureProfile:capture,canopyHeightMeters:canopy,maximumObstacleHeightMeters:maximumObstacleHeightMeters,clearanceMeters:clearanceMeters,maximumCaptureSpeedMetersPerSecond:maximumCaptureSpeedMetersPerSecond,transitSpeedMetersPerSecond:transitSpeedMetersPerSecond,marginMeters:marginMeters,surfaceCellMeters:surfaceCellMeters,fillUnknown2DAreas:fillUnknown2DAreas)
         let route=try MappingFlightRoute(mission:data),kmz=try route.kmz()
         let folder=try store.savePlan(data,boundary:mission.boundaryKML())
         try kmz.write(to:folder.appendingPathComponent("mission.kmz"),options:.atomic)
@@ -92,7 +95,7 @@ import R2CMapping
         invalidateLibrary()
     }
     func importFiles(_ urls:[URL],id:String,incident:String) {
-        guard !busy else{return};busy=true;error=nil;jobTitle=entries.first{$0.id==id}?.title ?? "";jobHeading="Importing original photos";let started=Date();cancellation=MappingCancellation();let cancel=cancellation
+        guard !busy else{return};busy=true;busyMissionID=id;error=nil;jobTitle=entries.first{$0.id==id}?.title ?? "";jobHeading="Importing original photos";let started=Date();cancellation=MappingCancellation();let cancel=cancellation
         UIApplication.shared.isIdleTimerDisabled=true
         queue.async {
             do {let store=try MappingMissionStore(root:MappingMissionStore.applicationRoot());var digests:[String]=[]
@@ -108,7 +111,7 @@ import R2CMapping
     func reconstruct(id:String,incident:String,title:String,selectedDigests:Set<String>? = nil) {
         guard !busy else{return}
         jobTitle=title;jobHeading="Reconstructing mission imagery";outcome=nil
-        busy=true;error=nil;ready=nil;cancellation=MappingCancellation();let cancel=cancellation
+        busy=true;busyMissionID=id;error=nil;ready=nil;cancellation=MappingCancellation();let cancel=cancellation
         AppleLog.info("Mapping", "Reconstruction started mission=\(id.prefix(8)) selectedPhotos=\(selectedDigests?.count ?? -1)")
         progress=MappingProgressSnapshot(stage:"Preparing local map",fraction:0,startedAt:Date());UIApplication.shared.isIdleTimerDisabled=true
         queue.async {
@@ -139,7 +142,7 @@ import R2CMapping
         }
     }
     func cancel(){cancellation.cancel()}
-    private func finish(){busy=false;progress=nil;UIApplication.shared.isIdleTimerDisabled=AppleMappingTransferModel.shared.active}
+    private func finish(){busy=false;busyMissionID=nil;progress=nil;UIApplication.shared.isIdleTimerDisabled=AppleMappingTransferModel.shared.active}
 }
 
 /// Index cache shared with the mapping IO queue; never touch from MainActor for filesystem work.

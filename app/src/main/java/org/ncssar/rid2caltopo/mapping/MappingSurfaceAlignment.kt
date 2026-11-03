@@ -56,7 +56,7 @@ internal object MappingSurfaceAlignment {
             MappingPhotoStore.writeJson(diagnosticsFile,diagnostics)
         }
         val native=MappingSharedReconstruction.withSamples(frames,w,h,progress,check){paths ->
-            MappingSurfaceNative.reconstructStage(cameras,laser,frames.map{it.pose.pitch}.toDoubleArray(),w,h,focal,paths,DoubleArray(0),callback)
+            MappingSurfaceNative.reconstructStage(cameras,laser,frames.map{it.pose.pitch}.toDoubleArray(),w,h,focal,paths,DoubleArray(0),callback,MappingMissionDefaults.cell(mission.optJSONObject("parameters")))
         }
         val result=native.adjustment
         val approximate=result.last()<0

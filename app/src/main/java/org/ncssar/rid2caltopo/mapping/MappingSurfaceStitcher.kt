@@ -29,7 +29,7 @@ internal object MappingSurfaceStitcher {
             (b.getDouble(0)-model.originX)*model.mercatorScale,(b.getDouble(1)-model.originY)*model.mercatorScale,
             (b.getDouble(2)-model.originX)*model.mercatorScale,(b.getDouble(3)-model.originY)*model.mercatorScale) }
         region?.let{model.report.put("processingRegionBoundsEnu",JSONArray(listOf(it.west,it.south,it.east,it.north)))}
-        val surface=restored?.surface?.takeIf{it.report.optString("heightFusion")=="supported-upper-v3"} ?: MappingDenseSurface.run(model,progress,check)
+        val surface=restored?.surface?.takeIf{it.report.optString("heightFusion")=="supported-upper-v3"} ?: MappingDenseSurface.run(model,progress,check,MappingMissionDefaults.cell(mission.optJSONObject("parameters")))
         val refined=surface.report.optString("refinement")!="local-median-v1"
         val needsExport=refined||surface.report.optString("projection")!="ray-coverage-photo-seams-v5"
         if(refined){check();progress("Refining local surface heights",.68)
@@ -51,8 +51,16 @@ internal object MappingSurfaceStitcher {
         surface.report.put("assignmentSurfaceCells",assignmentCells.total).put("knownAssignmentProjectionCells",assignmentCells.known).put("knownAssignmentSurfaceCells",if(model.report.optString("reconstructionMode")=="approximate-plane")0 else assignmentCells.known)
             .put("assignmentKnownSurfaceFraction",if(model.report.optString("reconstructionMode")=="approximate-plane")0.0 else assignmentCells.fraction)
             .put("boundingRectangleKnownSurfaceFraction",surface.heights.count(Float::isFinite).toDouble()/surface.heights.size)
+        // 2D-only fill: `surface.heights` stays measured for the 3D mesh/GLB; fill heights are used for 2D seams and tiles only.
+        val approximateSurface=model.report.optString("reconstructionMode")=="approximate-plane"
+        val fill=if(MappingMissionDefaults.fillUnknown2D(mission.optJSONObject("parameters"))&&!approximateSurface&&assignmentCells.known>0){
+            check();progress("Estimating unknown 2D areas",.685);MappingSurfaceFill.build(surface)
+        } else null
+        val assignmentEstimated=fill?.let{assignment.estimatedCells(it.mask,surface.width,surface.height,surface.x,surface.y,surface.cell)}?:0
+        MappingSurfaceFill.putReport(surface.report,fill,assignmentEstimated,assignmentCells.total)
         MappingPhotoStore.writeJson(File(root,"surface-reconstruction-report.json"),JSONObject().put("cameraAdjustment",model.report).put("surface",surface.report))
         require(assignmentCells.known>0){"No recoverable surface lies within the assignment. Originals are retained."}
+        File(out,"surface").let{if(fill!=null)MappingSurfaceFill.writeMask(it,fill.mask) else MappingSurfaceFill.removeMask(it)}
         val raw=mutableListOf<File>()
         try{
             model.frames.forEachIndexed{i,f->check();progress("Preparing original image colors ${i+1}/${model.frames.size}",.68+.01*i/model.frames.size)
@@ -61,15 +69,23 @@ internal object MappingSurfaceStitcher {
                 val file=File(out,"working-surface-$i.raw");raw.add(file)
                 try{val bytes=ByteBuffer.allocate(bitmap.byteCount);bitmap.copyPixelsToBuffer(bytes);file.outputStream().buffered().use{it.write(bytes.array())}}finally{bitmap.recycle()}}
             val paths=raw.map{it.path}.toTypedArray()
-            MappingSurfaceNative.prepareProjection(surface.heights,surface.width,surface.height,surface.x,surface.y,surface.cell,
-                model.cameras,MappingSurfaceExport.fullIntrinsics(model),model.frames[0].width,model.frames[0].height,paths,
-                object:MappingSurfaceNative.Progress {override fun iteration(iteration:Int,cost:Double):Boolean {
-                    // Optimizer cost is not a completion fraction; stay indeterminate in the seams band.
-                    check();progress("Matching photo seams",.69);return true
-                }})
-            val representation=(if(needsExport)null else restored?.representation) ?: MappingSurfaceExport.write(model,surface,paths,out,progress,check).also {
+            val seams=object:MappingSurfaceNative.Progress {override fun iteration(iteration:Int,cost:Double):Boolean {
+                // Optimizer cost is not a completion fraction; stay indeterminate in the seams band.
+                check();progress("Matching photo seams",.69);return true
+            }}
+            fun prepare2D(){
+                if(fill!=null)MappingSurfaceNative.prepareProjectionFill(surface.heights,fill.heights,surface.width,surface.height,surface.x,surface.y,surface.cell,
+                    model.cameras,MappingSurfaceExport.fullIntrinsics(model),model.frames[0].width,model.frames[0].height,paths,seams)
+                else MappingSurfaceNative.prepareProjection(surface.heights,surface.width,surface.height,surface.x,surface.y,surface.cell,
+                    model.cameras,MappingSurfaceExport.fullIntrinsics(model),model.frames[0].width,model.frames[0].height,paths,seams)
+            }
+            val reusable=if(needsExport)null else restored?.representation
+            // Mesh export prepares its own measured-only projection; the 2D projection (with fill) follows it.
+            if(reusable!=null)prepare2D()
+            val representation=reusable ?: MappingSurfaceExport.write(model,surface,paths,out,progress,check).also {
                 MappingSurfaceCheckpoint.save(mission,digests,out,it,check)
             }
+            if(reusable==null&&fill!=null){check();prepare2D()}
             check();progress("3D surface ready · projecting the 2D map",.73)
             val projectionStarted=System.nanoTime()
             val lat=MappingGeometry.latitude(model.originY);val k=MappingSurfaceExport.fullIntrinsics(model)
@@ -89,7 +105,8 @@ internal object MappingSurfaceStitcher {
             for(x in x0..x1)for(y in y0..y1){check();progress("Projecting corrected 2D tile ${++tile}/$count",.73+.17*tile/count)
                 val wx=((x*256.0/factor-MappingGeometry.WORLD/2)-model.originX)*model.mercatorScale
                 val wy=((MappingGeometry.WORLD/2-y*256.0/factor)-model.originY)*model.mercatorScale
-                var visible=MappingSurfaceNative.render(surface.heights,surface.width,surface.height,surface.x,surface.y,surface.cell,model.cameras,k,model.frames[0].width,model.frames[0].height,paths,wx,wy,model.mercatorScale/factor,pixels)
+                var visible=if(fill!=null)MappingSurfaceNative.renderFill(surface.heights,fill.heights,surface.width,surface.height,surface.x,surface.y,surface.cell,model.cameras,k,model.frames[0].width,model.frames[0].height,paths,wx,wy,model.mercatorScale/factor,pixels)
+                else MappingSurfaceNative.render(surface.heights,surface.width,surface.height,surface.x,surface.y,surface.cell,model.cameras,k,model.frames[0].width,model.frames[0].height,paths,wx,wy,model.mercatorScale/factor,pixels)
                 if(region!=null){val step=model.mercatorScale/factor
                     for(row in 0..255)for(col in 0..255)if(wx+(col+.5)*step !in region.west..region.east||wy-(row+.5)*step !in region.south..region.north)pixels[row*256+col]=0
                     visible=pixels.count{it!=0}
@@ -110,16 +127,18 @@ internal object MappingSurfaceStitcher {
             val captured=model.frames.map{it.pose.capturedAt}.sorted()
             val excluded=model.report.getInt("excludedPhotoCount")
             val approximate=model.report.optString("reconstructionMode")=="approximate-plane"
+            val fillFraction=if(assignmentCells.total>0)assignmentEstimated.toDouble()/assignmentCells.total else 0.0
             return JSONObject().put("resumedGeometry",restored!=null).put("photoCount",model.frames.size).put("selectedPhotoCount",digests.size).put("excludedPhotoCount",excluded)
                 .put("outputTileRectangleCount",count).put("tileProjectionSeconds",(System.nanoTime()-projectionStarted)/1_000_000_000.0)
                 .put("assignmentBoundary",JSONArray((0 until ring.length()).map{i->val p=ring.getJSONArray(i);listOf(p.getDouble(0),p.getDouble(1))}))
                 .put("excludedPhotos",model.report.getJSONArray("excludedPhotos")).put("profile","daylight-rgb").put("captureTimeLocal",captured.first()).put("captureEndTimeLocal",captured.last()).put("captureTimeZone","camera local time; zone unknown")
                 .put("groundResolutionCmPerPixel",gsd*100).put("minZoom",14).put("maxZoom",zoom)
                 .put("bounds",JSONArray(listOf(MappingGeometry.longitude(west),MappingGeometry.latitude(south),MappingGeometry.longitude(east),MappingGeometry.latitude(north))))
-                .put("scaleMode",model.report.optString("scaleMode")).put("scaleWarning",model.report.optString("scaleWarning")).put("engine",model.report.getString("engine")).put("reconstructionMode",if(approximate)"approximate-plane" else "measured-surface").put("quality",(if(approximate)"Approximate photo map: depth could not be recovered. Heights use an estimated reference plane; the 3D preview is flat, not a measured surface. ${(assignmentImageFraction*100).toInt()}% image coverage. Position and height accuracy are unknown. " else "")+(if(excluded>0)"${model.frames.size} of ${digests.size} selected photos support this result; $excluded lacked sufficient connected 3D support and remain retained. " else "")+(if(approximate)"" else "${(assignmentCells.fraction*100).toInt()}% of assignment surface has supported heights. Image-verified stereo surface projection. Includes roofs and canopy; unknown depth stays transparent. Review local seams. Pixel detail does not establish surveyed accuracy. ")+model.report.optString("positioningWarning")+" "+model.report.optString("scaleWarning"))
+                .put("scaleMode",model.report.optString("scaleMode")).put("scaleWarning",model.report.optString("scaleWarning")).put("engine",model.report.getString("engine")).put("reconstructionMode",if(approximate)"approximate-plane" else "measured-surface").put("quality",(if(approximate)"Approximate photo map: depth could not be recovered. Heights use an estimated reference plane; the 3D preview is flat, not a measured surface. ${(assignmentImageFraction*100).toInt()}% image coverage. Position and height accuracy are unknown. " else "")+(if(excluded>0)"${model.frames.size} of ${digests.size} selected photos support this result; $excluded lacked sufficient connected 3D support and remain retained. " else "")+(if(approximate)"" else "${(assignmentCells.fraction*100).toInt()}% of assignment surface has supported heights. Image-verified stereo surface projection. Includes roofs and canopy; "+(if(fill!=null)"${MappingSurfaceFill.percentLabel(fillFraction)} of the assignment has no measured depth and is shown with estimated heights, marked in the estimated-area mask; the 3D surface keeps measured heights only. " else "unknown depth stays transparent. ")+"Review local seams. Pixel detail does not establish surveyed accuracy. ")+model.report.optString("positioningWarning")+" "+model.report.optString("scaleWarning"))
                 .put("positioningMode",model.report.optString("positioningMode","fixed-rtk")).put("positioningWarning",model.report.optString("positioningWarning"))
                 .put("photogrammetric3D",!approximate).put("surfaceModel",representation).put("cameraAdjustment",model.report).put("surfaceReconstruction",surface.report).put("projectedImagePixels",coverage)
-                .put("assignmentProjectedImagePixels",assignmentPixels).put("assignmentImageCoverageFraction",assignmentImageFraction)
+                .put("assignmentProjectedImagePixels",assignmentPixels).put("assignmentImageCoverageFraction",assignmentImageFraction).put("fillUnknown2DAreas",fill!=null)
+                .also{result->if(fill!=null)result.put("estimatedFillCells",fill.estimatedCells).put("estimatedFillFraction",fillFraction).put("fillRadiusMeters",fill.radiusMeters).put("estimatedMaskPath","surface/${MappingSurfaceFill.MASK_NAME}")}
         }finally{MappingSurfaceNative.releasePixels();raw.forEach{it.delete()}}
     }
     private fun png(bitmap:Bitmap,file:File){file.parentFile!!.mkdirs();file.outputStream().buffered().use{require(bitmap.compress(Bitmap.CompressFormat.PNG,100,it))}}

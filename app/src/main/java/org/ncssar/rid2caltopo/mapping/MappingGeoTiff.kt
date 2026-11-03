@@ -45,9 +45,14 @@ object MappingGeoTiff {
         }
         throw NoTiles()
     }
+    /** Compact TIFF ImageDescription (tag 270); no coordinates. Null when the layer has no estimated-fill fraction. */
+    fun imageDescription(estimatedFillFraction: Double): String? {
+        if(!estimatedFillFraction.isFinite() || estimatedFillFraction<0) return null
+        return "R2C map; estimated fill ${String.format(java.util.Locale.US,"%.1f",estimatedFillFraction*100)}% of assignment (no measured depth)"
+    }
     /** Tries actual compressed output, preserving the highest saved zoom that fits. */
     fun writeBest(root: File, destination: File, minZoom: Int, maxZoom: Int, maxBytes: Long? = null,
-                  read: (Plan,Int,Int)->ByteArray?, check: ()->Unit = {}): Selection {
+                  read: (Plan,Int,Int)->ByteArray?, check: ()->Unit = {}, description: String? = null): Selection {
         var ceiling=maxZoom
         var fullZoom: Int?=null
         while(ceiling>=minZoom) {
@@ -57,14 +62,14 @@ object MappingGeoTiff {
             }
             if(fullZoom==null)fullZoom=candidate.zoom
             try {
-                write(destination,candidate,{x,y->read(candidate,x,y)},maxBytes,check)
+                write(destination,candidate,{x,y->read(candidate,x,y)},maxBytes,check,description)
                 return Selection(candidate,fullZoom)
             } catch(limit:SizeLimitExceeded) {ceiling=candidate.zoom-1}
         }
         error("No saved resolution fits the 40 MB CalTopo limit. Export with the limit unchecked.")
     }
     /** Reader returns straight (unassociated) RGBA, top row first; null means a missing tile. */
-    fun write(destination: File, plan: Plan, read: (Int,Int)->ByteArray?, maxBytes: Long? = null, check: ()->Unit = {}) {
+    fun write(destination: File, plan: Plan, read: (Int,Int)->ByteArray?, maxBytes: Long? = null, check: ()->Unit = {}, description: String? = null) {
         require(plan.columns>0 && plan.rows>0 && plan.count <= (TIFF_LIMIT-4096)/8)
         val entries=sortedMapOf<Int,Pair<Int,ByteArray>>()
         fun shorts(vararg v:Int)=ByteBuffer.allocate(v.size*2).order(ByteOrder.LITTLE_ENDIAN).apply{v.forEach{putShort(it.toShort())}}.array()
@@ -72,6 +77,9 @@ object MappingGeoTiff {
         fun doubles(vararg v:Double)=ByteBuffer.allocate(v.size*8).order(ByteOrder.LITTLE_ENDIAN).apply{v.forEach{putDouble(it)}}.array()
         fun tag(id:Int,type:Int,data:ByteArray){entries[id]=type to data}
         tag(256,4,longs((plan.columns.toLong()*256).toInt()));tag(257,4,longs((plan.rows.toLong()*256).toInt()));tag(258,3,shorts(8,8,8,8))
+        description?.takeIf{it.isNotBlank()}?.let{text->// ASCII + NUL, padded to an even length so following tag data stays word-aligned.
+            val ascii=text.filter{it.code in 32..126}.take(200).toByteArray(Charsets.US_ASCII)+0.toByte()
+            tag(270,2,if(ascii.size%2==0)ascii else ascii+0.toByte())}
         tag(259,3,shorts(8));tag(262,3,shorts(2));tag(274,3,shorts(1));tag(277,3,shorts(4));tag(284,3,shorts(1))
         tag(322,4,longs(256));tag(323,4,longs(256));tag(324,4,longs(0))
         tag(325,4,longs(0));tag(338,3,shorts(2))
@@ -95,7 +103,7 @@ object MappingGeoTiff {
                 if(id==324)offsets=location else counts=location
                 header.putInt(if(plan.count==1L)0 else location.toInt())
             } else {
-                header.putInt(data.size/when(type){3->2;12->8;else->4})
+                header.putInt(data.size/when(type){2->1;3->2;12->8;else->4})
                 if(data.size<=4){header.put(data);repeat(4-data.size){header.put(0.toByte())}}
                 else{header.putInt(extra);System.arraycopy(data,0,header.array(),extra,data.size);extra+=data.size}
             }

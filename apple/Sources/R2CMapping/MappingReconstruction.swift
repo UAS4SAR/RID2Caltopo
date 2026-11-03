@@ -107,7 +107,9 @@ public enum MappingReconstruction {
         let gsdCm=parameters["desiredGroundResolutionCmPerPixel"] as? Double ?? 2
         let pixelMeters=gsdCm/100
         let area=bounds.area(scale:scale)
-        let estimate=try MappingProcessingPolicy.storage(photos:photos.count,width:width,height:height,areaSquareMeters:area,pixelMeters:pixelMeters,regional:regions.count>1)
+        let surfaceCell=MappingMissionDefaults.cell(parameters)
+        let fillUnknown2D=MappingMissionDefaults.fillUnknown2D(parameters)
+        let estimate=try MappingProcessingPolicy.storage(photos:photos.count,width:width,height:height,areaSquareMeters:area,pixelMeters:pixelMeters,regional:regions.count>1,surfaceCellMeters:surfaceCell)
         let resultsRoot=root.appendingPathComponent("results",isDirectory:true)
         try fm.createDirectory(at:resultsRoot,withIntermediateDirectories:true)
         let assessment=try estimate.assess(originalsRoot:root,scratchRoot:work,layersRoot:resultsRoot,reserveBytes:MappingStorageBudget.reconstructReserveBytes)
@@ -158,7 +160,7 @@ public enum MappingReconstruction {
                     g=try PropertyListDecoder().decode(MappingGeometryResult.self,from:Data(contentsOf:geometryFile))
                     guard g.digests==selected.map(\.digest) else{throw MappingMission.Failure("Saved region selection changed.")}
                 }else{
-                    g=try MappingNativeEngine.reconstruct(photos:selected,originals:originals,work:raster,fov:fov,progress:regional)
+                    g=try MappingNativeEngine.reconstruct(photos:selected,originals:originals,work:raster,fov:fov,surfaceCellMeters:surfaceCell,progress:regional)
                     // Binary plists retain excluded cameras and unknown heights as NaN.
                     let encoder=PropertyListEncoder();encoder.outputFormat = .binary
                     try encoder.encode(g).write(to:geometryFile,options:.atomic)
@@ -167,7 +169,7 @@ public enum MappingReconstruction {
                 for (number,i) in g.used.enumerated(){try regional("Preparing full-resolution color \(number+1)/\(g.used.count)",0.685)
                     _=try autoreleasepool{try MappingOriginal.raster(originals.appendingPathComponent(g.digests[i]+".jpg"),output:raster.appendingPathComponent(g.digests[i]+".rgba"),sample:false)}
                 }
-                try MappingSurfaceProducts.export(g,rasters:raster,output:block,bounds:region.bounds,polygon:polygon,zoom:zoom,progress:regional)
+                try MappingSurfaceProducts.export(g,rasters:raster,output:block,bounds:region.bounds,polygon:polygon,zoom:zoom,fillUnknown2D:fillUnknown2D,progress:regional)
                 MappingNativeEngine.releaseRasters();try fm.removeItem(at:raster)
                 let files=try regularFiles(block).filter{$0 != checkpoint};var saved:[SavedFile]=[]
                 for (number,file) in files.enumerated(){let bytes=Int64(try file.resourceValues(forKeys:[.fileSizeKey]).fileSize ?? 0)
@@ -176,12 +178,12 @@ public enum MappingReconstruction {
                 }
                 try MappingFileIO.json(Checkpoint(fingerprint:fingerprint+"-refined-ray-coverage-photo-seams-v5",files:saved),to:checkpoint)
                 if g.approximate {approximateRegions+=1}
-                regionReports.append(["index":index,"reconstructionMode":g.approximate ? "approximate-plane":"measured-surface","registeredPhotoCount":g.used.count,"featureTracks":g.featureTracks,"measuredStereoCells":g.measuredCells,"knownProjectionCells":g.heights.filter{$0.isFinite}.count,"surfaceCells":g.heights.count,"reprojectionRmsSamplePixels":g.approximate ? NSNull():g.adjustment[7] as Any])
+                regionReports.append(Self.regionReport(index:index,g:g,surface:block.appendingPathComponent("surface/surface.json")))
                 supported.formUnion(g.used.map{g.digests[$0]});nominalCalibration = nominalCalibration || (g.adjustment.last ?? 0)<6
             } else {
                 let g=try PropertyListDecoder().decode(MappingGeometryResult.self,from:Data(contentsOf:block.appendingPathComponent("geometry.plist")))
                 if g.approximate {approximateRegions+=1}
-                regionReports.append(["index":index,"reconstructionMode":g.approximate ? "approximate-plane":"measured-surface","registeredPhotoCount":g.used.count,"featureTracks":g.featureTracks,"measuredStereoCells":g.measuredCells,"knownProjectionCells":g.heights.filter{$0.isFinite}.count,"surfaceCells":g.heights.count,"reprojectionRmsSamplePixels":g.approximate ? NSNull():g.adjustment[7] as Any])
+                regionReports.append(Self.regionReport(index:index,g:g,surface:block.appendingPathComponent("surface/surface.json")))
                 supported.formUnion(g.used.map{g.digests[$0]});nominalCalibration = nominalCalibration || (g.adjustment.last ?? 0)<6
             }
         }
@@ -210,7 +212,19 @@ public enum MappingReconstruction {
         let positioningWarning=lowerConfidence ? " GNSS-assisted reconstruction: some photos lack a verified fixed-RTK position. Conservative position priors were used; absolute placement is not independently verified.":""
         let scaleWarning=nominalCalibration ? " Nominal camera calibration used because laser height anchors were insufficient. Surface height and scale are not independently verified.":""
         let recoveryWarning=approximateRegions>0 ? "\(approximateRegions) regions use approximate reference planes, not measured depth. The flat 3D preview is only a photo projection. Position and height accuracy are unknown. ":""
-        let layer:[String:Any]=["regionReports":regionReports,"reconstructionMode":approximateRegions>0 ? "approximate-plane":"measured-surface","approximateRegionCount":approximateRegions,"photogrammetric3D":approximateRegions==0,"scaleMode":nominalCalibration ? "nominal-calibration":"laser-anchored","scaleWarning":scaleWarning,"positioningMode":lowerConfidence ? "gnss-assisted":"fixed-rtk","positioningWarning":positioningWarning,"type":"r2c_mapping_layer","version":1,"layerId":resultID,"missionId":missionID,"assignmentName":plan["title"] ?? "Map", "cameraProfileId":plan["cameraProfileId"] ?? "","incidentId":plan["incidentId"] ?? "","assignmentId":plan["assignmentId"] ?? "","title":plan["title"] ?? "Mission","profile":"daylight-rgb","tileScheme":"xyz","minZoom":14,"maxZoom":zoom,"bounds":boundsDegrees,"tileUrlTemplate":"http://127.0.0.1:8765/local-layer/\(resultID)/tiles/{Z}/{X}/{Y}.png","photoCount":supported.count,"selectedPhotoCount":photos.count,"excludedPhotoCount":photos.count-supported.count,"captureTimeLocal":photos.first?.capturedAt ?? "","captureEndTimeLocal":photos.last?.capturedAt ?? "","processedAt":ISO8601DateFormatter().string(from:Date()),"processingSeconds":Int(Date().timeIntervalSince(started)),"engine":"regions-v13-best-effort-mesh04","regionCount":regions.count,"surfaceModel":["type":"r2c_surface_collection","path":"surface/collection.json","regionCount":regions.count,"meshSpacingMeters":0.4],"assignmentBoundary":ring,"quality":recoveryWarning+"\(supported.count) of \(photos.count) originals support \(regions.count) overlapping reconstructed regions. Unknown depth remains transparent. Visible canopy surface; not bare earth."+positioningWarning+scaleWarning]
+        let filled=regionReports.filter{($0["fillUnknown2DAreas"] as? Bool)==true}
+        let estimatedCells=filled.reduce(0){$0+(($1["estimatedFillCells"] as? Int) ?? 0)}
+        let estimatedAssignment=filled.reduce(0){$0+(($1["estimatedFillAssignmentCells"] as? Int) ?? 0)}
+        let assignmentCells=filled.reduce(0){$0+(($1["assignmentSurfaceCells"] as? Int) ?? 0)}
+        let fillFraction=assignmentCells>0 ? Double(estimatedAssignment)/Double(assignmentCells):0
+        let fillRadius=filled.compactMap{$0["fillRadiusMeters"] as? Double}.max()
+        let fillNote=filled.isEmpty ? "Unknown depth remains transparent. " : "Cells without measured depth inside photo coverage use estimated heights and are marked as estimated (2D only; 3D stays measured). Areas outside photo coverage remain transparent. "
+        var layer:[String:Any]=["regionReports":regionReports,"reconstructionMode":approximateRegions>0 ? "approximate-plane":"measured-surface","approximateRegionCount":approximateRegions,"photogrammetric3D":approximateRegions==0,"scaleMode":nominalCalibration ? "nominal-calibration":"laser-anchored","scaleWarning":scaleWarning,"positioningMode":lowerConfidence ? "gnss-assisted":"fixed-rtk","positioningWarning":positioningWarning,"type":"r2c_mapping_layer","version":1,"layerId":resultID,"missionId":missionID,"assignmentName":plan["title"] ?? "Map", "cameraProfileId":plan["cameraProfileId"] ?? "","incidentId":plan["incidentId"] ?? "","assignmentId":plan["assignmentId"] ?? "","title":plan["title"] ?? "Mission","profile":"daylight-rgb","tileScheme":"xyz","minZoom":14,"maxZoom":zoom,"bounds":boundsDegrees,"tileUrlTemplate":"http://127.0.0.1:8765/local-layer/\(resultID)/tiles/{Z}/{X}/{Y}.png","photoCount":supported.count,"selectedPhotoCount":photos.count,"excludedPhotoCount":photos.count-supported.count,"captureTimeLocal":photos.first?.capturedAt ?? "","captureEndTimeLocal":photos.last?.capturedAt ?? "","processedAt":ISO8601DateFormatter().string(from:Date()),"processingSeconds":Int(Date().timeIntervalSince(started)),"engine":"regions-v13-best-effort-mesh04","regionCount":regions.count,"surfaceModel":["type":"r2c_surface_collection","path":"surface/collection.json","regionCount":regions.count,"meshSpacingMeters":0.4],"assignmentBoundary":ring,"fillUnknown2DAreas":!filled.isEmpty,"quality":recoveryWarning+"\(supported.count) of \(photos.count) originals support \(regions.count) overlapping reconstructed regions. "+fillNote+"Visible canopy surface; not bare earth."+positioningWarning+scaleWarning]
+        if !filled.isEmpty {
+            layer["estimatedFillCells"]=estimatedCells
+            layer["estimatedFillFraction"]=fillFraction
+            if let fillRadius {layer["fillRadiusMeters"]=fillRadius}
+        }
         try MappingSurfaceProducts.json(layer,result.appendingPathComponent("layer.json"));try cancellation.check()
         var tileEntries:[[String:Any]]=[],surfaceEntries:[[String:Any]]=[]
         for file in try regularFiles(result){let relative=try MappingFileIO.relative(file,to:result),path="mapping-layers/\(resultID)/"+relative
@@ -240,6 +254,16 @@ public enum MappingReconstruction {
         try ensureCancel()
         progress(MappingProgressSnapshot(stage:"Map ready",fraction:1,startedAt:started,activityAt:Date(),estimateSummary:estimateSummary))
         return destination
+    }
+    private static func regionReport(index: Int, g: MappingGeometryResult, surface: URL) -> [String:Any] {
+        var report:[String:Any]=["index":index,"reconstructionMode":g.approximate ? "approximate-plane":"measured-surface","registeredPhotoCount":g.used.count,"featureTracks":g.featureTracks,"measuredStereoCells":g.measuredCells,"knownProjectionCells":g.heights.filter{$0.isFinite}.count,"surfaceCells":g.heights.count,"reprojectionRmsSamplePixels":g.approximate ? NSNull():g.adjustment[7] as Any,"fillUnknown2DAreas":false]
+        if let data=try? Data(contentsOf:surface),let meta=try? JSONSerialization.jsonObject(with:data) as? [String:Any],(meta["fillUnknown2DAreas"] as? Bool)==true {
+            report["fillUnknown2DAreas"]=true
+            for key in ["estimatedFillCells","estimatedFillAssignmentCells","assignmentSurfaceCells","estimatedFillFraction","fillRadiusMeters"] {
+                if let value=meta[key] {report[key]=value}
+            }
+        }
+        return report
     }
     private static func pixels(_ url: URL) throws -> [UInt32] {
         guard let source=CGImageSourceCreateWithURL(url as CFURL,nil),let image=CGImageSourceCreateImageAtIndex(source,0,nil),image.width==256,image.height==256 else {throw MappingMission.Failure("Unreadable regional map tile.")}

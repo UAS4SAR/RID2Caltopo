@@ -27,7 +27,8 @@ class MappingMissionPlanningTest {
     }
     @Test fun noSuggestionForAlreadyBoundedPlanInvalidInputOrGated45() {
         val mission=mission();val camera=MappingResolution.profiles.first()
-        assertNull(MappingMissionPlanning.withinPhotoLimit(mission,camera,2.0,MappingCaptureProfile.nadir))
+        // Default edge overrun is half a photo width, so 2 cm now needs more than 200 originals for this fixture.
+        assertNull(MappingMissionPlanning.withinPhotoLimit(mission,camera,3.0,MappingCaptureProfile.nadir))
         assertNull(MappingMissionPlanning.withinPhotoLimit(mission,camera,Double.NaN,MappingCaptureProfile.nadir60))
         assertNull(MappingMissionPlanning.withinPhotoLimit(mission,camera,1.0,MappingCaptureProfile.nadir45))
     }

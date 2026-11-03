@@ -2,6 +2,7 @@
 #include "SurfaceRefinement.hpp"
 #include "include/R2CMapping.h"
 #include "SurfaceCore.hpp"
+#include "SurfaceExtent.hpp"
 #include <opencv2/core.hpp>
 #include <opencv2/features2d.hpp>
 #include <opencv2/calib3d.hpp>
@@ -127,21 +128,26 @@ Alignment bestAlignment(const R2CMappingInput& in,Worker& worker){
   worker.update(e.what(),.44);return approximate(in,worker);
  }
 }
-void approximateGrid(const R2CMappingInput& in,const Alignment& a,Worker& worker,R2CMappingResult& out){
- const double z=a.values[7],cx=a.values[3],cy=a.values[4],f=a.values[2];
- V lo(INFINITY,INFINITY,z),hi(-INFINITY,-INFINITY,z);
+double surfaceCell(const R2CMappingInput& in){return std::isfinite(in.surfaceCellMeters)&&in.surfaceCellMeters>0?in.surfaceCellMeters:.2;}
+r2c::mapping::Box clipBox(const R2CMappingInput& in){return {in.clipWest,in.clipSouth,in.clipEast,in.clipNorth};}
+// Union of the registered photos' ground footprints on plane z (bbox of the four corner rays).
+r2c::mapping::Box footprintBox(const R2CMappingInput& in,const Alignment& a,double z){
+ const double cx=a.values[3],cy=a.values[4],f=a.values[2];r2c::mapping::Box box;
  for(int i=0;i<in.count;++i){const double* c=&a.values[12+i*12];if(!std::isfinite(c[0]))continue;
   for(double y:{0.,double(in.height-1)})for(double x:{0.,double(in.width-1)}){
    V ray=rotation(c).t()*V((x-cx)/f,(y-cy)/f,1),camera=point(c+9);
-   if(ray[2]>=-.1||camera[2]<=z+3)continue;V p=camera+((z-camera[2])/ray[2])*ray;
-   for(int j=0;j<2;++j){lo[j]=std::min(lo[j],p[j]);hi[j]=std::max(hi[j],p[j]);}
-  }
- }
- if(!finite(lo)||!finite(hi))throw std::runtime_error("Photos have no downward footprint for an approximate map; originals retained.");
- out.cell=.2;out.x=std::floor(lo[0]/out.cell)*out.cell;out.y=std::floor(lo[1]/out.cell)*out.cell;
- const double w=std::ceil((hi[0]-out.x)/out.cell)+1,h=std::ceil((hi[1]-out.y)/out.cell)+1;
- if(w*h>3000000)throw std::runtime_error("Approximate photo extent exceeds the bounded region size.");
- out.width=int(w);out.height=int(h);out.heights=new float[size_t(out.width)*out.height];
+   if(ray[2]>=-.1||camera[2]<=z+3)continue;V p=camera+((z-camera[2])/ray[2])*ray;if(finite(p))box.add(p[0],p[1]);}}
+ return box;
+}
+void approximateGrid(const R2CMappingInput& in,const Alignment& a,Worker& worker,R2CMappingResult& out){
+ const double z=a.values[7],cx=a.values[3],cy=a.values[4],f=a.values[2];
+ auto footprint=footprintBox(in,a,z);
+ if(!footprint.valid())throw std::runtime_error("Photos have no downward footprint for an approximate map; originals retained.");
+ out.cell=surfaceCell(in);
+ auto extent=r2c::mapping::surfaceExtent(footprint,{},clipBox(in),out.cell,0,0,3000000);
+ if(!extent.fits)throw std::runtime_error("Approximate photo extent exceeds the 3,000,000-cell surface limit at this surface cell size; try Coarse detail.");
+ out.x=extent.x;out.y=extent.y;const int w=extent.width,h=extent.height;
+ out.width=w;out.height=h;out.heights=new float[size_t(out.width)*out.height];
  std::fill(out.heights,out.heights+size_t(out.width)*out.height,unknown);
  for(int row=0;row<out.height;++row){if(row%32==0)worker.update("Projecting available photo footprints · approximate heights",.46+.22*row/out.height);
   for(int col=0;col<out.width;++col){V p(out.x+col*out.cell,out.y+row*out.cell,z);
@@ -155,10 +161,14 @@ void dense(const R2CMappingInput& in,const Alignment& alignment,Worker& worker,R
  const auto& values=alignment.values;std::vector<V> points;for(size_t p=12+in.count*12;p+3<values.size();p+=3){V v=point(&values[p]);if(finite(v))points.push_back(v);}
  if(points.size()<500)throw r2c::mapping::GeometryUnavailable("Too few qualified 3D points to reconstruct the surface.");
  V lo=points.front(),hi=lo;for(V p:points)for(int a=0;a<3;++a){lo[a]=std::min(lo[a],p[a]);hi[a]=std::max(hi[a],p[a]);}
- out.cell=.2;out.x=std::floor((lo[0]-2)/out.cell)*out.cell;out.y=std::floor((lo[1]-2)/out.cell)*out.cell;
- double width=std::ceil((hi[0]+2-out.x)/out.cell)+1,height=std::ceil((hi[1]+2-out.y)/out.cell)+1;
- if(!std::isfinite(width*height)||width<1||height<1||width*height>3000000)throw std::runtime_error("The region exceeds the bounded surface size. Divide it into smaller regions.");
- out.width=int(width);out.height=int(height);size_t size=out.width*out.height;
+ out.cell=surfaceCell(in);
+ // Photo footprints (plane at the median sparse height, padded 1 m, then clipped) bound the grid so edge photos can be textured.
+ std::vector<double> zs;zs.reserve(points.size());for(V p:points)zs.push_back(p[2]);std::nth_element(zs.begin(),zs.begin()+zs.size()/2,zs.end());
+ auto extent=r2c::mapping::surfaceExtent(footprintBox(in,alignment,zs[zs.size()/2]),{lo[0],lo[1],hi[0],hi[1]},clipBox(in),out.cell,1,2,3000000);
+ if(!extent.fits)throw std::runtime_error("The region exceeds the 3,000,000-cell surface limit at this surface cell size. Choose Coarse detail or divide it into smaller regions.");
+ if(extent.sparseFallback)r2c::mapping::logLine("Surface grid footprint exceeds cell limit; using sparse extent");
+ out.x=extent.x;out.y=extent.y;out.width=extent.width;out.height=extent.height;
+ size_t size=size_t(out.width)*out.height;
 
  std::vector<int> used;std::vector<M> rotations(in.count);std::vector<V> centres(in.count);double ceiling=INFINITY;
  for(int i=0;i<in.count;++i){const double* c=&values[12+i*12];if(std::isfinite(c[0])){used.push_back(i);rotations[i]=rotation(c);centres[i]=point(c+9);ceiling=std::min(ceiling,centres[i][2]-4);}}
@@ -249,6 +259,32 @@ extern "C" int R2CMappingPrepareProjection(const float* surface,int width,int he
  try {if(!surface||!cameras||!intrinsics||!paths||width<2||height<2||size_t(width)*height>3000000||count<3||count>192)throw std::runtime_error("Invalid projection input.");
  std::vector<std::string> files;for(size_t i=0;i<count;++i)files.emplace_back(paths[i]);
  r2c::mapping::prepareProjection({surface,surface+size_t(width)*height},width,height,x,y,cell,{cameras,cameras+count*12},{intrinsics,intrinsics+5},iw,ih,files,[&](double fraction){if(callback&&!callback(context,"Matching photo seams",fraction))throw std::runtime_error("Processing cancelled; originals retained.");});return 1;
+ }catch(const std::exception& ex){errorText(error,capacity,ex.what());return 0;}
+}
+extern "C" int R2CMappingBuildOrthoFill(const float* measured,int width,int height,double cell,int enabled,double fillRadiusMeters,double planeHeight,
+ float* fillOut,uint8_t* maskBits,double* stats,char* error,size_t capacity){
+ try{if(!measured||!fillOut||!maskBits||width<1||height<1||size_t(width)*height>3000000||!(cell>0))throw std::runtime_error("Invalid ortho fill input.");
+  std::vector<float> source(measured,measured+size_t(width)*height),filled;std::vector<uint8_t> mask;
+  r2c::mapping::OrthoFillOptions options;options.enabled=enabled!=0;options.fillRadiusMeters=fillRadiusMeters>0?fillRadiusMeters:25;options.planeHeight=planeHeight;
+  auto result=r2c::mapping::buildOrthoFill(source,width,height,cell,options,filled,mask);
+  std::memcpy(fillOut,filled.data(),filled.size()*sizeof(float));std::memcpy(maskBits,mask.data(),mask.size());
+  if(stats){stats[0]=result.estimatedFillCells;stats[1]=result.knownFraction;stats[2]=result.estimatedFraction;stats[3]=result.emptyFraction;stats[4]=result.elapsedMs;stats[5]=result.fillRadiusMeters;}
+  return 1;
+ }catch(const std::exception& ex){errorText(error,capacity,ex.what());return 0;}
+}
+extern "C" int R2CMappingRenderFill(const float* measured,const float* fill,int width,int height,double x,double y,double cell,const double* cameras,size_t count,const double* intrinsics,int imageWidth,int imageHeight,const char*const* paths,double tileX,double tileY,double step,int32_t* output,char* error,size_t capacity){
+ try{if(!measured||!fill||!cameras||!intrinsics||!paths||!output||width<=0||height<=0||size_t(width)*height>3000000||count<3||count>192||cell<=0||step<=0)throw std::runtime_error("Invalid surface render input.");
+  std::vector<std::string> files;for(size_t i=0;i<count;++i){if(!paths[i])throw std::runtime_error("Missing original raster.");files.emplace_back(paths[i]);}
+  std::vector<float> z(measured,measured+size_t(width)*height),f(fill,fill+size_t(width)*height);std::vector<int32_t> pixels(256*256);
+  int rendered=r2c::mapping::render(z,width,height,x,y,cell,{cameras,cameras+count*12},{intrinsics,intrinsics+5},imageWidth,imageHeight,files,tileX,tileY,step,pixels,true,&f);
+  std::copy(pixels.begin(),pixels.end(),output);return rendered;
+ }catch(const std::exception& e){errorText(error,capacity,e.what());return -1;}catch(...){errorText(error,capacity,"Surface rendering failed.");return -1;}
+}
+extern "C" int R2CMappingPrepareProjectionFill(const float* measured,const float* fill,int width,int height,double x,double y,double cell,const double* cameras,size_t count,const double* intrinsics,int iw,int ih,const char*const* paths,R2CMappingProgress callback,void* context,char* error,size_t capacity){
+ try{if(!measured||!fill||!cameras||!intrinsics||!paths||width<2||height<2||size_t(width)*height>3000000||count<3||count>192)throw std::runtime_error("Invalid projection input.");
+  std::vector<std::string> files;for(size_t i=0;i<count;++i)files.emplace_back(paths[i]);
+  std::vector<float> z(measured,measured+size_t(width)*height),f(fill,fill+size_t(width)*height);
+  r2c::mapping::prepareProjection(z,width,height,x,y,cell,{cameras,cameras+count*12},{intrinsics,intrinsics+5},iw,ih,files,[&](double fraction){if(callback&&!callback(context,"Matching photo seams",fraction))throw std::runtime_error("Processing cancelled; originals retained.");},&f);return 1;
  }catch(const std::exception& ex){errorText(error,capacity,ex.what());return 0;}
 }
 

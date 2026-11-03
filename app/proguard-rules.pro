@@ -48,6 +48,7 @@
 -keep class * implements org.ncssar.rid2caltopo.mapping.MappingSurfaceNative$Progress { *; }
 
 -keep class org.ncssar.rid2caltopo.mapping.MappingSurfaceNative$Reconstruction { *; }
+-keep class org.ncssar.rid2caltopo.mapping.MappingSurfaceNative$OrthoFill { *; }
 -keep class * implements org.ncssar.rid2caltopo.mapping.MappingSurfaceNative$StageProgress { *; }
 
 -keep interface org.ncssar.rid2caltopo.mapping.MappingSurfaceNative$StageProgress { *; }

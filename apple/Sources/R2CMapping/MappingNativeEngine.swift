@@ -37,8 +37,10 @@ public struct MappingGeometryResult: Codable, Sendable {
 /// Call from one serial worker. Native raster mappings are released at the end of each region.
 public enum MappingNativeEngine {
     public static func reconstruct(photos: [MappingOriginal], originals: URL, work: URL, fov: Double,
+        surfaceCellMeters: Double = MappingProcessingPolicy.surfaceCellMeters,
         progress: @escaping (String,Double)throws->Void) throws -> MappingGeometryResult {
         guard (3...MappingProcessingPolicy.regionPhotos).contains(photos.count),fov.isFinite,fov>0,fov<180 else {throw MappingMission.Failure("Invalid region input.")}
+        let cell = MappingMissionDefaults.isValidCell(surfaceCellMeters) ? surfaceCellMeters : MappingProcessingPolicy.surfaceCellMeters
         try FileManager.default.createDirectory(at:work,withIntermediateDirectories:true)
         let originX=photos.map(\.east).reduce(0,+)/Double(photos.count),originY=photos.map(\.north).reduce(0,+)/Double(photos.count)
         let groundScale=cos(photos.map(\.latitude).reduce(0,+)/Double(photos.count) * .pi/180)
@@ -69,7 +71,7 @@ public enum MappingNativeEngine {
         let cpaths:[UnsafePointer<CChar>?]=strings.map{UnsafePointer($0)}
         var output:UnsafeMutablePointer<R2CMappingResult>?,error=[CChar](repeating:0,count:2048)
         let success=cameras.withUnsafeBufferPointer { c in lasers.withUnsafeBufferPointer { l in pitch.withUnsafeBufferPointer { p in cpaths.withUnsafeBufferPointer { paths in
-            var input=R2CMappingInput(count:Int32(photos.count),width:Int32(sampleWidth),height:Int32(sampleHeight),focal:focal,cameras:c.baseAddress,lasers:l.baseAddress,pitch:p.baseAddress,grayPaths:paths.baseAddress,connectivity:nil,connectivityContext:nil)
+            var input=R2CMappingInput(count:Int32(photos.count),width:Int32(sampleWidth),height:Int32(sampleHeight),focal:focal,cameras:c.baseAddress,lasers:l.baseAddress,pitch:p.baseAddress,grayPaths:paths.baseAddress,connectivity:nil,connectivityContext:nil,surfaceCellMeters:cell,clipWest:.nan,clipSouth:.nan,clipEast:.nan,clipNorth:.nan)
             return R2CMappingReconstruct(&input,{context,stage,fraction in
                 guard let context,let stage else{return 0};let bridge=Unmanaged<NativeProgress>.fromOpaque(context).takeUnretainedValue()
                 do{try bridge.update(String(cString:stage),fraction);return 1}catch{bridge.error=error;return 0}
@@ -122,4 +124,54 @@ public enum MappingNativeEngine {
         guard count>=0 else{throw MappingMission.Failure(String(cString:error))};return Array(output.prefix(Int(count)))
     }
     public static func releaseRasters(){R2CMappingReleasePixels()}
+    public struct OrthoFill: Sendable {
+        public let heights: [Float]
+        public let mask: [UInt8]
+        public let estimatedCells: Int
+        public let knownFraction, estimatedFraction, emptyFraction, fillRadiusMeters: Double
+        public let elapsedMs: Int
+    }
+    /// Measured heights are unchanged; fill supplies estimated values only where measured is NaN.
+    public static func buildOrthoFill(_ measured: [Float], width: Int, height: Int, cell: Double,
+        enabled: Bool = true, fillRadiusMeters: Double = 25, planeHeight: Double = .nan) throws -> OrthoFill {
+        var fill=[Float](repeating:.nan,count:measured.count)
+        var mask=[UInt8](repeating:0,count:(measured.count+7)/8)
+        var stats=[Double](repeating:0,count:6),error=[CChar](repeating:0,count:2048)
+        let ok=measured.withUnsafeBufferPointer{m in fill.withUnsafeMutableBufferPointer{f in mask.withUnsafeMutableBufferPointer{bits in
+            R2CMappingBuildOrthoFill(m.baseAddress,Int32(width),Int32(height),cell,enabled ? 1:0,fillRadiusMeters,planeHeight,f.baseAddress,bits.baseAddress,&stats,&error,error.count)
+        }}}
+        guard ok==1 else{throw MappingMission.Failure(String(cString:error))}
+        return OrthoFill(heights:fill,mask:mask,estimatedCells:Int(stats[0]),knownFraction:stats[1],estimatedFraction:stats[2],emptyFraction:stats[3],fillRadiusMeters:stats[5],elapsedMs:Int(stats[4]))
+    }
+    public static func prepareProjection(_ g: MappingGeometryResult, fill: [Float]?, rasters: URL, progress: (String,Double)throws->Void) throws {
+        guard let fill else { try prepareProjection(g,rasters:rasters,progress:progress); return }
+        try withoutActuallyEscaping(progress) { progress in
+            let bridge=NativeProgress {stage,fraction in try progress("\(stage) · \(Int(fraction*100))%",0.69+0.01*fraction)}
+            let context=Unmanaged.passUnretained(bridge).toOpaque()
+            let strings=g.used.map{strdup(rasters.appendingPathComponent(g.digests[$0]+".rgba").path)!}
+            defer{strings.forEach{free($0)}}
+            let paths:[UnsafePointer<CChar>?]=strings.map{UnsafePointer($0)},cameras=g.cameras,k=g.fullIntrinsics
+            var error=[CChar](repeating:0,count:2048)
+            let success=g.heights.withUnsafeBufferPointer { h in fill.withUnsafeBufferPointer { f in cameras.withUnsafeBufferPointer { c in k.withUnsafeBufferPointer { k in paths.withUnsafeBufferPointer { p in
+                R2CMappingPrepareProjectionFill(h.baseAddress,f.baseAddress,Int32(g.width),Int32(g.height),g.x,g.y,g.cell,c.baseAddress,g.used.count,k.baseAddress,Int32(g.rasterWidth),Int32(g.rasterHeight),p.baseAddress,{context,stage,fraction in
+                    guard let context,let stage else{return 0}
+                    let bridge=Unmanaged<NativeProgress>.fromOpaque(context).takeUnretainedValue()
+                    do{try bridge.update(String(cString:stage),fraction);return 1}catch{bridge.error=error;return 0}
+                },context,&error,error.count)
+            }}}}}
+            if let error=bridge.error{throw error}
+            guard success==1 else{throw MappingMission.Failure(String(cString:error))}
+        }
+    }
+    public static func render(_ geometry: MappingGeometryResult, fill: [Float]?, rasters: URL, x: Double, y: Double, step: Double) throws -> [UInt32] {
+        guard let fill else { return try render(geometry,rasters:rasters,x:x,y:y,step:step) }
+        let paths=geometry.used.map{rasters.appendingPathComponent(geometry.digests[$0]+".rgba").path}
+        let strings=paths.map{strdup($0)!};defer{strings.forEach{free($0)}}
+        let cpaths:[UnsafePointer<CChar>?]=strings.map{UnsafePointer($0)},cameras=geometry.cameras,k=geometry.fullIntrinsics
+        var pixels=[Int32](repeating:0,count:65536),error=[CChar](repeating:0,count:2048)
+        let result=geometry.heights.withUnsafeBufferPointer{height in fill.withUnsafeBufferPointer{f in cameras.withUnsafeBufferPointer{c in k.withUnsafeBufferPointer{intrinsics in cpaths.withUnsafeBufferPointer{paths in
+            R2CMappingRenderFill(height.baseAddress,f.baseAddress,Int32(geometry.width),Int32(geometry.height),geometry.x,geometry.y,geometry.cell,c.baseAddress,geometry.used.count,intrinsics.baseAddress,Int32(geometry.rasterWidth),Int32(geometry.rasterHeight),paths.baseAddress,x,y,step,&pixels,&error,error.count)
+        }}}}}
+        guard result>=0 else{throw MappingMission.Failure(String(cString:error))};return pixels.map{UInt32(bitPattern:$0)}
+    }
 }

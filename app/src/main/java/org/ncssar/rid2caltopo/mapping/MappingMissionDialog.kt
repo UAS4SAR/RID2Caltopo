@@ -24,6 +24,18 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.ncssar.rid2caltopo.ui.AlertDialog
 
+/** User-visible choices for the surface-detail and unknown-area fill knobs; ids are parsed by the dialog. */
+internal object MappingSurfaceChoices {
+    fun cellLabel(cell:Double)=when{cell<0.15->"Fine";cell>0.3->"Coarse";else->"Standard"}
+    fun cellHelp(cell:Double)=when{
+        cell<0.15->"Fine: sharper 3D, may leave more unknown cells; ~4x surface memory, ~1.5–2x processing time."
+        cell>0.3->"Coarse: smoother 3D, fewer unknown cells; ~1/4 the surface memory and faster processing."
+        else->"Standard: balanced 3D detail, memory and processing time."
+    }
+    val cellOptions=listOf("0.2" to "Standard","0.1" to "Fine · sharper 3D, may leave more unknown cells; ~4x surface memory, ~1.5–2x processing time","0.4" to "Coarse")
+    val fillOptions=listOf("on" to "On · estimated heights, marked","off" to "Off · leave transparent")
+}
+
 private data class MappingMissionPreview(val key: Any, val route: Result<DjiMappingRoute?>, val storage: MappingStorageEstimate?)
 
 @Composable
@@ -61,6 +73,10 @@ fun MappingMissionDialog(mission: MappingMission, onLayersChanged: () -> Unit, o
     var transitSpeedMeters by rememberSaveable { mutableStateOf(4.0) }
     var captureSpeedMeters by rememberSaveable { mutableStateOf(4.0) }
     var obstacleText by rememberSaveable { mutableStateOf("") }
+    // null margin text means "use the default": half a photo width at plan height, at least 10 m.
+    var marginText by rememberSaveable { mutableStateOf<String?>(null) }
+    var surfaceCellMeters by rememberSaveable { mutableStateOf(MappingMissionDefaults.STANDARD_CELL_METERS) }
+    var fillUnknown2DAreas by rememberSaveable { mutableStateOf(true) }
     val obstacleMeters=if(obstacleText.isBlank())null else Units.current.lengthMeters(obstacleText.toDoubleOrNull() ?: Double.NaN)
     val canopyHeight=obstacleMeters
     var card by remember { mutableStateOf<java.io.File?>(null) }
@@ -92,7 +108,10 @@ fun MappingMissionDialog(mission: MappingMission, onLayersChanged: () -> Unit, o
     val profileReady = activeProfile != null
     val estimatedHeight = activeProfile?.let { profile -> targetGsd?.let { MappingResolution.heightMetersForGsd(it,profile.sensor) } }
     val capture=if(activeProfile?.isVisibleWide==true)MappingCaptureProfile.profiles.first{it.id==selectedCaptureId} else MappingCaptureProfile.nadir
-    val previewKey=remember(mission,activeProfile,targetGsd,capture,canopyHeight,obstacleMeters,clearanceMeters,captureSpeedMeters,transitSpeedMeters){Any()}
+    val defaultMarginMeters=if(activeProfile!=null&&targetGsd!=null)MappingMissionDefaults.defaultMarginMeters(activeProfile.sensor.widthPixels,targetGsd) else MappingMissionDefaults.MINIMUM_MARGIN_METERS
+    val marginMeters=marginText?.let{it.toDoubleOrNull()?.let(Units.current::lengthMeters) ?: Double.NaN} ?: defaultMarginMeters
+    val marginValid=marginMeters.isFinite()&&marginMeters in 0.0..MappingMissionDefaults.MAXIMUM_MARGIN_METERS
+    val previewKey=remember(mission,activeProfile,targetGsd,capture,canopyHeight,obstacleMeters,clearanceMeters,captureSpeedMeters,transitSpeedMeters,marginMeters,surfaceCellMeters,fillUnknown2DAreas){Any()}
     // Serial execution bounds overlapping calculations while edits cancel stale requests.
     val planningDispatcher=remember {Dispatchers.Default.limitedParallelism(1)}
     val prepared by produceState<MappingMissionPreview?>(null,previewKey) {
@@ -100,7 +119,7 @@ fun MappingMissionDialog(mission: MappingMission, onLayersChanged: () -> Unit, o
         val preview=withContext(planningDispatcher) {
             val result=runCatching {
                 require(capture!=MappingCaptureProfile.brushTrees||obstacleMeters!=null){"Enter the maximum obstacle top above takeoff for brush/tree photo spacing and clearance."}
-                activeProfile?.let{DjiMappingRoute(mission.json(it,targetGsd,capture,canopyHeight ?: Double.NaN,obstacleMeters,clearanceMeters,captureSpeedMeters,transitSpeedMeters))}
+                activeProfile?.let{DjiMappingRoute(mission.json(it,targetGsd,capture,canopyHeight ?: Double.NaN,obstacleMeters,clearanceMeters,captureSpeedMeters,transitSpeedMeters,marginMeters,surfaceCellMeters,fillUnknown2DAreas))}
             }
             MappingMissionPreview(previewKey,result,result.getOrNull()?.let{runCatching{MappingStorageEstimate.plan(it.mission,it.photoEstimate)}.getOrNull()})
         }
@@ -115,7 +134,7 @@ fun MappingMissionDialog(mission: MappingMission, onLayersChanged: () -> Unit, o
         "Flight height ${Units.current.length(estimatedHeight)} must be at least ${Units.current.length(canopyHeight+clearanceMeters)} for ${Units.current.length(canopyHeight)} maximum obstacle top plus ${Units.current.length(clearanceMeters)} clearance." +
             (minimumGsd?.let { " This camera needs a coarser ground resolution of at least ${Units.current.resolution(it)}, or select a longer lens to preserve the requested detail." } ?: "")
     } else null
-    val canTransfer = aircraftPreferenceReady && storageReady && capture.exportQualified && route!=null && (route.photoEstimate<=200||card!=null) && route.photoEstimate<=MappingVolume.MAX_PHOTOS && !busy && activeProfile != null && targetGsd != null && targetGsd in 0.2..100.0 && estimatedHeight != null && estimatedHeight in 5.0..500.0
+    val canTransfer = aircraftPreferenceReady && storageReady && marginValid && capture.exportQualified && route!=null && (route.photoEstimate<=200||card!=null) && route.photoEstimate<=MappingVolume.MAX_PHOTOS && !busy && activeProfile != null && targetGsd != null && targetGsd in 0.2..100.0 && estimatedHeight != null && estimatedHeight in 5.0..500.0
     if(showCloudSetup){DjiCloudSetupDialog({showCloudSetup=false},{cloudConfigured=true});return}
     if(showCloud && cloudSession!=null){DjiCloudConnectionDialog(cloudSession!!){showCloud=false};return}
     AlertDialog(onDismissRequest = { if (!busy) onDismiss() }, title = { Text("Define Map Mission") }, text = {
@@ -174,6 +193,15 @@ fun MappingMissionDialog(mission: MappingMission, onLayersChanged: () -> Unit, o
                     Text("Finest resolution at minimum flight height: ${Units.current.resolution(minimum)} with this camera.")
                 }
             }
+            Text("Map edges and 3D detail",style=MaterialTheme.typography.titleSmall)
+            OutlinedTextField(marginText ?: Units.current.number(Units.current.lengthValue(defaultMarginMeters),1),{marginText=it},
+                label={Text("Edge overrun (${Units.current.lengthUnit})")},singleLine=true,enabled=!busy,isError=!marginValid,
+                keyboardOptions=androidx.compose.foundation.text.KeyboardOptions(keyboardType=androidx.compose.ui.text.input.KeyboardType.Decimal),modifier=Modifier.fillMaxWidth().testTag("mapping-edge-overrun"))
+            Text("Extra distance each capture line flies past the assignment edge, from ${Units.current.length(0.0)} to ${Units.current.length(MappingMissionDefaults.MAXIMUM_MARGIN_METERS)}. Default is half a photo width (at least ${Units.current.length(MappingMissionDefaults.MINIMUM_MARGIN_METERS)}); tilted passes add their aim-ahead distance at the line ends.")
+            MappingChoiceField("3D surface detail",MappingSurfaceChoices.cellLabel(surfaceCellMeters),MappingSurfaceChoices.cellOptions,!busy){surfaceCellMeters=it.toDouble()}
+            Text(MappingSurfaceChoices.cellHelp(surfaceCellMeters))
+            MappingChoiceField("Fill unknown 2D areas",if(fillUnknown2DAreas)"On" else "Off",MappingSurfaceChoices.fillOptions,!busy){fillUnknown2DAreas=it=="on"}
+            Text(if(fillUnknown2DAreas)"On: unknown cells inside photo coverage get estimated heights and are marked as estimated. The 3D model stays measured-only." else "Off: unknown cells stay transparent in the 2D map.")
             Text("Route estimate",style=MaterialTheme.typography.titleSmall)
             route?.let { preview ->
                 Text("Planned capture speed: ${Units.current.length(preview.speed,2)}/s · Transit speed: ${Units.current.length(preview.transitSpeed,2)}/s",modifier=Modifier.testTag("mapping-planned-speed"))
@@ -193,7 +221,7 @@ fun MappingMissionDialog(mission: MappingMission, onLayersChanged: () -> Unit, o
                 capacity?.let { (total,free)->if(estimate.warn(total,free))Text("Storage warning: this flight may leave the ${if(card!=null)"microSD card" else "tablet"} over 80% full. Free space or reduce the assignment before capture.",color=MaterialTheme.colorScheme.error) }
             }
             freeBytes?.let { Text("${if(card!=null)"Free microSD mapping storage" else "Free tablet storage"}: ${MappingStorageUsage.format(it)}") }
-            if(capture in MappingCaptureProfile.approved60Trials)Text("The aircraft can fly outside the assignment to aim the −60° camera inward. Route-end margins add 10 m; review the full path and image coverage in Pilot 2.")
+            if(capture in MappingCaptureProfile.approved60Trials)Text("The aircraft can fly outside the assignment to aim the −60° camera inward. Route-end margins add ${Units.current.length(marginMeters)}; review the full path and image coverage in Pilot 2.")
             if(routePreview.isFailure)Text(clearanceProblem ?: routePreview.exceptionOrNull()?.message ?: "Route cannot be estimated.",color=androidx.compose.material3.MaterialTheme.colorScheme.error)
             if(!cloudConfigured)Text("DJI app registration is unavailable. Install a complete app build or check administrator overrides.",color=androidx.compose.material3.MaterialTheme.colorScheme.error)
             if(route!=null&&route.photoEstimate>MappingVolume.MAX_PHOTOS)Text("This route exceeds the 10,000-original intake capacity.")
@@ -208,7 +236,7 @@ fun MappingMissionDialog(mission: MappingMission, onLayersChanged: () -> Unit, o
         }
     }, confirmButton = {
         TextButton(enabled=canTransfer&&cloudConfigured,modifier=Modifier.testTag("mapping-http-connect"),onClick={busy=true;error=null;scope.launch{
-            runCatching{withContext(Dispatchers.IO){DjiCloudManager.start(context,mission,activeProfile!!,targetGsd!!,httpDiagnostic=true,capture=capture,maximumObstacleHeightMeters=obstacleMeters,canopyHeightMeters=canopyHeight ?: Double.NaN,clearanceMeters=clearanceMeters,maximumCaptureSpeedMetersPerSecond=captureSpeedMeters,transitSpeedMetersPerSecond=transitSpeedMeters)}}
+            runCatching{withContext(Dispatchers.IO){DjiCloudManager.start(context,mission,activeProfile!!,targetGsd!!,httpDiagnostic=true,capture=capture,maximumObstacleHeightMeters=obstacleMeters,canopyHeightMeters=canopyHeight ?: Double.NaN,clearanceMeters=clearanceMeters,maximumCaptureSpeedMetersPerSecond=captureSpeedMeters,transitSpeedMetersPerSecond=transitSpeedMeters,marginMeters=marginMeters,surfaceCellMeters=surfaceCellMeters,fillUnknown2DAreas=fillUnknown2DAreas)}}
                 .onSuccess{showCloud=true}.onFailure{error=it.message?:"HTTP LAN connection could not start."};busy=false
         }}){Text(if(busy)"Preparing HTTP…" else "Test Pilot 2 using HTTP")}
     }, dismissButton = { TextButton(enabled = !busy, onClick = onDismiss) { Text("Close") } })

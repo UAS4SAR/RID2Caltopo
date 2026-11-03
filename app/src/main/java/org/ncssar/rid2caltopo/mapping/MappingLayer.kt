@@ -15,7 +15,11 @@ data class MappingLayer(val id: String, val incidentId: String, val title: Strin
     val bounds: List<Double> = emptyList(),val capturedAt:String="",val resolutionCmPerPixel:Double=0.0,
     val photoCount:Int=0,val profile:String="",val quality:String="",val engine:String="",val surfaceModel:String="",
     val assignmentBoundary:List<List<Double>> =emptyList(), val processedAt:String="",
-    val cameraProfileId:String="", val missionId:String="") {
+    val cameraProfileId:String="", val missionId:String="",
+    /** Share of the assignment's 2D surface using estimated heights; NaN for older layers or when fill was off. */
+    val estimatedFillFraction:Double=Double.NaN, val fillRadiusMeters:Double=Double.NaN) {
+    /** Inspector line, e.g. "Estimated (no measured depth): 12%". Null when there is no fill fraction. */
+    val estimatedFillSummary: String? get() = fillSummary(estimatedFillFraction)
     val generatedInstant: java.time.Instant? get() = runCatching { java.time.Instant.parse(processedAt) }.getOrNull()
     val resultTitle: String get() = if(capturedAt.isNotBlank()) title.removeSuffix(" · $capturedAt") else title
     val generatedLabel: String get() = MappingTimestamps.generated(processedAt)
@@ -30,6 +34,8 @@ data class MappingLayer(val id: String, val incidentId: String, val title: Strin
         put("photoCount",photoCount);put("profile",profile);put("quality",quality);put("engine",engine)
         if(surfaceModel.isNotBlank())put("surfaceModel",JSONObject(surfaceModel))
         if(assignmentBoundary.isNotEmpty())put("assignmentBoundary",JSONArray(assignmentBoundary))
+        if(estimatedFillFraction.isFinite())put("estimatedFillFraction",estimatedFillFraction)
+        if(fillRadiusMeters.isFinite())put("fillRadiusMeters",fillRadiusMeters)
     }
     fun overlay(context: Context,onInvalidate:()->Unit={}): Pair<TileCacheMapProvider,TilesOverlay> {
         val source = tileSource()
@@ -105,11 +111,17 @@ data class MappingLayer(val id: String, val incidentId: String, val title: Strin
             }
             return layer
         }
+        fun fillSummary(fraction:Double):String? {
+            if(!fraction.isFinite()||fraction<0)return null
+            val percent=fraction*100
+            return "Estimated (no measured depth): "+(if(percent>0&&percent<1)"<1%" else "${Math.round(percent)}%")
+        }
         fun parse(value: JSONObject) = MappingLayer(value.getString("layerId"),value.getString("incidentId"),value.getString("title"),
             value.getString("tileUrlTemplate"),value.getInt("minZoom"),value.getInt("maxZoom"),
             value.optJSONArray("bounds")?.let { array -> (0 until array.length()).map { array.getDouble(it) } } ?: emptyList(),
             value.optString("captureTimeLocal"),value.optDouble("groundResolutionCmPerPixel",0.0),value.optInt("photoCount"),value.optString("profile"),value.optString("quality"),value.optString("engine"),value.optJSONObject("surfaceModel")?.toString().orEmpty(),
-            value.optJSONArray("assignmentBoundary")?.let{MappingBoundary.parse(it)}?:emptyList(),value.optString("processedAt"),value.optString("cameraProfileId"),value.optString("missionId")).also {
+            value.optJSONArray("assignmentBoundary")?.let{MappingBoundary.parse(it)}?:emptyList(),value.optString("processedAt"),value.optString("cameraProfileId"),value.optString("missionId"),
+            value.optDouble("estimatedFillFraction",Double.NaN),value.optDouble("fillRadiusMeters",Double.NaN)).also {
             java.util.UUID.fromString(it.id)
             require(it.minZoom in 0..23 && it.maxZoom in it.minZoom..23) { "Invalid layer zoom range." }
             require(it.bounds.isEmpty() || (it.bounds.size == 4 && it.bounds.all { bound -> bound.isFinite() } &&

@@ -14,7 +14,8 @@ internal object MappingSurfaceCheckpoint {
     private val names=listOf("surface.json","surface.f32","surface.glb","cameras.json","sparse-points.ply")
     private fun key(mission:JSONObject,digests:List<String>)=LocalS3.hex(MessageDigest.getInstance("SHA-256")
         .digest(("surface-checkpoint-best-effort-v5"+mission.toString()+digests.sorted().joinToString()).toByteArray()))
-    private fun geometryMission(mission:JSONObject)=JSONObject(mission.toString()).apply{remove("processingRegionBounds")}
+    // Region bounds and the 2D-only fill choice never change camera or DSM geometry.
+    private fun geometryMission(mission:JSONObject)=JSONObject(mission.toString()).apply{remove("processingRegionBounds");optJSONObject("parameters")?.remove("fillUnknown2DAreas")}
     fun save(mission:JSONObject,digests:List<String>,out:File,representation:JSONObject,check:()->Unit) {
         val files=JSONArray(names.map { name->check();val f=File(out,"surface/$name");require(f.isFile)
             JSONObject().put("name",name).put("bytes",f.length()).put("sha256",MappingRegionProcessor.sha(f)) })

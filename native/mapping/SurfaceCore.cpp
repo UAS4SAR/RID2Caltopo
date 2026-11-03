@@ -11,7 +11,9 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
+#include <memory>
 #include <fcntl.h>
 #include <limits>
 #include <map>
@@ -21,6 +23,9 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <vector>
+#ifdef __ANDROID__
+#include <android/log.h>
+#endif
 #ifdef _OPENMP
 #include <omp.h>
 #endif
@@ -245,7 +250,7 @@ bool projectionVisible(const std::vector<float>& z,int gw,int gh,double gx,doubl
 // Exceeds every angular/border score: a clear ray always beats an unknown one.
 constexpr double unknownRayPenalty=10.;
 struct SeamAtlas {
- std::vector<float> heights;
+ std::vector<float> heights,fill;
  std::vector<double> cameras,intrinsics;
  std::vector<std::string> paths;
  std::vector<int> labels;
@@ -256,14 +261,17 @@ struct SeamAtlas {
 SeamAtlas seams;
 void prepareProjection(const std::vector<float>& z,int gw,int gh,double gx,double gy,double cell,
  const std::vector<double>& c,const std::vector<double>& k,int iw,int ih,const std::vector<std::string>& paths,
- const std::function<void(double)>& progress){
+ const std::function<void(double)>& progress,const std::vector<float>* fillSurface){
  if(gw<2||gh<2||size_t(gw)*gh>3000000||z.size()!=size_t(gw)*gh||cell<=0||c.size()!=paths.size()*12||k.size()!=5||iw<4||ih<4)throw std::runtime_error("Invalid projection input.");
- if(seams.ready&&seams.width==gw&&seams.height==gh&&seams.x==gx&&seams.y==gy&&seams.cell==cell&&seams.imageWidth==iw&&seams.imageHeight==ih&&seams.cameras==c&&seams.intrinsics==k&&seams.paths==paths&&seams.heights.size()==z.size()&&!std::memcmp(seams.heights.data(),z.data(),z.size()*sizeof(float)))return;
+ const std::vector<float>* fillPtr=fillSurface&&fillSurface!=&z?fillSurface:nullptr;
+ if(fillPtr&&fillPtr->size()!=z.size())throw std::runtime_error("Invalid projection input.");
+ const std::vector<float>& f=fillPtr?*fillPtr:z;
+ if(seams.ready&&seams.width==gw&&seams.height==gh&&seams.x==gx&&seams.y==gy&&seams.cell==cell&&seams.imageWidth==iw&&seams.imageHeight==ih&&seams.cameras==c&&seams.intrinsics==k&&seams.paths==paths&&seams.heights.size()==z.size()&&!std::memcmp(seams.heights.data(),z.data(),z.size()*sizeof(float))&&seams.fill.size()==(fillPtr?z.size():0)&&(!fillPtr||!std::memcmp(seams.fill.data(),f.data(),f.size()*sizeof(float))))return;
  auto last=std::chrono::steady_clock::now()-std::chrono::seconds(1);
  auto pulse=[&](double fraction){auto now=std::chrono::steady_clock::now();if(fraction>=1||now-last>=std::chrono::milliseconds(100)){progress(fraction);last=now;}};
  pulse(0);
- seams={};seams.width=gw;seams.height=gh;seams.x=gx;seams.y=gy;seams.cell=cell;seams.imageWidth=iw;seams.imageHeight=ih;seams.cameras=c;seams.intrinsics=k;seams.paths=paths;seams.heights=z;seams.labels.assign(z.size(),-1);
- auto project=[&](int p,int i,bool color,double limit=INFINITY){SeamSample result;int ix=p%gw,iy=p/gw;double h=0;if(ix>=gw-1||iy>=gh-1||!sampleSurface(z.data(),gw,ix,iy,.5,.5,h))return result;
+ seams={};seams.width=gw;seams.height=gh;seams.x=gx;seams.y=gy;seams.cell=cell;seams.imageWidth=iw;seams.imageHeight=ih;seams.cameras=c;seams.intrinsics=k;seams.paths=paths;seams.heights=z;if(fillPtr)seams.fill=f;seams.labels.assign(z.size(),-1);
+ auto project=[&](int p,int i,bool color,double limit=INFINITY,bool filled=false){SeamSample result;int ix=p%gw,iy=p/gw;double h=0;if(ix>=gw-1||iy>=gh-1||!sampleSurface(filled?f.data():z.data(),gw,ix,iy,.5,.5,h))return result;
   double x=gx+(ix+.5)*cell,y=gy+(iy+.5)*cell;const double* a=&c[i*12];double dx=x-a[9],dy=y-a[10],dz=h-a[11],cz=a[6]*dx+a[7]*dy+a[8]*dz;if(cz<=3)return result;
   double cx=(a[0]*dx+a[1]*dy+a[2]*dz)/cz,cy=(a[3]*dx+a[4]*dy+a[5]*dz)/cz,rr=cx*cx+cy*cy,rad=1+k[3]*rr+k[4]*rr*rr,px=k[0]*cx*rad+k[1],py=k[0]*cy*rad+k[2];
   if(px<1||py<1||px>=iw-2||py>=ih-2)return result;
@@ -279,22 +287,26 @@ void prepareProjection(const std::vector<float>& z,int gw,int gh,double gx,doubl
   for(int ch=0;ch<3;++ch){auto v=[&](int dx,int dy){return double((pixels[(yy+dy)*iw+xx+dx]>>(ch*8))&255);};result.rgb[ch]=(1-fy)*((1-fx)*v(0,0)+fx*v(1,0))+fy*((1-fx)*v(0,1)+fx*v(1,1));}return result;
  };
  for(int p=0;p<int(z.size());++p){if(p%4096==0)pulse(.5*p/z.size());if(!std::isfinite(z[p]))continue;double best=INFINITY;for(int i=0;i<int(paths.size());++i){double score=project(p,i,false,best).score;if(score<best){best=score;seams.labels[p]=i;}}}
- choosePhotoSeams(seams.labels,gw,gh,[&](int p,int i){return project(p,i,true);},[&](double fraction){pulse(.5+.5*fraction);});seams.ready=true;
+ choosePhotoSeams(seams.labels,gw,gh,[&](int p,int i){return project(p,i,true);},[&](double fraction){pulse(.5+.5*fraction);});
+ // Fill-only cells never take part in the measured seam cut: label them by best view afterwards.
+ if(fillPtr)for(int p=0;p<int(z.size());++p){if(seams.labels[p]>=0||!std::isfinite(f[p]))continue;double best=INFINITY;for(int i=0;i<int(paths.size());++i){double score=project(p,i,false,best,true).score;if(score<best){best=score;seams.labels[p]=i;}}}
+ seams.ready=true;
 }
 int render(const std::vector<float>& z,int gw,int gh,double gx,double gy,double cell,
  const std::vector<double>& c,const std::vector<double>& k,int iw,int ih,
- const std::vector<std::string>& paths,double tx,double ty,double step,std::vector<int32_t>& out,bool ordered){
- if(gw<2||gh<2||cell<=0||z.size()!=size_t(gw)*gh)throw std::runtime_error("Invalid surface tile.");
+ const std::vector<std::string>& paths,double tx,double ty,double step,std::vector<int32_t>& out,bool ordered,const std::vector<float>* fillSurface){
+ if(gw<2||gh<2||cell<=0||z.size()!=size_t(gw)*gh||(fillSurface&&fillSurface->size()!=z.size()))throw std::runtime_error("Invalid surface tile.");
  if(c.size()%12||k.size()!=5)throw std::runtime_error("Invalid calibrated cameras.");
  int n=int(c.size()/12);if(paths.size()!=size_t(n))throw std::runtime_error("Image camera count mismatch.");
- prepareProjection(z,gw,gh,gx,gy,cell,c,k,iw,ih,paths,[](double){});
+ prepareProjection(z,gw,gh,gx,gy,cell,c,k,iw,ih,paths,[](double){},fillSurface);
+ const std::vector<float>* fillPtr=fillSurface&&fillSurface!=&z?fillSurface:nullptr;
  out.assign(256*256,0);int coverage=0;
     // Prefer likely central views before expensive oblique occlusion walks. Every
     // camera is still tested per pixel, with original-index tie breaking preserved.
     const double centreX=tx+128*step,centreY=ty-128*step;
     int centreCol=int(std::floor((centreX-gx)/cell)),centreRow=int(std::floor((centreY-gy)/cell));
     double centreZ=0;
-    if(centreCol>=0&&centreRow>=0&&centreCol<gw&&centreRow<gh&&std::isfinite(z[centreRow*gw+centreCol]))centreZ=z[centreRow*gw+centreCol];
+    if(centreCol>=0&&centreRow>=0&&centreCol<gw&&centreRow<gh){int at=centreRow*gw+centreCol;if(std::isfinite(z[at]))centreZ=z[at];else if(fillPtr&&std::isfinite((*fillPtr)[at]))centreZ=(*fillPtr)[at];}
     std::vector<std::pair<double,int>> order;order.reserve(n);
     for(int i=0;i<n;++i){const double* a=&c[i*12];double dx=centreX-a[9],dy=centreY-a[10],dz=centreZ-a[11];
       double cz=a[6]*dx+a[7]*dy+a[8]*dz,score=std::numeric_limits<double>::infinity();
@@ -304,7 +316,7 @@ int render(const std::vector<float>& z,int gw,int gh,double gx,double gy,double 
       order.emplace_back(score,i);}
     if(ordered&&std::abs(step)*256<=8)std::sort(order.begin(),order.end());
     for(int row=0;row<256;++row)for(int col=0;col<256;++col){double x=tx+(col+.5)*step,y=ty-(row+.5)*step,u=(x-gx)/cell,v=(y-gy)/cell;int ix=int(std::floor(u)),iy=int(std::floor(v));if(ix<0||iy<0||ix>=gw-1||iy>=gh-1)continue;
-      double value=0;if(!sampleSurface(z.data(),gw,ix,iy,u-ix,v-iy,value))continue;
+      double value=0;if(!sampleSurface(z.data(),gw,ix,iy,u-ix,v-iy,value)&&!(fillPtr&&sampleSurface(fillPtr->data(),gw,ix,iy,u-ix,v-iy,value)))continue;
       int best=-1;double bestScore=1e9,bx=0,by=0;
       for(const auto& candidate:order){int i=candidate.second;const double* a=&c[i*12];double dx=x-a[9],dy=y-a[10],dz=value-a[11];double cz=a[6]*dx+a[7]*dy+a[8]*dz;if(cz<=3)continue;
         double cx=(a[0]*dx+a[1]*dy+a[2]*dz)/cz,cy=(a[3]*dx+a[4]*dy+a[5]*dz)/cz,rr=cx*cx+cy*cy,rad=1+k[3]*rr+k[4]*rr*rr;
@@ -330,6 +342,102 @@ int render(const std::vector<float>& z,int gw,int gh,double gx,double gy,double 
       out[row*256+col]=int32_t(color);++coverage;
     }
  return coverage;
+}
+// ---- Ortho fill -------------------------------------------------------------------------------------------
+namespace {
+const float nanHeight=std::numeric_limits<float>::quiet_NaN();
+// Pull-push over a 2x2 pyramid: level 0 is the measured grid itself (weight 1 where finite). Every level above is a
+// weighted mean with weight min(1,sum). Push returns, for each unknown cell, a bilinear blend of the nearest data.
+struct PullPush {
+ struct Level{int w,h;std::vector<float> value,weight;};
+ std::vector<Level> levels; // [0] is level 1 of the pyramid
+ bool build(const std::vector<float>& z,int w,int h){
+  int pw=w,ph=h;bool first=true;
+  while(pw>1||ph>1){
+   Level next;next.w=(pw+1)/2;next.h=(ph+1)/2;next.value.assign(size_t(next.w)*next.h,0);next.weight.assign(next.value.size(),0);
+   for(int y=0;y<next.h;++y)for(int x=0;x<next.w;++x){double sum=0,total=0;
+    for(int dy=0;dy<2;++dy)for(int dx=0;dx<2;++dx){int cx=2*x+dx,cy=2*y+dy;if(cx>=pw||cy>=ph)continue;
+     double v,wt;if(first){float m=z[size_t(cy)*pw+cx];if(!std::isfinite(m))continue;v=m;wt=1;}
+     else{const Level& below=levels.back();size_t at=size_t(cy)*pw+cx;wt=below.weight[at];if(wt<=0)continue;v=below.value[at];}
+     sum+=wt*v;total+=wt;}
+    size_t at=size_t(y)*next.w+x;if(total>0){next.value[at]=float(sum/total);next.weight[at]=float(std::min(1.,total));}}
+   levels.push_back(std::move(next));pw=levels.back().w;ph=levels.back().h;first=false;
+  }
+  return !levels.empty()&&levels.back().weight[0]>0;
+ }
+ // Bilinear sample of level l (cell-centre aligned) from the parent grid, weighted by parent weights.
+ float up(int l,int x,int y)const{
+  const Level& p=levels[l];
+  double u=(x+.5)/2-.5,v=(y+.5)/2-.5;int x0=int(std::floor(u)),y0=int(std::floor(v));double fx=u-x0,fy=v-y0;
+  double sum=0,total=0,plain=0,plainTotal=0;
+  for(int dy=0;dy<2;++dy)for(int dx=0;dx<2;++dx){int cx=std::clamp(x0+dx,0,p.w-1),cy=std::clamp(y0+dy,0,p.h-1);
+   double b=(dx?fx:1-fx)*(dy?fy:1-fy);size_t at=size_t(cy)*p.w+cx;sum+=b*p.weight[at]*p.value[at];total+=b*p.weight[at];plain+=b*p.value[at];plainTotal+=b;}
+  return float(total>1e-9?sum/total:plain/plainTotal);
+ }
+ // Fills levels top-down in place (value := blended estimate). Level 0 cells read parent estimates via fillCell.
+ void push(){
+  for(int l=int(levels.size())-2;l>=0;--l){Level& cur=levels[l];
+   for(int y=0;y<cur.h;++y)for(int x=0;x<cur.w;++x){size_t at=size_t(y)*cur.w+x;float wt=cur.weight[at];
+    if(wt>=1)continue;float above=up(l+1,x,y);cur.value[at]=wt>0?wt*cur.value[at]+(1-wt)*above:above;}}
+  // Parent weights must stay as built for interpolation; push modified only values, so weights are intact.
+ }
+};
+// Two-pass 3-4 chamfer distance (cells) to the nearest measured cell, O(n), one float per cell.
+void chamferDistance(const std::vector<float>& z,int w,int h,std::vector<float>& d){
+ const float big=1e9f,diag=1.4142f;d.assign(z.size(),big);
+ for(size_t i=0;i<z.size();++i)if(std::isfinite(z[i]))d[i]=0;
+ for(int y=0;y<h;++y)for(int x=0;x<w;++x){size_t i=size_t(y)*w+x;float v=d[i];if(v==0)continue;
+  if(x>0)v=std::min(v,d[i-1]+1);if(y>0){v=std::min(v,d[i-w]+1);if(x>0)v=std::min(v,d[i-w-1]+diag);if(x<w-1)v=std::min(v,d[i-w+1]+diag);}d[i]=v;}
+ for(int y=h-1;y>=0;--y)for(int x=w-1;x>=0;--x){size_t i=size_t(y)*w+x;float v=d[i];if(v==0)continue;
+  if(x<w-1)v=std::min(v,d[i+1]+1);if(y<h-1){v=std::min(v,d[i+w]+1);if(x<w-1)v=std::min(v,d[i+w+1]+diag);if(x>0)v=std::min(v,d[i+w-1]+diag);}d[i]=v;}
+}
+// Median of measured heights per coarse block window (lazy, memoised). Deterministic subsample keeps it bounded.
+struct LocalPlane {
+ int bs,bw,bh,reach;std::vector<std::vector<float>> samples;std::vector<float> memo;std::vector<char> done;
+ LocalPlane(const std::vector<float>& z,int w,int h,double cell,double windowMeters){
+  bs=std::max(1,int(std::ceil(10./cell)));bw=(w+bs-1)/bs;bh=(h+bs-1)/bs;reach=std::max(1,int(std::ceil(windowMeters/(bs*cell))));
+  samples.resize(size_t(bw)*bh);memo.assign(samples.size(),nanHeight);done.assign(samples.size(),0);
+  const int stride=std::max(1,bs*bs/32);std::vector<int> counter(samples.size(),0);
+  for(int y=0;y<h;++y)for(int x=0;x<w;++x){float v=z[size_t(y)*w+x];if(!std::isfinite(v))continue;size_t b=size_t(y/bs)*bw+x/bs;if(counter[b]++%stride==0)samples[b].push_back(v);}
+ }
+ float at(int x,int y){size_t b=size_t(y/bs)*bw+x/bs;if(done[b])return memo[b];done[b]=1;
+  std::vector<float> values;int bx=int(b%bw),by=int(b/bw);
+  for(int j=std::max(0,by-reach);j<=std::min(bh-1,by+reach);++j)for(int i=std::max(0,bx-reach);i<=std::min(bw-1,bx+reach);++i){const auto& s=samples[size_t(j)*bw+i];values.insert(values.end(),s.begin(),s.end());}
+  if(values.size()>=8){auto mid=values.begin()+values.size()/2;std::nth_element(values.begin(),mid,values.end());memo[b]=*mid;}
+  return memo[b];}
+};
+}
+void logLine(const char* text){
+#ifdef __ANDROID__
+ __android_log_print(ANDROID_LOG_INFO,"R2CMapping","%s",text);
+#else
+ std::fprintf(stderr,"%s\n",text);
+#endif
+}
+OrthoFillStats buildOrthoFill(const std::vector<float>& measured,int w,int h,double cell,const OrthoFillOptions& options,
+ std::vector<float>& fillOut,std::vector<uint8_t>& mask){
+ if(w<1||h<1||size_t(w)*h>3000000||measured.size()!=size_t(w)*h||!(cell>0))throw std::runtime_error("Invalid ortho fill input.");
+ const auto started=std::chrono::steady_clock::now();const size_t n=measured.size();
+ OrthoFillStats stats;stats.fillRadiusMeters=std::isfinite(options.fillRadiusMeters)&&options.fillRadiusMeters>0?options.fillRadiusMeters:25;
+ if(&fillOut!=&measured)fillOut=measured;mask.assign((n+7)/8,0);
+ size_t known=0;for(size_t i=0;i<n;++i)known+=std::isfinite(measured[i]);
+ size_t estimated=0;
+ if(options.enabled&&known<n){
+  PullPush pyramid;const bool ok=pyramid.build(measured,w,h);
+  if(ok)pyramid.push();
+  std::vector<float> distance;chamferDistance(measured,w,h,distance);
+  const float limit=float(stats.fillRadiusMeters/cell);
+  const double window=std::isfinite(options.planeWindowMeters)&&options.planeWindowMeters>0?options.planeWindowMeters:50;
+  std::unique_ptr<LocalPlane> plane;
+  for(int y=0;y<h;++y)for(int x=0;x<w;++x){size_t i=size_t(y)*w+x;if(std::isfinite(measured[i]))continue;float value=nanHeight;
+   if(ok&&distance[i]<=limit){value=pyramid.up(0,x,y);}
+   else{if(!plane)plane=std::make_unique<LocalPlane>(measured,w,h,cell,window);value=plane->at(x,y);if(!std::isfinite(value))value=std::isfinite(options.planeHeight)?float(options.planeHeight):nanHeight;}
+   if(!std::isfinite(value))continue;fillOut[i]=value;mask[i>>3]|=uint8_t(1u<<(i&7));++estimated;}
+ }
+ stats.estimatedFillCells=int(estimated);stats.knownFraction=double(known)/n;stats.estimatedFraction=double(estimated)/n;stats.emptyFraction=1-stats.knownFraction-stats.estimatedFraction;
+ stats.elapsedMs=int(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now()-started).count());
+ char text[96];std::snprintf(text,sizeof text,"Ortho fill known=%.3f est=%.3f empty=%.3f ms=%d",stats.knownFraction,stats.estimatedFraction,stats.emptyFraction,stats.elapsedMs);logLine(text);
+ return stats;
 }
 void releasePixels(){images.clear();seams={};}
 }

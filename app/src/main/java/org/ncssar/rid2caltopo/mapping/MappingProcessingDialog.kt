@@ -111,6 +111,7 @@ import org.json.JSONObject
         if(layer.resolutionCmPerPixel>0)Text("Estimated ground detail: ${Units.current.resolution(layer.resolutionCmPerPixel)}")
         runCatching{JSONObject(layer.surfaceModel).getDouble("meshSpacingMeters")}.getOrNull()?.takeIf{it.isFinite()&&it>0}?.let{Text("3D preview mesh: ${Units.current.length(it)} spacing")}
         Text("Zoom levels: ${layer.minZoom}–${layer.maxZoom}");Text(layer.engine);Text(layer.quality)
+        layer.estimatedFillSummary?.let{Text(it,modifier=Modifier.testTag("mapping-estimated-fill"))}
         if(boundary!=null)Row(verticalAlignment=androidx.compose.ui.Alignment.CenterVertically){
             Switch(checked=softEdges,onCheckedChange={softEdges=it;MappingBoundary.setSoft(context,layer.id,it)},modifier=Modifier.testTag("mapping-soft-edges"))
             Text(if(softEdges)"Target region · 5 m outer fade" else "Full captured extent")

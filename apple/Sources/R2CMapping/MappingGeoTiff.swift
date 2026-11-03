@@ -45,6 +45,11 @@ public enum MappingGeoTiff {
         }
         throw ExportFailure.noTiles
     }
+    /// Compact TIFF ImageDescription (tag 270); no coordinates. Nil when the layer has no estimated-fill fraction.
+    public static func imageDescription(estimatedFillFraction: Double?) -> String? {
+        guard let fraction = estimatedFillFraction, fraction.isFinite, fraction >= 0 else { return nil }
+        return "R2C map; estimated fill \(String(format:"%.1f",locale:Locale(identifier:"en_US_POSIX"),fraction*100))% of assignment (no measured depth)"
+    }
     public static func export(root: URL, minZoom: Int, maxZoom: Int, assignmentName: String = "Map", limitForCalTopo: Bool = false) throws -> Result {
         let shares=TemporaryWorkspace.root.appendingPathComponent("GeoTIFF")
         try FileManager.default.createDirectory(at:shares,withIntermediateDirectories:true)
@@ -56,8 +61,10 @@ public enum MappingGeoTiff {
         try FileManager.default.createDirectory(at:directory,withIntermediateDirectories:true)
         let url=directory.appendingPathComponent(MappingResultFiles.geoTiffName(assignment:assignmentName))
         do {
+            // Layer metadata is small and this export already runs on a worker.
+            let fraction=(try? JSONSerialization.jsonObject(with:Data(contentsOf:root.appendingPathComponent("layer.json"))) as? [String:Any])?["estimatedFillFraction"] as? Double
             let selection=try writeBest(root:root,destination:url,minZoom:minZoom,maxZoom:maxZoom,
-                maxBytes:limitForCalTopo ? caltopoMaxBytes:nil) { plan,x,y in
+                maxBytes:limitForCalTopo ? caltopoMaxBytes:nil,description:imageDescription(estimatedFillFraction:fraction)) { plan,x,y in
                 let tile=root.appendingPathComponent("\(plan.zoom)/\(x)/\(y).png")
                 guard FileManager.default.fileExists(atPath:tile.path) else { return nil }
                 return try pixels(tile)
@@ -67,7 +74,7 @@ public enum MappingGeoTiff {
     }
     /// Tries actual compressed output before reducing the saved zoom level.
     public static func writeBest(root: URL, destination: URL, minZoom: Int, maxZoom: Int,
-                                 maxBytes: Int64? = nil, read: (Plan,Int,Int)throws->Data?) throws -> Selection {
+                                 maxBytes: Int64? = nil, description: String? = nil, read: (Plan,Int,Int)throws->Data?) throws -> Selection {
         var ceiling=maxZoom,fullZoom:Int?
         while ceiling>=minZoom {
             try Task.checkCancellation()
@@ -76,19 +83,23 @@ public enum MappingGeoTiff {
             catch ExportFailure.noTiles {if fullZoom==nil {throw ExportFailure.noTiles};break}
             if fullZoom==nil {fullZoom=candidate.zoom}
             do {
-                try write(destination:destination,plan:candidate,maxBytes:maxBytes){x,y in try read(candidate,x,y)}
+                try write(destination:destination,plan:candidate,maxBytes:maxBytes,description:description){x,y in try read(candidate,x,y)}
                 return Selection(plan:candidate,fullZoom:fullZoom!)
             } catch ExportFailure.sizeLimit {ceiling=candidate.zoom-1}
         }
         throw MappingMission.Failure("No saved resolution fits the 40 MB CalTopo limit. Export with the limit unchecked.")
     }
     /// Reader provides straight RGBA in top-to-bottom order, or nil for a missing tile.
-    public static func write(destination: URL, plan: Plan, maxBytes: Int64? = nil, read: (Int,Int)throws->Data?) throws {
+    public static func write(destination: URL, plan: Plan, maxBytes: Int64? = nil, description: String? = nil, read: (Int,Int)throws->Data?) throws {
         guard plan.columns>0, plan.rows>0, plan.count <= (Int(UInt32.max)-4096)/8 else { throw MappingMission.Failure("Map extent exceeds classic TIFF’s tile index limit.") }
         var tags:[Int:(Int,Data)]=[:]
         func shorts(_ v:[Int])->Data { var d=Data();for x in v { d.le(UInt16(x)) };return d }
         func longs(_ v:[Int])->Data { var d=Data();for x in v { d.le(UInt32(x)) };return d }
         func doubles(_ v:[Double])->Data { var d=Data();for x in v { d.le(x.bitPattern) };return d }
+        if let description, !description.isEmpty {
+            var text=Data(description.unicodeScalars.filter{(32...126).contains($0.value)}.prefix(200).map{UInt8($0.value)});text.append(0)
+            tags[270]=(2,text)
+        }
         tags[256]=(4,longs([plan.columns*256]));tags[257]=(4,longs([plan.rows*256]));tags[258]=(3,shorts([8,8,8,8]))
         tags[259]=(3,shorts([8]));tags[262]=(3,shorts([2]));tags[274]=(3,shorts([1]));tags[277]=(3,shorts([4]));tags[284]=(3,shorts([1]))
         tags[322]=(4,longs([256]));tags[323]=(4,longs([256]));tags[324]=(4,longs([0]))
@@ -111,7 +122,7 @@ public enum MappingGeoTiff {
                 if id==324 {offsets=location} else {counts=location}
                 header.le(UInt32(plan.count==1 ? 0:location))
             } else {
-                header.le(UInt32(data.count/(type==3 ? 2:type==12 ? 8:4)))
+                header.le(UInt32(data.count/(type==2 ? 1:type==3 ? 2:type==12 ? 8:4)))
                 if data.count<=4 {header.append(data);header.append(Data(count:4-data.count))}
                 else {header.le(UInt32(base+extra.count));extra.append(data)}
             }

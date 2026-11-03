@@ -38,6 +38,15 @@ int main(int argc,char** argv){
  assert(R2CMappingDense(&input,aligned->adjustment,aligned->adjustmentCount,nullptr,nullptr,&split,error,sizeof(error))==1);
  assert(split->width==result->width&&split->height==result->height&&split->x==result->x&&split->y==result->y&&split->cell==result->cell);
  for(int i=0;i<result->width*result->height;++i)assert(split->heights[i]==result->heights[i]||(std::isnan(split->heights[i])&&std::isnan(result->heights[i])));
+ // New input fields default to 0.2 m cells and a footprint extent that covers edge photos (about +-50 m x, +-40 m y).
+ assert(result->cell==.2&&result->x<=-45&&result->x+result->width*result->cell>=45&&result->y<=-38&&result->y+result->height*result->cell>=38);
+ {
+  R2CMappingInput custom=input;custom.surfaceCellMeters=.4;custom.clipWest=-20;custom.clipSouth=-20;custom.clipEast=20;custom.clipNorth=20;
+  R2CMappingResult* clipped=nullptr;
+  assert(R2CMappingDense(&custom,aligned->adjustment,aligned->adjustmentCount,nullptr,nullptr,&clipped,error,sizeof(error))==1);
+  assert(clipped->cell==.4&&std::abs(clipped->x+20)<1e-9&&std::abs(clipped->y+20)<1e-9&&clipped->width==101&&clipped->height==101);
+  R2CMappingFree(clipped);
+ }
  R2CMappingFree(split);R2CMappingFree(aligned);
  assert(R2CMappingAlign(&input,[](void*,const char*,double){return 0;},nullptr,&aligned,error,sizeof(error))==0&&aligned==nullptr);
  assert(R2CMappingDense(&input,nullptr,0,nullptr,nullptr,&split,error,sizeof(error))==0&&split==nullptr);

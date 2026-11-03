@@ -52,6 +52,19 @@ internal class MappingSurfaceCoverage(val polygon:List<Pair<Double,Double>>) {
         }
         return Cells(total,known)
     }
+    /** Assignment cells whose height was estimated (bit set in the LSB-first fill mask); same cell enumeration as [cells]. */
+    fun estimatedCells(mask:ByteArray,width:Int,height:Int,x:Double,y:Double,cell:Double):Int {
+        require(width>0&&height>0&&mask.size>=(width.toLong()*height+7)/8&&cell>0&&cell.isFinite())
+        val x0=floor((west-x)/cell).toInt();val x1=ceil((east-x)/cell).toInt()
+        val y0=floor((south-y)/cell).toInt();val y1=ceil((north-y)/cell).toInt()
+        require((x1.toLong()-x0+1)*(y1.toLong()-y0+1) in 1..3_000_000){"Assignment coverage exceeds this tablet's local job limit."}
+        var estimated=0
+        for(row in max(y0,0)..min(y1,height-1))for(col in max(x0,0)..min(x1,width-1)){
+            val index=row*width+col
+            if(((mask[index shr 3].toInt() shr (index and 7)) and 1)!=0&&contains(x+col*cell,y+row*cell))estimated++
+        }
+        return estimated
+    }
     fun imagePixels(pixels:IntArray,x:Double,y:Double,step:Double):Int {
         require(pixels.size==256*256&&step>0&&step.isFinite())
         if(x>east||x+256*step<west||y<south||y-256*step>north)return 0

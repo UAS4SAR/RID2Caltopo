@@ -15,13 +15,31 @@ public enum MappingSurfaceProducts {
         CGImageDestinationAddImage(destination,image,nil);guard CGImageDestinationFinalize(destination) else {throw MappingMission.Failure("Could not finish map tile.")}
     }
     public static func export(_ g: MappingGeometryResult, rasters: URL, output: URL, bounds: MappingProcessingPolicy.Bounds,
-        polygon: [[Double]], zoom: Int, progress: (String,Double)throws->Void) throws {
+        polygon: [[Double]], zoom: Int, fillUnknown2D: Bool = true, progress: (String,Double)throws->Void) throws {
         try progress("Refining local surface heights",0.68)
         let g=try MappingNativeEngine.refine(g)
-        try MappingNativeEngine.prepareProjection(g,rasters:rasters,progress:progress)
         let fm=FileManager.default,surface=output.appendingPathComponent("surface")
         try fm.createDirectory(at:surface,withIntermediateDirectories:true)
+        var fillHeights:[Float]?=nil
+        var fillStats:MappingNativeEngine.OrthoFill?=nil
+        var estimatedFillAssignmentCells=0,assignmentSurfaceCells=0
+        if fillUnknown2D && !g.approximate {
+            try progress("Estimating unknown 2D areas",0.685)
+            let plane=g.heights.filter(\.isFinite).sorted().dropFirst(max(0,g.heights.filter(\.isFinite).count/2)).first.map(Double.init) ?? .nan
+            let fill=try MappingNativeEngine.buildOrthoFill(g.heights,width:g.width,height:g.height,cell:g.cell,enabled:true,fillRadiusMeters:25,planeHeight:plane)
+            fillHeights=fill.heights;fillStats=fill
+            try Data(fill.mask).write(to:surface.appendingPathComponent("estimated-mask.bin"),options:.atomic)
+        } else {
+            try? fm.removeItem(at:surface.appendingPathComponent("estimated-mask.bin"))
+        }
+        try MappingNativeEngine.prepareProjection(g,fill:fillHeights,rasters:rasters,progress:progress)
         let clipped=bounds.expanded(MappingProcessingPolicy.outputOverlapMeters/g.groundScale)
+        func inAssignment(_ x: Double,_ y: Double) -> Bool {
+            var yes=false,j=polygon.count-1
+            for i in polygon.indices {let a=polygon[i],b=polygon[j]
+                if (a[1]>y) != (b[1]>y),x<(b[0]-a[0])*(y-a[1])/(b[1]-a[1])+a[0]{yes.toggle()};j=i}
+            return yes
+        }
         func inside(_ x: Double,_ y: Double) -> Bool {
             guard x>=clipped.west,x<=clipped.east,y>=clipped.south,y<=clipped.north else{return false}
             var yes=false,j=polygon.count-1;var distance=Double.infinity
@@ -32,20 +50,40 @@ public enum MappingSurfaceProducts {
             }
             return yes || distance*g.groundScale<=5
         }
+        if let fillStats {
+            let mask=fillStats.mask
+            for row in 0..<g.height {for col in 0..<g.width {
+                let mx=g.originX+(g.x+Double(col)*g.cell)/g.groundScale,my=g.originY+(g.y+Double(row)*g.cell)/g.groundScale
+                guard inAssignment(mx,my) else {continue}
+                assignmentSurfaceCells+=1
+                let i=row*g.width+col
+                if ((Int(mask[i>>3])>>(i&7))&1) != 0 {estimatedFillAssignmentCells+=1}
+            }}
+        }
         var colors=[UInt32](repeating:0,count:g.width*g.height)
         let bx=(g.width+255)/256,by=(g.height+255)/256
         for yy in 0..<by {for xx in 0..<bx {
             try progress("Coloring 3D surface · block \(yy*bx+xx+1)/\(bx*by)",0.69+0.035*Double(yy*bx+xx)/Double(bx*by))
             let left=g.x+Double(xx*256)*g.cell,top=g.y+Double(g.height-1-yy*256)*g.cell
             if (left+256*g.cell)/g.groundScale+g.originX<clipped.west || left/g.groundScale+g.originX>clipped.east || top/g.groundScale+g.originY<clipped.south || (top-256*g.cell)/g.groundScale+g.originY>clipped.north {continue}
-            let pixels=try MappingNativeEngine.render(g,rasters:rasters,x:left-g.cell/2,y:top+g.cell/2,step:g.cell)
+            let pixels=try MappingNativeEngine.render(g,fill:fillHeights,rasters:rasters,x:left-g.cell/2,y:top+g.cell/2,step:g.cell)
             for row in 0..<min(256,g.height-yy*256){for col in 0..<min(256,g.width-xx*256){
                 if inside((left+Double(col)*g.cell)/g.groundScale+g.originX,(top-Double(row)*g.cell)/g.groundScale+g.originY){colors[(g.height-1-yy*256-row)*g.width+xx*256+col]=pixels[row*256+col]}
             }}
         }}
         try mesh(g,colors:colors,polygon:polygon,output:surface.appendingPathComponent("surface.glb"),progress:progress)
-        let metadata:[String:Any]=["reconstructionMode":g.approximate ? "approximate-plane":"measured-surface","measuredStereoCells":g.measuredCells,"knownProjectionCells":g.heights.filter{$0.isFinite}.count,"accuracy":"not independently measured","type":"r2c_visible_surface","version":1,"width":g.width,"height":g.height,"gridX":g.x,"gridY":g.y,"cellMeters":g.cell,"meshSpacingMeters":0.4,"originMercatorX":g.originX,"originMercatorY":g.originY,"mercatorToGroundScale":g.groundScale,"originDjiAltitude":g.originAltitude,"byteOrder":"little-endian","noData":"NaN","refinement":"local-median-v1","projection":"ray-coverage-photo-seams-v5"]
+        var metadata:[String:Any]=["reconstructionMode":g.approximate ? "approximate-plane":"measured-surface","measuredStereoCells":g.measuredCells,"knownProjectionCells":g.heights.filter{$0.isFinite}.count,"accuracy":"not independently measured","type":"r2c_visible_surface","version":1,"width":g.width,"height":g.height,"gridX":g.x,"gridY":g.y,"cellMeters":g.cell,"meshSpacingMeters":0.4,"originMercatorX":g.originX,"originMercatorY":g.originY,"mercatorToGroundScale":g.groundScale,"originDjiAltitude":g.originAltitude,"byteOrder":"little-endian","noData":"NaN","refinement":"local-median-v1","projection":"ray-coverage-photo-seams-v5","fillUnknown2DAreas":fillStats != nil]
+        if let fillStats {
+            let assignmentFraction=assignmentSurfaceCells>0 ? Double(estimatedFillAssignmentCells)/Double(assignmentSurfaceCells):0
+            metadata["estimatedFillCells"]=fillStats.estimatedCells
+            metadata["estimatedFillAssignmentCells"]=estimatedFillAssignmentCells
+            metadata["assignmentSurfaceCells"]=assignmentSurfaceCells
+            metadata["estimatedFillFraction"]=assignmentFraction
+            metadata["fillRadiusMeters"]=fillStats.fillRadiusMeters
+            metadata["estimatedMaskPath"]="surface/estimated-mask.bin"
+        }
         try json(metadata,surface.appendingPathComponent("surface.json"))
+        try json(["cameraAdjustment":["reconstructionMode":g.approximate ? "approximate-plane":"measured-surface","measuredStereoCells":g.measuredCells,"registeredPhotoCount":g.used.count],"surface":metadata],surface.appendingPathComponent("surface-reconstruction-report.json"))
         var heights=Data();heights.reserveCapacity(g.heights.count*4);for z in g.heights{heights.appendLE(z.bitPattern)};try heights.write(to:surface.appendingPathComponent("surface.f32"),options:.atomic)
         try json(["camerasEnu":g.cameras,"intrinsicsPixels":g.fullIntrinsics,"width":g.rasterWidth,"height":g.rasterHeight,"originalSha256":g.used.map{g.digests[$0]}],surface.appendingPathComponent("cameras.json"))
         let unit=MappingOriginal.world/(256*pow(2,Double(zoom))),half=MappingOriginal.world/2
@@ -58,7 +96,7 @@ public enum MappingSurfaceProducts {
         for ty in minY...maxY {for tx in minX...maxX {
             try progress("Rendering 2D tiles · \(index+1)/\(count)",0.73+0.25*Double(index)/Double(count));index+=1
             let mapX=Double(tx*256)*unit-half,mapY=half-Double(ty*256)*unit
-            var pixels=try MappingNativeEngine.render(g,rasters:rasters,x:(mapX-g.originX)*g.groundScale,y:(mapY-g.originY)*g.groundScale,step:unit*g.groundScale)
+            var pixels=try MappingNativeEngine.render(g,fill:fillHeights,rasters:rasters,x:(mapX-g.originX)*g.groundScale,y:(mapY-g.originY)*g.groundScale,step:unit*g.groundScale)
             for row in 0..<256{for col in 0..<256{if !inside(mapX+(Double(col)+0.5)*unit,mapY-(Double(row)+0.5)*unit){pixels[row*256+col]=0}}}
             if pixels.contains(where:{$0>>24>0}) {try png(pixels,output.appendingPathComponent("\(zoom)/\(tx)/\(ty).png"))}
         }}

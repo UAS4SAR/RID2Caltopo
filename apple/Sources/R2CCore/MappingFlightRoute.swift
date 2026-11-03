@@ -8,6 +8,10 @@ public struct MappingFlightRoute: Sendable {
     public let photoEstimate,durationEstimateSeconds:Int
     public let height,speed,spacing,transitSpeed:Double
     public let photoTag:String
+    /// Edge overrun at each leg end (0-100 m). Missing key in a saved legacy plan means 10 m.
+    public let routeEndMarginMeters:Double
+    /// Largest extra along-track end margin from oblique passes (0 for nadir-only plans).
+    public let obliqueEndExtensionMeters:Double
     public let passes:[MappingProcessingPolicy.Pass]
     public let spacings:[Double]
     private let lat0,lon0,scaleX:Double
@@ -62,6 +66,11 @@ public struct MappingFlightRoute: Sendable {
         let area=abs(twiceArea)/2
         guard area>=1 else{throw MappingMission.Failure("Assignment has no usable area.")}
         var planned:[Leg]=[]
+        let margin=MappingMissionDefaults.margin(parameters);routeEndMarginMeters=margin
+        /// Oblique views look ahead, so the leg's end (in flight direction) also extends by the optical-centre offset.
+        func opticalOffset(_ pass:MappingProcessingPolicy.Pass)->Double{height*reference*tan((90+pass.gimbalPitchDegrees) * .pi/180)}
+        func endExtension(_ pass:MappingProcessingPolicy.Pass)->Double{pass.gimbalPitchDegrees > -90 ? abs(opticalOffset(pass)):0}
+        obliqueEndExtensionMeters=passes.map(endExtension).max() ?? 0
         for (index,pass) in passes.enumerated(){let angle=pass.directionDegrees * .pi/180,oriented=polygon.map{Point(x:$0.x*cos(angle)-$0.y*sin(angle),y:$0.x*sin(angle)+$0.y*cos(angle))}
             func unrotate(_ point:Point)->Point{Point(x:point.x*cos(angle)+point.y*sin(angle),y:-point.x*sin(angle)+point.y*cos(angle))}
             let minimum=oriented.map(\.x).min()!,maximum=oriented.map(\.x).max()!,crossSpacing=width*gsd*near(pass)*(1-pass.sideOverlapPercent/100)*reference
@@ -71,8 +80,8 @@ public struct MappingFlightRoute: Sendable {
                 let hits=oriented.indices.compactMap{i->Double? in let a=oriented[i],b=oriented[(i+1)%oriented.count];return (a.x<=x && b.x>x)||(b.x<=x && a.x>x) ? a.y+(x-a.x)*(b.y-a.y)/(b.x-a.x):nil}.sorted()
                 guard hits.count%2==0 else{throw MappingMission.Failure("Assignment cannot be clipped into a mapping grid.")}
                 var pairs:[(Double,Double)]=[];for i in stride(from:0,to:hits.count,by:2){if hits[i+1]-hits[i]>0.2{pairs.append((hits[i],hits[i+1]))}};if column%2==1{pairs.reverse()}
-                for ends in pairs{let margin=min(100,max(0,parameters["marginMeters"] as? Double ?? 10)),a=Point(x:x,y:ends.0-margin),b=Point(x:x,y:ends.1+margin),start=column%2==0 ? a:b,end=column%2==0 ? b:a
-                    let offset=height*reference*tan((90+pass.gimbalPitchDegrees) * .pi/180)*(column%2==0 ? 1.0:-1.0)
+                for ends in pairs{let forward=column%2==0,extra=endExtension(pass),a=Point(x:x,y:ends.0-margin-(forward ? 0:extra)),b=Point(x:x,y:ends.1+margin+(forward ? extra:0)),start=forward ? a:b,end=forward ? b:a
+                    let offset=opticalOffset(pass)*(forward ? 1.0:-1.0)
                     planned.append(Leg(start:unrotate(Point(x:start.x,y:start.y-offset)),end:unrotate(Point(x:end.x,y:end.y-offset)),pass:index))
                 }
             }
@@ -105,7 +114,7 @@ public struct MappingFlightRoute: Sendable {
         return try OperationalZipArchive.encode([.init(path:"wpmz/template.kml",data:Data(xml(template:true).utf8)),.init(path:"wpmz/waylines.wpml",data:Data(xml(template:false).utf8))],compress:true)
     }
     public func summary() throws -> Data {
-        try JSONSerialization.data(withJSONObject:["estimatedPhotos":photoEstimate,"estimatedFlightSeconds":durationEstimateSeconds,"transitSpeedMetersPerSecond":transitSpeed,"speedMetersPerSecond":speed,"captureIntervalSeconds":spacing/speed,"waypointCount":legs.count*2,"heightMeters":height,"returnHomeHeightMeters":max(30,height),"heightReference":"takeoff","photoTag":photoTag,"captureTrigger":"multipleDistance","cameraHeadingPolicy":"aircraft-first-v1","photoLimit":10000,"withinPhotoLimit":photoEstimate<=10000,"reviewRequired":true,"flightEstimateIncludes":"capture legs, connections and 4 s per leg; excludes takeoff, landing, launch transit, wind and reserve"],options:[.sortedKeys])
+        try JSONSerialization.data(withJSONObject:["estimatedPhotos":photoEstimate,"routeEndMarginMeters":routeEndMarginMeters,"obliqueEndExtensionMeters":obliqueEndExtensionMeters,"estimatedFlightSeconds":durationEstimateSeconds,"transitSpeedMetersPerSecond":transitSpeed,"speedMetersPerSecond":speed,"captureIntervalSeconds":spacing/speed,"waypointCount":legs.count*2,"heightMeters":height,"returnHomeHeightMeters":max(30,height),"heightReference":"takeoff","photoTag":photoTag,"captureTrigger":"multipleDistance","cameraHeadingPolicy":"aircraft-first-v1","photoLimit":10000,"withinPhotoLimit":photoEstimate<=10000,"reviewRequired":true,"flightEstimateIncludes":"capture legs, connections and 4 s per leg; excludes takeoff, landing, launch transit, wind and reserve"],options:[.sortedKeys])
     }
     private func xml(template:Bool)->String{
         var text="<?xml version=\"1.0\" encoding=\"UTF-8\"?><kml xmlns=\"http://www.opengis.net/kml/2.2\" xmlns:wpml=\"http://www.dji.com/wpmz/1.0.6\"><Document>"

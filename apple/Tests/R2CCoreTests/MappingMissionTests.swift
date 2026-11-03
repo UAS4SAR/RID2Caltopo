@@ -179,4 +179,36 @@ final class MappingMissionTests: XCTestCase {
         XCTAssertEqual(layer.displayTitle,"East Pasture · IR · 2026-10-10 19:30")
         XCTAssertNil(layer.requestedResolutionCm)
     }
+
+    func testSurfaceKnobsRoundTripAndOldMissionDefaults() throws {
+        let mission=try MappingMission(feature:feature,incidentID:"MAP123")
+        let camera=MappingResolution.profiles.first{$0.id=="m4td.visible.wide"}!
+        let data=try mission.json(cameraProfile:camera,desiredGsdCmPerPixel:2,captureProfile:MappingProcessingPolicy.openGround)
+        let parameters=try XCTUnwrap((JSONSerialization.jsonObject(with:data) as? [String:Any])?["parameters"] as? [String:Any])
+        XCTAssertEqual(parameters["surfaceCellMeters"] as? Double,0.2)
+        XCTAssertEqual(parameters["fillUnknown2DAreas"] as? Bool,true)
+        let footprint=camera.sensor.widthPixels*(2.0/100)
+        XCTAssertEqual(parameters["marginMeters"] as? Double ?? 0,max(10,0.5*footprint),accuracy:1e-9)
+        XCTAssertEqual(MappingMissionDefaults.cell(nil),0.2)
+        XCTAssertTrue(MappingMissionDefaults.fillUnknown2D(nil))
+        XCTAssertEqual(MappingMissionDefaults.margin(["desiredGroundResolutionCmPerPixel":2]),10)
+        XCTAssertEqual(MappingMissionDefaults.cell(["surfaceCellMeters":0.1]),0.1)
+        XCTAssertFalse(MappingMissionDefaults.fillUnknown2D(["fillUnknown2DAreas":false]))
+        let standard=try MappingProcessingPolicy.storage(photos:40,width:4032,height:3024,areaSquareMeters:1e4,pixelMeters:0.03,regional:false,surfaceCellMeters:0.2)
+        let fine=try MappingProcessingPolicy.storage(photos:40,width:4032,height:3024,areaSquareMeters:1e4,pixelMeters:0.03,regional:false,surfaceCellMeters:0.1)
+        let coarse=try MappingProcessingPolicy.storage(photos:40,width:4032,height:3024,areaSquareMeters:1e4,pixelMeters:0.03,regional:false,surfaceCellMeters:0.4)
+        // Model term ∝ 1/cell² is the only cell-dependent part of products; Fine−Standard ≈ 4×(Standard−Coarse).
+        XCTAssertGreaterThan(fine.products,standard.products)
+        XCTAssertLessThan(coarse.products,standard.products)
+        XCTAssertEqual(Double(fine.products-standard.products),Double(standard.products-coarse.products)*4,accuracy:max(1,Double(standard.products-coarse.products)*0.05))
+        let tight=try MappingFlightRoute(mission:try mission.json(cameraProfile:camera,desiredGsdCmPerPixel:2,captureProfile:MappingProcessingPolicy.openGround,marginMeters:10))
+        let wide=try MappingFlightRoute(mission:try mission.json(cameraProfile:camera,desiredGsdCmPerPixel:2,captureProfile:MappingProcessingPolicy.openGround,marginMeters:40))
+        XCTAssertGreaterThan(wide.photoEstimate,tight.photoEstimate)
+        XCTAssertEqual(tight.routeEndMarginMeters,10)
+        XCTAssertEqual(wide.routeEndMarginMeters,40)
+        let brush=try MappingFlightRoute(mission:try mission.json(cameraProfile:camera,desiredGsdCmPerPixel:2,captureProfile:MappingProcessingPolicy.brushTrees,canopyHeightMeters:10,maximumObstacleHeightMeters:10,marginMeters:10))
+        XCTAssertGreaterThan(brush.obliqueEndExtensionMeters,0)
+        XCTAssertEqual(MappingLayer.estimatedFillSummary(fraction:0.061),"Estimated (no measured depth): 6%")
+        XCTAssertEqual(MappingProcessingPolicy.surfaceCellMeters,0.2)
+    }
 }

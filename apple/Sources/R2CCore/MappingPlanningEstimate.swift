@@ -12,7 +12,7 @@ public struct MappingPlanningEstimate:Sendable {
         let east=points.map(\.x).max()!,west=points.map(\.x).min()!,north=points.map(\.y).max()!,south=points.map(\.y).min()!
         let footprint=hypot(Double(width),Double(height))*pixel
         let area=(east-west+footprint)*(north-south+footprint)
-        storage=try MappingProcessingPolicy.storage(photos:photos,width:width,height:height,areaSquareMeters:area,pixelMeters:pixel,regional:area>2*MappingProcessingPolicy.acre || photos>192)
+        storage=try MappingProcessingPolicy.storage(photos:photos,width:width,height:height,areaSquareMeters:area,pixelMeters:pixel,regional:area>2*MappingProcessingPolicy.acre || photos>192,surfaceCellMeters:MappingMissionDefaults.cell(parameters))
         capacityWarning=storage.approachesCapacity(total:totalCapacity,available:availableCapacity)
     }
 }

@@ -5,6 +5,32 @@ import zlib
 @testable import R2CMapping
 
 final class MappingGeoTiffTests: XCTestCase {
+    func testImageDescriptionCarriesEstimatedFillWithoutCoordinates() throws {
+        let root=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at:root.appendingPathComponent("14/2600"),withIntermediateDirectories:true)
+        defer {try? FileManager.default.removeItem(at:root)}
+        try Data().write(to:root.appendingPathComponent("14/2600/6300.png"))
+        let plan=try MappingGeoTiff.plan(root:root,minZoom:14,maxZoom:14)
+        let description=try XCTUnwrap(MappingGeoTiff.imageDescription(estimatedFillFraction:0.1234))
+        XCTAssertEqual(description,"R2C map; estimated fill 12.3% of assignment (no measured depth)")
+        XCTAssertNil(MappingGeoTiff.imageDescription(estimatedFillFraction:nil));XCTAssertNil(MappingGeoTiff.imageDescription(estimatedFillFraction:.nan))
+        let url=root.appendingPathComponent("map.tif"),plain=root.appendingPathComponent("plain.tif")
+        try MappingGeoTiff.write(destination:url,plan:plan,description:description) { _,_ in Data(count:262144) }
+        try MappingGeoTiff.write(destination:plain,plan:plan) { _,_ in Data(count:262144) }
+        func entries(_ data:Data)->[Int:(type:Int,count:Int,value:Int)] {
+            func u16(_ i:Int)->Int {Int(data[i]) | Int(data[i+1])<<8}
+            func u32(_ i:Int)->Int {u16(i) | u16(i+2)<<16}
+            var out:[Int:(type:Int,count:Int,value:Int)]=[:]
+            for n in 0..<u16(8) {let i=10+n*12;out[u16(i)]=(u16(i+2),u32(i+4),u32(i+8))}
+            return out
+        }
+        let data=try Data(contentsOf:url),tag=try XCTUnwrap(entries(data)[270])
+        XCTAssertEqual(tag.type,2);XCTAssertEqual(tag.count,description.utf8.count+1)
+        let text=data.subdata(in:tag.value..<tag.value+tag.count)
+        XCTAssertEqual(String(decoding:text.dropLast(),as:UTF8.self),description);XCTAssertEqual(text.last,0)
+        XCTAssertNil(entries(try Data(contentsOf:plain))[270])
+    }
+
     func testGeoReferencePixelsAndTransparentGap() throws {
         let root=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at:root.appendingPathComponent("14/2600"),withIntermediateDirectories:true)

@@ -6,6 +6,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
+import org.json.JSONObject
 
 object MappingGeoTiffExport {
     data class Result(val file: File, val zoom: Int, val byteCount: Long, val reducedDetail: Boolean)
@@ -13,6 +14,8 @@ object MappingGeoTiffExport {
         val job=currentCoroutineContext()
         job.ensureActive()
         val destination=File(root,"map.tif")
+        // Layer metadata is small; read it here on the IO dispatcher, never on the UI thread.
+        val description=MappingGeoTiff.imageDescription(runCatching{JSONObject(File(root,"layer.json").readText()).optDouble("estimatedFillFraction",Double.NaN)}.getOrDefault(Double.NaN))
         val selection=MappingGeoTiff.writeBest(root,destination,minZoom,maxZoom,
             maxBytes=if(limitForCalTopo)MappingGeoTiff.CALTOPO_MAX_BYTES else null,read={plan,x,y ->
             val file=File(root,"${plan.zoom}/$x/$y.png")
@@ -29,7 +32,7 @@ object MappingGeoTiffExport {
                     } }
                 } finally { bitmap.recycle() }
             }
-        },check={job.ensureActive()})
+        },check={job.ensureActive()},description=description)
         Result(destination,selection.plan.zoom,destination.length(),selection.plan.zoom<selection.fullZoom)
     }
 }

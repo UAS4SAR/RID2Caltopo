@@ -50,7 +50,9 @@ class MappingCaptureProfileTest {
             val t= -route.heightMeters/r[8]
             val target=DjiMappingRoute.Point((leg.start.x+leg.end.x)/2+r[6]*t,(leg.start.y+leg.end.y)/2+r[7]*t)
             val (lon,lat)=route.coordinate(target)
-            assertTrue(lon in -121.0..-120.9995);assertTrue(lat in 39.0..39.0005)
+            // Oblique legs run past the end margin by the optical-centre offset, which moves the leg midpoint along track.
+            val slack=route.obliqueEndExtensionMeters/2/111_000.0+1e-9
+            assertTrue(lon in -121.0-slack..-120.9995+slack);assertTrue(lat in 39.0-slack..39.0005+slack)
         }
     }
 

@@ -101,7 +101,16 @@ internal object MappingRegionProcessor {
         val lowerConfidence=results.any{it.optString("positioningMode")=="gnss-assisted"}
         val report=JSONObject(results.first().toString()).put("positioningMode",if(lowerConfidence)"gnss-assisted" else "fixed-rtk").put("positioningWarning",if(lowerConfidence)MappingPositionQuality.WARNING else "").put("scaleWarning",scaleWarning).put("scaleMode",if(scaleWarning.isEmpty())"laser-anchored" else "nominal-calibration")
         // Per-region percentages must not be reported as whole-assignment coverage.
-        listOf("cameraAdjustment","surfaceReconstruction","assignmentImageCoverageFraction","assignmentProjectedImagePixels","projectedImagePixels","excludedPhotos","resumedGeometry").forEach{report.remove(it)}
+        listOf("cameraAdjustment","surfaceReconstruction","assignmentImageCoverageFraction","assignmentProjectedImagePixels","projectedImagePixels","excludedPhotos","resumedGeometry",
+            "estimatedFillCells","estimatedFillFraction","fillRadiusMeters","estimatedMaskPath","fillUnknown2DAreas").forEach{report.remove(it)}
+        // Estimated-fill share is the assignment-cell weighted mean of the region reports; the per-region values stay in regionReports.
+        val filled=results.filter{it.optBoolean("fillUnknown2DAreas")}
+        if(filled.isNotEmpty()) {
+            val surfaces=filled.mapNotNull{it.optJSONObject("surfaceReconstruction")}
+            val estimated=surfaces.sumOf{it.optLong("estimatedFillAssignmentCells")};val total=surfaces.sumOf{it.optLong("assignmentSurfaceCells")}
+            report.put("fillUnknown2DAreas",true).put("estimatedFillCells",filled.sumOf{it.optLong("estimatedFillCells")})
+                .put("estimatedFillFraction",if(total>0)estimated.toDouble()/total else 0.0).put("fillRadiusMeters",filled.maxOf{it.optDouble("fillRadiusMeters",0.0)})
+        } else report.put("fillUnknown2DAreas",false)
         return report.put("reconstructionMode",if(approximateRegions>0)"approximate-plane" else "measured-surface").put("approximateRegionCount",approximateRegions).put("photogrammetric3D",approximateRegions==0).put("photoCount",supported.size).put("selectedPhotoCount",digests.size).put("excludedPhotoCount",digests.size-supported.size)
             .put("captureTimeLocal",results.minOf{it.getString("captureTimeLocal")}).put("captureEndTimeLocal",results.maxOf{it.getString("captureEndTimeLocal")})
             .put("outputTileRectangleCount",results.sumOf{it.optLong("outputTileRectangleCount")})
@@ -110,7 +119,7 @@ internal object MappingRegionProcessor {
             .put("resumedRegionCount",resumed).put("regionCount",regions.size).put("regionReports",JSONArray(results)).put("engine",VERSION)
             .put("bounds",JSONArray(listOf(allBounds.minOf{it.getDouble(0)},allBounds.minOf{it.getDouble(1)},allBounds.maxOf{it.getDouble(2)},allBounds.maxOf{it.getDouble(3)})))
             .put("surfaceModel",JSONObject().put("type","r2c_surface_collection").put("path","surface/collection.json").put("regionCount",regions.size).put("meshSpacingMeters",.4))
-            .put("quality",(if(approximateRegions>0)"$approximateRegions regions use approximate reference planes, not measured depth. Position and height accuracy are unknown. " else "")+"${supported.size} of ${digests.size} originals support ${regions.size} overlapping reconstructed regions. View 3D one region at a time. Regions are independently adjusted; inspect their boundaries. Unknown depth remains transparent. "+(if(lowerConfidence)MappingPositionQuality.WARNING else "")+" "+scaleWarning)
+            .put("quality",(if(approximateRegions>0)"$approximateRegions regions use approximate reference planes, not measured depth. Position and height accuracy are unknown. " else "")+"${supported.size} of ${digests.size} originals support ${regions.size} overlapping reconstructed regions. View 3D one region at a time. Regions are independently adjusted; inspect their boundaries. "+(if(filled.isNotEmpty())"Cells without measured depth inside photo coverage use estimated heights and are marked as estimated (2D only; 3D stays measured). Areas outside photo coverage remain transparent. " else "Unknown depth remains transparent. ")+(if(lowerConfidence)MappingPositionQuality.WARNING else "")+" "+scaleWarning)
     }
     internal data class Plan(val regions:List<MappingRegionPlan.Region>,val mission:JSONObject)
     private fun ring(mission:JSONObject)=mission.getJSONObject("feature").getJSONObject("geometry").getJSONArray("coordinates").getJSONArray(0)

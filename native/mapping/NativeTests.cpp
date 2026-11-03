@@ -3,6 +3,7 @@
 #include "RasterCache.hpp"
 #include "include/R2CMapping.h"
 #include "SurfaceCore.hpp"
+#include "SurfaceExtent.hpp"
 #include <cassert>
 #include <cmath>
 #include <iostream>
@@ -201,5 +202,125 @@ int main(){
  r2c::mapping::choosePhotoSeams(three,20,12,third,[](double){});
  for(int x=0;x<20;++x){assert(three[x]==2);assert(three[20+x]==0);}
  std::cout<<"Height consensus, photometric seam, three-view boundaries, ray visibility, unknown mask and cancellation fixtures passed\n";
+ // Ortho fill: measured cells stay identical; holes inside photo coverage fill; out-of-view stay empty.
+ {
+  const int gw=81,gh=81;std::vector<float> surface(gw*gh,NAN);
+  for(int y=10;y<70;++y)for(int x=10;x<70;++x)surface[y*gw+x]=12;
+  for(int y=30;y<45;++y)for(int x=30;x<45;++x)surface[y*gw+x]=NAN; // hole
+  std::vector<float> filled;std::vector<uint8_t> mask;
+  r2c::mapping::OrthoFillOptions opt;opt.planeHeight=12;
+  auto stats=r2c::mapping::buildOrthoFill(surface,gw,gh,.2,opt,filled,mask);
+  assert(stats.estimatedFillCells>0);assert(mask.size()==(size_t(gw)*gh+7)/8);
+  for(size_t i=0;i<surface.size();++i)if(std::isfinite(surface[i]))assert(filled[i]==surface[i]);
+  assert(std::isfinite(filled[37*gw+37]));
+  char fillPath[]="/tmp/r2c-ortho-fill-XXXXXX";int fillFd=mkstemp(fillPath);assert(fillFd>=0);close(fillFd);
+  std::vector<uint32_t> fillRgba(1008*756,0xff00ff00u);
+  {std::ofstream file(fillPath,std::ios::binary);file.write(reinterpret_cast<char*>(fillRgba.data()),fillRgba.size()*4);}
+  std::vector<double> cam{1,0,0,0,-1,0,0,0,-1,8,8,60};
+  std::vector<int32_t> measuredOnly,withFill;
+  r2c::mapping::render(surface,gw,gh,0,0,.2,cam,{700,503.5,377.5,0,0},1008,756,{fillPath},7,9,.02,measuredOnly);
+  r2c::mapping::render(surface,gw,gh,0,0,.2,cam,{700,503.5,377.5,0,0},1008,756,{fillPath},7,9,.02,withFill,true,&filled);
+  for(int p=0;p<256*256;++p)if(measuredOnly[p]!=0)assert(withFill[p]==measuredOnly[p]);
+  int filledPixels=0;for(int v:withFill)if(v!=0)++filledPixels;assert(filledPixels>int(measuredOnly.size()*.01));
+  // Far corner with no photo visibility stays transparent even if height was estimated.
+  std::vector<int32_t> far;
+  r2c::mapping::render(surface,gw,gh,0,0,.2,cam,{700,503.5,377.5,0,0},1008,756,{fillPath},-30,50,.02,far,true,&filled);
+  int farCovered=0;for(int v:far)if(v!=0)++farCovered;assert(farCovered==0);
+  // Radius/plane: cell beyond fill radius uses plane when local median unavailable.
+  std::vector<float> sparse(200*200,NAN);sparse[100*200+100]=5;sparse[100*200+101]=5;sparse[101*200+100]=5;sparse[101*200+101]=5;
+  r2c::mapping::OrthoFillOptions farOpt;farOpt.fillRadiusMeters=2;farOpt.planeHeight=9;farOpt.planeWindowMeters=1;
+  std::vector<float> sparseFill;std::vector<uint8_t> sparseMask;
+  r2c::mapping::buildOrthoFill(sparse,200,200,.5,farOpt,sparseFill,sparseMask);
+  assert(std::abs(sparseFill[0]-9)<1e-3f);
+  // Bounded mask size on a large sparse grid.
+  std::vector<float> large(2000*1500,NAN);for(int i=0;i<2000;i+=40)large[750*2000+i]=3;
+  std::vector<float> largeFill;std::vector<uint8_t> largeMask;
+  r2c::mapping::OrthoFillOptions largeOpt;largeOpt.fillRadiusMeters=25;largeOpt.planeHeight=3;
+  r2c::mapping::buildOrthoFill(large,2000,1500,.2,largeOpt,largeFill,largeMask);
+  assert(largeMask.size()==(size_t(2000)*1500+7)/8);
+  R2CMappingReleasePixels();unlink(fillPath);
+  std::cout<<"Ortho fill hole, measured identity, plane fallback and bounded mask fixtures passed\n";
+ }
+
+ // Ortho fill through the measured+fill render path (heights only where measured is NaN).
+ {
+  const int gw=81,gh=81;std::vector<float> measured(gw*gh,NAN);
+  for(int y=10;y<70;++y)for(int x=10;x<70;++x)measured[y*gw+x]=12;
+  for(int y=30;y<45;++y)for(int x=30;x<45;++x)measured[y*gw+x]=NAN;
+  std::vector<float> filled;std::vector<uint8_t> mask;r2c::mapping::OrthoFillOptions opt;opt.planeHeight=NAN;
+  auto stats=r2c::mapping::buildOrthoFill(measured,gw,gh,.2,opt,filled,mask);
+  size_t bits=0,known=0;for(size_t i=0;i<measured.size();++i){bool bit=(mask[i>>3]>>(i&7))&1;bits+=bit;known+=std::isfinite(measured[i]);
+   if(std::isfinite(measured[i]))assert(!bit&&filled[i]==measured[i]);else assert(bit==std::isfinite(filled[i]));}
+  assert(int(bits)==stats.estimatedFillCells&&stats.estimatedFillCells>0&&known==size_t(stats.knownFraction*measured.size()+.5));
+  assert(std::abs(stats.knownFraction+stats.estimatedFraction+stats.emptyFraction-1)<1e-9);
+  for(float v:filled)assert(std::isnan(v)||std::abs(v-12)<1e-4f); // constant surface: estimates are the constant
+  char path[]="/tmp/r2c-fill-visible-XXXXXX";int fd=mkstemp(path);assert(fd>=0);close(fd);
+  std::vector<uint32_t> rgba(1008*756);for(int y=0;y<756;++y)for(int x=0;x<1008;++x)rgba[y*1008+x]=0xff000000u|uint32_t(x/4)|(uint32_t(y/3)<<8);
+  {std::ofstream file(path,std::ios::binary);file.write(reinterpret_cast<char*>(rgba.data()),rgba.size()*4);}
+  const std::vector<double> intrinsics{700,503.5,377.5,.01,0};
+  std::vector<double> camera{1,0,0,0,-1,0,0,0,-1,8,8,60},away{1,0,0,0,-1,0,0,0,-1,500,500,60};
+  const double tx=.3,ty=15.7,step=.06;std::vector<int32_t> plain,withFill,unseen;
+  r2c::mapping::render(measured,gw,gh,0,0,.2,camera,intrinsics,1008,756,{path},tx,ty,step,plain);
+  r2c::mapping::render(measured,gw,gh,0,0,.2,camera,intrinsics,1008,756,{path},tx,ty,step,withFill,true,&filled);
+  int inside=0,transparentBefore=0;
+  for(int row=0;row<256;++row)for(int col=0;col<256;++col){double u=(tx+(col+.5)*step)/.2,v=(ty-(row+.5)*step)/.2;int p=row*256+col;
+   if(u>=0&&v>=0&&u<gw-1&&v<gh-1){++inside;assert(withFill[p]!=0);transparentBefore+=plain[p]==0;}
+   if(plain[p]!=0)assert(withFill[p]==plain[p]); // measured pixels byte-identical
+   else if(!(u>=0&&v>=0&&u<gw-1&&v<gh-1))assert(withFill[p]==0);}
+  assert(inside>10000&&transparentBefore>1000);
+  // A camera that sees nothing leaves every pixel transparent even though heights were estimated.
+  r2c::mapping::render(measured,gw,gh,0,0,.2,away,intrinsics,1008,756,{path},tx,ty,step,unseen,true,&filled);
+  for(int v:unseen)assert(v==0);
+  // The C ABI agrees with the C++ core and survives disabled fill.
+  std::vector<float> abiFill(measured.size());std::vector<uint8_t> abiMask((measured.size()+7)/8);double abiStats[6]{};char error[256]{};
+  assert(R2CMappingBuildOrthoFill(measured.data(),gw,gh,.2,1,25,NAN,abiFill.data(),abiMask.data(),abiStats,error,sizeof error)==1);
+  assert(abiStats[0]==stats.estimatedFillCells&&abiMask==mask);
+  assert(R2CMappingBuildOrthoFill(measured.data(),gw,gh,.2,0,25,NAN,abiFill.data(),abiMask.data(),abiStats,error,sizeof error)==1&&abiStats[0]==0);
+  assert(R2CMappingBuildOrthoFill(nullptr,gw,gh,.2,1,25,NAN,abiFill.data(),abiMask.data(),abiStats,error,sizeof error)==0);
+  R2CMappingReleasePixels();unlink(path);
+ }
+ // Fill radius, local median window and global plane fallback.
+ {
+  const int n=200;std::vector<float> z(n*n,NAN);
+  for(int y=100;y<110;++y)for(int x=100;x<110;++x)z[y*n+x]=7;
+  std::vector<float> f;std::vector<uint8_t> mask;r2c::mapping::OrthoFillOptions opt;opt.fillRadiusMeters=5;opt.planeHeight=9;opt.planeWindowMeters=30;
+  r2c::mapping::buildOrthoFill(z,n,n,.5,opt,f,mask);
+  auto at=[&](int x,int y){return f[y*n+x];};auto est=[&](int x,int y){size_t i=size_t(y)*n+x;return bool((mask[i>>3]>>(i&7))&1);};
+  assert(std::abs(at(105,115)-7)<1e-4f&&est(105,115)); // inside R: from the known patch
+  assert(std::abs(at(105,125)-7)<1e-4f&&est(105,125)); // beyond R, inside the 30 m window: local median
+  assert(std::abs(at(0,0)-9)<1e-4f&&est(0,0));          // beyond R and window: global plane
+  opt.planeHeight=NAN;r2c::mapping::buildOrthoFill(z,n,n,.5,opt,f,mask);
+  assert(std::isnan(at(0,0))&&!est(0,0)&&std::abs(at(105,125)-7)<1e-4f);
+  // Sloped data: nearby estimates blend the closest heights, not a distant constant.
+  std::vector<float> ramp(60*60,NAN);for(int y=0;y<60;++y)for(int x=0;x<20;++x){ramp[y*60+x]=x*.1f;ramp[y*60+40+x]=4+x*.1f;}
+  r2c::mapping::OrthoFillOptions rampOpt;r2c::mapping::buildOrthoFill(ramp,60,60,.5,rampOpt,f,mask);
+  float left=f[30*60+20],mid=f[30*60+30],right=f[30*60+39];assert(left<mid&&mid<right);assert(left>=1.5f&&right<=4.2f);
+ }
+ // A 3,000,000-cell grid with sparse known cells stays bounded and consistent.
+ {
+  const int gw=2000,gh=1500;std::vector<float> z(size_t(gw)*gh,NAN);for(int i=0;i<gw;i+=40)z[size_t(750)*gw+i]=3;
+  std::vector<float> f;std::vector<uint8_t> mask;r2c::mapping::OrthoFillOptions opt;opt.planeHeight=3;
+  auto stats=r2c::mapping::buildOrthoFill(z,gw,gh,.2,opt,f,mask);
+  assert(mask.size()==(size_t(gw)*gh+7)/8&&f.size()==z.size());size_t bits=0;for(uint8_t b:mask)bits+=__builtin_popcount(b);
+  assert(int(bits)==stats.estimatedFillCells&&stats.estimatedFraction>.9&&stats.elapsedMs<20000);
+  assert(std::abs(stats.knownFraction+stats.estimatedFraction+stats.emptyFraction-1)<1e-9);
+ }
+ // Grid extent: footprints cover edge photos, clip applies only when usable, and an oversize footprint falls back.
+ {
+  using namespace r2c::mapping;Box footprint{0,0,100,50},sparse{40,20,60,30},none;
+  auto plain=surfaceExtent(footprint,sparse,none,.2,1,2,3000000);
+  assert(plain.fits&&!plain.sparseFallback&&plain.x<=-1&&plain.y<=-1&&plain.x+plain.width*.2>=101&&plain.y+plain.height*.2>=51);
+  Box clip{10,10,30,30};auto clipped=surfaceExtent(footprint,sparse,clip,.2,1,2,3000000);
+  assert(clipped.fits&&!clipped.sparseFallback&&std::abs(clipped.x-10)<1e-9&&clipped.width==101&&clipped.height==101);
+  for(Box unusable:{Box{0,0,0,0},Box{NAN,0,30,30},Box{30,10,10,30},Box{10,30,30,10}}){auto e=surfaceExtent(footprint,sparse,unusable,.2,1,2,3000000);assert(e.fits&&e.width==plain.width&&e.height==plain.height);}
+  assert(!clipUsable(Box{0,0,0,0})&&clipUsable(clip));
+  Box huge{0,0,2000,2000};auto fallback=surfaceExtent(huge,sparse,none,.2,1,2,3000000);
+  assert(fallback.fits&&fallback.sparseFallback&&std::abs(fallback.x-38)<.2&&fallback.width<=3000000/fallback.height);
+  assert(surfaceExtent(huge,sparse,none,2,1,2,3000000).fits&&!surfaceExtent(huge,sparse,none,2,1,2,3000000).sparseFallback); // coarser cells fit
+  assert(!surfaceExtent(huge,Box{0,0,2000,2000},none,.2,1,2,3000000).fits);
+  auto disjoint=surfaceExtent(footprint,sparse,Box{500,500,600,600},.2,1,2,3000000);assert(disjoint.fits&&disjoint.sparseFallback);
+  assert(!surfaceExtent(Box{},Box{},none,.2,1,2,3000000).fits);
+ }
+ std::cout<<"Ortho fill render, radius/plane, 3M-cell bound and grid extent fixtures passed\n";
  return 0;
 }
