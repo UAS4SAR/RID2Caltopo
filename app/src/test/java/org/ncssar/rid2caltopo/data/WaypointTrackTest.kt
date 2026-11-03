@@ -300,20 +300,22 @@ class WaypointTrackTest {
     }
 
     @Test
-    fun mappedButUnansweredFlightDoesNotRecordAndPriorFlightConsentResets() {
+    fun mappedButUnansweredFlightStillRecordsLocallyAndPriorFlightConsentResets() {
         val drone = activeDrone("RIDUNANSWERED2", "1sar7DjMtrc4td")
         CaltopoClient.ClearCurrentPeerDroneConfirmation(drone.remoteId)
         val unanswered = WaypointTrack(drone.trackLabel(), drone)
         unanswered.addWaypoint(39.15, -121.13, 100L, 1000L)
-        assertFalse(unanswered.shouldRecordArchive())
-        drone.setCurrentFlightConfirmed(true)
-        assertFalse(unanswered.shouldRecordArchive()) // A later decision cannot change a finished flight.
+        // Unanswered flights keep a local archive; publication stays gated.
+        assertTrue(unanswered.shouldRecordArchive())
+        unanswered.prepareForArchive()
+        assertFalse(drone.isCurrentFlightConfirmed)
         val acknowledged = WaypointTrack(drone.trackLabel(), drone)
+        drone.setCurrentFlightConfirmed(true)
         assertTrue(acknowledged.shouldRecordArchive())
         drone.reset()
         assertFalse(drone.isCurrentFlightConfirmed)
         assertTrue(acknowledged.shouldRecordArchive()) // Captured before lifecycle reset.
-        assertFalse(WaypointTrack("next", drone).shouldRecordArchive())
+        assertTrue(WaypointTrack("next", drone).shouldRecordArchive())
     }
 
     @Test
@@ -347,9 +349,10 @@ class WaypointTrackTest {
         val track = WaypointTrack(drone.trackLabel(), drone)
 
         track.prepareForArchive()
-        assertFalse(track.shouldRecordArchive())
+        // Local retention is always on; tracker authorization stays false for unanswered.
+        assertTrue(track.shouldRecordArchive())
         confirmTeamDrone("RIDUNCONFIRMED1", "NCSSAR")
-        assertFalse(track.shouldRecordArchive())
+        assertTrue(track.shouldRecordArchive())
 
         val geoJson = track.getGeoJson()!!
         val r2cProp = geoJson.getJSONArray("features")
@@ -358,6 +361,58 @@ class WaypointTrackTest {
             .getJSONObject("r2c_prop")
         assertFalse(r2cProp.getBoolean("tracker_upload_authorized"))
         assertFalse(WaypointTrack.ShouldPublishGeoJsonStatsForTracker(geoJson))
+    }
+
+    @Test
+    fun declinedAndUnansweredFlightsRetainLocalArchiveWithoutTrackerPublish() {
+        val ledgerFile = java.io.File.createTempFile("ledger-local-retain", ".json").also { it.writeText("{}") }
+        FlightPublicationLedger.useFileForTesting(ledgerFile)
+        try {
+            val declinedDrone = activeDrone("RIDDECLINED1", "mini4pro").apply {
+                setLocalArchiveOnly(true)
+                setCurrentFlightConfirmed(false)
+            }
+            val declined = WaypointTrack(declinedDrone.trackLabel(), declinedDrone)
+            declined.addWaypoint(39.15, -121.13, 100L, 1_000L, 1_000L, "rid", true)
+            declined.archive()
+            // Don't Publish: ledger blocks CalTopo/tracker; local_archive_only skips stats upload.
+            assertTrue(
+                FlightPublicationLedger.allForTesting().values.any {
+                    it == FlightPublicationLedger.Disposition.DECLINED ||
+                        it == FlightPublicationLedger.Disposition.LOCAL_ARCHIVED
+                }
+            )
+            val declinedGeo = declined.getGeoJson()!!
+            assertTrue(
+                declinedGeo.getJSONArray("features").getJSONObject(0)
+                    .getJSONObject("properties").getJSONObject("r2c_prop")
+                    .getBoolean("local_archive_only")
+            )
+            assertFalse(WaypointTrack.ShouldPublishGeoJsonStatsForTracker(declinedGeo))
+
+            FlightPublicationLedger.clearForTesting()
+            val unansweredDrone = activeDrone("RIDUNANS1", "1sar7DjMtrc4td")
+            CaltopoClient.ClearCurrentPeerDroneConfirmation(unansweredDrone.remoteId)
+            val unanswered = WaypointTrack(unansweredDrone.trackLabel(), unansweredDrone)
+            unanswered.addWaypoint(39.16, -121.14, 110L, 2_000L, 2_000L, "rid", true)
+            unanswered.archive()
+            assertTrue(
+                FlightPublicationLedger.allForTesting().values.any {
+                    it == FlightPublicationLedger.Disposition.SUPPRESSED ||
+                        it == FlightPublicationLedger.Disposition.LOCAL_ARCHIVED
+                }
+            )
+            val unansweredGeo = unanswered.getGeoJson()!!
+            assertTrue(
+                unansweredGeo.getJSONArray("features").getJSONObject(0)
+                    .getJSONObject("properties").getJSONObject("r2c_prop")
+                    .getBoolean("local_archive_only")
+            )
+            assertFalse(WaypointTrack.ShouldPublishGeoJsonStatsForTracker(unansweredGeo))
+        } finally {
+            FlightPublicationLedger.useFileForTesting(null)
+            ledgerFile.delete()
+        }
     }
 
     @Test

@@ -22,7 +22,6 @@ public struct CurrentFlightConfirmationLifecycle: Sendable, Equatable {
         orderedRemoteIDs: [String],
         confirmedRemoteIDs: Set<String>,
         ignoredRemoteIDs: Set<String>,
-        videoReconfirmationRemoteIDs: Set<String> = [],
         allowPrompt: Bool = true
     ) -> CurrentFlightConfirmationReconciliation {
         let currentRemoteIDs = Set(orderedRemoteIDs.filter { !$0.isEmpty })
@@ -33,10 +32,12 @@ public struct CurrentFlightConfirmationLifecycle: Sendable, Equatable {
         let decisionsAfterFlightEnd = confirmedRemoteIDs
             .subtracting(endedRemoteIDs)
             .union(ignoredRemoteIDs)
+        // Don't Publish drones stay ignored for the session; only Aircraft and Reception
+        // selection reopens the panel (outside this automatic reconcile path).
         let candidate = orderedRemoteIDs.first { remoteID in
             allowPrompt && !remoteID.isEmpty
-                && (videoReconfirmationRemoteIDs.contains(remoteID) ||
-                    (!promptedRemoteIDs.contains(remoteID) && !decisionsAfterFlightEnd.contains(remoteID)))
+                && !promptedRemoteIDs.contains(remoteID)
+                && !decisionsAfterFlightEnd.contains(remoteID)
         }
         if let candidate {
             promptedRemoteIDs.insert(candidate)

@@ -1,1 +1,1 @@
-Unconfirmed and Don't Publish flights stay local. USGS/USFS topo base layers. Durable map discard. Fixed false storage-full and slow Local Maps. Orthophoto hole fill with new mission-plan settings. Realistic reconstruction progress and time remaining.
+Don't Publish only stops CalTopo/tracker publish; track, video and clues stay local. Unconfirmed flights stay local. USGS/USFS topo. Durable map discard. Fixed false storage-full and slow Local Maps. Orthophoto hole fill. Realistic reconstruction progress.

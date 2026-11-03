@@ -1079,9 +1079,9 @@ public class WaypointTrack {
 
     boolean shouldRecordArchive() {
         prepareForArchive();
-        // Confirmed publish OR Don't Publish (local-archive-only) both write a local archive.
-        // Unacknowledged flights do not.
-        return archivedFlightConfirmed || archivedLocalOnly;
+        // Don't Publish, unanswered, and confirmed flights all retain a local archive.
+        // Publication (CalTopo / tracker) remains gated by confirmation + local_archive_only.
+        return true;
     }
 
     public void archive() {
@@ -1092,16 +1092,19 @@ public class WaypointTrack {
             retireUnpublishedJournal(FlightPublicationLedger.Disposition.SUPPRESSED);
             return;
         }
-        if (!archivedFlightConfirmed && !archivedLocalOnly) {
-            CTDebug(TAG, "archive(): suppressed unacknowledged flight " + archivedRemoteId);
-            retireUnpublishedJournal(FlightPublicationLedger.Disposition.SUPPRESSED);
-            return;
-        }
-        if (archivedLocalOnly && !archivedFlightConfirmed) {
-            // Don't Publish: durable local archive, never awaiting-map / tracker / CalTopo.
-            CTDebug(TAG, "archive(): declined flight retained locally only " + archivedRemoteId);
+        if (!archivedFlightConfirmed) {
+            // Don't Publish or unanswered: durable local archive, never awaiting-map / tracker / CalTopo.
+            boolean declined = archivedLocalOnly;
+            CTDebug(TAG, declined
+                    ? "archive(): declined flight retained locally only " + archivedRemoteId
+                    : "archive(): unanswered flight retained locally only " + archivedRemoteId);
             FlightPublicationLedger.remember(
-                    deferredPublicationId, FlightPublicationLedger.Disposition.DECLINED);
+                    deferredPublicationId,
+                    declined
+                            ? FlightPublicationLedger.Disposition.DECLINED
+                            : FlightPublicationLedger.Disposition.SUPPRESSED);
+            // Force local-only metadata so tracker / CalTopo paths stay closed.
+            archivedLocalOnly = true;
             archiveRecorded();
             return;
         }
@@ -1131,6 +1134,9 @@ public class WaypointTrack {
         long numCoords = coordinates.length();
         JSONObject joTop = getGeoJson();
         if (null == joTop) return;
+        // Link matching day-folder MediaMTX / catalog video into the local record for every
+        // retained flight. CalTopo description updates stay on the publish path only.
+        attachLocalCapturedVideo(joTop);
         try {
             Context ctxt = R2CApplication.getAppCtxt();
             DocumentFile todaysArchiveDir = GetTodaysTrackDir();
@@ -1166,6 +1172,57 @@ public class WaypointTrack {
 			CTError(TAG, String.format("archive(%s): raised.", fileName), e);
 		}
 	}
+
+    /**
+     * Writes the same captured-video short URL used for CalTopo into the local GeoJSON
+     * {@code description}, matching by stream designators and flight start/end. Never publishes.
+     */
+    private void attachLocalCapturedVideo(@NonNull JSONObject geoJson) {
+        Context ctxt = R2CApplication.getAppCtxt();
+        if (ctxt == null) return;
+        long startedAtMs = firstReceivedAtMs();
+        long endedAtMs = lastReceivedAtMs();
+        if (startedAtMs <= 0L || endedAtMs < startedAtMs) return;
+        String mapped = archivedMappedId == null ? "" : archivedMappedId.trim();
+        String remote = archivedRemoteId == null ? "" : archivedRemoteId.trim();
+        String labelPrefix = trackLabel == null ? "" : trackLabel.split("_", 2)[0];
+        try {
+            org.ncssar.rid2caltopo.video.ManagedVideoSessionRecording recording =
+                    org.ncssar.rid2caltopo.video.ManagedVideoSessionRecordingCatalog.findForTrack(
+                            ctxt, startedAtMs, endedAtMs, mapped, remote, labelPrefix);
+            if (recording == null) return;
+            String videoUrl = TrackerTabletLink.recordingShortUrl(
+                    CaltopoClient.GetTrackerCoordinationUrlPfx(),
+                    R2CActivity.MyDeviceName,
+                    recording.getSessionId());
+            if (videoUrl == null || videoUrl.trim().isEmpty()) return;
+            JSONArray features = geoJson.optJSONArray("features");
+            JSONObject feature = features == null ? null : features.optJSONObject(0);
+            JSONObject properties = feature == null ? null : feature.optJSONObject("properties");
+            if (properties == null) return;
+            properties.put("description", videoUrl.trim());
+            CTDebug(TAG, "archive(): linked local captured video sessionId=" + recording.getSessionId());
+        } catch (Exception error) {
+            CTWarn(TAG, "archive(): local video link skipped", error);
+        }
+    }
+
+    private long firstReceivedAtMs() {
+        for (int i = 0; i < pointReceivedAtMs.size(); i++) {
+            Long value = pointReceivedAtMs.get(i);
+            if (value != null && value > 0L) return value;
+        }
+        return startedAtMs;
+    }
+
+    private long lastReceivedAtMs() {
+        for (int i = pointReceivedAtMs.size() - 1; i >= 0; i--) {
+            Long value = pointReceivedAtMs.get(i);
+            if (value != null && value > 0L) return value;
+        }
+        long stamp = archiveTimestampMsec();
+        return stamp > 0L ? stamp : System.currentTimeMillis();
+    }
 
     // returns true if waypoint added
 	public void addWaypoint(double lat, double lng,

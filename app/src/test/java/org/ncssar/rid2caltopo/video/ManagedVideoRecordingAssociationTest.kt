@@ -116,6 +116,32 @@ class ManagedVideoRecordingAssociationTest {
         )
     }
 
+    @Test
+    fun declinedFlightUsesSameMatchingToLinkLocalVideoDescription() {
+        // Don't Publish / unanswered local archives use the same stream-ID + interval match
+        // as CalTopo capturedVideoURL; only the CalTopo POST stays publish-only.
+        val matched = recording("declined-session", startMs = 5_000L, endMs = 25_000L)
+        val selected = ManagedVideoSessionRecordingCatalog.selectForTrack(
+            recordings = listOf(matched),
+            trackStartedAtMs = 6_000L,
+            trackEndedAtMs = 24_000L,
+            candidates = listOf("1SAR7", "RID-DECLINED"),
+        )
+        assertEquals(matched, selected)
+        val description = org.ncssar.rid2caltopo.data.CaltopoLiveTrack.buildArchiveDescription(
+            org.ncssar.rid2caltopo.data.CtDroneSpec("RID-DECLINED"),
+            "https://r2c-tracker.com/s/${selected!!.sessionId}",
+        )
+        assertEquals("https://r2c-tracker.com/s/declined-session", description)
+        assertEquals(
+            "",
+            org.ncssar.rid2caltopo.data.CaltopoLiveTrack.buildArchiveDescription(
+                org.ncssar.rid2caltopo.data.CtDroneSpec("RID-DECLINED"),
+                null,
+            ),
+        )
+    }
+
     private fun recording(
         sessionID: String,
         startMs: Long,

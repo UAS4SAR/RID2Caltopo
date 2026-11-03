@@ -708,7 +708,8 @@ struct ContentView: View {
                 if !ProcessInfo.processInfo.arguments.contains("--manual-radios") {
                     try? await bluetoothScanner.start()
                 }
-                ridTracks.configureFlightRecording(droneConfirmations.isCurrentFlightConfirmed)
+                // Record locally for every flight; CurrentFlightPublicationGate alone gates publish.
+                ridTracks.configureFlightRecording { _ in true }
                 ridTracks.configurePublicationSuppression { remoteID in
                     droneConfirmations.logPublicationGateIfNeeded(remoteID: remoteID)
                     let decision = CurrentFlightPublicationGate.decide(

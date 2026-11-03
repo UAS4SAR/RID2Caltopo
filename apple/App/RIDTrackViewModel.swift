@@ -1674,10 +1674,14 @@ final class RIDTrackViewModel: ObservableObject {
     private func archive(_ track: RidAircraftTrack, publishFlightEnd: Bool = false) async {
         let flightID = liveFlightID(aircraftID: track.aircraftID)
             ?? RidFlightID.make(aircraftID: track.aircraftID, startedAt: track.flightStartedAt)
-        // Snapshot the decision before publishing flight end clears the current DCP state.
-        guard flightRecordingAllowed?(track.aircraftID) == true else {
-            let alreadyDeclined =
-                (try? await publicationLedger.isDeclinedOrSuppressed(flightID: flightID)) == true
+        // Snapshot publish gate before flight-end observers clear DCP state.
+        let recordingAllowed = flightRecordingAllowed?(track.aircraftID) != false
+        let publicationSuppressed = publicationSuppressionProvider?(track.aircraftID) == true
+        let alreadyDeclined =
+            (try? await publicationLedger.isDeclinedOrSuppressed(flightID: flightID)) == true
+        let localOnly = !recordingAllowed || publicationSuppressed || alreadyDeclined
+
+        if track.points.isEmpty {
             let disposition: FlightPublicationLedger.Disposition =
                 alreadyDeclined ? .declined : .suppressed
             try? await publicationLedger.remember(flightID: flightID, disposition: disposition)
@@ -1687,16 +1691,70 @@ final class RIDTrackViewModel: ObservableObject {
                 flightEndConsumer?(track.aircraftID)
                 tracks.removeAll { $0.aircraftID == track.aircraftID }
             }
+            return
+        }
+
+        if localOnly {
+            // Don't Publish / unanswered: durable local archive; never awaiting-map / CalTopo / tracker.
+            let disposition: FlightPublicationLedger.Disposition =
+                alreadyDeclined ? .declined : .suppressed
+            try? await publicationLedger.remember(flightID: flightID, disposition: disposition)
+            try? await waypointAppendJournal.markFinishedAndRemove(flightID: flightID)
+            _ = try? await awaitingMapJournal.discard(id: flightID)
+            let identity = identityProvider?(track.aircraftID)
+            let recording = CaltopoRecordingAssociation(track: track, identity: identity)
+            let videoURL = peerCoordinator?.capturedVideoURL(
+                matching: recording.designators,
+                trackStartedAt: recording.startedAt,
+                trackEndedAt: recording.endedAt
+            )
+            let archiveConfiguration = archiveConfiguration
+            let metadata = RidTrackArchiveMetadata(
+                mappedID: identity?.mappedID ?? track.aircraftID,
+                owner: identity?.pilotCallsign ?? "",
+                model: identity?.droneDescription ?? "",
+                organization: identity?.organization ?? "",
+                incident: archiveConfiguration?.incident ?? "",
+                operationalPeriod: archiveConfiguration?.operationalPeriod ?? "",
+                mapID: archiveConfiguration?.mapID ?? "",
+                deviceName: AppleDeviceIdentity.displayName,
+                buildVersion: AppleBuildMetadata.version,
+                buildTime: AppleBuildMetadata.buildTime,
+                localArchiveOnly: true,
+                flightReadiness: identity?.flightReadiness,
+                flightID: flightID,
+                capturedVideoDescription: CaltopoArchiveDescription.build(capturedVideoURL: videoURL)
+            )
+            let start = track.points.first?.receivedAt ?? track.lastAircraftMessageAt
+            let otherFlights = await archiveStore.archivedFlights(aircraftID: track.aircraftID, around: start)
+                .map { OperationalFlightKMZ.candidate(id: $0.key, contents: $0.value) }
+            let flightCandidate = AwaitingMapClueMatch.Candidate(
+                id: flightID, remoteID: track.aircraftID, times: track.points.map(\.bindingTime))
+            let clues = await clueStore?.archiveClues(flight: flightCandidate, otherFlights: otherFlights) ?? []
+            if publishFlightEnd {
+                peerCoordinator?.droneLost(remoteID: track.aircraftID)
+                flightEndConsumer?(track.aircraftID)
+                tracks.removeAll { $0.aircraftID == track.aircraftID }
+            }
+            await archiveRecorded(track, metadata: metadata, clues: clues)
+            try? await publicationLedger.remember(flightID: flightID, disposition: .localArchived)
             AppleLog.info(
                 "DroneConfirmation",
-                "Ignored unanswered/unconfirmed flight remoteId=\(track.aircraftID); archive and upload skipped disposition=\(disposition.rawValue)"
+                "archive(): \(alreadyDeclined ? "declined" : "unanswered") flight retained locally only remoteId=\(track.aircraftID)"
             )
             return
         }
+
         await recordAwaitingFlight(track, finished: true)?.value
         try? await waypointAppendJournal.markFinishedAndRemove(flightID: flightID)
         await queueCompletedDeferredFlights()
         let identity = identityProvider?(track.aircraftID)
+        let recording = CaltopoRecordingAssociation(track: track, identity: identity)
+        let videoURL = peerCoordinator?.capturedVideoURL(
+            matching: recording.designators,
+            trackStartedAt: recording.startedAt,
+            trackEndedAt: recording.endedAt
+        )
         let archiveConfiguration = archiveConfiguration
         let metadata = RidTrackArchiveMetadata(
             mappedID: identity?.mappedID ?? track.aircraftID,
@@ -1710,7 +1768,8 @@ final class RIDTrackViewModel: ObservableObject {
             buildVersion: AppleBuildMetadata.version,
             buildTime: AppleBuildMetadata.buildTime,
             flightReadiness: identity?.flightReadiness,
-            flightID: flightID
+            flightID: flightID,
+            capturedVideoDescription: CaltopoArchiveDescription.build(capturedVideoURL: videoURL)
         )
         let start = track.points.first?.receivedAt ?? track.lastAircraftMessageAt
         let otherFlights = await archiveStore.archivedFlights(aircraftID: track.aircraftID, around: start)
@@ -2084,6 +2143,15 @@ final class RIDTrackViewModel: ObservableObject {
         _ = await publication?.value
         let flightID = liveFlightID(aircraftID: remoteID)
             ?? RidFlightID.make(aircraftID: track.aircraftID, startedAt: track.flightStartedAt)
+        // CalTopo video link and LiveTrack finish stay publish-only.
+        let blockedByLedger =
+            (try? await publicationLedger.isDeclinedOrSuppressed(flightID: flightID)) == true
+        if publicationSuppressionProvider?(remoteID) == true
+            || blockedByLedger
+            || flightRecordingAllowed?(remoteID) == false {
+            await caltopoPublisher.discard(remoteID: remoteID)
+            return
+        }
         let fallbackObservations = track.points.map {
             RidObservation(
                 source: $0.source ?? track.lastObservation.source,

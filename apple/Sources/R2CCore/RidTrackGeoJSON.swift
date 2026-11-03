@@ -15,6 +15,8 @@ public struct RidTrackArchiveMetadata: Sendable, Equatable {
     public var localArchiveOnly: Bool
     /// Stable flight id (RidFlightID), written as `properties.r2c_flight_id` like Android.
     public var flightID: String
+    /// Local captured-video short URL (same matching as CalTopo); empty when none linked.
+    public var capturedVideoDescription: String
 
     public init(
         mappedID: String = "",
@@ -29,7 +31,8 @@ public struct RidTrackArchiveMetadata: Sendable, Equatable {
         buildTime: String = "",
         localArchiveOnly: Bool = false,
         flightReadiness: FlightReadiness? = nil,
-        flightID: String = ""
+        flightID: String = "",
+        capturedVideoDescription: String = ""
     ) {
         self.flightReadiness = flightReadiness
         self.mappedID = mappedID
@@ -44,6 +47,7 @@ public struct RidTrackArchiveMetadata: Sendable, Equatable {
         self.buildTime = buildTime
         self.localArchiveOnly = localArchiveOnly
         self.flightID = flightID
+        self.capturedVideoDescription = capturedVideoDescription
     }
 }
 
@@ -94,6 +98,10 @@ public enum RidTrackGeoJSON {
             "start_time": startTime,
             "r2c_prop": r2cProperties,
         ]
+        let videoDescription = metadata.capturedVideoDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !videoDescription.isEmpty {
+            properties["description"] = videoDescription
+        }
         FlightArchivePointTiming.write(into: &properties, receivedAtMs: receivedMilliseconds, droneClock: droneClock)
         if !metadata.flightID.isEmpty { properties["r2c_flight_id"] = metadata.flightID }
         let feature: [String: Any] = [

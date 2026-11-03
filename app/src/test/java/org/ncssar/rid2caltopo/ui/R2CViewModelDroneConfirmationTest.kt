@@ -667,7 +667,7 @@ class R2CViewModelDroneConfirmationTest {
     }
 
     @Test
-    fun declinedDroneGetsOneNewPromptWhenLocalPublisherStarts() {
+    fun declinedDroneDoesNotRepromptWhenLocalPublisherStarts() {
         val drone = activeDrone("DRONENEWVIDEO", waypointTimestampMsec = 131415L).apply { setMappedId("mini4pro") }
         val viewModel = R2CViewModel(SimpleTimer())
         viewModel.onDroneConfirmationCandidate(drone)
@@ -675,13 +675,48 @@ class R2CViewModelDroneConfirmationTest {
         viewModel.onDroneSpecsChanged(listOf(drone))
         assertNull(viewModel.pendingDroneConfirmation.value)
         viewModel.onLiveStreamDesignatorsChanged(setOf(drone.mappedId), listOf(drone), mapOf(drone.mappedId to "publisher-1"))
-        assertNotNull(viewModel.pendingDroneConfirmation.value)
-        assertTrue(CaltopoClient.IsSessionUnknownDrone(drone.remoteId))
-        viewModel.markPendingDroneConfirmationUnknown()
-        viewModel.onLiveStreamDesignatorsChanged(setOf(drone.mappedId), listOf(drone), mapOf(drone.mappedId to "publisher-1"))
         assertNull(viewModel.pendingDroneConfirmation.value)
+        assertTrue(CaltopoClient.IsSessionUnknownDrone(drone.remoteId))
         viewModel.onLiveStreamDesignatorsChanged(setOf(drone.mappedId), listOf(drone), mapOf(drone.mappedId to "publisher-2"))
+        assertNull(viewModel.pendingDroneConfirmation.value)
+    }
+
+    @Test
+    fun declinedDroneStaysSilentAfterGapUntilAircraftAndReceptionSelection() {
+        val remoteId = "DRONEGAPIGNORE"
+        val drone = activeDrone(remoteId, waypointTimestampMsec = 200_000L).apply { setMappedId("mini4pro") }
+        val viewModel = R2CViewModel(SimpleTimer())
+        viewModel.onDroneConfirmationCandidate(drone)
+        viewModel.markPendingDroneConfirmationUnknown()
+        assertTrue(CaltopoClient.IsSessionUnknownDrone(remoteId))
+        assertNull(viewModel.pendingDroneConfirmation.value)
+
+        // >30 s RID gap ends the flight lifecycle, then a new video session arrives.
+        CaltopoLiveTrack.NotifyLocalTrackFinished(drone, "gap after Don't Publish")
+        viewModel.onDroneSpecsChanged(emptyList())
+        viewModel.onLiveStreamDesignatorsChanged(emptySet(), listOf(drone))
+        val resumed = activeDrone(remoteId, waypointTimestampMsec = 200_000L + 45_000L).apply {
+            setMappedId("mini4pro")
+        }
+        viewModel.onDroneSpecsChanged(listOf(resumed))
+        viewModel.onLiveStreamDesignatorsChanged(
+            setOf(resumed.mappedId), listOf(resumed), mapOf(resumed.mappedId to "publisher-after-gap")
+        )
+        assertNull(viewModel.pendingDroneConfirmation.value)
+        assertTrue(CaltopoClient.IsSessionUnknownDrone(remoteId))
+
+        // Aircraft and Reception selection reopens the panel; Confirm un-ignores.
+        viewModel.requestDroneConfirmation(resumed)
         assertNotNull(viewModel.pendingDroneConfirmation.value)
+        viewModel.updatePendingDroneConfirmation(
+            organization = "NCSSAR",
+            pilotCallsign = "1SAR7",
+            droneDescription = "DJI Mini 4 Pro"
+        )
+        viewModel.savePendingDroneConfirmation()
+        assertNull(viewModel.pendingDroneConfirmation.value)
+        assertFalse(CaltopoClient.IsSessionUnknownDrone(remoteId))
+        assertTrue(CaltopoClient.GetDroneSpec(remoteId)!!.isCurrentFlightConfirmed)
     }
 
     @Test

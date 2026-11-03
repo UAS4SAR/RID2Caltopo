@@ -236,7 +236,6 @@ final class AppleDroneConfirmationStore: ObservableObject {
     @Published private var importedIdentities: [String: RidAircraftIdentity] = [:]
     @Published private(set) var preferredPilotCallsign: String
     private var confirmationLifecycle = CurrentFlightConfirmationLifecycle()
-    private var declinedVideoConfirmation = DeclinedDroneVideoConfirmation()
     private var completedFlightGuard = CompletedFlightConfirmationGuard()
     private var peerConfirmationMapID = ""
     private var ignoredRemoteIDs: Set<String> = []
@@ -298,7 +297,6 @@ final class AppleDroneConfirmationStore: ObservableObject {
         onFlightEnded: (String) -> Void = { _ in }
     ) -> String? {
         completedFlightGuard.updateSessions(videoSessions)
-        declinedVideoConfirmation.update(videoSessions)
         var rearmedRemoteIDs: Set<String> = []
         let eligible = orderedRemoteIDs.filter { remoteID in
             completedFlightGuard.allows(remoteID: remoteID, receivedAt: aircraftReceivedAt[remoteID]) {
@@ -311,9 +309,6 @@ final class AppleDroneConfirmationStore: ObservableObject {
             orderedRemoteIDs: eligible,
             confirmedRemoteIDs: confirmedRemoteIDs,
             ignoredRemoteIDs: ignoredRemoteIDs,
-            videoReconfirmationRemoteIDs: Set(eligible.filter {
-                ignoredRemoteIDs.contains($0) && declinedVideoConfirmation.hasNewPublisher($0)
-            }),
             allowPrompt: allowPrompt
         )
         for remoteID in reconciliation.endedRemoteIDs {
@@ -345,7 +340,6 @@ final class AppleDroneConfirmationStore: ObservableObject {
             }
             return nil
         }
-        if ignoredRemoteIDs.contains(candidate) { declinedVideoConfirmation.markHandled(candidate) }
         AppleLog.info(
             "DroneConfirmation",
             "Panel path=queue_new_flight remoteId=\(candidate) publication=\(CurrentFlightPublicationGate.decide(confirmed: false, ignored: ignoredRemoteIDs.contains(candidate)).logLabel) aircraftReceivedAt=\(String(describing: aircraftReceivedAt[candidate])) publisherSessions=\((videoSessions[candidate] ?? []).sorted()) \(mediaDiagnostics)"
@@ -384,7 +378,6 @@ final class AppleDroneConfirmationStore: ObservableObject {
     func ignore(_ remoteID: String) {
         guard !remoteID.isEmpty else { return }
         ignoredRemoteIDs.insert(remoteID)
-        declinedVideoConfirmation.markHandled(remoteID)
         sessionIdentities.removeValue(forKey: remoteID)
         peerIdentities.removeValue(forKey: remoteID)
         AppleLog.info(

@@ -874,7 +874,6 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
         val current = _pendingDroneConfirmation.value ?: return
         val remoteId = current.remoteId.trim()
         CTDebug(tag, "markPendingDroneConfirmationUnknown(): remoteId=$remoteId")
-        declinedDroneVideoConfirmation.markHandled(remoteId)
         CaltopoClient.SaveDroneSpecUnknownConfirmation(remoteId)
         _pendingDroneConfirmation.value = null
         pendingDroneConfirmationRequestedByOperator = false
@@ -1061,8 +1060,6 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
     private var confirmationMediaDiagnostics: () -> String = { "media=unavailable" }
     private val completedFlightConfirmationGuard = CompletedFlightConfirmationGuard { CTDebug(tag, "$it ${confirmationMediaDiagnostics()}") }
 
-    private val declinedDroneVideoConfirmation = DeclinedDroneVideoConfirmation()
-
     private var liveStreamConfirmationSpecs: Map<String,CtDroneSpec> = emptyMap()
 
     @Synchronized
@@ -1086,7 +1083,6 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
             if(_drones.value.none { it.remoteId==id && it.isActive }) clearFinishedFlightConfirmationState(id,"video session ended before RID")
         }
         completedFlightConfirmationGuard.updateSessions(sessionTokens)
-        declinedDroneVideoConfirmation.update(sessionTokens)
         for(spec in liveStreamConfirmationSpecs.values) if(queueConfirmationIfNeeded(spec,"unique configured live stream")) break
     }
 
@@ -1111,17 +1107,17 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
         val remoteId = drone.remoteId.takeIf { it.isNotBlank() } ?: return false
         if (!completedFlightConfirmationGuard.allows(remoteId, if (drone.isActive) drone.mostRecentAircraftReceiptMsecTimestamp else 0L)) return false
         val declined = CaltopoClient.IsSessionUnknownDrone(remoteId)
-        val newLocalVideo = declined && declinedDroneVideoConfirmation.hasNewPublisher(remoteId)
-        if ((remoteId in promptedCurrentFlightRemoteIds && !newLocalVideo) ||
-            (declined && !newLocalVideo) ||
-            (drone.isLocalArchiveOnly && !newLocalVideo) ||
+        // Don't Publish stays ignored for the session until Aircraft and Reception selection.
+        // New local video alone never reopens the panel.
+        if (remoteId in promptedCurrentFlightRemoteIds ||
+            declined ||
+            drone.isLocalArchiveOnly ||
             remoteId in confirmedCurrentFlightRemoteIds ||
             CaltopoClient.IsCurrentPeerDroneConfirmed(remoteId)
         ) return false
-        if (newLocalVideo) declinedDroneVideoConfirmation.markHandled(remoteId)
         val publication = CurrentFlightPublicationGate.decide(
             confirmed = false,
-            ignored = declined && !newLocalVideo
+            ignored = false
         )
         CTInfo(
             tag,
@@ -1136,7 +1132,7 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
                 "aircraftReceivedAtMs=${drone.mostRecentAircraftReceiptMsecTimestamp} ${confirmationMediaDiagnostics()}"
         )
         promptedCurrentFlightRemoteIds.add(remoteId)
-        logPublicationGateIfNeeded(remoteId, confirmed = false, ignored = declined && !newLocalVideo)
+        logPublicationGateIfNeeded(remoteId, confirmed = false, ignored = false)
         _pendingDroneConfirmation.value = buildConfirmationState(drone)
         pendingDroneConfirmationRequestedByOperator = false
         refreshPendingDroneConfirmationValidation()
