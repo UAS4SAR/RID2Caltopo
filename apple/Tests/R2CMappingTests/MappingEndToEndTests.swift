@@ -6,6 +6,19 @@ import UniformTypeIdentifiers
 import R2CCore
 
 final class MappingEndToEndTests:XCTestCase{
+    private func onIO<T>(_ body: @escaping () throws -> T) throws -> T {
+        if !Thread.isMainThread { return try body() }
+        let box = ResultBox<T>()
+        let sem = DispatchSemaphore(value: 0)
+        DispatchQueue.global(qos: .userInitiated).async {
+            do { box.result = .success(try body()) } catch { box.result = .failure(error) }
+            sem.signal()
+        }
+        sem.wait()
+        return try box.result.get()
+    }
+    private final class ResultBox<T>: @unchecked Sendable { var result: Result<T, Error>! }
+
     // Optional local evidence check, never a dependency of release tests or a device connection.
     func testExplicitLocalFlightCopy() throws {
         guard let path=ProcessInfo.processInfo.environment["R2C_LOCAL_FLIGHT_COPY"] else {throw XCTSkip("No local photo fixture requested")}
@@ -14,8 +27,10 @@ final class MappingEndToEndTests:XCTestCase{
         let root=FileManager.default.temporaryDirectory.appendingPathComponent("r2c-local-recovery-"+UUID().uuidString)
         let store=try MappingMissionStore(root:root)
         try FileManager.default.copyItem(at:source,to:root.appendingPathComponent(id))
-        let output=try MappingReconstruction.run(store:store,missionID:id,cancellation:MappingCancellation()){snapshot in
-            print("LOCAL RECOVERY: \(snapshot.stage)")
+        let output=try onIO {
+            try MappingReconstruction.run(store:store,missionID:id,cancellation:MappingCancellation()){snapshot in
+                print("LOCAL RECOVERY: \(snapshot.stage)")
+            }
         }
         let report=try XCTUnwrap(JSONSerialization.jsonObject(with:Data(contentsOf:output.appendingPathComponent("layer.json"))) as? [String:Any])
         XCTAssertGreaterThan(report["photoCount"] as? Int ?? 0,0)
@@ -54,13 +69,15 @@ final class MappingEndToEndTests:XCTestCase{
         }}
         let originals=try store.originals(id);XCTAssertEqual(originals.count,9)
         XCTAssertEqual(originals[0].rotation[0],1,accuracy:1e-9);XCTAssertEqual(originals[0].rotation[4],-1,accuracy:1e-9)
-        let first=try MappingReconstruction.run(store:store,missionID:id,cancellation:MappingCancellation()){_ in}
+        let first=try onIO { try MappingReconstruction.run(store:store,missionID:id,cancellation:MappingCancellation()){_ in} }
         XCTAssertTrue(FileManager.default.fileExists(atPath:first.appendingPathComponent("share.zip").path))
         let report=try XCTUnwrap(JSONSerialization.jsonObject(with:Data(contentsOf:first.appendingPathComponent("layer.json"))) as? [String:Any]);XCTAssertGreaterThan(report["photoCount"] as? Int ?? 0,5)
         if textureless {XCTAssertEqual(report["reconstructionMode"] as? String,"approximate-plane");XCTAssertEqual(report["photogrammetric3D"] as? Bool,false);XCTAssertTrue((report["quality"] as? String ?? "").contains("not measured depth"))}
         else {XCTAssertEqual(report["reconstructionMode"] as? String,"measured-surface")}
-        let second=try MappingReconstruction.run(store:store,missionID:id,cancellation:MappingCancellation()){snapshot in
-            XCTAssertFalse(snapshot.stage.contains("Finding 3D image detail"),"Completed regions must be verified and reused")
+        let second=try onIO {
+            try MappingReconstruction.run(store:store,missionID:id,cancellation:MappingCancellation()){snapshot in
+                XCTAssertFalse(snapshot.stage.contains("Finding 3D image detail"),"Completed regions must be verified and reused")
+            }
         }
         XCTAssertNotEqual(first,second);XCTAssertEqual(try store.originals(id).count,9)
         let list=try store.list(incidentID:"FIXTURE",newestFirst:true);XCTAssertEqual(list.count,1);XCTAssertEqual(list[0].results.count,2)
@@ -76,7 +93,9 @@ final class MappingEndToEndTests:XCTestCase{
         try store.completeSelection(selected,missionID:id)
         XCTAssertEqual(Set(try store.completedSelection(id)),Set(selected))
         XCTAssertThrowsError(try store.completeSelection([String(repeating:"f",count:64)],missionID:id))
-        let subset=try MappingReconstruction.run(store:store,missionID:id,selectedDigests:Set(selected),cancellation:MappingCancellation()){_ in}
+        let subset=try onIO {
+            try MappingReconstruction.run(store:store,missionID:id,selectedDigests:Set(selected),cancellation:MappingCancellation()){_ in}
+        }
         let subsetReport=try XCTUnwrap(JSONSerialization.jsonObject(with:Data(contentsOf:subset.appendingPathComponent("layer.json"))) as? [String:Any])
         XCTAssertEqual(subsetReport["selectedPhotoCount"] as? Int,8)
         XCTAssertEqual(try store.originals(id).count,9)
