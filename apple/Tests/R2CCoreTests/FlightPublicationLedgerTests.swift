@@ -47,8 +47,18 @@ struct FlightPublicationLedgerTests {
         let file = root.appendingPathComponent("ledger.json")
         let first = FlightPublicationLedger(fileURL: file)
         try await first.remember(flightID: "flight-d", disposition: .localArchived)
+        try await first.flushForTesting()
         let second = FlightPublicationLedger(fileURL: file)
         #expect(try await second.disposition(flightID: "flight-d") == .localArchived)
+    }
+
+    @Test func rememberAppliesInMemoryBeforeDiskFlush() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let ledger = FlightPublicationLedger(fileURL: root.appendingPathComponent("ledger.json"))
+        try await ledger.remember(flightID: "flight-e", disposition: .declined)
+        #expect(try await ledger.blocksPublication(flightID: "flight-e"))
     }
 
     @Test func inboxHelperHonoursLedgerBlock() {

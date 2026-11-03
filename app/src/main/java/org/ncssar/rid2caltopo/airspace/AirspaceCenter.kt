@@ -18,6 +18,7 @@ import org.ncssar.rid2caltopo.data.CaltopoMap
 
 object AirspaceCenter {
     private const val LOOP_DELAY_MS = 1_000L
+    private const val GPS_WAIT_DELAY_MS = 15_000L
     private var nextRoutineRefreshAt = Long.MIN_VALUE
     private val scope = CoroutineScope(
         SupervisorJob() + Dispatchers.IO + org.ncssar.rid2caltopo.app.StartupCoroutineSafety.handler
@@ -34,6 +35,7 @@ object AirspaceCenter {
     private var lastSuccessfulCheck = "No successful check this session"
     private var queryCoordinate: AirspaceCoordinate? = null
     private var hasCompletedRefresh = false
+    private var loggedGpsWait = false
     private val refreshMutex = Mutex()
     private val retryPolicy = AirspaceRetryPolicy()
 
@@ -57,41 +59,48 @@ object AirspaceCenter {
         refreshJob?.cancel()
         refreshJob = null
         initialized = false
+        loggedGpsWait = false
     }
 
     private fun startLoop() {
         refreshJob?.cancel()
         refreshJob = scope.launch {
             while (isActive) {
-                refresh()
-                delay(LOOP_DELAY_MS)
+                val waitedForGps = refresh()
+                delay(if (waitedForGps) GPS_WAIT_DELAY_MS else LOOP_DELAY_MS)
             }
         }
     }
 
-    private suspend fun refresh(force: Boolean = false) = refreshMutex.withLock {
+    /** @return true when refresh returned early because GPS was unavailable. */
+    private suspend fun refresh(force: Boolean = false): Boolean = refreshMutex.withLock {
         if (!CaltopoClient.GetNotamEnabled()) {
             lastRecords = emptyList()
             lastError = null
             lastSuccessfulCheck = "No successful check this session"
             queryCoordinate = null
             hasCompletedRefresh = false
+            loggedGpsWait = false
             _uiState.value = AirspaceUiState(visible = false)
-            return@withLock
+            return@withLock false
         }
-        if (!retryPolicy.permits(System.currentTimeMillis())) return@withLock
-        if (!force && retryPolicy.failures == 0 && System.currentTimeMillis() < nextRoutineRefreshAt) return@withLock
+        if (!retryPolicy.permits(System.currentTimeMillis())) return@withLock false
+        if (!force && retryPolicy.failures == 0 && System.currentTimeMillis() < nextRoutineRefreshAt) return@withLock false
         val location = CaltopoMap.GetMyLocation()
         if (location == null) {
-            CaltopoClient.CTDebug("Airspace", "Controlled-airspace refresh waiting for GPS location")
+            if (!loggedGpsWait) {
+                loggedGpsWait = true
+                CaltopoClient.CTDebug("Airspace", "Controlled-airspace refresh waiting for GPS location")
+            }
             _uiState.value = AirspacePolicy.buildUiState(
                 records = lastRecords,
                 loading = false,
                 errorMessage = lastError ?: "Waiting for GPS location",
                 pilotCoordinate = null
             ).copy(lastSuccessfulCheck = lastSuccessfulCheck, queryCoordinate = queryCoordinate)
-            return@withLock
+            return@withLock true
         }
+        loggedGpsWait = false
         if (!hasCompletedRefresh) {
             _uiState.value = AirspacePolicy.buildUiState(
                 records = lastRecords,
@@ -129,5 +138,6 @@ object AirspaceCenter {
             pilotCoordinate = AirspaceCoordinate(location.latitude, location.longitude)
         )
         _uiState.value = refreshedState.copy(lastSuccessfulCheck = lastSuccessfulCheck, queryCoordinate = queryCoordinate)
+        false
     }
 }

@@ -102,7 +102,9 @@ internal class OfflinePrepWorkerLease<T : Closeable>(private val factory: () -> 
  * A replacement MapPane observes the same state and reattaches to the active progress UI.
  */
 internal object AndroidMapOfflinePrepCoordinator {
-    val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    val scope = CoroutineScope(
+        SupervisorJob() + Dispatchers.Main.immediate + org.ncssar.rid2caltopo.app.StartupCoroutineSafety.handler
+    )
     val showDialog = mutableStateOf(false)
     val inFlight = mutableStateOf(false)
     val includeUsgsScannedTopo = mutableStateOf(false)

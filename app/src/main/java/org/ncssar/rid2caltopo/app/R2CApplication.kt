@@ -157,6 +157,24 @@ class R2CApplication : Application() {
      */
     private fun openSessionLogAtProcessStart() {
         Thread({
+            // Avoid DocumentsProvider binder flood while the process is still cached
+            // (post-crash restart before Activity/FGS elevates importance).
+            var waits = 0
+            while (waits < 120) {
+                val cached = runCatching {
+                    val info = android.app.ActivityManager.RunningAppProcessInfo()
+                    android.app.ActivityManager.getMyMemoryState(info)
+                    info.importance >= android.app.ActivityManager.RunningAppProcessInfo.IMPORTANCE_CACHED
+                }.getOrDefault(false)
+                if (!cached) break
+                try {
+                    Thread.sleep(500L)
+                } catch (_: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    return@Thread
+                }
+                waits++
+            }
             runCatching { CaltopoClient.InitArchiveDir() }
                 .onSuccess {
                     CaltopoClient.CTDebug(

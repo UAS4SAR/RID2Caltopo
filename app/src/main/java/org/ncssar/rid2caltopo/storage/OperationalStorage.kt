@@ -67,16 +67,64 @@ internal object OperationalStorage {
     private val startup = java.util.concurrent.Executors.newSingleThreadExecutor { r -> Thread(r, "archive-storage-setup").apply { isDaemon = true } }
     private data class Area(val id: String, val retained: String, val alias: File, val sources: List<File>)
     private data class Store(val uri: String, val work: File, val tree: ArchiveTree, val writer: VerifiedArchiveTree, val areas: List<Area>, val migrated: MutableMap<String, String> = mutableMapOf(), val growingOffsets: MutableMap<String, Long> = mutableMapOf())
+    /**
+     * Optional test seam: when set, invoked from [worker] even if Looper is absent
+     * (plain JVM). Robolectric supplies a real main Looper so the default check fires.
+     */
+    @Volatile private var workerAssertForTesting: (() -> Unit)? = null
+
+    @androidx.annotation.VisibleForTesting
+    fun installWorkerAssertForTesting(assert: (() -> Unit)?) {
+        workerAssertForTesting = assert
+    }
+
     private fun worker() {
+        workerAssertForTesting?.invoke()
         // Plain JVM tests have no Android UI Looper. On a device the main Looper
         // is present, and its thread must still be rejected before any storage work.
         val main = Looper.getMainLooper() ?: return
         check(Looper.myLooper() != main) { "Operational storage must run on a worker" }
     }
+
+    /**
+     * True when the process is cached/background without a visible Activity or FGS.
+     * Heavy DocumentsProvider walks from a cached process trigger Android's
+     * "excessive binder traffic during cached" kill.
+     */
+    private fun processIsCached(context: Context): Boolean {
+        return runCatching {
+            val info = android.app.ActivityManager.RunningAppProcessInfo()
+            android.app.ActivityManager.getMyMemoryState(info)
+            info.importance >= android.app.ActivityManager.RunningAppProcessInfo.IMPORTANCE_CACHED
+        }.getOrDefault(false)
+    }
+
+    /** Yields while cached so DocumentsProvider traffic does not flood binder. */
+    private fun awaitNonCached(context: Context) {
+        var waits = 0
+        while (processIsCached(context) && waits < 120) {
+            if (waits == 0) {
+                CaltopoClient.CTDebug(
+                    "OperationalStorage",
+                    "Deferring Archive Dir hydrate while process is cached",
+                )
+            }
+            try {
+                Thread.sleep(500L)
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+                return
+            }
+            waits++
+        }
+    }
+
     fun start(context: Context) {
         startup.execute {
             runCatching {
                 TemporaryStorage.cleanAbandoned(context)
+                // App-private cleanup is fine while cached; SAF prepare waits for foreground/FGS.
+                awaitNonCached(context)
                 prepare(context.applicationContext)
             }.onFailure { error ->
                 if (ArchiveDirAvailability.isUnavailable(error)) {
@@ -103,6 +151,8 @@ internal object OperationalStorage {
                 Thread.currentThread().interrupt()
                 return@execute
             }
+            if (state.value.ready) return@execute
+            awaitNonCached(context)
             if (state.value.ready) return@execute
             runCatching { prepare(context) }
                 .onFailure { error ->

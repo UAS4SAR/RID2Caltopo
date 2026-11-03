@@ -1113,10 +1113,11 @@ public class WaypointTrack {
         if (!ShortFlightRecording.request(archivedMappedId.isEmpty() ? archivedRemoteId : archivedMappedId,
                 (last - first) / 1000.0, archivedDistanceInFeet * 0.3048,
                 () -> GetTrackArchiveExecutorPool().submit(this::archiveRecorded),
-                () -> {
+                () -> GetTrackArchiveExecutorPool().submit(() -> {
+                    // Short-flight "No" arrives on the Compose click thread; storage stays off Main.
                     AwaitingMapFlights.discard(deferredPublicationId);
                     retireUnpublishedJournal(FlightPublicationLedger.Disposition.SUPPRESSED);
-                })) {
+                }))) {
             archiveRecorded();
         }
     }

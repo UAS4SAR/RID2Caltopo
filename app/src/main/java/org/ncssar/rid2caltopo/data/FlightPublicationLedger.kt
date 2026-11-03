@@ -11,6 +11,9 @@ import java.io.File
  * tracker upload cannot rely on that journal alone. This ledger survives those prunes and
  * gates every publish path: live CalTopo, archive, awaiting-map promotion, journal recovery,
  * and BgPollUnreportedTracks / r2c-tracker uploads.
+ *
+ * Publication gates consult in-memory state first. Disk writes always run on a worker so
+ * UI Don't Publish / Discard never hit OperationalStorage on Main.
  */
 object FlightPublicationLedger {
     enum class Disposition(val wire: String) {
@@ -35,6 +38,7 @@ object FlightPublicationLedger {
     private var loaded = false
     private var entries = JSONObject()
     private val lock = Any()
+    private val persist = java.util.concurrent.atomic.AtomicBoolean(false)
 
     @JvmStatic
     fun useFileForTesting(file: File?) {
@@ -42,41 +46,88 @@ object FlightPublicationLedger {
             testFile = file
             loaded = false
             entries = JSONObject()
+            persist.set(false)
         }
     }
 
-    private fun file(): File? = testFile
-        ?: R2CApplication.getAppCtxt()?.let {
-            org.ncssar.rid2caltopo.storage.OperationalStorage.stateFile(it, "flight-publication-ledger.json")
+    /** App-private path only — never triggers Archive Dir prepare/retain on the caller. */
+    private fun appPrivateFile(): File? = testFile
+        ?: R2CApplication.getAppCtxt()?.let { context ->
+            org.ncssar.rid2caltopo.storage.ArchiveDirAvailability.operationalStateFile(
+                context.filesDir,
+                "flight-publication-ledger.json",
+            )
         }
 
-    private fun load() {
+    private fun loadLocked() {
         if (loaded) return
-        val file = file() ?: return
-        entries = runCatching { JSONObject(file.readText()) }.getOrDefault(JSONObject())
+        val file = appPrivateFile() ?: return
+        val disk = runCatching { JSONObject(file.readText()) }.getOrDefault(JSONObject())
+        // Memory wins for keys already decided this session (Don't Publish before hydrate).
+        val merged = JSONObject()
+        for (key in disk.keys()) {
+            merged.put(key, disk.get(key))
+        }
+        for (key in entries.keys()) {
+            val memory = Disposition.fromWire(entries.optString(key)) ?: continue
+            val prior = Disposition.fromWire(merged.optString(key))
+            merged.put(key, merge(prior, memory).wire)
+        }
+        entries = merged
         loaded = true
     }
 
-    private fun save() {
-        val file = file() ?: return
+    private fun saveLocked() {
+        val file = appPrivateFile() ?: return
         file.parentFile?.mkdirs()
-        PlainFileSafeWriter.replace(file, entries.toString().toByteArray(Charsets.UTF_8)) { it.isNotEmpty() }
+        // App-private atomic write; Archive Dir copy is retainLater (never sync retain on caller).
+        PlainFileSafeWriter.replaceLocal(file, entries.toString().toByteArray(Charsets.UTF_8)) { it.isNotEmpty() }
         org.ncssar.rid2caltopo.storage.OperationalStorage.retainLater(file)
     }
 
+    private fun schedulePersist() {
+        if (!persist.compareAndSet(false, true)) return
+        CaltopoRecoveryWork.offMainArchive {
+            try {
+                while (true) {
+                    persist.set(false)
+                    synchronized(lock) {
+                        loadLocked()
+                        saveLocked()
+                    }
+                    if (!persist.get()) break
+                }
+            } catch (error: Exception) {
+                persist.set(false)
+                CaltopoClient.CTWarn(
+                    "FlightPublicationLedger",
+                    "persist failed: ${error.message}",
+                    error,
+                )
+            }
+        }
+    }
+
+    /**
+     * Applies the disposition in memory immediately (publication gate sees it before return),
+     * then persists on the archive worker.
+     */
     @JvmStatic
     fun remember(flightId: String, disposition: Disposition) {
         val id = flightId.trim()
         if (id.isEmpty()) return
         synchronized(lock) {
-            load()
+            // Do not touch disk on the caller thread. Seed memory if cold so Don't Publish
+            // blocks publication before the worker merges the file.
+            if (!loaded && entries.length() == 0) {
+                entries = JSONObject()
+            }
             val prior = Disposition.fromWire(entries.optString(id))
-            // Published / declined win over weaker suppressions; never downgrade published.
             val next = merge(prior, disposition)
             if (prior == next && entries.has(id)) return
             entries.put(id, next.wire)
-            save()
         }
+        schedulePersist()
     }
 
     private fun merge(prior: Disposition?, next: Disposition): Disposition = when {
@@ -94,7 +145,18 @@ object FlightPublicationLedger {
         val id = flightId.trim()
         if (id.isEmpty()) return null
         synchronized(lock) {
-            load()
+            // Prefer in-memory decisions without forcing a main-thread file hydrate.
+            if (entries.has(id)) return Disposition.fromWire(entries.optString(id))
+            if (loaded) return Disposition.fromWire(entries.optString(id))
+        }
+        val main = android.os.Looper.getMainLooper()
+        if (main != null && android.os.Looper.myLooper() == main) {
+            // Never read the ledger file on Main; schedule a worker hydrate.
+            schedulePersist()
+            return null
+        }
+        synchronized(lock) {
+            runCatching { loadLocked() }
             return Disposition.fromWire(entries.optString(id))
         }
     }
@@ -119,7 +181,7 @@ object FlightPublicationLedger {
     @androidx.annotation.VisibleForTesting
     fun allForTesting(): Map<String, Disposition> {
         synchronized(lock) {
-            load()
+            loadLocked()
             val out = linkedMapOf<String, Disposition>()
             for (key in entries.keys()) {
                 Disposition.fromWire(entries.optString(key))?.let { out[key] = it }
@@ -134,7 +196,26 @@ object FlightPublicationLedger {
         synchronized(lock) {
             entries = JSONObject()
             loaded = testFile != null
-            if (testFile != null) save()
+            if (testFile != null) saveLocked()
         }
+    }
+
+    /** Drain scheduled persist for tests that assert durable file contents. */
+    @JvmStatic
+    @androidx.annotation.VisibleForTesting
+    fun flushForTesting() {
+        val done = java.util.concurrent.CountDownLatch(1)
+        CaltopoRecoveryWork.offMainArchive {
+            try {
+                synchronized(lock) {
+                    loadLocked()
+                    saveLocked()
+                    persist.set(false)
+                }
+            } finally {
+                done.countDown()
+            }
+        }
+        done.await(5, java.util.concurrent.TimeUnit.SECONDS)
     }
 }

@@ -72,10 +72,17 @@ class FlightPublicationLedgerTest {
     @Test
     fun survivesReload() {
         FlightPublicationLedger.remember("flight-d", FlightPublicationLedger.Disposition.LOCAL_ARCHIVED)
+        FlightPublicationLedger.flushForTesting()
         FlightPublicationLedger.useFileForTesting(file)
         assertEquals(
             FlightPublicationLedger.Disposition.LOCAL_ARCHIVED,
             FlightPublicationLedger.disposition("flight-d"),
         )
+    }
+
+    @Test
+    fun rememberBlocksPublicationBeforeDiskFlush() {
+        FlightPublicationLedger.remember("flight-e", FlightPublicationLedger.Disposition.DECLINED)
+        assertTrue(FlightPublicationLedger.blocksPublication("flight-e"))
     }
 }

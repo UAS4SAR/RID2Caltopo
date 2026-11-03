@@ -5,6 +5,9 @@ import Foundation
 /// Awaiting-map rows are pruned after local/publish/confirm decisions, so recovery and
 /// tracker upload cannot rely on that journal alone. This ledger survives those prunes and
 /// gates every publish path. Mirrors Android `FlightPublicationLedger`.
+///
+/// In-memory dispositions update synchronously; disk writes run on [OperationalWorkQueue]
+/// so MainActor callers never block on file I/O.
 public actor FlightPublicationLedger {
     public enum Disposition: String, Sendable, Equatable {
         case declined
@@ -17,6 +20,8 @@ public actor FlightPublicationLedger {
     private var entries: [String: Disposition] = [:]
     private let fileURL: URL?
     private var loaded = false
+    private let disk = OperationalWorkQueue(label: "org.ncssar.flight-publication-ledger.disk")
+    private var persistTask: Task<Void, Never>?
 
     public init(fileURL: URL? = nil) {
         self.fileURL = fileURL
@@ -25,18 +30,19 @@ public actor FlightPublicationLedger {
     public func remember(flightID: String, disposition: Disposition) throws {
         let id = flightID.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !id.isEmpty else { return }
-        try load()
+        // Memory first — publication gates see the refusal before disk completes.
         let prior = entries[id]
         let next = Self.merge(prior: prior, next: disposition)
-        if prior == next { return }
+        if prior == next, entries[id] != nil { return }
         entries[id] = next
-        try save()
+        schedulePersist()
     }
 
     public func disposition(flightID: String) throws -> Disposition? {
         let id = flightID.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !id.isEmpty else { return nil }
-        try load()
+        if let value = entries[id] { return value }
+        if !loaded { try loadFromDiskMergingMemory() }
         return entries[id]
     }
 
@@ -54,14 +60,28 @@ public actor FlightPublicationLedger {
     }
 
     public func allForTesting() throws -> [String: Disposition] {
-        try load()
+        if !loaded { try loadFromDiskMergingMemory() }
         return entries
     }
 
     public func clearForTesting() throws {
         entries = [:]
         loaded = fileURL != nil
-        if fileURL != nil { try save() }
+        if let fileURL {
+            try Self.write(entries: [:], fileURL: fileURL)
+        }
+    }
+
+    /// Drain scheduled persist for tests that assert durable file contents.
+    public func flushForTesting() async throws {
+        persistTask?.cancel()
+        persistTask = nil
+        if !loaded { try await loadMergingOnDiskQueue() }
+        let snapshot = entries
+        guard let fileURL else { return }
+        try await disk.run {
+            try Self.write(entries: snapshot, fileURL: fileURL)
+        }
     }
 
     private static func merge(prior: Disposition?, next: Disposition) -> Disposition {
@@ -74,17 +94,65 @@ public actor FlightPublicationLedger {
         return next
     }
 
-    private func load() throws {
-        if loaded { return }
-        defer { loaded = true }
-        guard let fileURL, FileManager.default.fileExists(atPath: fileURL.path) else {
-            entries = [:]
+    private func schedulePersist() {
+        persistTask?.cancel()
+        let snapshot = entries
+        let fileURL = self.fileURL
+        persistTask = Task { [disk] in
+            do {
+                try await disk.run {
+                    guard let fileURL else { return }
+                    // Merge disk under the worker so concurrent remember() memory wins on overlap.
+                    var merged = (try? Self.read(fileURL: fileURL)) ?? [:]
+                    for (key, value) in snapshot {
+                        merged[key] = Self.merge(prior: merged[key], next: value)
+                    }
+                    try Self.write(entries: merged, fileURL: fileURL)
+                }
+                loaded = true
+            } catch {
+                // Soft-fail: in-memory gate already blocks publication.
+            }
+        }
+    }
+
+    private func loadFromDiskMergingMemory() throws {
+        guard let fileURL else {
+            loaded = true
             return
         }
+        // Synchronous fallback for tests without awaiting the queue; production prefer async path.
+        let diskEntries = (try? Self.read(fileURL: fileURL)) ?? [:]
+        var merged = diskEntries
+        for (key, value) in entries {
+            merged[key] = Self.merge(prior: merged[key], next: value)
+        }
+        entries = merged
+        loaded = true
+    }
+
+    private func loadMergingOnDiskQueue() async throws {
+        guard let fileURL else {
+            loaded = true
+            return
+        }
+        let memory = entries
+        let merged = try await disk.run {
+            var diskEntries = (try? Self.read(fileURL: fileURL)) ?? [:]
+            for (key, value) in memory {
+                diskEntries[key] = Self.merge(prior: diskEntries[key], next: value)
+            }
+            return diskEntries
+        }
+        entries = merged
+        loaded = true
+    }
+
+    private static func read(fileURL: URL) throws -> [String: Disposition] {
+        guard FileManager.default.fileExists(atPath: fileURL.path) else { return [:] }
         let data = try Data(contentsOf: fileURL)
         guard let object = try JSONSerialization.jsonObject(with: data) as? [String: String] else {
-            entries = [:]
-            return
+            return [:]
         }
         var parsed: [String: Disposition] = [:]
         for (key, value) in object {
@@ -92,11 +160,10 @@ public actor FlightPublicationLedger {
                 parsed[key] = disposition
             }
         }
-        entries = parsed
+        return parsed
     }
 
-    private func save() throws {
-        guard let fileURL else { return }
+    private static func write(entries: [String: Disposition], fileURL: URL) throws {
         try FileManager.default.createDirectory(
             at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         let object = Dictionary(uniqueKeysWithValues: entries.map { ($0.key, $0.value.rawValue) })

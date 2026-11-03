@@ -105,7 +105,7 @@ data class MappingLayer(val id: String, val incidentId: String, val title: Strin
         }
         fun selectedLocal(context:Context):MappingLayer? {
             val preferences=context.getSharedPreferences("mapping_layers",0)
-            val id=preferences.getString("selectedLocalLayer",null)?:return null
+            val id=PreferenceTypeSafety.string(preferences,"selectedLocalLayer")?:return null
             val layer=savedLayers(context).firstOrNull{it.id==id}
             if(layer==null||!hasTileManifest(context,id)){
                 preferences.edit().remove("selectedLocalLayer").apply()
@@ -156,8 +156,9 @@ data class MappingLayer(val id: String, val incidentId: String, val title: Strin
             } finally { connection.disconnect() }
         }
         fun load(context: Context, incidentId: String): List<MappingLayer> {
-            val text=context.getSharedPreferences("mapping_layers",0).getString(incidentId,"[]") ?: "[]"
-            val hidden=context.getSharedPreferences("mapping_layers",0).getStringSet("hidden:$incidentId",emptySet()).orEmpty()
+            val preferences=context.getSharedPreferences("mapping_layers",0)
+            val text=PreferenceTypeSafety.string(preferences,incidentId,"[]") ?: "[]"
+            val hidden=PreferenceTypeSafety.stringSet(preferences,"hidden:$incidentId")
             return runCatching { val array=JSONArray(text);(0 until array.length()).map { parse(array.getJSONObject(it)) }.filterNot { it.id in hidden } }.getOrDefault(emptyList())
         }
         fun save(context: Context, incidentId: String, layers: List<MappingLayer>) {
@@ -166,7 +167,7 @@ data class MappingLayer(val id: String, val incidentId: String, val title: Strin
         }
         fun visibility(context: Context, incidentId: String, layerId: String, visible: Boolean) {
             val preferences=context.getSharedPreferences("mapping_layers",0)
-            val hidden=preferences.getStringSet("hidden:$incidentId",emptySet()).orEmpty().toMutableSet()
+            val hidden=PreferenceTypeSafety.stringSet(preferences,"hidden:$incidentId").toMutableSet()
             if(visible)hidden.remove(layerId) else hidden.add(layerId)
             preferences.edit().putStringSet("hidden:$incidentId",hidden).apply()
         }

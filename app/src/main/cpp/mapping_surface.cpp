@@ -22,11 +22,25 @@ struct Progress: r2c::mapping::Progress {
   if(e->ExceptionCheck())throw std::runtime_error("Processing interrupted.");
  }
 };
+std::vector<std::string> pathStrings(JNIEnv* e,jobjectArray paths){
+  std::vector<std::string> files;
+  if(!paths)throw std::runtime_error("Missing image paths.");
+  const jsize n=e->GetArrayLength(paths);
+  files.reserve(size_t(n));
+  for(jsize i=0;i<n;++i){
+   auto s=(jstring)e->GetObjectArrayElement(paths,i);
+   if(!s)throw std::runtime_error("Missing image path.");
+   auto p=e->GetStringUTFChars(s,nullptr);
+   if(!p){e->DeleteLocalRef(s);throw std::runtime_error("Missing image path text.");}
+   files.emplace_back(p);e->ReleaseStringUTFChars(s,p);e->DeleteLocalRef(s);
+  }
+  return files;
+}
 jint render(JNIEnv* e,jfloatArray surface,jint gw,jint gh,jdouble gx,jdouble gy,jdouble cell,jdoubleArray c,jdoubleArray k,jint iw,jint ih,jobjectArray paths,jdouble tx,jdouble ty,jdouble step,jintArray output,bool ordered){
  try {
   if(e->GetArrayLength(output)!=65536)throw std::runtime_error("Invalid surface tile.");
   std::vector<float> z(e->GetArrayLength(surface));e->GetFloatArrayRegion(surface,0,int(z.size()),z.data());
-  std::vector<std::string> files;for(int i=0;i<e->GetArrayLength(paths);++i){auto s=(jstring)e->GetObjectArrayElement(paths,i);auto p=e->GetStringUTFChars(s,nullptr);files.emplace_back(p);e->ReleaseStringUTFChars(s,p);e->DeleteLocalRef(s);}
+  auto files=pathStrings(e,paths);
   std::vector<int32_t> out;int count=r2c::mapping::render(z,gw,gh,gx,gy,cell,doubles(e,c),doubles(e,k),iw,ih,files,tx,ty,step,out,ordered);
   e->SetIntArrayRegion(output,0,65536,out.data());return count;
  }catch(const std::exception& ex){fail(e,ex.what());return -1;}
@@ -53,7 +67,7 @@ extern "C" JNIEXPORT jintArray JNICALL Java_org_ncssar_rid2caltopo_mapping_Mappi
 
 extern "C" JNIEXPORT void JNICALL Java_org_ncssar_rid2caltopo_mapping_MappingSurfaceNative_prepareProjection(JNIEnv* e,jobject,jfloatArray surface,jint w,jint h,jdouble x,jdouble y,jdouble cell,jdoubleArray c,jdoubleArray k,jint iw,jint ih,jobjectArray paths,jobject object){
  try {std::vector<float> z(e->GetArrayLength(surface));e->GetFloatArrayRegion(surface,0,int(z.size()),z.data());
- std::vector<std::string> files;for(int i=0;i<e->GetArrayLength(paths);++i){auto s=(jstring)e->GetObjectArrayElement(paths,i);auto p=e->GetStringUTFChars(s,nullptr);files.emplace_back(p);e->ReleaseStringUTFChars(s,p);e->DeleteLocalRef(s);}
+ auto files=pathStrings(e,paths);
  Progress progress(e,object);r2c::mapping::prepareProjection(z,w,h,x,y,cell,doubles(e,c),doubles(e,k),iw,ih,files,[&](double fraction){if(!progress.iteration(0,fraction))throw std::runtime_error("Processing cancelled; originals retained.");});
  }catch(const std::exception& ex){fail(e,ex.what());}
 }
@@ -110,15 +124,23 @@ extern "C" JNIEXPORT jbyteArray JNICALL Java_org_ncssar_rid2caltopo_mapping_Mapp
 // Ortho fill for the 2D map only. Returns OrthoFill(filled heights, packed 1-bit estimated mask, 6 stats); the measured surface array is never modified.
 extern "C" JNIEXPORT jobject JNICALL Java_org_ncssar_rid2caltopo_mapping_MappingSurfaceNative_buildOrthoFill(JNIEnv* e,jobject,jfloatArray measured,jint w,jint h,jdouble cell,jboolean enabled,jdouble radius,jdouble plane){
  try{
-  if(w<1||h<1||int64_t(w)*h>3000000||e->GetArrayLength(measured)!=int64_t(w)*h)throw std::runtime_error("Invalid ortho fill surface.");
+  if(!measured||w<1||h<1||int64_t(w)*h>3000000||e->GetArrayLength(measured)!=int64_t(w)*h)throw std::runtime_error("Invalid ortho fill surface.");
   size_t cells=size_t(w)*h;std::vector<float> z(cells),filled(cells);e->GetFloatArrayRegion(measured,0,int(cells),z.data());
   std::vector<uint8_t> mask((cells+7)/8);double stats[6]{};char error[512]{};
   if(!R2CMappingBuildOrthoFill(z.data(),w,h,cell,enabled?1:0,radius,plane,filled.data(),mask.data(),stats,error,sizeof(error)))throw std::runtime_error(error);
-  auto f=e->NewFloatArray(int(cells));e->SetFloatArrayRegion(f,0,int(cells),filled.data());
-  auto m=e->NewByteArray(int(mask.size()));e->SetByteArrayRegion(m,0,int(mask.size()),reinterpret_cast<jbyte*>(mask.data()));
-  auto s=e->NewDoubleArray(6);e->SetDoubleArrayRegion(s,0,6,stats);
-  auto cls=e->FindClass("org/ncssar/rid2caltopo/mapping/MappingSurfaceNative$OrthoFill");auto constructor=e->GetMethodID(cls,"<init>","([F[B[D)V");
-  return e->NewObject(cls,constructor,f,m,s);
+  auto f=e->NewFloatArray(int(cells));if(!f||e->ExceptionCheck())throw std::runtime_error("Ortho fill heights alloc failed.");
+  e->SetFloatArrayRegion(f,0,int(cells),filled.data());
+  auto m=e->NewByteArray(int(mask.size()));if(!m||e->ExceptionCheck())throw std::runtime_error("Ortho fill mask alloc failed.");
+  e->SetByteArrayRegion(m,0,int(mask.size()),reinterpret_cast<jbyte*>(mask.data()));
+  auto s=e->NewDoubleArray(6);if(!s||e->ExceptionCheck())throw std::runtime_error("Ortho fill stats alloc failed.");
+  e->SetDoubleArrayRegion(s,0,6,stats);
+  auto cls=e->FindClass("org/ncssar/rid2caltopo/mapping/MappingSurfaceNative$OrthoFill");
+  if(!cls||e->ExceptionCheck())throw std::runtime_error("OrthoFill class missing.");
+  auto constructor=e->GetMethodID(cls,"<init>","([F[B[D)V");
+  if(!constructor||e->ExceptionCheck())throw std::runtime_error("OrthoFill constructor missing.");
+  auto object=e->NewObject(cls,constructor,f,m,s);
+  if(!object||e->ExceptionCheck())throw std::runtime_error("OrthoFill construction failed.");
+  return object;
  }catch(const std::exception& ex){fail(e,ex.what());return nullptr;}
 }
 // Measured heights drive occlusion/colour; fill supplies heights only where measured is NaN.
@@ -127,7 +149,7 @@ extern "C" JNIEXPORT jint JNICALL Java_org_ncssar_rid2caltopo_mapping_MappingSur
   if(e->GetArrayLength(output)!=65536)throw std::runtime_error("Invalid surface tile.");
   size_t cells=size_t(w)*h;if(w<1||h<1||e->GetArrayLength(measured)!=int64_t(cells)||e->GetArrayLength(fill)!=int64_t(cells))throw std::runtime_error("Invalid surface size.");
   std::vector<float> z(cells),f(cells);e->GetFloatArrayRegion(measured,0,int(cells),z.data());e->GetFloatArrayRegion(fill,0,int(cells),f.data());
-  std::vector<std::string> files;for(int i=0;i<e->GetArrayLength(paths);++i){auto s=(jstring)e->GetObjectArrayElement(paths,i);auto p=e->GetStringUTFChars(s,nullptr);files.emplace_back(p);e->ReleaseStringUTFChars(s,p);e->DeleteLocalRef(s);}
+  auto files=pathStrings(e,paths);
   std::vector<const char*> names;for(auto& n:files)names.push_back(n.c_str());auto cameras=doubles(e,c),intrinsics=doubles(e,k);
   std::vector<int32_t> out(65536);char error[512]{};
   int count=R2CMappingRenderFill(z.data(),f.data(),w,h,x,y,cell,cameras.data(),files.size(),intrinsics.data(),iw,ih,names.data(),tx,ty,step,out.data(),error,sizeof(error));
@@ -138,7 +160,7 @@ extern "C" JNIEXPORT void JNICALL Java_org_ncssar_rid2caltopo_mapping_MappingSur
  try{
   size_t cells=size_t(w)*h;if(w<2||h<2||e->GetArrayLength(measured)!=int64_t(cells)||e->GetArrayLength(fill)!=int64_t(cells))throw std::runtime_error("Invalid surface size.");
   std::vector<float> z(cells),f(cells);e->GetFloatArrayRegion(measured,0,int(cells),z.data());e->GetFloatArrayRegion(fill,0,int(cells),f.data());
-  std::vector<std::string> files;for(int i=0;i<e->GetArrayLength(paths);++i){auto s=(jstring)e->GetObjectArrayElement(paths,i);auto p=e->GetStringUTFChars(s,nullptr);files.emplace_back(p);e->ReleaseStringUTFChars(s,p);e->DeleteLocalRef(s);}
+  auto files=pathStrings(e,paths);
   std::vector<const char*> names;for(auto& n:files)names.push_back(n.c_str());auto cameras=doubles(e,c),intrinsics=doubles(e,k);
   Progress progress(e,object);char error[512]{};
   struct Bridge{Progress* p;static int update(void* context,const char*,double fraction){return static_cast<Bridge*>(context)->p->iteration(0,fraction)?1:0;}} bridge{&progress};

@@ -32,11 +32,15 @@ object FlightArchiveFiles {
 
 /** Plain files (app storage, the session's temporary archive folder): `.partial` + fsync + verify + atomic move. */
 object PlainFileSafeWriter {
+    /**
+     * App-private atomic replace without Archive Dir retain. Callers that need an Archive
+     * copy must [org.ncssar.rid2caltopo.storage.OperationalStorage.retainLater] afterward.
+     * Safe to invoke from a worker that already owns the file path; never calls sync retain.
+     */
     @JvmStatic
     @JvmOverloads
     @Throws(IOException::class)
-    fun replace(target: File, bytes: ByteArray, validator: (ByteArray) -> Boolean = FlightArchiveFiles.validatorFor(target.name)) {
-        org.ncssar.rid2caltopo.storage.OperationalStorage.requireFor(target)
+    fun replaceLocal(target: File, bytes: ByteArray, validator: (ByteArray) -> Boolean = FlightArchiveFiles.validatorFor(target.name)) {
         if (!validator(bytes)) throw IOException("verification failed before write: ${target.name}")
         target.parentFile?.mkdirs()
         val partial = File(target.parentFile, target.name + FlightArchiveFiles.PARTIAL_SUFFIX)
@@ -49,11 +53,20 @@ object PlainFileSafeWriter {
             val readBack = partial.readBytes()
             if (!readBack.contentEquals(bytes) || !validator(readBack)) throw IOException("verification failed: ${partial.name}")
             move(partial, target)
-            org.ncssar.rid2caltopo.storage.OperationalStorage.retain(target)
         } catch (error: Exception) {
             partial.delete()
             throw error as? IOException ?: IOException(error)
         }
+    }
+
+    @JvmStatic
+    @JvmOverloads
+    @Throws(IOException::class)
+    fun replace(target: File, bytes: ByteArray, validator: (ByteArray) -> Boolean = FlightArchiveFiles.validatorFor(target.name)) {
+        org.ncssar.rid2caltopo.storage.OperationalStorage.requireFor(target)
+        replaceLocal(target, bytes, validator)
+        // Archive Dir copy must never run on the caller (UI) thread.
+        org.ncssar.rid2caltopo.storage.OperationalStorage.retainLater(target)
     }
 
     private fun move(source: File, target: File) {

@@ -2558,7 +2558,8 @@ internal fun SplitMapPane(
                     CaltopoClient.ShowToast("Download map cancelled.")
                 }
                 MapCacheDebug.log("download map cancelled at completed=${completed.get()}")
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
+                // Errors (e.g. UnsatisfiedLinkError) must clear inFlight the same way Exceptions do.
                 withContext(NonCancellable + Dispatchers.Main.immediate) {
                     phase = "Failed"
                     offlinePrepInFlight = false
@@ -2570,7 +2571,7 @@ internal fun SplitMapPane(
                     offlinePrepAutoCloseJob = null
                     offlinePrepProgress = offlinePrepProgress.copy(
                         phase = "Failed: ${e.message ?: e.javaClass.simpleName}",
-                        failure = OfflinePrepProgressText.describeFailure(e, "the download server")
+                        failure = OfflinePrepProgressText.describeFailure(e, "the download server"),
                     )
                     discardAolWorkIfDialogClosed()
                     CaltopoClient.ShowToast("Download map failed: ${e.javaClass.simpleName}")
@@ -4272,12 +4273,15 @@ internal fun SplitMapPane(
                         )
                     }
                     // Coarse presence only — never log precise coordinates.
+                    // Bucket age so onChangeOnly is not defeated by per-frame ageMs churn
+                    // (that path previously flooded SAF session-log flushes via binder).
+                    val ageBucketSec = (locationAgeMs(myLocation, uiNowWallMsec) / 5_000L)
                     val localDeviceMarkerStats = String.format(
                         Locale.US,
-                        "present=true zoom=%.2f contains=%s ageMs=%d",
+                        "present=true zoom=%.1f contains=%s ageBucket=%d",
                         mapView.zoomLevelDouble,
                         mapView.boundingBox.containsLocation(myLocation),
-                        locationAgeMs(myLocation, uiNowWallMsec)
+                        ageBucketSec
                     )
                     if (localDeviceMarkerStats != lastLocalDeviceMarkerStats) {
                         lastLocalDeviceMarkerStats = localDeviceMarkerStats

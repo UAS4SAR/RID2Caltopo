@@ -33,7 +33,14 @@ object AwaitingMapFlights {
     private var loaded = false
     private var entries = JSONArray()
     private val lastWrite = mutableMapOf<String, Long>()
-    private fun file() = testFile ?: R2CApplication.getAppCtxt()?.let { org.ncssar.rid2caltopo.storage.OperationalStorage.stateFile(it, "awaiting-map-flights.json") }
+    private val persist = java.util.concurrent.atomic.AtomicBoolean(false)
+    /** App-private path only — never triggers Archive Dir prepare on the caller. */
+    private fun file() = testFile ?: R2CApplication.getAppCtxt()?.let { context ->
+        org.ncssar.rid2caltopo.storage.ArchiveDirAvailability.operationalStateFile(
+            context.filesDir,
+            "awaiting-map-flights.json",
+        )
+    }
     private fun load() {
         if (loaded) return
         val file = file() ?: return
@@ -48,9 +55,36 @@ object AwaitingMapFlights {
     private fun save() {
         val file = file() ?: return
         file.parentFile?.mkdirs()
-        // .partial + fsync + verify + atomic move — same durability as flight archives.
-        PlainFileSafeWriter.replace(file, entries.toString().toByteArray(Charsets.UTF_8)) { it.isNotEmpty() }
+        // App-private atomic write; Archive Dir copy via retainLater (never sync retain).
+        PlainFileSafeWriter.replaceLocal(file, entries.toString().toByteArray(Charsets.UTF_8)) { it.isNotEmpty() }
         org.ncssar.rid2caltopo.storage.OperationalStorage.retainLater(file)
+    }
+    /** Persist on the archive worker when the caller may be Main; otherwise write immediately. */
+    private fun saveOffMainIfNeeded() {
+        val main = android.os.Looper.getMainLooper()
+        if (main != null && android.os.Looper.myLooper() == main) {
+            schedulePersist()
+        } else {
+            save()
+        }
+    }
+    private fun schedulePersist() {
+        if (!persist.compareAndSet(false, true)) return
+        CaltopoRecoveryWork.offMainArchive {
+            try {
+                while (true) {
+                    persist.set(false)
+                    synchronized(this) {
+                        load()
+                        save()
+                    }
+                    if (!persist.get()) break
+                }
+            } catch (error: Exception) {
+                persist.set(false)
+                CaltopoClient.CTWarn("AwaitingMapFlights", "persist failed: ${error.message}", error)
+            }
+        }
     }
     private fun all() = (0 until entries.length()).mapNotNull { entries.optJSONObject(it) }
 
@@ -78,11 +112,11 @@ object AwaitingMapFlights {
             item.put("decision", if (item.optString("map").isNotEmpty()) "publish" else "review")
         }
         if (finished && item.optString("decision") in listOf("bound", "local")) {
-            entries = JSONArray(all().filterNot { it.optString("id") == id }); save(); publishChoices(); intentSaved(remote, id); return
+            entries = JSONArray(all().filterNot { it.optString("id") == id }); saveOffMainIfNeeded(); publishChoices(); intentSaved(remote, id); return
         }
         val now = System.currentTimeMillis()
         if (finished || existing == null || now - (lastWrite[id] ?: 0) >= 5_000) {
-            save(); lastWrite[id] = now
+            saveOffMainIfNeeded(); lastWrite[id] = now
         }
         publishChoices()
         intentSaved(remote, id)
@@ -184,7 +218,7 @@ object AwaitingMapFlights {
             if (map != null) require(map.isNotBlank() && team.isNotBlank())
             val prior = entries.toString()
             item.put("decision", if (map == null) "local" else "publish").put("map", map ?: "").put("team", team)
-            try { save() } catch (error: Exception) { entries = JSONArray(prior); throw error }
+            try { saveOffMainIfNeeded() } catch (error: Exception) { entries = JSONArray(prior); throw error }
             publishChoices()
             if (map == null) {
                 FlightPublicationLedger.remember(id, FlightPublicationLedger.Disposition.DECLINED)
@@ -244,18 +278,49 @@ object AwaitingMapFlights {
      * Removes exactly one undecided or local entry and records a durable discarded
      * disposition so leftover journals / archive hydrate cannot resurrect it.
      * Returns false when nothing matched.
+     *
+     * The ledger tombstone is applied in memory on the caller thread first so publication
+     * cannot race the worker. Journal load/save always run off Main.
      */
-    @JvmStatic @Synchronized fun discard(id: String): Boolean {
+    @JvmStatic fun discard(id: String): Boolean {
+        val trimmed = id.trim()
+        if (trimmed.isEmpty()) return false
+        // Permanent refusal visible to publication gates before any disk I/O.
+        FlightPublicationLedger.remember(trimmed, FlightPublicationLedger.Disposition.DISCARDED)
+        val main = android.os.Looper.getMainLooper()
+        if (main != null && android.os.Looper.myLooper() == main) {
+            var matched = false
+            synchronized(this) {
+                if (loaded) {
+                    matched = all().any {
+                        it.optString("id") == trimmed &&
+                            it.optString("decision") in listOf("review", "bound", "local")
+                    }
+                    if (matched) {
+                        entries = JSONArray(all().filterNot { it.optString("id") == trimmed })
+                        publishChoices()
+                    }
+                }
+            }
+            CaltopoRecoveryWork.offMainArchive {
+                runCatching { discardBody(trimmed) }.onFailure { error ->
+                    CaltopoClient.CTWarn("AwaitingMapFlights", "discard persist failed: ${error.message}", error)
+                }
+            }
+            return matched
+        }
+        return synchronized(this) { discardBody(trimmed) }
+    }
+
+    @Synchronized
+    private fun discardBody(id: String): Boolean {
         load()
         val matched = all().firstOrNull {
             it.optString("id") == id && it.optString("decision") in listOf("review", "bound", "local")
         } ?: return false
-        // Tombstone first so a crash between ledger and journal prune still blocks recovery.
-        FlightPublicationLedger.remember(matched.optString("id"), FlightPublicationLedger.Disposition.DISCARDED)
-        val prior = entries
         entries = JSONArray(all().filterNot { it.optString("id") == id })
-        try { save() } catch (error: Exception) { entries = prior; throw error }
         publishChoices()
+        save()
         return true
     }
     /** Copies of every journal entry, including decided ones, for clue ownership checks. */
@@ -320,7 +385,7 @@ object AwaitingMapFlights {
             return false
         }
         entries = JSONArray(remaining)
-        save()
+        saveOffMainIfNeeded()
         publishChoices()
         return true
     }
@@ -337,7 +402,7 @@ object AwaitingMapFlights {
         }
         if (remaining.size == entries.length()) return
         entries = JSONArray(remaining)
-        save()
+        saveOffMainIfNeeded()
         publishChoices()
     }
     fun firstTime(item: JSONObject): Long = item.optJSONArray("points")?.optJSONArray(0)?.optLong(3) ?: 0
