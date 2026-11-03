@@ -7,14 +7,92 @@ import R2CCore
 
 public enum MappingReconstruction {
     private static let processingLog = Logger(subsystem: "org.ncssar.RID2Caltopo", category: "MappingProcessing")
+    private static let resumeLock = NSLock()
+    // Guarded by resumeLock; marked unsafe for Swift 6 global-mutable checking.
+    nonisolated(unsafe) private static var resumeScheduled = false
     private struct SavedFile: Codable {let path,sha256:String;let bytes:Int64}
     private struct GeometryCheckpoint: Codable {let fingerprint,sha256:String}
     private struct Checkpoint: Codable {let fingerprint:String;let files:[SavedFile]}
+
+    /// Interrupted job discovered after process death from processing-status.json.
+    public struct InterruptedJob: Sendable {
+        public let missionID: String
+        public let title: String
+        public let incidentID: String
+        public let selectedDigests: Set<String>?
+    }
+
+    /// Persist stop state so cancel/failure does not look like process death on next launch.
+    public static func markStopped(root: URL, message: String, cancelled: Bool) {
+        var body: [String: Any] = [
+            "active": false,
+            "stage": message,
+            "cancelled": cancelled,
+            "updatedAt": ISO8601DateFormatter().string(from: Date()),
+        ]
+        if !cancelled { body["error"] = message }
+        if let encoded = try? JSONSerialization.data(withJSONObject: body, options: [.sortedKeys]) {
+            try? encoded.write(to: root.appendingPathComponent("processing-status.json"), options: .atomic)
+        }
+    }
+
+    /// Scan missions for active processing-status left by process death. IO worker only.
+    public static func findInterruptedJobs(missionsRoot: URL) -> [InterruptedJob] {
+        precondition(!Thread.isMainThread)
+        let fm = FileManager.default
+        guard let missions = try? fm.contentsOfDirectory(at: missionsRoot, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]) else { return [] }
+        var jobs: [InterruptedJob] = []
+        for mission in missions {
+            guard UUID(uuidString: mission.lastPathComponent) != nil else { continue }
+            let statusURL = mission.appendingPathComponent("processing-status.json")
+            guard let data = try? Data(contentsOf: statusURL),
+                  let status = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  (status["active"] as? Bool) == true else { continue }
+            let digests: Set<String>? = {
+                if let selected = status["selectedDigests"] as? [String], !selected.isEmpty { return Set(selected) }
+                if let input = try? Data(contentsOf: mission.appendingPathComponent("processing-input.json")),
+                   let object = try? JSONSerialization.jsonObject(with: input) as? [String: Any],
+                   let sha = object["sha256"] as? [String], !sha.isEmpty { return Set(sha) }
+                return nil
+            }()
+            let plan = (try? JSONSerialization.jsonObject(with: Data(contentsOf: mission.appendingPathComponent("mission.json"))) as? [String: Any]) ?? [:]
+            jobs.append(InterruptedJob(
+                missionID: mission.lastPathComponent,
+                title: plan["title"] as? String ?? mission.lastPathComponent.prefix(8).description,
+                incidentID: plan["incidentId"] as? String ?? "",
+                selectedDigests: digests
+            ))
+        }
+        return jobs
+    }
+
+    /// Once per process: return interrupted jobs so the UI can re-queue. Off MainActor.
+    public static func consumeInterruptedJobs(missionsRoot: URL) -> [InterruptedJob] {
+        resumeLock.lock(); defer { resumeLock.unlock() }
+        guard !resumeScheduled else { return [] }
+        resumeScheduled = true
+        let jobs = findInterruptedJobs(missionsRoot: missionsRoot)
+        if let first = jobs.first {
+            processingLog.debug("resume job id=\(first.missionID.prefix(8), privacy: .public) photos=\(first.selectedDigests?.count ?? 0, privacy: .public)")
+        }
+        return jobs
+    }
+
     /// One region is decoded/solved/exported at a time. Checkpoints are verified before reuse.
     public static func run(store: MappingMissionStore, missionID: String, selectedDigests:Set<String>? = nil, cancellation: MappingCancellation,
         progress: @escaping @Sendable (MappingProgressSnapshot)->Void) throws -> URL {
         precondition(!Thread.isMainThread)
         let fm=FileManager.default,root=try store.directory(missionID),planData=try Data(contentsOf:root.appendingPathComponent("mission.json"))
+        var finishedCleanly = false
+        defer {
+            if !finishedCleanly {
+                let cancelled = cancellation.isCancelled
+                let message = cancelled
+                    ? "Processing cancelled; originals and completed regions retained."
+                    : "Processing interrupted; originals retained"
+                markStopped(root: root, message: message, cancelled: cancelled)
+            }
+        }
         guard let plan=try JSONSerialization.jsonObject(with:planData) as? [String:Any],let parameters=plan["parameters"] as? [String:Any],let camera=plan["cameraSpecifications"] as? [String:Any],let fov=camera["diagonalFOVDegrees"] as? Double,
               let feature=plan["feature"] as? [String:Any],let geometry=feature["geometry"] as? [String:Any],let ring=(geometry["coordinates"] as? [[[Double]]])?.first,ring.count>=3 else{throw MappingMission.Failure("Invalid mapping plan.")}
         let allPhotos=try store.originals(missionID)
@@ -126,8 +204,22 @@ public enum MappingReconstruction {
         try fm.createDirectory(at:resultsRoot,withIntermediateDirectories:true)
         let assessment=try estimate.assess(originalsRoot:root,scratchRoot:work,layersRoot:resultsRoot,reserveBytes:MappingStorageBudget.reconstructReserveBytes)
         estimateSummary=assessment.summary()
-        if let encoded=try? JSONSerialization.data(withJSONObject:["active":true,"stage":"Preparing local map","progress":0.0,"estimate":assessment.json(),"updatedAt":ISO8601DateFormatter().string(from:Date())],options:[.sortedKeys]) {
-            try? encoded.write(to:root.appendingPathComponent("processing-status.json"),options:.atomic)
+        var statusBody: [String: Any] = [
+            "active": true,
+            "stage": "Preparing local map",
+            "progress": 0.0,
+            "engine": "rtk-surface",
+            "estimate": assessment.json(),
+            "updatedAt": ISO8601DateFormatter().string(from: Date()),
+        ]
+        if let selectedDigests {
+            statusBody["selectedDigests"] = selectedDigests.sorted()
+            if let input = try? JSONSerialization.data(withJSONObject: ["sha256": selectedDigests.sorted()], options: [.sortedKeys]) {
+                try? input.write(to: root.appendingPathComponent("processing-input.json"), options: .atomic)
+            }
+        }
+        if let encoded = try? JSONSerialization.data(withJSONObject: statusBody, options: [.sortedKeys]) {
+            try? encoded.write(to: root.appendingPathComponent("processing-status.json"), options: .atomic)
         }
         processingLog.debug("start missionId=\(missionID.prefix(8), privacy: .public) photos=\(photos.count, privacy: .public) engine=rtk-surface \(assessment.summary(), privacy: .public)")
         if !assessment.shortages.isEmpty { throw MappingMission.Failure(assessment.summary()) }
@@ -265,6 +357,7 @@ public enum MappingReconstruction {
         if let encoded=try? JSONSerialization.data(withJSONObject:["active":false,"stage":"Map ready","layerId":resultID,"photoCount":photos.count,"progress":1.0,"updatedAt":ISO8601DateFormatter().string(from:Date())],options:[.sortedKeys]) {
             try? encoded.write(to:root.appendingPathComponent("processing-status.json"),options:.atomic)
         }
+        finishedCleanly = true
         try ensureCancel()
         progress(MappingProgressSnapshot(stage:"Map ready",fraction:1,startedAt:started,activityAt:Date(),estimateSummary:estimateSummary,remainingSeconds:0))
         return destination

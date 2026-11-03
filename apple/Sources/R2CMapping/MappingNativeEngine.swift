@@ -7,6 +7,7 @@ public final class MappingCancellation: @unchecked Sendable {
     private var stopped=false
     public init() {}
     public func cancel() { lock.lock(); stopped=true; lock.unlock() }
+    public var isCancelled: Bool { lock.lock(); defer { lock.unlock() }; return stopped }
     public func check() throws {lock.lock();let value=stopped;lock.unlock();if value{throw CancellationError()}}
 }
 private final class NativeProgress {

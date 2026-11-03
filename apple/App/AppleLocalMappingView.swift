@@ -58,6 +58,14 @@ import R2CMapping
                         }
                     }
                 }
+                // Process-death resume: re-queue one interrupted job from processing-status.json.
+                let interrupted = MappingReconstruction.consumeInterruptedJobs(missionsRoot: missionsRoot)
+                if let job = interrupted.first {
+                    Task { @MainActor in
+                        guard !self.busy else { return }
+                        self.reconstruct(id: job.missionID, incident: job.incidentID.isEmpty ? incident : job.incidentID, title: job.title, selectedDigests: job.selectedDigests)
+                    }
+                }
                 let needRefresh: Bool
                 if force { needRefresh = true }
                 else if let previous = self.libraryCache.index {
