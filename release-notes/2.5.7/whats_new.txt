@@ -1,3 +1,16 @@
 Latest changes:
 - Unconfirmed flights stay local until the Drone Confirmation Panel is Confirmed: no CalTopo LiveTrack/archive publish and no tracker live traffic or flight record without acknowledgement.
 - Returning aircraft always reopen confirmation after a completed flight, including quick returns without a new video publisher session.
+- Flights marked Don't Publish and finished flights stay out of recovery and tracker upload.
+- New USGS Scanned Topo and USFS Topo base layers, with faster tile fill that no longer stalls the map.
+- Smaller flight-archive records for receive times and drone clock data.
+- Discarding an awaiting map is final, even after a power loss or journal recovery.
+- Mapping no longer reports storage full at publish when space is available, and shows a realistic storage estimate before processing.
+- Local Maps opens faster and keeps saved missions and their original images safe while the list loads.
+- View 2D map shows the mapping overlay, or explains when the map has no imagery yet.
+- Orthophotos fill holes near the flight edges from estimated 3D surface heights, sized to the flight footprint. Mission plans add settings for edge overrun, 3D surface detail, and hole fill.
+- Faster startup verification of mapping missions.
+- Reconstruction progress and time remaining follow measured stage timings, including slower late tiles.
+- Interrupted reconstructions are shown as interrupted and can resume; failed jobs no longer stay stuck as running.
+- Connect to Pilot stays available while a reconstruction is running.
+- Fewer redundant log messages, in a more compact format.
