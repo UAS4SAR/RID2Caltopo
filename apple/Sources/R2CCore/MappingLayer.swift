@@ -28,6 +28,25 @@ public struct MappingLayer: Codable, Identifiable, Sendable, Equatable {
         public let path: String
         public let regionCount: Int?
         public let meshSpacingMeters: Double?
+
+        private enum CodingKeys: String, CodingKey { case type, path, modelPath, regionCount, meshSpacingMeters }
+
+        public init(from decoder: Decoder) throws {
+            let values = try decoder.container(keyedBy: CodingKeys.self)
+            type = try values.decode(String.self, forKey: .type)
+            path = try values.decodeIfPresent(String.self, forKey: .path)
+                ?? values.decode(String.self, forKey: .modelPath)
+            regionCount = try values.decodeIfPresent(Int.self, forKey: .regionCount)
+            meshSpacingMeters = try values.decodeIfPresent(Double.self, forKey: .meshSpacingMeters)
+        }
+
+        public func encode(to encoder: Encoder) throws {
+            var values = encoder.container(keyedBy: CodingKeys.self)
+            try values.encode(type, forKey: .type)
+            try values.encode(path, forKey: type == "r2c_visible_surface" ? .modelPath : .path)
+            try values.encodeIfPresent(regionCount, forKey: .regionCount)
+            try values.encodeIfPresent(meshSpacingMeters, forKey: .meshSpacingMeters)
+        }
     }
     public var id: String { layerId }
     /// Inspector line, e.g. "Estimated (no measured depth): 12%". Nil when the layer has no fill fraction.

@@ -268,7 +268,10 @@ struct AppleLocalMappingView:View {
                 return
             }
             let root = await Task.detached(priority: .userInitiated) { AppleMappingTileCache.layerRoot(layer.id) }.value
-            let hasTiles = await Task.detached(priority: .userInitiated) { MappingLayerTiles.hasTileManifest(root) }.value
+            let hasTiles = await Task.detached(priority: .userInitiated) {
+                try? MappingLayerTiles.ensureImportedManifest(layer, in: root)
+                return MappingLayerTiles.hasTileManifest(root)
+            }.value
             guard layers.selectLocal(layer, hasTiles: hasTiles) else {
                 model.error = "This map has no imagery yet"
                 return

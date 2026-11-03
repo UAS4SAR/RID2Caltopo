@@ -140,6 +140,35 @@ final class MappingMissionTests: XCTestCase {
         XCTAssertEqual(copy.assignmentBoundary?.count,3)
     }
 
+    func testAndroidSingleSurfaceMetadataSurvivesSharing() throws {
+        let manifest = Data(#"{"type":"r2c_mapping_layer","version":1,"tileScheme":"xyz","layerId":"00000000-0000-0000-0000-000000000001","incidentId":"MAP123","title":"Map","minZoom":14,"maxZoom":21,"tileUrlTemplate":"http://127.0.0.1/tiles/{Z}/{X}/{Y}.png","surfaceModel":{"type":"r2c_visible_surface","modelPath":"surface/surface.glb","surfacePath":"surface/surface.f32","meshSpacingMeters":0.4}}"#.utf8)
+        let layer = try MappingLayer.decode(manifest, incidentID: "MAP123")
+        XCTAssertEqual(layer.surfaceModel?.path, "surface/surface.glb")
+        let encoded = try JSONEncoder().encode(layer)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        XCTAssertEqual((object["surfaceModel"] as? [String: Any])?["modelPath"] as? String, "surface/surface.glb")
+        XCTAssertEqual(try MappingLayer.decode(encoded, incidentID: "MAP123"), layer)
+    }
+
+    func testImportedTilesGainManifestAndExistingManifestIsPreserved() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let data = Data(#"{"type":"r2c_mapping_layer","version":1,"tileScheme":"xyz","layerId":"00000000-0000-0000-0000-000000000001","incidentId":"MAP123","title":"Map","minZoom":14,"maxZoom":21,"tileUrlTemplate":"http://127.0.0.1/tiles/{Z}/{X}/{Y}.png"}"#.utf8)
+        let layer = try MappingLayer.decode(data, incidentID: "MAP123")
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("18/1"), withIntermediateDirectories: true)
+        try MappingLayerTiles.ensureImportedManifest(layer, in: root)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("layer.json").path))
+        try Data([1]).write(to: root.appendingPathComponent("18/1/2.png"))
+        try MappingLayerTiles.ensureImportedManifest(layer, in: root)
+        XCTAssertTrue(MappingLayerTiles.hasTileManifest(root))
+        let file = root.appendingPathComponent("layer.json")
+        XCTAssertEqual(try MappingLayer.decode(Data(contentsOf: file), incidentID: "MAP123"), layer)
+        let existing = Data("existing full manifest".utf8)
+        try existing.write(to: file)
+        try MappingLayerTiles.ensureImportedManifest(layer, in: root)
+        XCTAssertEqual(try Data(contentsOf: file), existing)
+    }
+
     func testLayerEncodingPreservesInterchangeMetadataAndReadsLegacyCache() throws {
         let manifest=Data(#"{"type":"r2c_mapping_layer","version":1,"layerId":"00000000-0000-0000-0000-000000000001","incidentId":"MAP123","title":"Thermal","tileScheme":"xyz","minZoom":18,"maxZoom":21,"bounds":[-121.1,39.1,-121.0,39.2],"tileUrlTemplate":"http://192.168.1.20:8765/tiles/{Z}/{X}/{Y}.png"}"#.utf8)
         let layer=try MappingLayer.decode(manifest,incidentID:"MAP123")

@@ -25,6 +25,7 @@ public struct MappingResultFiles: Sendable {
     /// Inspect result/mission metadata on a worker, including older saved results.
     public static func inspect(result: URL, layer: MappingLayer, missionsRoot: URL) throws -> MappingResultFiles {
         let fm = FileManager.default
+        try MappingLayerTiles.ensureImportedManifest(layer, in: result)
         let manifest = (try? Data(contentsOf: result.appendingPathComponent("layer.json")))
             .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
         let fallback = result.deletingLastPathComponent().lastPathComponent == "results" ? result.deletingLastPathComponent().deletingLastPathComponent().lastPathComponent : ""

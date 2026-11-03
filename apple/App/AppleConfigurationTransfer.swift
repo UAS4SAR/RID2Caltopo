@@ -277,8 +277,9 @@ final class AppleConfigurationTransferManager: ObservableObject {
         var importedTiles = 0
         var importedMappingLayers:[MappingLayer]=[]
         for value in manifest["mapping_layers"] as? [[String:Any]] ?? [] {
-            guard let data=try? JSONSerialization.data(withJSONObject:value),
-                  let layer=try? MappingLayer.decode(data,incidentID: value["incidentId"] as? String ?? "") else {continue}
+            guard let incidentID = value["incidentId"] as? String else { throw TransferError.invalidPackage }
+            let data = try JSONSerialization.data(withJSONObject: value)
+            let layer = try MappingLayer.decode(data, incidentID: incidentID)
             importedMappingLayers.append(layer)
         }
         let tileEntries = manifest["tile_entries"] as? [[String: Any]] ?? []
@@ -338,6 +339,9 @@ final class AppleConfigurationTransferManager: ObservableObject {
             let relative=String(path.dropFirst("mapping-layers/\(id)/".count))
             guard !relative.split(separator:"/").contains(".."),!relative.contains("\\") else{throw TransferError.invalidPackage}
             _ = try AppleMapCacheAccess.write(bytes,to:AppleMappingTileCache.layerRoot(id).appendingPathComponent(relative))
+        }
+        for layer in importedMappingLayers {
+            try MappingLayerTiles.ensureImportedManifest(layer, in: AppleMappingTileCache.layerRoot(layer.id))
         }
         await progress("Saving mapping layer and other package data…", 0.92)
         var importedDEM = 0
