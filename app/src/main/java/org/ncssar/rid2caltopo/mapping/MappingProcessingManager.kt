@@ -271,10 +271,11 @@ object MappingProcessingManager {
                         markReady(published)
                     } else throw post
                 }
-            }catch(e:Exception){
+            }catch(e:Throwable){
+                // Errors (e.g. UnsatisfiedLinkError) are not Exception; still clear active and keep originals.
                 val msg=e.message.orEmpty()
                 if(msg.contains("need ")&&msg.contains("free ")) log("warn","failure $msg")
-                else log("warn","failure err=${e.message}")
+                else log("warn","failure err=${e.javaClass.simpleName}: ${e.message}")
                 stopped(root,id,mission.getString("title"),e)
             }finally{
                 activeWorkId=null;activeLayerId=null

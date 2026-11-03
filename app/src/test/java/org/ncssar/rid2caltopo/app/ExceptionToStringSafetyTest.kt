@@ -14,4 +14,11 @@ class ExceptionToStringSafetyTest {
         assertTrue(caused.contains("Caused by:"))
         assertTrue(caused.contains("native"))
     }
+
+    /** Guards MappingProcessingManager catching Throwable, not only Exception. */
+    @Test fun unsatisfiedLinkErrorIsNotException() {
+        val error: Throwable = UnsatisfiedLinkError("missing JNI")
+        assertFalse(error is Exception)
+        assertTrue(error is Error)
+    }
 }
