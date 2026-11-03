@@ -47,6 +47,7 @@ internal object MappingLayerRecovery {
         for (dir in root.listFiles().orEmpty().filter { it.isDirectory }) {
             val id = dir.name
             if (runCatching { java.util.UUID.fromString(id).toString() == id }.getOrDefault(false).not()) continue
+            require(!dir.path.contains("mapping-missions")) { "orphan cleanup refuses mapping-missions" }
             val children = dir.listFiles()
             if (children == null) continue
             if (children.isEmpty()) {
@@ -55,6 +56,8 @@ internal object MappingLayerRecovery {
                 }
                 continue
             }
+            // Never delete a directory that still holds original photos.
+            if (MissionProjectionGuard.hasOriginals(dir)) continue
             if (!MappingLayer.hasTileManifest(dir)) continue
             val layer = runCatching {
                 MappingLayer.parse(JSONObject(File(dir, "layer.json").readText()))
@@ -72,6 +75,8 @@ internal object MappingLayerRecovery {
     }
 
     private fun removeEmptyOrphan(context: Context, dir: File, id: String, remembered: Set<String>) {
+        require(!dir.path.contains("mapping-missions")) { "orphan cleanup refuses mapping-missions" }
+        require(!MissionProjectionGuard.hasOriginals(dir)) { "orphan cleanup refuses dirs with originals" }
         // Prefer Archive Dir deletion so deferred layers hydrate cannot resurrect the empty dir.
         val removed = runCatching {
             org.ncssar.rid2caltopo.storage.OperationalStorage.remove(dir)

@@ -28,7 +28,9 @@ import org.ncssar.rid2caltopo.ui.AlertDialog
     var measuring by remember { mutableStateOf(false) }
     var measuredCount by remember { mutableIntStateOf(0) }
     var measurementTotal by remember { mutableIntStateOf(0) }
-    LaunchedEffect(processing?.missionId,processing?.stage,processing?.active,processing?.progress,changes) {
+    var staleBanner by remember { mutableStateOf(false) }
+    val busyAreas by org.ncssar.rid2caltopo.storage.OperationalStorage.busyAreas.collectAsState()
+    LaunchedEffect(processing?.missionId,processing?.stage,processing?.active,processing?.progress,changes,busyAreas) {
         if(!loaded) {
             val cached=withContext(Dispatchers.IO){
                 MappingLibraryIndex.load(context.filesDir)?.let{MappingLibraryIndex.entries(it,context,MappingProcessingManager.state.value)}
@@ -37,13 +39,24 @@ import org.ncssar.rid2caltopo.ui.AlertDialog
         }
         refreshing=true
         try {
-            val next=withContext(Dispatchers.IO){MappingLibraryIndex.refresh(context,MappingProcessingManager.state.value).entries}
+            val refreshed=withContext(Dispatchers.IO){MappingLibraryIndex.refresh(context,MappingProcessingManager.state.value)}
+            staleBanner=refreshed.stale
+            val next=refreshed.entries
             val previous=entries.associateBy{it.id}
             entries=next.map{it.copy(storage=previous[it.id]?.storage)}
             loaded=true;loadError=null
+            if(refreshed.stale) {
+                // Wait until missions area is ready, then refresh again.
+                while(isActive && "missions" in org.ncssar.rid2caltopo.storage.OperationalStorage.busyAreas.value) delay(500)
+                if(!isActive) return@LaunchedEffect
+                val retry=withContext(Dispatchers.IO){MappingLibraryIndex.refresh(context,MappingProcessingManager.state.value)}
+                staleBanner=retry.stale
+                val prior=entries.associateBy{it.id}
+                entries=retry.entries.map{it.copy(storage=prior[it.id]?.storage)}
+            }
             val index=withContext(Dispatchers.IO){MappingMissionStorage.index(context.filesDir,MappingProcessingManager.state.value)}
             val pending=mutableListOf<MappingLibraryEntry>()
-            for(entry in next) {
+            for(entry in entries) {
                 val usage=withContext(Dispatchers.IO){
                     entry.flight?.let{index.cachedMission(it.id)}?:if(entry.layer!=null)MappingMissionStorage.cachedLayer(context.filesDir,entry.layer.id)else null
                 }
@@ -68,9 +81,10 @@ import org.ncssar.rid2caltopo.ui.AlertDialog
             delay(30_000)
             try {
                 refreshing=true
-                val next=withContext(Dispatchers.IO){MappingLibraryIndex.refresh(context,MappingProcessingManager.state.value).entries}
+                val refreshed=withContext(Dispatchers.IO){MappingLibraryIndex.refresh(context,MappingProcessingManager.state.value)}
+                staleBanner=refreshed.stale
                 val previous=entries.associateBy{it.id}
-                entries=next.map{it.copy(storage=previous[it.id]?.storage)}
+                entries=refreshed.entries.map{it.copy(storage=previous[it.id]?.storage)}
                 loadError=null
             }catch(e:CancellationException){throw e}
              catch(e:Exception){loadError="Could not refresh local maps: ${e.message ?: "storage unavailable"}"}
@@ -146,6 +160,7 @@ import org.ncssar.rid2caltopo.ui.AlertDialog
             }
         }
         loadError?.let{message->item(key="load-error"){Text(message,color=MaterialTheme.colorScheme.error);Text("Saved missions are retained. Retrying…")}}
+        if(staleBanner)item(key="stale"){Text(MappingLibraryListing.STALE_STAGE,style=MaterialTheme.typography.bodySmall)}
         if(loaded&&entries.isEmpty()&&loadError==null)item(key="empty"){Text("No mapping missions yet.")}
         items(MappingLibraryEntry.sorted(entries,newestFirst),key={it.id}){entry->
             MappingLibraryCard(entry,location?.coordinates,location?.note.orEmpty()) {

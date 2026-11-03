@@ -45,21 +45,28 @@ object MappingProcessingManager {
             require(values.isNotEmpty()&&values.distinct().size==values.size){"Choose a nonempty photo selection."}
             values.forEach(MappingPhotoStore::checkDigest)
         }
-        val app=context.applicationContext;val root=MappingVolume.directory(app,"mapping-missions",id)
-        val mission=JSONObject(File(root,"mission.json").readText())
+        val app=context.applicationContext
+        // Publish UI state immediately; Archive verify / volume prep runs inside the job.
+        val missionFile=File(app.filesDir,"mapping-missions/$id/mission.json")
+        val mission=runCatching{JSONObject(missionFile.readText())}.getOrElse{
+            throw IllegalArgumentException("Mission metadata unreadable; originals retained")
+        }
         require(mission.getString("profile")=="daylight-rgb"){"Select a visible-wide photo flight for local stitching."}
+        val title=mission.getString("title")
         MappingLayerRecovery.ensureScheduled(app)
-        MappingPhotoStore.writeJson(File(root,"processing-status.json"),JSONObject().put("active",true).put("stage","Preparing local map").put("progress",0.0)
+        val statusRoot=File(app.filesDir,"mapping-missions/$id")
+        MappingPhotoStore.writeJson(File(statusRoot,"processing-status.json"),JSONObject().put("active",true).put("stage","Preparing local map").put("progress",0.0)
             .put("engine",engine).put("completionSource",completionSource)
             .put("selectedDigests",selection?.let{JSONArray(it)} ?: JSONObject.NULL)
             .put("updatedAt",Instant.now().toString()))
-        current.value=MappingProcessingState(id,mission.getString("title"))
+        current.value=MappingProcessingState(id,title,stage="Preparing local map",progress=0.0)
         val nextJob=mappingJob(scope,onStopped={finished,cause->
             // A job cancelled before its first dispatch never enters the worker's try/finally.
             if(job===finished&&current.value?.missionId==id&&current.value?.active==true)
-                stopped(root,id,mission.getString("title"),cause ?: IllegalStateException("Local processing stopped; originals retained"))
+                stopped(statusRoot,id,title,cause ?: IllegalStateException("Local processing stopped; originals retained"))
         }) {
             var lease:String?=null;var wake:PowerManager.WakeLock?=null
+            val root=MappingVolume.directory(app,"mapping-missions",id)
             // A stable work id resumes this mission/engine/selection without touching other jobs.
             val workKey=id+engine+(selection?.sorted()?.joinToString() ?: "all")
             val workId=UUID.nameUUIDFromBytes(workKey.toByteArray()).toString()
@@ -92,27 +99,30 @@ object MappingProcessingManager {
                 val now=System.nanoTime()
                 val phaseElapsedMs=(now-phaseStarted)/1_000_000
                 val estimated=phases.estimatedPhaseMs(phase)
-                val timeHint=if(local==null && estimated>1.0) (phaseElapsedMs.toDouble()/estimated).coerceIn(0.0,0.95) else null
+                val timeHint=if(local==null && estimated>1.0) (phaseElapsedMs.toDouble()/estimated).coerceIn(0.0,0.85) else null
                 val fraction=phases.overall(phase,local,timeHint)
                 val stage=stageOverride ?: phases.stage(phase,unitIndex,unitTotal)
                 if(phase!=lastPhase){
                     val ended=lastPhase
                     if(ended!=null) {
                         val endedMs=(now-phaseStarted)/1_000_000
-                        log("debug","phase end id=$ended elapsedMs=$endedMs photos=$photoCountForWeights")
+                        val w=phases.weight(ended)
+                        log("debug","phase end id=$ended N=$photoCountForWeights durationMs=$endedMs weight=${"%.4f".format(java.util.Locale.US,w)}")
                         MappingProgressPhases.Costs.record(app.filesDir,ended,endedMs,photoCountForWeights)
                     }
                     log("debug","phase start id=$phase photos=$photoCountForWeights")
                     lastPhase=phase;phaseStarted=now;lastProgressLog=now
-                } else if(now-lastProgressLog>60_000_000_000L){
+                } else if(now-lastProgressLog>15_000_000_000L){
                     log("debug","phase progress id=$phase fraction=${"%.3f".format(java.util.Locale.US,fraction)} elapsedMs=${(now-started)/1_000_000} photos=$photoCountForWeights")
                     lastProgressLog=now
                 }
-                if(now-lastSaved<1_000_000_000L&&fraction<1)return
+                // Persist at least every few seconds so long stages never sit silent.
+                if(now-lastSaved<2_000_000_000L&&fraction<1&&local!=null)return
+                if(now-lastSaved<1_000_000_000L&&fraction<1&&local==null)return
                 lastSaved=now
                 val elapsed=(now-started)/1_000_000_000
-                val remaining=phases.etaSeconds(fraction,elapsed)
-                val next=MappingProcessingState(id,mission.getString("title"),stage=stage,progress=fraction,remainingSeconds=remaining,elapsedSeconds=elapsed,
+                val remaining=phases.etaSeconds(fraction,now)
+                val next=MappingProcessingState(id,title,stage=stage,progress=fraction,remainingSeconds=remaining,elapsedSeconds=elapsed,
                     surfacePreviewId=if(File(budgetRoot,"surface/surface.glb").isFile)workId else null,estimateSummary=current.value?.estimateSummary)
                 current.value=next
                 MappingPhotoStore.writeJson(File(root,"processing-status.json"),JSONObject().put("active",true).put("stage",stage).put("progress",fraction).put("remainingSeconds",remaining ?: JSONObject.NULL).put("elapsedSeconds",elapsed)
@@ -121,9 +131,13 @@ object MappingProcessingManager {
             }
             fun progress(stage:String,fraction:Double){
                 // Stitcher absolute fractions are remapped into phase bands; optimizer cost never drives %.
+                // Matching photo seams: JNI passes a real 0..1 local fraction as the second arg.
                 when {
-                    stage.startsWith("Matching photo seams") || stage.contains("Matching photo seams") ->
-                        reportPhase(MappingProgressPhases.MATCH_SEAMS,null,stageOverride=phases.title(MappingProgressPhases.MATCH_SEAMS))
+                    stage.startsWith("Matching photo seams") || stage.contains("Matching photo seams") -> {
+                        val local=fraction.coerceIn(0.0,1.0)
+                        val pct=(local*100).toInt()
+                        reportPhase(MappingProgressPhases.MATCH_SEAMS,local,stageOverride="${phases.title(MappingProgressPhases.MATCH_SEAMS)} · $pct%")
+                    }
                     stage.startsWith("Checking original") || stage.startsWith("Reading photo") -> {
                         val match=Regex("""(\d+)/(\d+)""").find(stage)
                         val i=match?.groupValues?.get(1)?.toIntOrNull();val n=match?.groupValues?.get(2)?.toIntOrNull()
@@ -178,7 +192,7 @@ object MappingProcessingManager {
                 val estimateText=assessment.summary()
                 MappingPhotoStore.writeJson(File(root,"processing-status.json"),JSONObject().put("active",true).put("stage","Preparing local map").put("progress",0.0)
                     .put("estimate",assessment.json()).put("updatedAt",Instant.now().toString()))
-                current.value=MappingProcessingState(id,mission.getString("title"),stage="Preparing local map",estimateSummary=estimateText)
+                current.value=MappingProcessingState(id,title,stage="Preparing local map",estimateSummary=estimateText)
                 log("debug","start missionId=${id.take(8)} photos=${records.size} engine=$engine $estimateText")
                 if(assessment.shortages.isNotEmpty()) error(estimateText)
                 val digests=records.mapIndexed{index,record->
@@ -239,11 +253,12 @@ object MappingProcessingManager {
                     val ended=lastPhase
                     if(ended!=null) {
                         val endedMs=(System.nanoTime()-phaseStarted)/1_000_000
-                        log("debug","phase end id=$ended elapsedMs=$endedMs photos=$photoCountForWeights")
+                        val w=phases.weight(ended)
+                        log("debug","phase end id=$ended N=$photoCountForWeights durationMs=$endedMs weight=${"%.4f".format(java.util.Locale.US,w)}")
                         MappingProgressPhases.Costs.record(app.filesDir,ended,endedMs,photoCountForWeights)
                     }
                     MappingPhotoStore.writeJson(File(root,"processing-status.json"),JSONObject().put("active",false).put("stage","Map ready").put("layerId",layerId).put("photoCount",digests.size).put("progress",1.0).put("updatedAt",Instant.now().toString()))
-                    current.value=MappingProcessingState(id,mission.getString("title"),active=false,stage="Map ready",progress=1.0,layer=ready,surfacePreviewId=if(ready.surfaceModel.isNotBlank())ready.id else null,estimateSummary=current.value?.estimateSummary)
+                    current.value=MappingProcessingState(id,title,active=false,stage="Map ready",progress=1.0,layer=ready,surfacePreviewId=if(ready.surfaceModel.isNotBlank())ready.id else null,estimateSummary=current.value?.estimateSummary)
                 }
                 try {
                     // Post-publish uses cancel-only; retainTree can take >30s on SD FUSE.
@@ -276,7 +291,7 @@ object MappingProcessingManager {
                 val msg=e.message.orEmpty()
                 if(msg.contains("need ")&&msg.contains("free ")) log("warn","failure $msg")
                 else log("warn","failure err=${e.javaClass.simpleName}: ${e.message}")
-                stopped(root,id,mission.getString("title"),e)
+                stopped(root,id,title,e)
             }finally{
                 activeWorkId=null;activeLayerId=null
                 // Keep completed region checkpoints after cancellation, failure or process death.
@@ -314,29 +329,23 @@ object MappingProcessingManager {
         }
     }
 
+    /** Clear crash residue (active=true, no live job) so hydrate is not postponed and UI is not "running". */
     private fun resumeInterruptedJobs(context:Context) {
         if(current.value?.active==true||job?.isCompleted==false)return
         val root=File(context.filesDir,"mapping-missions")
         for(dir in root.listFiles().orEmpty().filter{it.isDirectory}) {
-            val status=runCatching{JSONObject(File(dir,"processing-status.json").readText())}.getOrNull() ?: continue
+            val statusFile=File(dir,"processing-status.json")
+            val status=runCatching{JSONObject(statusFile.readText())}.getOrNull() ?: continue
             if(!status.optBoolean("active"))continue
             val id=dir.name
             if(runCatching{UUID.fromString(id).toString()==id}.getOrDefault(false).not())continue
-            val engine=status.optString("engine","rtk-surface").takeIf{it in listOf("flat","rtk-surface")} ?: "rtk-surface"
-            val input=runCatching{JSONObject(File(dir,"processing-input.json").readText())}.getOrNull()
-            val digests=status.optJSONArray("selectedDigests")?.let{arr->(0 until arr.length()).map{arr.getString(it)}}
-                ?: input?.optJSONArray("sha256")?.let{arr->(0 until arr.length()).map{arr.getString(it)}}
-            val completion=status.optString("completionSource",input?.optString("completionSource") ?: "operator_selected_verified_photos")
-            org.ncssar.rid2caltopo.data.CaltopoClient.CTDebug("MappingProcessing","resume job id=${id.take(8)} engine=$engine photos=${digests?.size ?: 0}")
-            runCatching {
-                start(context,id,expectedPhotos=digests?.size,selectedDigests=digests,
-                    completionSource=completion.ifBlank{"operator_selected_verified_photos"},engine=engine)
-            }.onFailure { error ->
-                org.ncssar.rid2caltopo.data.CaltopoClient.CTWarn("MappingProcessing","resume start failed id=${id.take(8)} err=${error.message}")
-                val title=runCatching{JSONObject(File(dir,"mission.json").readText()).getString("title")}.getOrDefault(id.take(8))
-                stopped(dir,id,title,error)
+            val title=runCatching{JSONObject(File(dir,"mission.json").readText()).getString("title")}.getOrDefault(id.take(8))
+            val message="Processing interrupted; originals retained"
+            org.ncssar.rid2caltopo.data.CaltopoClient.CTDebug("MappingProcessing","crash residue cleared id=${id.take(8)}")
+            runCatching{
+                MappingPhotoStore.writeJson(statusFile,JSONObject().put("active",false).put("stage",message)
+                    .put("cancelled",false).put("error",message).put("updatedAt",Instant.now().toString()))
             }
-            return // one active mapping job at a time
         }
     }
 

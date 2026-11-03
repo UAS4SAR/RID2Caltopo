@@ -66,16 +66,33 @@ public enum MappingReconstruction {
         return jobs
     }
 
-    /// Once per process: return interrupted jobs so the UI can re-queue. Off MainActor.
+    /// Rewrite active=true status files with no live job as interrupted. Safe to call repeatedly.
+    public static func clearCrashResidue(missionsRoot: URL) {
+        precondition(!Thread.isMainThread)
+        for job in findInterruptedJobs(missionsRoot: missionsRoot) {
+            let statusURL = missionsRoot.appendingPathComponent(job.missionID).appendingPathComponent("processing-status.json")
+            let body: [String: Any] = [
+                "active": false,
+                "stage": "Processing interrupted; originals retained",
+                "cancelled": false,
+                "error": "Processing interrupted; originals retained",
+                "updatedAt": ISO8601DateFormatter().string(from: Date()),
+            ]
+            if let data = try? JSONSerialization.data(withJSONObject: body, options: [.sortedKeys]) {
+                try? data.write(to: statusURL, options: .atomic)
+            }
+            processingLog.debug("crash residue cleared id=\(job.missionID.prefix(8), privacy: .public)")
+        }
+    }
+
+    /// Once per process: clear crash residue (active=true, no live job) so UI is not "running".
+    @discardableResult
     public static func consumeInterruptedJobs(missionsRoot: URL) -> [InterruptedJob] {
         resumeLock.lock(); defer { resumeLock.unlock() }
         guard !resumeScheduled else { return [] }
         resumeScheduled = true
-        let jobs = findInterruptedJobs(missionsRoot: missionsRoot)
-        if let first = jobs.first {
-            processingLog.debug("resume job id=\(first.missionID.prefix(8), privacy: .public) photos=\(first.selectedDigests?.count ?? 0, privacy: .public)")
-        }
-        return jobs
+        clearCrashResidue(missionsRoot: missionsRoot)
+        return [] // do not auto re-queue; operator starts Reconstruct explicitly
     }
 
     /// One region is decoded/solved/exported at a time. Checkpoints are verified before reuse.
@@ -122,25 +139,25 @@ public enum MappingReconstruction {
             let phaseElapsedMs=now.timeIntervalSince(phaseStarted)*1000
             let defaults=MappingProgressPhases.defaultCostsMs(photoCount:photoCount, engine:"rtk-surface")
             let estimated=defaults[phase] ?? 1
-            let timeHint: Double? = local == nil && estimated > 1 ? min(0.95, max(0, phaseElapsedMs / estimated)) : nil
+            let timeHint: Double? = local == nil && estimated > 1 ? min(0.85, max(0, phaseElapsedMs / estimated)) : nil
             let fraction=phases.overall(phase, local: local, timeHint: timeHint)
             let stage=stageOverride ?? phases.stage(phase, unitIndex: unitIndex, unitTotal: unitTotal)
             if phase != lastPhase {
                 if let lastPhase {
                     let endedMs=Int64(now.timeIntervalSince(phaseStarted)*1000)
-                    processingLog.debug("phase end id=\(lastPhase, privacy: .public) elapsedMs=\(endedMs, privacy: .public) photos=\(photoCount, privacy: .public)")
+                    let w=phases.weight(lastPhase)
+                    processingLog.debug("phase end id=\(lastPhase, privacy: .public) N=\(photoCount, privacy: .public) durationMs=\(endedMs, privacy: .public) weight=\(String(format: "%.4f", locale: Locale(identifier: "en_US_POSIX"), w), privacy: .public)")
                     MappingProgressPhases.Costs.record(supportRoot:supportRoot, phaseId:lastPhase, elapsedMs:endedMs, photoCount:photoCount)
                 }
                 processingLog.debug("phase start id=\(phase, privacy: .public) photos=\(photoCount, privacy: .public)")
                 lastPhase=phase; phaseStarted=now; lastProgressLog=now
-            } else if now.timeIntervalSince(lastProgressLog) > 60 {
+            } else if now.timeIntervalSince(lastProgressLog) > 15 {
                 processingLog.debug("phase progress id=\(phase, privacy: .public) fraction=\(String(format: "%.3f", locale: Locale(identifier: "en_US_POSIX"), fraction), privacy: .public) elapsedMs=\(Int(now.timeIntervalSince(started)*1000), privacy: .public) photos=\(photoCount, privacy: .public)")
                 lastProgressLog=now
             }
             if now.timeIntervalSince(lastUpdate)>=0.25 || fraction>=1 || local==nil {
                 lastUpdate=now
-                let elapsed=Int64(max(0, now.timeIntervalSince(started)))
-                let remaining=phases.etaSeconds(overall:fraction, elapsedSeconds:elapsed)
+                let remaining=phases.etaSeconds(overall:fraction, now:now)
                 progress(MappingProgressSnapshot(stage:stage,fraction:fraction,startedAt:started,activityAt:now,estimateSummary:estimateSummary,remainingSeconds:remaining))
             }
         }
@@ -172,7 +189,9 @@ public enum MappingReconstruction {
                 if let (i, n) = counts(in: body) { try reportPhase(MappingProgressPhases.package, local: Double(i) / Double(n), unitIndex: i, unitTotal: n, stageOverride: stage) }
                 else { try reportPhase(MappingProgressPhases.package, local: nil, stageOverride: stage) }
             } else if body.hasPrefix("Matching") || body.hasPrefix("Refining local surface") || body.contains("Matching photo seams") {
-                try reportPhase(MappingProgressPhases.matchSeams, local: nil, stageOverride: phases.title(MappingProgressPhases.matchSeams))
+                let local = min(1, max(0, fraction))
+                let pct = Int(local * 100)
+                try reportPhase(MappingProgressPhases.matchSeams, local: local, stageOverride: "\(phases.title(MappingProgressPhases.matchSeams)) · \(pct)%")
             } else if body == "Map ready" || body.hasPrefix("Publishing") {
                 try reportPhase(MappingProgressPhases.publish, local: body == "Map ready" ? 1 : 0, stageOverride: stage)
             } else {

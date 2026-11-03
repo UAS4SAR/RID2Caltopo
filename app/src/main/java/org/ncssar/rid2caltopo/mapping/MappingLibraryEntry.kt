@@ -67,7 +67,7 @@ internal object MappingLibraryRepository {
         return time
     }
     fun list(context: Context, live: MappingProcessingState?, includeStorage: Boolean = true): List<MappingLibraryEntry> {
-        if (!org.ncssar.rid2caltopo.storage.OperationalStorage.tryRequireReady(context)) return emptyList()
+        // Refresh itself skips writes while missions hydrate; do not gate on Archive ready.
         val refreshed = MappingLibraryIndex.refresh(context, live)
         if (!includeStorage) return refreshed.entries
         val storage = MappingMissionStorage.index(context.filesDir, live)

@@ -42,6 +42,10 @@ public enum MappingLayerRecovery {
                     }
                     continue
                 }
+                let originals = dir.appendingPathComponent("originals", isDirectory: true)
+                if let names = try? fm.contentsOfDirectory(atPath: originals.path), names.contains(where: { $0.lowercased().hasSuffix(".jpg") }) {
+                    continue
+                }
                 guard MappingLayerTiles.hasTileManifest(dir) else { continue }
                 let data = try Data(contentsOf: dir.appendingPathComponent("layer.json"))
                 guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -57,6 +61,12 @@ public enum MappingLayerRecovery {
     }
 
     private static func removeEmptyOrphan(dir: URL, id: String, remembered: Set<String>, supportRoot: URL) {
+        precondition(!dir.path.contains("/originals"), "orphan cleanup refuses dirs with originals")
+        let originals = dir.appendingPathComponent("originals", isDirectory: true)
+        if let names = try? FileManager.default.contentsOfDirectory(atPath: originals.path),
+           names.contains(where: { $0.lowercased().hasSuffix(".jpg") }) {
+            preconditionFailure("orphan cleanup refuses dirs with originals")
+        }
         let fm = FileManager.default
         let removed: Bool
         do {

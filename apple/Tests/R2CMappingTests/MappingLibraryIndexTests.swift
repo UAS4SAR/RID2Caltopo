@@ -100,4 +100,92 @@ final class MappingLibraryIndexTests: XCTestCase {
         defer { _ = chmod(tif.path, S_IRUSR | S_IWUSR) }
         XCTAssertNoThrow(try onIO { try MappingLibraryIndex.refresh(missionsRoot: missions, supportRoot: support) })
     }
+
+    private func writeOriginals(missions: URL, id: String) throws {
+        let originals = missions.appendingPathComponent("\(id)/originals", isDirectory: true)
+        try FileManager.default.createDirectory(at: originals, withIntermediateDirectories: true)
+        try Data([1, 2, 3]).write(to: originals.appendingPathComponent("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.jpg"))
+        let inventory = missions.appendingPathComponent("\(id)/inventory", isDirectory: true)
+        try FileManager.default.createDirectory(at: inventory, withIntermediateDirectories: true)
+        let record: [String: Any] = ["sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "name": "DJI_0.jpg", "complete": true, "sizeBytes": 3]
+        try JSONSerialization.data(withJSONObject: record).write(to: inventory.appendingPathComponent("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.json"))
+    }
+
+    func testMissionWithOriginalsAlwaysAppears() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let missions = root.appendingPathComponent("mapping-missions", isDirectory: true)
+        let support = root.appendingPathComponent("Library/Application Support", isDirectory: true)
+        try FileManager.default.createDirectory(at: missions, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let id = "e80815fa-0000-4000-8000-000000000030"
+        try writeMission(root: missions, id: id)
+        try writeOriginals(missions: missions, id: id)
+        let status: [String: Any] = ["active": true, "stage": "Estimating unknown 2D areas", "progress": 0.5]
+        try JSONSerialization.data(withJSONObject: status).write(to: missions.appendingPathComponent("\(id)/processing-status.json"), options: .atomic)
+        let result = try onIO { try MappingLibraryIndex.refresh(missionsRoot: missions, supportRoot: support) }
+        XCTAssertEqual(result.index.missions.count, 1)
+        XCTAssertTrue(result.index.missions[0].stage.contains("interrupted"))
+    }
+
+    func testUnavailableListingKeepsPreviousIndex() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let missions = root.appendingPathComponent("mapping-missions", isDirectory: true)
+        let support = root.appendingPathComponent("Library/Application Support", isDirectory: true)
+        try FileManager.default.createDirectory(at: missions, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
+        defer {
+            MappingLibraryIndex.missionListingOverride = nil
+            try? FileManager.default.removeItem(at: root)
+        }
+        let id = "e80815fa-0000-4000-8000-000000000031"
+        try writeMission(root: missions, id: id)
+        try writeOriginals(missions: missions, id: id)
+        _ = try onIO { try MappingLibraryIndex.refresh(missionsRoot: missions, supportRoot: support) }
+        let before = try Data(contentsOf: MappingLibraryIndex.fileURL(supportRoot: support))
+        MappingLibraryIndex.missionListingOverride = { nil }
+        let result = try onIO { try MappingLibraryIndex.refresh(missionsRoot: missions, supportRoot: support) }
+        XCTAssertTrue(result.stale)
+        XCTAssertEqual(result.skipReason, MappingLibraryIndex.reasonUnavailable)
+        let after = try Data(contentsOf: MappingLibraryIndex.fileURL(supportRoot: support))
+        XCTAssertEqual(before, after)
+        XCTAssertEqual(result.index.missions.count, 1)
+        XCTAssertEqual(result.index.missions[0].stage, MappingLibraryIndex.staleStage)
+    }
+
+    func testEmptyIndexPlusExistingDirsRewrites() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let missions = root.appendingPathComponent("mapping-missions", isDirectory: true)
+        let support = root.appendingPathComponent("Library/Application Support", isDirectory: true)
+        try FileManager.default.createDirectory(at: missions, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let id = "e80815fa-0000-4000-8000-000000000032"
+        try writeMission(root: missions, id: id)
+        try writeOriginals(missions: missions, id: id)
+        try FileManager.default.createDirectory(at: MappingLibraryIndex.storageDirectory(supportRoot: support), withIntermediateDirectories: true)
+        let empty = MappingLibraryIndex.Index(schemaVersion: MappingLibraryIndex.schemaVersion, missions: [], layers: [], updatedAt: "2026-01-01T00:00:00Z")
+        try JSONEncoder().encode(empty).write(to: MappingLibraryIndex.fileURL(supportRoot: support), options: .atomic)
+        let result = try onIO { try MappingLibraryIndex.refresh(missionsRoot: missions, supportRoot: support) }
+        XCTAssertEqual(result.index.missions.count, 1)
+        XCTAssertEqual(result.index.missions[0].id.lowercased(), id.lowercased())
+    }
+
+    func testRemovedMissionDroppedOnlyAfterSuccessfulListing() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let missions = root.appendingPathComponent("mapping-missions", isDirectory: true)
+        let support = root.appendingPathComponent("Library/Application Support", isDirectory: true)
+        try FileManager.default.createDirectory(at: missions, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let keep = "e80815fa-0000-4000-8000-000000000033"
+        let drop = "e80815fa-0000-4000-8000-000000000034"
+        try writeMission(root: missions, id: keep)
+        try writeMission(root: missions, id: drop)
+        _ = try onIO { try MappingLibraryIndex.refresh(missionsRoot: missions, supportRoot: support) }
+        try FileManager.default.removeItem(at: missions.appendingPathComponent(drop))
+        let result = try onIO { try MappingLibraryIndex.refresh(missionsRoot: missions, supportRoot: support) }
+        XCTAssertEqual(result.index.missions.map { $0.id.lowercased() }, [keep.lowercased()])
+        XCTAssertEqual(result.removed, 1)
+    }
 }

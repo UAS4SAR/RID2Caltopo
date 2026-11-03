@@ -26,6 +26,13 @@ internal object OperationalStorage {
     data class Status(val busy: Boolean = false, val ready: Boolean = false, val message: String = "")
     private val state = MutableStateFlow(Status())
     val status = state.asStateFlow()
+    /** Area ids currently inside prepareAreaProjection / migrateMissionSources. Library refresh must not treat a busy missions area as empty. */
+    private val busyAreasState = MutableStateFlow<Set<String>>(emptySet())
+    val busyAreas = busyAreasState.asStateFlow()
+    fun areaBusy(id: String): Boolean = id in busyAreasState.value
+    private fun markAreaBusy(id: String, busy: Boolean) {
+        busyAreasState.value = if (busy) busyAreasState.value + id else busyAreasState.value - id
+    }
     private val gate = Any()
     /** Serializes archive hydration. Callers that publish do not take this lock. */
     private val prepareBody = java.util.concurrent.locks.ReentrantLock()
@@ -616,6 +623,21 @@ internal object OperationalStorage {
         checkSelection: () -> Unit,
         announce: Boolean,
     ) {
+        markAreaBusy(area.id, true)
+        try {
+            migrateMissionSourcesBody(context, value, area, checkSelection, announce)
+        } finally {
+            markAreaBusy(area.id, false)
+        }
+    }
+
+    private fun migrateMissionSourcesBody(
+        context: Context,
+        value: Store,
+        area: Area,
+        checkSelection: () -> Unit,
+        announce: Boolean,
+    ) {
         val filesDir = context.filesDir
         val stamps = org.ncssar.rid2caltopo.mapping.MissionVerifyStamps.load(filesDir).toMutableMap()
         var verified = 0
@@ -722,10 +744,26 @@ internal object OperationalStorage {
                 return
             }
         }
+        markAreaBusy(area.id, true)
+        try {
+            prepareAreaProjectionBody(context, value, area, hydrationScratch, checkSelection)
+        } finally {
+            markAreaBusy(area.id, false)
+        }
+    }
+
+    private fun prepareAreaProjectionBody(context: Context, value: Store, area: Area, hydrationScratch: File, checkSelection: () -> Unit) {
         val work = value.work
         val hydrationStarted = android.os.SystemClock.elapsedRealtime()
         checkSelection()
         val destination = File(work, area.id)
+        val priorWorking = when {
+            Files.isSymbolicLink(area.alias.toPath()) ->
+                runCatching { Files.readSymbolicLink(area.alias.toPath()).toFile() }.getOrNull()?.takeIf { it.isDirectory }
+            area.alias.isDirectory -> area.alias
+            destination.isDirectory -> destination
+            else -> null
+        }
         var reuse = area.id !in listOf("processing", "layers") &&
             destination.isDirectory && Files.isSymbolicLink(area.alias.toPath()) &&
             projectedRoot(context, area, area.alias) == destination.canonicalFile.toPath() &&
@@ -748,30 +786,55 @@ internal object OperationalStorage {
         verifyHydratedProjection(area, value, staged)
         checkSelection()
         if (area.id == "layers") purgeRememberedEmptyLayers(context, value, staged)
+        if (area.id == "missions" && priorWorking != null && !reuse) {
+            val verdict = org.ncssar.rid2caltopo.mapping.MissionProjectionGuard.assertStagedPreservesWorking(priorWorking, staged)
+            if (!verdict.ok) {
+                CaltopoClient.CTWarn(
+                    "OperationalStorage",
+                    "Missions swap aborted; staged copy missing retained missions count=${verdict.missingMissionIds.size}",
+                )
+                if (staged != destination && staged.exists()) removeTree(staged)
+                return
+            }
+        }
         if (!reuse) {
             if (destination.exists()) removeTree(destination)
             destination.parentFile!!.mkdirs()
             check(staged.renameTo(destination)) { "Cannot prepare temporary ${area.id} workspace." }
         }
+        // Atomic alias install: never delete the alias before the replacement exists.
+        org.ncssar.rid2caltopo.mapping.MissionProjectionGuard.installAliasAtomically(area.alias, destination)
         for (source in area.sources) {
-            if (Files.isSymbolicLink(source.toPath())) Files.delete(source.toPath())
-            else if (source.exists()) removeTree(source)
+            if (source.absolutePath == area.alias.absolutePath) continue
+            if (Files.isSymbolicLink(source.toPath())) {
+                val target = runCatching { Files.readSymbolicLink(source.toPath()).toFile().canonicalFile }.getOrNull()
+                if (target == destination.canonicalFile) continue
+                Files.delete(source.toPath())
+            } else if (source.exists() && source.canonicalFile != destination.canonicalFile) {
+                removeTree(source)
+            }
         }
-        area.alias.parentFile!!.mkdirs()
-        Os.symlink(destination.absolutePath, area.alias.absolutePath)
         if (area.id == "queue-state") for (name in queueNames) File(context.filesDir, name).let { if (it.exists()) check(it.delete()) }
         if (area.id == "review-annotations") context.cacheDir.listFiles().orEmpty().filter { it.isFile && it.name.endsWith(".review.json") }.forEach { check(it.delete()) }
         CaltopoClient.CTDebug("OperationalStorage", "Prepared area=${area.id} reused=$reuse elapsedMs=${android.os.SystemClock.elapsedRealtime() - hydrationStarted}")
     }
 
-    /** Drop empty layer UUID dirs previously removed so Archive Dir hydrate cannot resurrect them. */
+    /** Drop empty layer UUID dirs previously removed so Archive Dir hydrate cannot resurrect them. Never missions; never dirs with originals. */
     private fun purgeRememberedEmptyLayers(context: Context, value: Store, staged: File) {
+        require(staged.name == "layers" || staged.name.startsWith(".layers-")) {
+            "purgeRememberedEmptyLayers refused non-layers path name=${staged.name}"
+        }
+        require(!staged.path.contains("mapping-missions") && !staged.path.contains("/missions")) {
+            "purgeRememberedEmptyLayers refused missions path"
+        }
         val remembered = org.ncssar.rid2caltopo.mapping.OrphanEmptyRegistry.load(context.filesDir)
         if (remembered.isEmpty()) return
         var purged = 0
         for (id in remembered) {
             val local = File(staged, id)
-            if (local.isDirectory && local.listFiles().orEmpty().isEmpty()) {
+            if (local.isDirectory && local.listFiles().orEmpty().isEmpty() &&
+                !org.ncssar.rid2caltopo.mapping.MissionProjectionGuard.hasOriginals(local)
+            ) {
                 removeTree(local)
                 purged++
             }
@@ -1573,6 +1636,7 @@ internal object OperationalStorage {
         synchronized(gate) { synchronized(queueGate) { synchronized(recorderGate) { synchronized(cluesGate) {
             store = null; preparedQueue = null; preparedRecorder = null; preparedClues = null
             cluesPreparedGeneration = -1L; recoveredUri = null; state.value = Status()
+            busyAreasState.value = emptySet()
         } } } }
     }
     fun workspace(context: Context): File { requireReady(context); return synchronized(gate) { requireNotNull(store).work } }

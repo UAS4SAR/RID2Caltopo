@@ -62,6 +62,24 @@ final class MappingReconstructionResumeTests: XCTestCase {
         XCTAssertTrue(jobs.isEmpty)
     }
 
+    func testClearCrashResidueWithoutRequeue() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let missionID = UUID().uuidString.lowercased()
+        let mission = root.appendingPathComponent(missionID, isDirectory: true)
+        try FileManager.default.createDirectory(at: mission, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try JSONSerialization.data(withJSONObject: ["title": "Crash", "incidentId": "inc"], options: [.sortedKeys])
+            .write(to: mission.appendingPathComponent("mission.json"), options: .atomic)
+        try JSONSerialization.data(withJSONObject: ["active": true, "stage": "Estimating unknown 2D areas"], options: [.sortedKeys])
+            .write(to: mission.appendingPathComponent("processing-status.json"), options: .atomic)
+        try onIO { MappingReconstruction.clearCrashResidue(missionsRoot: root) }
+        let status = try JSONSerialization.jsonObject(with: Data(contentsOf: mission.appendingPathComponent("processing-status.json"))) as! [String: Any]
+        XCTAssertEqual(status["active"] as? Bool, false)
+        XCTAssertEqual(status["stage"] as? String, "Processing interrupted; originals retained")
+        let remaining = try onIO { MappingReconstruction.findInterruptedJobs(missionsRoot: root) }
+        XCTAssertTrue(remaining.isEmpty)
+    }
+
     func testCancellationExposesIsCancelled() {
         let cancel = MappingCancellation()
         XCTAssertFalse(cancel.isCancelled)

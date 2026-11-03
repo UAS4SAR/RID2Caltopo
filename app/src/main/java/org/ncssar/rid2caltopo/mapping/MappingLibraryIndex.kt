@@ -131,7 +131,8 @@ internal object MappingLibraryIndex {
     }
 
     data class RefreshResult(val entries: List<MappingLibraryEntry>, val index: Index,
-        val loadMs: Long, val refreshMs: Long, val changed: Int, val removed: Int)
+        val loadMs: Long, val refreshMs: Long, val changed: Int, val removed: Int,
+        val stale: Boolean = false, val skipReason: String? = null)
 
     fun file(filesDir: File) = File(filesDir, "mapping-storage-stats/library-index.json")
 
@@ -150,11 +151,22 @@ internal object MappingLibraryIndex {
             layers.keys().asSequence().mapNotNull { key -> LayerRecord.parse(layers.getJSONObject(key))?.let { it.id to it } }.toMap())
     }.getOrNull()
 
-    fun entries(index: Index, context: Context, live: MappingProcessingState?): List<MappingLibraryEntry> {
+    fun isVisible(record: MissionRecord, root: File? = null): Boolean {
+        if (record.photoCount + record.pendingCount > 0 || record.hasRoute || record.resultIds.isNotEmpty()) return true
+        if (root != null && MissionProjectionGuard.hasRetainedEvidence(root)) return true
+        return false
+    }
+
+    fun entries(index: Index, context: Context, live: MappingProcessingState?, stale: Boolean = false): List<MappingLibraryEntry> {
         val owned = index.missions.values.flatMap { it.resultIds }.toSet()
         val flights = index.missions.values
-            .filter { it.photoCount + it.pendingCount > 0 || it.hasRoute || it.resultIds.isNotEmpty() }
-            .map { it.entry(live) }
+            .filter { record ->
+                isVisible(record) || MissionProjectionGuard.hasRetainedEvidence(File(context.filesDir, "mapping-missions/${record.id}"))
+            }
+            .map { record ->
+                val entry = record.entry(live)
+                if (stale) entry.copy(stage = MappingLibraryListing.STALE_STAGE) else entry
+            }
         val layers = MappingLayer.allLocal(context).filterNot { it.id in owned }.mapNotNull { layer ->
             val record = index.layers[layer.id]
             MappingLibraryEntry("layer:${layer.id}", layer.title, layer.capturedAt, "", false, layer.photoCount,
@@ -176,17 +188,48 @@ internal object MappingLibraryIndex {
         MappingLayerRecovery.ensureScheduled(context)
         MappingProcessingManager.ensureResume(context)
         runCatching { MappingLayerRecovery.adoptCompleteOrphans(context) }
-        val missionDirs = File(filesDir, "mapping-missions").listFiles().orEmpty().filter { it.isDirectory }
-        val layerDirs = File(filesDir, "mapping-layers").listFiles().orEmpty().filter { it.isDirectory }
+        val missionDirs = when (val missionListing = MappingLibraryListing.listMissions(filesDir)) {
+            is MappingLibraryListing.Result.Unavailable -> {
+                val reason = missionListing.reason
+                CaltopoClient.CTDebug(TAG, "LibIdx skip reason=$reason")
+                val index = previous ?: Index(SCHEMA, emptyMap(), emptyMap())
+                val refreshMs = (System.nanoTime() - refreshStart) / 1_000_000
+                return RefreshResult(entries(index, context, live, stale = previous != null), index, loadMs, refreshMs, 0, 0,
+                    stale = previous != null, skipReason = reason)
+            }
+            is MappingLibraryListing.Result.Available -> missionListing.dirs
+        }
+        val layerListing = MappingLibraryListing.listLayers(filesDir)
+        val layerDirs = when (layerListing) {
+            is MappingLibraryListing.Result.Available -> layerListing.dirs
+            is MappingLibraryListing.Result.Unavailable -> {
+                // Layers hydrating: keep previous layer records; still refresh missions.
+                emptyList()
+            }
+        }
+        val layersListed = layerListing is MappingLibraryListing.Result.Available
         val storage = MappingMissionStorage.index(filesDir, live)
         val nextMissions = linkedMapOf<String, MissionRecord>()
         val nextLayers = linkedMapOf<String, LayerRecord>()
         var changed = 0
+        val seenMissionIds = mutableSetOf<String>()
         for (root in missionDirs) {
             val missionFile = File(root, "mission.json")
-            val mission = jsonReader(missionFile) ?: continue
+            val mission = jsonReader(missionFile)
+            val idFromDir = root.name.takeIf { runCatching { java.util.UUID.fromString(it).toString() == it }.getOrDefault(false) }
+            if (mission == null) {
+                if (idFromDir != null && MissionProjectionGuard.hasRetainedEvidence(root)) {
+                    seenMissionIds += idFromDir
+                    val cached = previous?.missions?.get(idFromDir)
+                    nextMissions[idFromDir] = cached?.copy(stage = "Mission metadata unreadable; originals retained")
+                        ?: syntheticUnreadable(idFromDir, root)
+                    changed++
+                }
+                continue
+            }
             val id = mission.optString("missionId").takeIf { runCatching { java.util.UUID.fromString(it).toString() == it }.getOrDefault(false) } ?: continue
             if (root.name != id) continue
+            seenMissionIds += id
             val fingerprint = MissionFingerprint.of(root)
             val cached = previous?.missions?.get(id)
             val record = if (cached != null && cached.fingerprint == fingerprint) {
@@ -195,16 +238,33 @@ internal object MappingLibraryIndex {
                 changed++
                 rebuildMission(filesDir, root, mission, fingerprint, cached, live, storage)
             }
-            if (record.photoCount + record.pendingCount > 0 || record.hasRoute || record.resultIds.isNotEmpty()) nextMissions[id] = record
+            val finalized = finalizeVisible(record, root)
+            if (isVisible(finalized, root) || MissionProjectionGuard.hasRetainedEvidence(root)) nextMissions[id] = finalized
         }
-        for (root in layerDirs) {
-            val fingerprint = LayerFingerprint.of(root)
-            val cached = previous?.layers?.get(root.name)
-            val record = if (cached != null && cached.fingerprint == fingerprint) cached else {
-                changed++
-                rebuildLayer(root, fingerprint) ?: continue
+        // Never drop a previous mission unless the parent listing succeeded and the id is absent.
+        for ((id, record) in previous?.missions.orEmpty()) {
+            if (id in nextMissions) continue
+            if (id !in seenMissionIds) {
+                // Confirmed gone from a successful listing — drop.
+                continue
             }
-            nextLayers[record.id] = record
+            // Listed but filtered: keep if evidence remains (should already be in next).
+            if (MissionProjectionGuard.hasRetainedEvidence(File(filesDir, "mapping-missions/$id"))) {
+                nextMissions[id] = record
+            }
+        }
+        if (layersListed) {
+            for (root in layerDirs) {
+                val fingerprint = LayerFingerprint.of(root)
+                val cached = previous?.layers?.get(root.name)
+                val record = if (cached != null && cached.fingerprint == fingerprint) cached else {
+                    changed++
+                    rebuildLayer(root, fingerprint) ?: continue
+                }
+                nextLayers[record.id] = record
+            }
+        } else {
+            previous?.layers?.let { nextLayers.putAll(it) }
         }
         val removed = (previous?.missions?.keys.orEmpty() - nextMissions.keys).size +
             (previous?.layers?.keys.orEmpty() - nextLayers.keys).size
@@ -215,6 +275,28 @@ internal object MappingLibraryIndex {
         val refreshMs = (System.nanoTime() - refreshStart) / 1_000_000
         CaltopoClient.CTDebug(TAG, "LibIdx load ms=$loadMs n=${previous?.missions?.size ?: 0} | refresh ms=$refreshMs changed=$changed removed=$removed")
         return RefreshResult(entries(index, context, live), index, loadMs, refreshMs, changed, removed)
+    }
+
+    private fun syntheticUnreadable(id: String, root: File): MissionRecord {
+        val fp = MissionFingerprint.of(root)
+        return MissionRecord(id, "Mission", "", "", "Mission metadata unreadable; originals retained",
+            photoCount = 0, completeBytes = 0, pendingCount = 0, selectedCount = 0, hasRoute = File(root, "mission.kmz").isFile,
+            plannedPhotos = null, plannedSeconds = null, plannedHeightMeters = null, resultIds = emptyList(),
+            has2D = false, has3D = false, centerLat = null, centerLon = null, cameraLabel = "Camera unavailable",
+            visible = true, routeUnavailableFingerprint = null, fingerprint = fp)
+    }
+
+    /** Counts parse as 0 / unreadable inventory must not hide retained originals. */
+    private fun finalizeVisible(record: MissionRecord, root: File): MissionRecord {
+        if (record.photoCount + record.pendingCount > 0 || record.resultIds.isNotEmpty()) return record
+        if (!MissionProjectionGuard.hasRetainedEvidence(root)) return record
+        val status = jsonReader(File(root, "processing-status.json"))
+        val stage = when {
+            status?.optBoolean("active") == true -> "Processing interrupted; originals retained"
+            record.stage.contains("interrupted", ignoreCase = true) -> record.stage
+            else -> "Mission metadata unreadable; originals retained"
+        }
+        return record.copy(stage = stage, visible = true)
     }
 
     private fun applyLive(record: MissionRecord, live: MappingProcessingState?): MissionRecord {

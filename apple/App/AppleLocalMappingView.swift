@@ -58,14 +58,8 @@ import R2CMapping
                         }
                     }
                 }
-                // Process-death resume: re-queue one interrupted job from processing-status.json.
-                let interrupted = MappingReconstruction.consumeInterruptedJobs(missionsRoot: missionsRoot)
-                if let job = interrupted.first {
-                    Task { @MainActor in
-                        guard !self.busy else { return }
-                        self.reconstruct(id: job.missionID, incident: job.incidentID.isEmpty ? incident : job.incidentID, title: job.title, selectedDigests: job.selectedDigests)
-                    }
-                }
+                // Clear crash residue (active=true with no live job); do not auto re-queue.
+                _ = MappingReconstruction.consumeInterruptedJobs(missionsRoot: missionsRoot)
                 let needRefresh: Bool
                 if force { needRefresh = true }
                 else if let previous = self.libraryCache.index {
@@ -360,17 +354,22 @@ private struct AppleMappingMissionDetail:View {
             Text("Generated: \(MappingLayer.generatedLabel(entry.plannedAt))")
             if let count=route["estimatedPhotos"]{Text("Planned: \(Int(count)) photos"+(route["estimatedFlightSeconds"].map{String(format:" · %.1f min route time",$0/60)} ?? ""))}
             if let height=route["heightMeters"]{Text("Planned height: \(DisplayUnits.current.length(height, decimals: 1)) above takeoff")}
-            if entry.photos.isEmpty{Button("Connect to Pilot 2"){connect=true};Text("No photos collected yet. Review the route and start the flight in Pilot 2.")}
+            if entry.photos.isEmpty && !model.busy{Button("Connect to Pilot 2"){connect=true};Text("No photos collected yet. Review the route and start the flight in Pilot 2.")}
+            if model.busy, let snapshot = model.progress {
+                Text(snapshot.stage).font(.headline)
+                ProgressView(value: snapshot.fraction)
+                Text(snapshot.remainingSeconds.map { "About \(($0 + 59) / 60) min remaining" } ?? "estimating…")
+            }
             Text("Captured images").font(.headline)
             Text("Captured (first photo): \(MappingLayer.capturedLabel(entry.photos.first(where:{!$0.capturedAt.isEmpty})?.capturedAt ?? ""))")
             Text("Camera: \(entry.cameraLabel)")
             Text("\(entry.photos.count) originals verified")
-            if !entry.photos.isEmpty { Button("Browse original photos") { browsingOriginals = true }.accessibilityIdentifier("mapping-browse-originals") }
+            if !entry.photos.isEmpty { Button("Browse original photos") { browsingOriginals = true }.accessibilityIdentifier("mapping-browse-originals").disabled(model.busy) }
             if !entry.photos.isEmpty{
                 Text("Total mapping storage: \(size(entry.totalBytes))").font(.headline)
                 Text("Original photos: \(size(entry.photoBytes))");Text("Other controller files / partial uploads: \(size(entry.controllerBytes))");Text("Retained controller files and unfinished transfers, including unmatched files or additional upload copies. Verified mission originals are listed separately.").font(.footnote);Text("Export packages: \(size(entry.exportBytes))");Text("Other metadata: \(size(entry.metadataBytes))");Text("2D map tiles: \(size(entry.tileBytes))");Text("3D models and surface data: \(size(entry.modelBytes))");Text("Temporary processing files: \(size(entry.workBytes))");Text("Planning files: \(size(entry.planningBytes))")
             }
-            Button("Import original photos from Files / SD card"){importing=true}
+            Button("Import original photos from Files / SD card"){importing=true}.disabled(model.busy)
             if pending>0{Text("\(pending) originals still transferring")}
             if !completed.isEmpty {Text("Completed transfer selection: \(completed.count) originals")
                 if entry.photos.count>completed.count {Text("\(entry.photos.count-completed.count) additional originals are retained outside that selection. Choose the completed set or all received originals explicitly.")}
@@ -381,17 +380,18 @@ private struct AppleMappingMissionDetail:View {
                 VStack(alignment:.leading,spacing:6){
                     Text(layer.resultTitle);Text("Generated: \(layer.generatedLabel)")
                     Text("\(layer.photoCount ?? 0) photos · \(layer.surfaceModel == nil ? "2D":"2D and 3D")")
-                    Button("View 2D map"){onView(layer)}.disabled(!has2D)
-                    Button("Inspect / share result · 2D and 3D"){onInspect(layer)}
+                    Button("View 2D map"){onView(layer)}.disabled(!has2D || model.busy)
+                    Button("Inspect / share result · 2D and 3D"){onInspect(layer)}.disabled(model.busy)
                 }.padding(12).frame(maxWidth:.infinity,alignment:.leading).background(.quaternary,in:RoundedRectangle(cornerRadius:12))
             }
             if results.isEmpty{Text("No completed map results yet.")}
-            if completed.count>=3{Button("Reconstruct completed set · \(completed.count) originals"){model.reconstruct(id:entry.id,incident:entry.incidentID,title:entry.title,selectedDigests:Set(completed))}.accessibilityIdentifier("mapping-reconstruct-completed")}
-            if entry.photos.count>=3 && pending==0 && (completed.isEmpty || completed.count<entry.photos.count){Button("Reconstruct all received · \(entry.photos.count) originals"){model.reconstruct(id:entry.id,incident:entry.incidentID,title:entry.title)}.accessibilityIdentifier("mapping-reconstruct-all")}
-            if !entry.photos.isEmpty{Text("Reconstruction stays on screen until it finishes or you cancel it. Originals are retained.");Button("Connect to Pilot 2"){connect=true}}
-            Text("The connection receives originals for this saved flight. Review clearance and start any flight in Pilot 2.")
-        } actions:{Button("Back to local maps",action:onBack)}
-        .disabled(model.busy)
+            if !model.busy {
+                if completed.count>=3{Button("Reconstruct completed set · \(completed.count) originals"){model.reconstruct(id:entry.id,incident:entry.incidentID,title:entry.title,selectedDigests:Set(completed))}.accessibilityIdentifier("mapping-reconstruct-completed")}
+                if entry.photos.count>=3 && pending==0 && (completed.isEmpty || completed.count<entry.photos.count){Button("Reconstruct all received · \(entry.photos.count) originals"){model.reconstruct(id:entry.id,incident:entry.incidentID,title:entry.title)}.accessibilityIdentifier("mapping-reconstruct-all")}
+                if !entry.photos.isEmpty{Text("Reconstruction stays on screen until it finishes or you cancel it. Originals are retained.");Button("Connect to Pilot 2"){connect=true}}
+                Text("The connection receives originals for this saved flight. Review clearance and start any flight in Pilot 2.")
+            }
+        } actions:{Button("Back to local maps",action:onBack).disabled(model.busy)}
         .task(id:"\(entry.photos.count):\(entry.results.count):\(connect)"){await load()}
         .sheet(isPresented:$connect,onDismiss:{model.refresh(incident:entry.incidentID,newest:true)}){AppleMappingTransferView(missionID:entry.id,onViewMap:onView)}
         .onChange(of:connect,initial:true){_,presented in onConnectionPresentationChanged(presented)}

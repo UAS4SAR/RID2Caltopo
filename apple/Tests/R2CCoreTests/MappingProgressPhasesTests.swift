@@ -25,6 +25,27 @@ final class MappingProgressPhasesTests: XCTestCase {
         XCTAssertEqual(samples.last!, 1, accuracy: 1e-9)
     }
 
+    func testWeightsScaleWithPhotoCount() {
+        let small = MappingProgressPhases.phases(engine: "rtk-surface", photoCount: 20)
+        let large = MappingProgressPhases.phases(engine: "rtk-surface", photoCount: 200)
+        let smallPrepare = small.first { $0.id == MappingProgressPhases.prepareColors }!.weight
+        let largePrepare = large.first { $0.id == MappingProgressPhases.prepareColors }!.weight
+        let smallPublish = small.first { $0.id == MappingProgressPhases.publish }!.weight
+        let largePublish = large.first { $0.id == MappingProgressPhases.publish }!.weight
+        XCTAssertGreaterThan(largePrepare, smallPrepare * 0.9)
+        XCTAssertLessThan(largePublish, smallPublish)
+        let seams = large.first { $0.id == MappingProgressPhases.matchSeams }!.weight
+        XCTAssertGreaterThan(seams, 0.15)
+    }
+
+    func testPrepareColorsAtPartialCannotReachNextStageStart() {
+        var tracker = MappingProgressPhases.tracker(engine: "rtk-surface", photoCount: 134)
+        let at54 = tracker.overall(MappingProgressPhases.prepareColors, unitIndex: 54, unitTotal: 134)
+        let seamsStart = tracker.band(MappingProgressPhases.matchSeams).lowerBound
+        XCTAssertLessThan(at54, seamsStart - 1e-9)
+        XCTAssertLessThan(at54, 0.8)
+    }
+
     func testUnitStepsStayUnderThirtyPointsWithinKnownWorkPhase() {
         var tracker = MappingProgressPhases.tracker(engine: "rtk-surface", photoCount: 20)
         let total = 20
@@ -55,27 +76,36 @@ final class MappingProgressPhasesTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(timeAdvanced + 1e-9, retreated)
     }
 
-    func testRtkWeightsEmphasizeReconstructForLargePhotoCount() {
-        let phases = MappingProgressPhases.phases(engine: "rtk-surface", photoCount: 200)
-        let reconstruct = phases.first { $0.id == MappingProgressPhases.reconstruct }!.weight
-        let packageWeight = phases.first { $0.id == MappingProgressPhases.package }!.weight
-        XCTAssertGreaterThan(reconstruct, packageWeight)
-        XCTAssertGreaterThan(reconstruct, 0.35)
-    }
-
     func testStageNamesPhaseAndCounts() {
         let tracker = MappingProgressPhases.tracker(engine: "flat")
         XCTAssertEqual(tracker.stage(MappingProgressPhases.checkOriginals, unitIndex: 3, unitTotal: 10), "Checking originals · 3/10")
         XCTAssertEqual(tracker.stage(MappingProgressPhases.publish), "Publishing")
     }
 
-    func testEtaStableAfterEnoughProgress() {
-        let tracker = MappingProgressPhases.tracker(engine: "rtk-surface", photoCount: 50)
-        XCTAssertNil(tracker.etaSeconds(overall: 0.05, elapsedSeconds: 60))
-        XCTAssertNil(tracker.etaSeconds(overall: 0.5, elapsedSeconds: 10))
-        let eta = tracker.etaSeconds(overall: 0.5, elapsedSeconds: 120)
-        XCTAssertNotNil(eta)
-        XCTAssertTrue((100...140).contains(eta!))
+    func testEtaDecreasesUnderConstantRate() {
+        var tracker = MappingProgressPhases.tracker(engine: "rtk-surface", photoCount: 50)
+        let t0 = Date(timeIntervalSince1970: 1_700_000_000)
+        var etaPrev: Int64?
+        for i in 0...40 {
+            let overall = min(0.9, 0.1 + 0.02 * Double(i))
+            let now = t0.addingTimeInterval(Double(i) * 2)
+            let eta = tracker.etaSeconds(overall: overall, now: now)
+            if let eta, let prev = etaPrev {
+                XCTAssertLessThanOrEqual(eta, prev + 2)
+            }
+            if let eta { etaPrev = eta }
+        }
+        XCTAssertNotNil(etaPrev)
+        XCTAssertLessThan(etaPrev!, 300)
+    }
+
+    func testFlatStageDetection() {
+        var tracker = MappingProgressPhases.tracker(engine: "rtk-surface", photoCount: 50)
+        let t0 = Date(timeIntervalSince1970: 1_700_000_000)
+        XCTAssertFalse(tracker.isFlat(overall: 0.5, now: t0, flatSeconds: 60))
+        XCTAssertFalse(tracker.isFlat(overall: 0.5, now: t0.addingTimeInterval(30), flatSeconds: 60))
+        XCTAssertTrue(tracker.isFlat(overall: 0.5, now: t0.addingTimeInterval(61), flatSeconds: 60))
+        XCTAssertFalse(tracker.isFlat(overall: 0.51, now: t0.addingTimeInterval(62), flatSeconds: 60))
     }
 
     func testPhaseCostsRoundTripAndBlend() throws {

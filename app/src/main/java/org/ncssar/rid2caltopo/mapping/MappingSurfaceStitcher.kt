@@ -71,8 +71,8 @@ internal object MappingSurfaceStitcher {
                 try{val bytes=ByteBuffer.allocate(bitmap.byteCount);bitmap.copyPixelsToBuffer(bytes);file.outputStream().buffered().use{it.write(bytes.array())}}finally{bitmap.recycle()}}
             val paths=raw.map{it.path}.toTypedArray()
             val seams=object:MappingSurfaceNative.Progress {override fun iteration(iteration:Int,cost:Double):Boolean {
-                // Optimizer cost is not a completion fraction; stay indeterminate in the seams band.
-                check();progress("Matching photo seams",.69);return true
+                // prepareProjection passes a real 0..1 local fraction as cost (not optimizer cost).
+                check();progress("Matching photo seams",cost.coerceIn(0.0,1.0));return true
             }}
             fun prepare2D(){
                 if(fill!=null)MappingSurfaceNative.prepareProjectionFill(surface.heights,fill.heights,surface.width,surface.height,surface.x,surface.y,surface.cell,

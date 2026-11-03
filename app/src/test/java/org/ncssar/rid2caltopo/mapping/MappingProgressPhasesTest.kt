@@ -30,6 +30,28 @@ class MappingProgressPhasesTest {
         assertEquals(1.0, samples.last(), 1e-9)
     }
 
+    @Test fun weightsScaleWithPhotoCount() {
+        val small = MappingProgressPhases.phases("rtk-surface", photoCount = 20)
+        val large = MappingProgressPhases.phases("rtk-surface", photoCount = 200)
+        val smallPrepare = small.first { it.id == MappingProgressPhases.PREPARE_COLORS }.weight
+        val largePrepare = large.first { it.id == MappingProgressPhases.PREPARE_COLORS }.weight
+        val smallPublish = small.first { it.id == MappingProgressPhases.PUBLISH }.weight
+        val largePublish = large.first { it.id == MappingProgressPhases.PUBLISH }.weight
+        // Per-photo stages gain share as N grows; fixed publish shrinks.
+        assertTrue(largePrepare > smallPrepare * 0.9)
+        assertTrue(largePublish < smallPublish)
+        val seams = large.first { it.id == MappingProgressPhases.MATCH_SEAMS }.weight
+        assertTrue("seams=$seams", seams > 0.15)
+    }
+
+    @Test fun prepareColorsAtPartialCannotReachNextStageStart() {
+        val tracker = MappingProgressPhases.tracker("rtk-surface", photoCount = 134)
+        val at54 = tracker.overall(MappingProgressPhases.PREPARE_COLORS, 54, 134)
+        val seamsStart = tracker.band(MappingProgressPhases.MATCH_SEAMS).start
+        assertTrue("at54=$at54 seamsStart=$seamsStart", at54 < seamsStart - 1e-9)
+        assertTrue(at54 < 0.8)
+    }
+
     @Test fun unitStepsStayUnderThirtyPointsWithinKnownWorkPhase() {
         val tracker = MappingProgressPhases.tracker("rtk-surface", photoCount = 20)
         val total = 20
@@ -61,27 +83,42 @@ class MappingProgressPhasesTest {
         assertTrue(timeAdvanced + 1e-9 >= retreated)
     }
 
-    @Test fun rtkWeightsEmphasizeReconstructForLargePhotoCount() {
-        val phases = MappingProgressPhases.phases("rtk-surface", photoCount = 200)
-        val reconstruct = phases.first { it.id == MappingProgressPhases.RECONSTRUCT }.weight
-        val packageWeight = phases.first { it.id == MappingProgressPhases.PACKAGE }.weight
-        assertTrue("reconstruct=$reconstruct package=$packageWeight", reconstruct > packageWeight)
-        assertTrue(reconstruct > 0.35)
-    }
-
     @Test fun stageNamesPhaseAndCounts() {
         val tracker = MappingProgressPhases.tracker("flat")
         assertEquals("Checking originals · 3/10", tracker.stage(MappingProgressPhases.CHECK_ORIGINALS, 3, 10))
         assertEquals("Publishing", tracker.stage(MappingProgressPhases.PUBLISH))
     }
 
-    @Test fun etaStableAfterEnoughProgress() {
+    @Test fun etaDecreasesUnderConstantRate() {
         val tracker = MappingProgressPhases.tracker("rtk-surface", photoCount = 50)
-        assertNull(tracker.etaSeconds(0.05, 60))
-        assertNull(tracker.etaSeconds(0.5, 10))
-        val eta = tracker.etaSeconds(0.5, 120)
-        assertNotNull(eta)
-        assertTrue(eta!! in 100..140)
+        val t0 = 1_000_000_000_000L
+        // Simulate steady progress over ~60 s with 2 s steps.
+        var etaPrev: Long? = null
+        for (i in 0..40) {
+            val overall = 0.1 + 0.02 * i
+            val now = t0 + i * 2_000_000_000L
+            val eta = tracker.etaSeconds(overall.coerceAtMost(0.9), now)
+            if (eta != null && etaPrev != null) {
+                assertTrue("eta rose $etaPrev -> $eta at i=$i", eta <= etaPrev + 2)
+            }
+            if (eta != null) etaPrev = eta
+        }
+        assertNotNull(etaPrev)
+        assertTrue(etaPrev!! < 300)
+    }
+
+    @Test fun etaNullWhileEstimating() {
+        val tracker = MappingProgressPhases.tracker("rtk-surface", photoCount = 50)
+        assertNull(tracker.etaSeconds(0.02, System.nanoTime()))
+    }
+
+    @Test fun flatStageDetection() {
+        val tracker = MappingProgressPhases.tracker("rtk-surface", photoCount = 50)
+        val t0 = 1_000_000_000_000L
+        assertFalse(tracker.isFlat(0.5, t0, flatMs = 60_000))
+        assertFalse(tracker.isFlat(0.5, t0 + 30_000_000_000L, flatMs = 60_000))
+        assertTrue(tracker.isFlat(0.5, t0 + 61_000_000_000L, flatMs = 60_000))
+        assertFalse(tracker.isFlat(0.51, t0 + 62_000_000_000L, flatMs = 60_000))
     }
 
     @Test fun phaseCostsRoundTripAndBlend() {

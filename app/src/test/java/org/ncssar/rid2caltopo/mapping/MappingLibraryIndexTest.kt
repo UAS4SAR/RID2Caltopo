@@ -55,6 +55,7 @@ class MappingLibraryIndexTest {
     @After fun restoreReaders() {
         MappingLibraryIndex.jsonReader = defaultJson
         MappingLibraryIndex.inventoryReader = defaultInventory
+        MappingLibraryListing.areaBusyProbe = null
     }
 
     private fun mission(root: File, photos: Int = 2): Pair<String, File> {
@@ -207,5 +208,99 @@ class MappingLibraryIndexTest {
             assertNull(MappingFlightRepository.resolveRoute(root, mission))
             assertEquals(firstMark, MappingFlightRepository.routeUnavailableFingerprint(root))
         }
+    }
+
+    @Test fun missionWithOriginalsAlwaysAppearsEvenWhenCorruptOrActiveCrash() {
+        val context = IndexContext(folder.root)
+        val (id, dir) = mission(folder.root, photos = 2)
+        File(dir, "processing-status.json").writeText(JSONObject().put("active", true)
+            .put("stage", "Estimating unknown 2D areas").put("progress", 0.5).toString())
+        val ok = MappingLibraryIndex.refresh(context, null)
+        assertTrue(ok.entries.any { it.flight?.id == id })
+        assertTrue(ok.index.missions.getValue(id).stage.contains("interrupted"))
+
+        File(dir, "mission.json").writeText("{not-json")
+        val corrupt = MappingLibraryIndex.refresh(context, null)
+        assertTrue(corrupt.entries.any { it.id == "flight:$id" || it.flight?.id == id })
+        assertTrue(corrupt.index.missions.getValue(id).stage.contains("unreadable") ||
+            corrupt.index.missions.getValue(id).stage.contains("interrupted"))
+    }
+
+    @Test fun emptyIndexPlusExistingDirsRewritesIndex() {
+        val context = IndexContext(folder.root)
+        val (id, _) = mission(folder.root, photos = 3)
+        File(folder.root, "mapping-storage-stats").mkdirs()
+        MappingLibraryIndex.file(folder.root).writeText("""{"schema":1,"missions":{},"layers":{}}""")
+        val refreshed = MappingLibraryIndex.refresh(context, null)
+        assertEquals(1, refreshed.index.missions.size)
+        assertEquals(id, refreshed.index.missions.keys.single())
+        assertTrue(MappingLibraryIndex.load(folder.root)!!.missions.containsKey(id))
+    }
+
+    @Test fun unavailableListingKeepsPreviousIndexByteIdentical() {
+        val context = IndexContext(folder.root)
+        mission(folder.root, photos = 2)
+        MappingLibraryIndex.refresh(context, null)
+        val before = MappingLibraryIndex.file(folder.root).readBytes()
+        MappingLibraryListing.areaBusyProbe = { true }
+        try {
+            val refreshed = MappingLibraryIndex.refresh(context, null)
+            assertTrue(refreshed.stale)
+            assertEquals(MappingLibraryListing.REASON_HYDRATING, refreshed.skipReason)
+            assertEquals(1, refreshed.index.missions.size)
+            assertArrayEquals(before, MappingLibraryIndex.file(folder.root).readBytes())
+            assertTrue(refreshed.entries.any { it.stage == MappingLibraryListing.STALE_STAGE })
+        } finally {
+            MappingLibraryListing.areaBusyProbe = null
+        }
+    }
+
+    @Test fun danglingSymlinkSkipsWrite() {
+        val context = IndexContext(folder.root)
+        mission(folder.root, photos = 1)
+        MappingLibraryIndex.refresh(context, null)
+        val before = MappingLibraryIndex.file(folder.root).readBytes()
+        val alias = File(folder.root, "mapping-missions")
+        val missing = File(folder.root, "missing-target-${UUID.randomUUID()}")
+        alias.deleteRecursively()
+        java.nio.file.Files.createSymbolicLink(alias.toPath(), missing.toPath())
+        try {
+            val refreshed = MappingLibraryIndex.refresh(context, null)
+            assertTrue(refreshed.stale)
+            assertEquals(MappingLibraryListing.REASON_UNAVAILABLE, refreshed.skipReason)
+            assertArrayEquals(before, MappingLibraryIndex.file(folder.root).readBytes())
+        } finally {
+            java.nio.file.Files.deleteIfExists(alias.toPath())
+        }
+    }
+
+    @Test fun removedMissionDroppedOnlyAfterSuccessfulListing() {
+        val context = IndexContext(folder.root)
+        val (keep, _) = mission(folder.root)
+        val (drop, dropDir) = mission(folder.root)
+        MappingLibraryIndex.refresh(context, null)
+        assertTrue(dropDir.deleteRecursively())
+        val refreshed = MappingLibraryIndex.refresh(context, null)
+        assertTrue(refreshed.index.missions.containsKey(keep))
+        assertFalse(refreshed.index.missions.containsKey(drop))
+        assertEquals(1, refreshed.removed)
+    }
+
+    @Test fun zeroCountsWithOriginalsStillList() {
+        val context = IndexContext(folder.root)
+        val id = UUID.randomUUID().toString()
+        val dir = File(folder.root, "mapping-missions/$id").apply { mkdirs() }
+        File(dir, "mission.json").writeText(JSONObject().put("missionId", id).put("title", "Zero")
+            .put("createdAt", "2026-10-12T00:00:00Z").put("assignmentId", "a").put("incidentId", "i")
+            .put("profile", "daylight-rgb").toString())
+        File(dir, "originals").mkdirs()
+        File(dir, "originals/${"%064x".format(1)}.jpg").writeBytes(byteArrayOf(1))
+        File(dir, "inventory").mkdirs()
+        // Inventory present but not matching complete size → photoCount 0.
+        File(dir, "inventory/${"%064x".format(1)}.json").writeText(JSONObject()
+            .put("sha256", "%064x".format(1)).put("name", "x.jpg").put("complete", false).put("sizeBytes", 99).toString())
+        val refreshed = MappingLibraryIndex.refresh(context, null)
+        assertTrue(refreshed.index.missions.containsKey(id))
+        assertTrue(refreshed.entries.any { it.flight?.id == id })
     }
 }

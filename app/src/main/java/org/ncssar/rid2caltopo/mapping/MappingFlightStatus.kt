@@ -68,10 +68,20 @@ object MappingFlightRepository {
     fun list(filesDir: File, assignmentId: String? = null, incidentId: String? = null, live: MappingProcessingState? = null, includeStorage: Boolean = true, onlyMissionId: String? = null): List<MappingFlightStatus> {
         val storage = MappingMissionStorage.index(filesDir, live)
         return File(filesDir, "mapping-missions").listFiles().orEmpty().filter { it.isDirectory && (onlyMissionId == null || it.name == onlyMissionId) }.mapNotNull { root ->
-            val mission = read(File(root, "mission.json")) ?: return@mapNotNull null
+            val mission = read(File(root, "mission.json"))
+            if (mission == null) {
+                if (!MissionProjectionGuard.hasRetainedEvidence(root)) return@mapNotNull null
+                val id = root.name.takeIf { runCatching { java.util.UUID.fromString(it).toString() == it }.getOrDefault(false) } ?: return@mapNotNull null
+                return@mapNotNull MappingFlightStatus(id, "Mission", "", 0, 0, 0, emptyList(),
+                    "Mission metadata unreadable; originals retained", visible = true)
+            }
             if ((assignmentId != null && mission.optString("assignmentId") != assignmentId) || (incidentId != null && mission.optString("incidentId") != incidentId)) return@mapNotNull null
             runCatching { snapshot(root, mission, live, storage, includeStorage) }.getOrNull()
-        }.filter { it.photoCount + it.pendingCount > 0 || it.hasRoute || it.resultIds.isNotEmpty() || it.storage?.let { usage -> usage.originals + usage.controllerReturns + usage.maps2D + usage.models3D + usage.exports + usage.working > 0 } == true }.sortedByDescending { it.createdAt }
+        }.filter { status ->
+            status.photoCount + status.pendingCount > 0 || status.hasRoute || status.resultIds.isNotEmpty() ||
+                status.storage?.let { usage -> usage.originals + usage.controllerReturns + usage.maps2D + usage.models3D + usage.exports + usage.working > 0 } == true ||
+                MissionProjectionGuard.hasRetainedEvidence(File(filesDir, "mapping-missions/${status.id}"))
+        }.sortedByDescending { it.createdAt }
     }
 
     fun snapshot(root: File, mission: JSONObject, live: MappingProcessingState? = null, storage: MappingMissionStorage.Index? = null,

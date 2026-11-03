@@ -2,6 +2,9 @@ import Foundation
 
 /// Phase-weighted mapping progress. Weights come from measured per-phase cost
 /// (ms and photo count) with photo-scaled defaults. Never maps optimizer cost into a fraction.
+///
+/// ETA uses remaining weighted work / EMA of weighted progress per second — never
+/// elapsed/overall alone (that grows when a long stage sits flat).
 public enum MappingProgressPhases {
     public static let checkOriginals = "check-originals"
     public static let reconstruct = "reconstruct"
@@ -34,15 +37,15 @@ public enum MappingProgressPhases {
         publish: "Publishing",
     ]
 
-    /// Default ms cost model: dominant work scales with photo count.
+    /// Initial measured cost table (A5 Pro): prepare-colors ≈ 3.4 s/photo; seams multi-minute.
     public static func defaultCostsMs(photoCount: Int, engine: String) -> [String: Double] {
         let n = Double(max(1, photoCount))
         let reconstructMs = engine == "rtk-surface" ? 3500.0 * n : 900.0 * n
         return [
             checkOriginals: 80.0 * n,
             reconstruct: reconstructMs,
-            prepareColors: 120.0 * n,
-            matchSeams: 400.0 * n,
+            prepareColors: 3400.0 * n,
+            matchSeams: 5500.0 * n,
             projectTiles: 600.0 * n,
             zoomLevels: 12_000.0 + 20.0 * n,
             package: 25_000.0 + 40.0 * n,
@@ -117,11 +120,48 @@ public enum MappingProgressPhases {
         }
     }
 
+    public struct RateEma: Sendable {
+        private var rate: Double?
+        private var lastOverall: Double?
+        private var lastDate: Date?
+        private var samples = 0
+        private let halfLifeSeconds: Double
+
+        public init(halfLifeSeconds: Double = 45) {
+            self.halfLifeSeconds = halfLifeSeconds
+        }
+
+        public mutating func observe(overall: Double, now: Date = Date()) -> Double? {
+            let prevO = lastOverall
+            let prevT = lastDate
+            lastOverall = overall
+            lastDate = now
+            guard let prevO, let prevT else { return rate }
+            let dt = now.timeIntervalSince(prevT)
+            guard dt >= 0.5 else { return rate }
+            let instant = max(0, (overall - prevO) / dt)
+            let alpha = 1.0 - exp(-dt * log(2.0) / halfLifeSeconds)
+            rate = rate.map { alpha * instant + (1 - alpha) * $0 } ?? instant
+            samples += 1
+            return rate
+        }
+
+        public func etaSeconds(overall: Double) -> Int64? {
+            guard let r = rate, samples >= 3, overall >= 0.05 else { return nil }
+            if overall >= 0.99 { return 0 }
+            if r < 1e-5 { return nil }
+            return Int64(min(24 * 3600, max(0, (1.0 - overall) / r)))
+        }
+    }
+
     public struct Tracker: Sendable {
         public let phases: [Phase]
         private let starts: [String: Double]
         private let photoCount: Int
         private var floor: Double
+        public private(set) var rate = RateEma()
+        private var lastOverallForFlat = 0.0
+        private var flatSince: Date?
 
         public init(phases: [Phase], photoCount: Int) {
             precondition(!phases.isEmpty)
@@ -139,6 +179,10 @@ public enum MappingProgressPhases {
             self.starts = map
         }
 
+        public func weight(_ phase: String) -> Double {
+            phases.first { $0.id == phase }!.weight
+        }
+
         public func band(_ phase: String) -> ClosedRange<Double> {
             let p = phases.first { $0.id == phase }!
             let start = starts[phase]!
@@ -152,7 +196,7 @@ public enum MappingProgressPhases {
                 let clamped = min(1, max(0, local))
                 raw = range.lowerBound + clamped * (range.upperBound - range.lowerBound)
             } else if let timeHint {
-                let clamped = min(0.95, max(0, timeHint))
+                let clamped = min(0.85, max(0, timeHint))
                 raw = range.lowerBound + clamped * (range.upperBound - range.lowerBound)
             } else {
                 raw = range.lowerBound
@@ -179,11 +223,20 @@ public enum MappingProgressPhases {
             phases.first { $0.id == phase }!.title
         }
 
-        public func etaSeconds(overall: Double, elapsedSeconds: Int64) -> Int64? {
-            if elapsedSeconds < 15 || overall < 0.08 { return nil }
-            if overall >= 0.99 { return 0 }
-            let remaining = Double(elapsedSeconds) * (1.0 - overall) / overall
-            return Int64(max(0, remaining))
+        public mutating func etaSeconds(overall: Double, now: Date = Date()) -> Int64? {
+            _ = rate.observe(overall: overall, now: now)
+            return rate.etaSeconds(overall: overall)
+        }
+
+        public mutating func isFlat(overall: Double, now: Date = Date(), flatSeconds: TimeInterval = 60) -> Bool {
+            if abs(overall - lastOverallForFlat) > 1e-4 {
+                lastOverallForFlat = overall
+                flatSince = now
+                return false
+            }
+            let since = flatSince ?? now
+            if flatSince == nil { flatSince = now }
+            return now.timeIntervalSince(since) >= flatSeconds
         }
     }
 }

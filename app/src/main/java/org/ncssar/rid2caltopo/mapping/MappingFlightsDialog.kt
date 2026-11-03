@@ -90,15 +90,23 @@ fun MappingFlightsDialog(mission: MappingMission?, onDismiss: () -> Unit, onConn
             onView2D = if (layerHas2D) onViewLayer else null)
         return
     }
+    val processingActive = processing?.active == true && (selectedSnapshot == null || processing?.missionId == selectedSnapshot?.id)
     val phaseMessage = when {
         connecting -> "Connecting…"
+        processingActive -> null // stage/progress panel owns the message while a job runs
         busyMessage != null -> busyMessage
         busy && storageStatus.busy && storageStatus.message.isNotBlank() -> storageStatus.message
         busy -> "Please wait…"
         storageStatus.busy && storageStatus.message.isNotBlank() -> storageStatus.message
         else -> null
     }
-    MappingFlightsContent(flights, selected, busy, error, results = results, viewable2DIds = viewable2DIds, capturedAt = capturedAt, selectedHas2D = layerHas2D,
+    val selectedLive = selected?.let { flight ->
+        val live = processing
+        if (live != null && live.missionId == flight.id && live.active)
+            flight.copy(active = true, stage = live.stage, progress = live.progress, remainingSeconds = live.remainingSeconds)
+        else flight
+    }
+    MappingFlightsContent(flights, selectedLive, busy && !processingActive, error, results = results, viewable2DIds = viewable2DIds, capturedAt = capturedAt, selectedHas2D = layerHas2D,
         connecting = connecting, phaseMessage = phaseMessage,
         onInspectResult = { inspectedId = it.id }, onViewResult = onViewLayer, freeBytes=overview?.first, unassignedStorage=overview?.second, detailOnly = detailOnly, onSelect = { if (it == null && detailOnly) onDismiss() else selectedId = it; error = null }, onDismiss = onDismiss,
         onInspect = { inspectedId = layer?.id }, onView = { if (layerHas2D) layer?.let(onViewLayer) },
@@ -118,16 +126,14 @@ fun MappingFlightsDialog(mission: MappingMission?, onDismiss: () -> Unit, onConn
                 busy = false; busyMessage = null
             }
         }, onProcess = { flight, completedOnly ->
-            busy = true; connecting = false
-            busyMessage = storageStatus.message.takeIf { storageStatus.busy && it.isNotBlank() } ?: "Checking mapping storage…"
-            error = null
+            connecting = false; error = null
+            // start() publishes active state immediately and returns once the job is queued.
             scope.launch {
-            runCatching { withContext(Dispatchers.IO) { MappingProcessingManager.start(context, flight.id,
-                expectedPhotos = if (completedOnly) flight.completedDigests.size else flight.photoCount,
-                selectedDigests = if (completedOnly) flight.completedDigests else null,
-                completionSource = if (completedOnly) "operator_selected_completed_batch" else "operator_selected_verified_photos",
-                engine = "rtk-surface") } }.onFailure { error = it.message }
-            busy = false; busyMessage = null
+                runCatching { withContext(Dispatchers.IO) { MappingProcessingManager.start(context, flight.id,
+                    expectedPhotos = if (completedOnly) flight.completedDigests.size else flight.photoCount,
+                    selectedDigests = if (completedOnly) flight.completedDigests else null,
+                    completionSource = if (completedOnly) "operator_selected_completed_batch" else "operator_selected_verified_photos",
+                    engine = "rtk-surface") } }.onFailure { error = it.message }
             }
         })
 }
@@ -227,8 +233,9 @@ internal fun MappingFlightsContent(flights: List<MappingFlightStatus>, selected:
                     if(!usage.complete)Text("Some files could not be measured. The displayed total is a minimum.")
                 }
                 if (selected.active) {
-                    selected.progress?.let { LinearProgressIndicator(progress = { it.toFloat() }, modifier = Modifier.fillMaxWidth()) }
-                    selected.remainingSeconds?.let { Text("About ${(it + 59) / 60} min remaining") }
+                    Text(selected.stage, style = MaterialTheme.typography.titleMedium, modifier = Modifier.testTag("mapping-processing-stage"))
+                    selected.progress?.let { LinearProgressIndicator(progress = { it.toFloat() }, modifier = Modifier.fillMaxWidth().testTag("mapping-processing-progress")) }
+                    Text(selected.remainingSeconds?.let { "About ${(it + 59) / 60} min remaining" } ?: "estimating…")
                 }
                 if (selected.pendingCount > 0) Text("${selected.pendingCount} originals still transferring")
                 if (selected.completedDigests.isNotEmpty()) {
@@ -243,15 +250,15 @@ internal fun MappingFlightsContent(flights: List<MappingFlightStatus>, selected:
                             Text(result.resultTitle)
                             Text("Generated: ${result.generatedLabel}")
                             Text("${result.photoCount} photos · ${if (result.surfaceModel.isNotBlank()) "2D and 3D" else "2D"}")
-                            TextButton(enabled = !busy && has2D, onClick = { onViewResult(result) }) { Text("View 2D map") }
-                            TextButton(enabled = !busy, onClick = { onInspectResult(result) }) { Text("Inspect / share result · 2D and 3D") }
+                            TextButton(enabled = !busy && !selected.active && has2D, onClick = { onViewResult(result) }) { Text("View 2D map") }
+                            TextButton(enabled = !busy && !selected.active, onClick = { onInspectResult(result) }) { Text("Inspect / share result · 2D and 3D") }
                         }
                     }
                 }
                 if (results.isEmpty() && selected.layerId == null) Text("No completed map results yet.")
                 if (results.isEmpty() && selected.layerId != null) {
-                    TextButton(enabled = !busy && selectedHas2D, onClick = onView) { Text("View 2D map") }
-                    TextButton(enabled = !busy, onClick = onInspect) { Text("Inspect / share result · 2D and 3D") }
+                    TextButton(enabled = !busy && !selected.active && selectedHas2D, onClick = onView) { Text("View 2D map") }
+                    TextButton(enabled = !busy && !selected.active, onClick = onInspect) { Text("Inspect / share result · 2D and 3D") }
                 }
                 if (selected.visible && !selected.active && selected.photoCount>0) {
                     if (selected.completedDigests.size in 3..MappingVolume.MAX_PHOTOS) TextButton(enabled = !busy, onClick = { onProcess(selected, true) }) {
@@ -263,8 +270,13 @@ internal fun MappingFlightsContent(flights: List<MappingFlightStatus>, selected:
                     }
                     Text("Reconstruction stays on screen until it finishes or you cancel it. Originals are retained.")
                 }
-                if (selected.hasRoute && selected.photoCount>0) TextButton(enabled = !busy, onClick = { onConnect(selected) }) { Text(if (connecting) "Connecting…" else "Connect to Pilot 2") }
-                Text("The connection receives originals for this saved flight. Review clearance and start any flight in Pilot 2.")
+                // Hide Connect while processing; never show "Connecting…" unless a connection is in progress.
+                if (selected.hasRoute && selected.photoCount>0 && !selected.active) {
+                    TextButton(enabled = !busy, onClick = { onConnect(selected) }) {
+                        Text(if (connecting) "Connecting…" else "Connect to Pilot 2")
+                    }
+                }
+                if (!selected.active) Text("The connection receives originals for this saved flight. Review clearance and start any flight in Pilot 2.")
             }
         }, confirmButton = { TextButton(enabled = !busy, onClick = { if (selected == null) onDismiss() else onSelect(null) }) {
             Text(if (detailOnly || selected == null) "Back to local maps" else "Back to flights")

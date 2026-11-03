@@ -55,7 +55,16 @@ public enum MappingLibraryIndex {
         public let loadMs: Int
         public let refreshMs: Int
         public let fromCache: Bool
+        public let stale: Bool
+        public let skipReason: String?
     }
+
+    public static let staleStage = "Storage is being prepared · showing saved list"
+    public static let reasonHydrating = "hydrating"
+    public static let reasonUnavailable = "missions-unavailable"
+
+    /// Injectable for tests. When non-nil, overrides directory listing.
+    nonisolated(unsafe) public static var missionListingOverride: (() -> [URL]?)?
 
     public static func storageDirectory(supportRoot: URL) -> URL {
         supportRoot.appendingPathComponent("mapping-storage-stats", isDirectory: true)
@@ -79,7 +88,8 @@ public enum MappingLibraryIndex {
         supportRoot: URL,
         liveMissionID: String? = nil,
         liveStage: String? = nil,
-        liveProgress: Double? = nil
+        liveProgress: Double? = nil,
+        areaBusy: Bool = false
     ) throws -> RefreshResult {
         precondition(!Thread.isMainThread)
         let loadStarted = Date()
@@ -93,13 +103,69 @@ public enum MappingLibraryIndex {
         var changed = 0
         var nextMissions: [MissionEntry] = []
         var nextLayers: [LayerEntry] = []
-        let missionDirs = (try? fm.contentsOfDirectory(at: missionsRoot, includingPropertiesForKeys: [.contentModificationDateKey, .isDirectoryKey], options: [.skipsHiddenFiles])) ?? []
+
+        if areaBusy {
+            log.debug("LibIdx skip reason=\(reasonHydrating, privacy: .public)")
+            let index = previous ?? Index(schemaVersion: schemaVersion, missions: [], layers: [], updatedAt: ISO8601DateFormatter().string(from: Date()))
+            var missions = index.missions
+            if previous != nil {
+                for i in missions.indices { missions[i].stage = staleStage }
+            }
+            let staleIndex = Index(schemaVersion: schemaVersion, missions: missions, layers: index.layers, updatedAt: index.updatedAt)
+            let refreshMs = Int(Date().timeIntervalSince(refreshStarted) * 1000)
+            return RefreshResult(index: staleIndex, changed: 0, removed: 0, loadMs: loadMs, refreshMs: refreshMs, fromCache: previous != nil, stale: previous != nil, skipReason: reasonHydrating)
+        }
+
+        let missionDirs: [URL]
+        if let override = missionListingOverride {
+            guard let listed = override() else {
+                log.debug("LibIdx skip reason=\(reasonUnavailable, privacy: .public)")
+                let index = previous ?? Index(schemaVersion: schemaVersion, missions: [], layers: [], updatedAt: ISO8601DateFormatter().string(from: Date()))
+                var missions = index.missions
+                if previous != nil {
+                    for i in missions.indices { missions[i].stage = staleStage }
+                }
+                let staleIndex = Index(schemaVersion: schemaVersion, missions: missions, layers: index.layers, updatedAt: index.updatedAt)
+                let refreshMs = Int(Date().timeIntervalSince(refreshStarted) * 1000)
+                return RefreshResult(index: staleIndex, changed: 0, removed: 0, loadMs: loadMs, refreshMs: refreshMs, fromCache: previous != nil, stale: previous != nil, skipReason: reasonUnavailable)
+            }
+            missionDirs = listed
+        } else {
+            var isDir: ObjCBool = false
+            let resolved = missionsRoot.resolvingSymlinksInPath()
+            if fm.fileExists(atPath: missionsRoot.path, isDirectory: &isDir) == false ||
+                (try? missionsRoot.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) == true &&
+                fm.fileExists(atPath: resolved.path) == false {
+                log.debug("LibIdx skip reason=\(reasonUnavailable, privacy: .public)")
+                let index = previous ?? Index(schemaVersion: schemaVersion, missions: [], layers: [], updatedAt: ISO8601DateFormatter().string(from: Date()))
+                var missions = index.missions
+                if previous != nil {
+                    for i in missions.indices { missions[i].stage = staleStage }
+                }
+                let staleIndex = Index(schemaVersion: schemaVersion, missions: missions, layers: index.layers, updatedAt: index.updatedAt)
+                let refreshMs = Int(Date().timeIntervalSince(refreshStarted) * 1000)
+                return RefreshResult(index: staleIndex, changed: 0, removed: 0, loadMs: loadMs, refreshMs: refreshMs, fromCache: previous != nil, stale: previous != nil, skipReason: reasonUnavailable)
+            }
+            missionDirs = (try? fm.contentsOfDirectory(at: missionsRoot, includingPropertiesForKeys: [.contentModificationDateKey, .isDirectoryKey], options: [.skipsHiddenFiles])) ?? []
+        }
         var seen = Set<String>()
         for mission in missionDirs {
             guard let uuid = UUID(uuidString: mission.lastPathComponent) else { continue }
             let id = uuid.uuidString.lowercased()
             seen.insert(id)
-            let fingerprint = try missionFingerprint(mission)
+            let evidence = hasRetainedEvidence(mission)
+            let fingerprint: Fingerprint
+            do { fingerprint = try missionFingerprint(mission) } catch {
+                if evidence, var cached = byID[id] {
+                    cached.stage = "Mission metadata unreadable; originals retained"
+                    nextMissions.append(cached); continue
+                }
+                if evidence {
+                    nextMissions.append(syntheticUnreadable(id: id, mission: mission))
+                    changed += 1
+                }
+                continue
+            }
             if var cached = byID[id], cached.fingerprint == fingerprint {
                 if id == liveMissionID {
                     if let liveStage { cached.stage = liveStage }
@@ -111,12 +177,33 @@ public enum MappingLibraryIndex {
                 }
                 continue
             }
-            let rebuilt = try rebuildMission(mission, fingerprint: fingerprint)
-            changed += 1
-            nextMissions.append(rebuilt.mission)
-            nextLayers.append(contentsOf: rebuilt.layers)
-            for layer in rebuilt.layers { layerByID[layer.id] = layer }
+            do {
+                let rebuilt = try rebuildMission(mission, fingerprint: fingerprint)
+                changed += 1
+                var entry = rebuilt.mission
+                if entry.photoCount == 0 && evidence {
+                    entry.stage = entry.stage.contains("interrupted") ? entry.stage : "Mission metadata unreadable; originals retained"
+                }
+                nextMissions.append(entry)
+                nextLayers.append(contentsOf: rebuilt.layers)
+                for layer in rebuilt.layers { layerByID[layer.id] = layer }
+            } catch {
+                let status = (try? JSONSerialization.jsonObject(with: Data(contentsOf: mission.appendingPathComponent("processing-status.json"))) as? [String: Any]) ?? [:]
+                let stage = (status["active"] as? Bool) == true
+                    ? "Processing interrupted; originals retained"
+                    : "Mission metadata unreadable; originals retained"
+                if evidence, var cached = byID[id] {
+                    cached.stage = stage
+                    nextMissions.append(cached)
+                } else if evidence {
+                    var synthetic = syntheticUnreadable(id: id, mission: mission)
+                    synthetic.stage = stage
+                    nextMissions.append(synthetic)
+                    changed += 1
+                }
+            }
         }
+        // Drop only when parent listing succeeded and id is absent.
         let removed = byID.keys.filter { !seen.contains($0) }.count
         if let liveMissionID, let liveStage, let idx = nextMissions.firstIndex(where: { $0.id == liveMissionID }) {
             nextMissions[idx].stage = liveStage
@@ -133,7 +220,30 @@ public enum MappingLibraryIndex {
         }
         let refreshMs = Int(Date().timeIntervalSince(refreshStarted) * 1000)
         log.debug("LibIdx load ms=\(loadMs, privacy: .public) n=\(nextMissions.count, privacy: .public) | refresh ms=\(refreshMs, privacy: .public) changed=\(changed, privacy: .public) removed=\(removed, privacy: .public)")
-        return RefreshResult(index: index, changed: changed, removed: removed, loadMs: loadMs, refreshMs: refreshMs, fromCache: previous != nil)
+        return RefreshResult(index: index, changed: changed, removed: removed, loadMs: loadMs, refreshMs: refreshMs, fromCache: previous != nil, stale: false, skipReason: nil)
+    }
+
+    public static func hasRetainedEvidence(_ mission: URL) -> Bool {
+        let fm = FileManager.default
+        if fm.fileExists(atPath: mission.appendingPathComponent("processing-status.json").path) { return true }
+        let originals = mission.appendingPathComponent("originals", isDirectory: true)
+        if let names = try? fm.contentsOfDirectory(atPath: originals.path), names.contains(where: { $0.lowercased().hasSuffix(".jpg") }) { return true }
+        let inventory = mission.appendingPathComponent("inventory", isDirectory: true)
+        if let names = try? fm.contentsOfDirectory(atPath: inventory.path), names.contains(where: { $0.hasSuffix(".json") }) { return true }
+        return false
+    }
+
+    private static func syntheticUnreadable(id: String, mission: URL) -> MissionEntry {
+        let fp = (try? missionFingerprint(mission)) ?? Fingerprint(dirModified: 0, dirCount: 0, files: [:])
+        return MissionEntry(
+            id: id, title: "Mission", createdAt: "", captureTime: "",
+            stage: "Mission metadata unreadable; originals retained",
+            photoCount: 0, pendingCount: 0, selectedCount: 0, completeBytes: 0,
+            hasRoute: FileManager.default.fileExists(atPath: mission.appendingPathComponent("mission.kmz").path),
+            has2D: false, has3D: false, routeUnavailable: nil, resultIds: [], center: nil, fingerprint: fp,
+            planningBytes: 0, photoBytes: 0, tileBytes: 0, modelBytes: 0, workBytes: 0, exportBytes: 0,
+            controllerBytes: 0, metadataBytes: 0, incidentID: "", cameraLabel: "Camera unavailable"
+        )
     }
 
     /// Cheap fingerprint compare — max caller interval should be 30s.
@@ -258,6 +368,7 @@ public enum MappingLibraryIndex {
         }()
         let status = (try? JSONSerialization.jsonObject(with: Data(contentsOf: mission.appendingPathComponent("processing-status.json"))) as? [String: Any]) ?? [:]
         let stage: String = {
+            if (status["active"] as? Bool) == true { return "Processing interrupted; originals retained" }
             if let stage = status["stage"] as? String, !stage.isEmpty { return stage }
             if has2D { return "Map ready" }
             if photos.isEmpty { return "Map prepared" }
