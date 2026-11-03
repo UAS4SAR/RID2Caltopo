@@ -15,6 +15,9 @@ public enum MappingProgressPhases {
     public static let package = "package"
     public static let publish = "publish"
 
+    /// Late tiles dominate wall time (A5 Pro: early ~2 s, late ~45 s). Count alone runs ahead.
+    public static let tileLocalExponent = 3.5
+
     public struct Phase: Sendable, Equatable {
         public let id: String
         public let weight: Double
@@ -37,20 +40,44 @@ public enum MappingProgressPhases {
         publish: "Publishing",
     ]
 
-    /// Initial measured cost table (A5 Pro): prepare-colors ≈ 3.4 s/photo; seams multi-minute.
-    public static func defaultCostsMs(photoCount: Int, engine: String) -> [String: Double] {
+    /// ≈ 1.5 × N when tile count is not yet known.
+    public static func estimateTileCount(photoCount: Int) -> Int {
+        max(1, (max(1, photoCount) * 3 + 1) / 2)
+    }
+
+    /// Full-run calibration (A5 Pro, 134 photos, 195 tiles, ~6490 s wall):
+    /// early ~167 s; colors ~180 s (~1.35 s/photo); seams ~3527 s (~26.3 s/photo);
+    /// tiles ~2500 s (~12.8 s/tile); zoom ~12 s; package ~102 s.
+    public static func defaultCostsMs(photoCount: Int, engine: String, tileCount: Int? = nil) -> [String: Double] {
         let n = Double(max(1, photoCount))
-        let reconstructMs = engine == "rtk-surface" ? 3500.0 * n : 900.0 * n
+        let tiles = Double(max(1, tileCount ?? estimateTileCount(photoCount: photoCount)))
+        let reconstructMs = engine == "rtk-surface" ? 1170.0 * n : 900.0 * n
         return [
             checkOriginals: 80.0 * n,
             reconstruct: reconstructMs,
-            prepareColors: 3400.0 * n,
-            matchSeams: 5500.0 * n,
-            projectTiles: 600.0 * n,
-            zoomLevels: 12_000.0 + 20.0 * n,
-            package: 25_000.0 + 40.0 * n,
+            prepareColors: 1350.0 * n,
+            matchSeams: 26_300.0 * n,
+            projectTiles: 12_800.0 * tiles,
+            zoomLevels: 12_000.0,
+            package: 102_000.0,
             publish: 8_000.0,
         ]
+    }
+
+    /// Intra-phase fraction for tile projection. Prefers work units when known; otherwise
+    /// a back-loaded curve so early cheap tiles do not run ahead of wall time.
+    public static func tileLocalFraction(
+        unitIndex: Int,
+        unitTotal: Int,
+        workDone: Double? = nil,
+        workTotal: Double? = nil
+    ) -> Double {
+        if let workDone, let workTotal, workTotal > 0 {
+            return min(1, max(0, workDone / workTotal))
+        }
+        guard unitTotal > 0 else { return 0 }
+        let f = min(1, max(0, Double(unitIndex) / Double(unitTotal)))
+        return min(1, max(0, pow(f, tileLocalExponent)))
     }
 
     public static func weightsFromCosts(_ costs: [String: Double]) -> [Phase] {
@@ -59,8 +86,13 @@ public enum MappingProgressPhases {
         return ordered.map { Phase(id: $0.0, weight: $0.1 / sum, title: titles[$0.0]!) }
     }
 
-    public static func phases(engine: String, photoCount: Int = 50, measuredMsPerPhoto: [String: Double] = [:]) -> [Phase] {
-        var defaults = defaultCostsMs(photoCount: photoCount, engine: engine)
+    public static func phases(
+        engine: String,
+        photoCount: Int = 50,
+        measuredMsPerPhoto: [String: Double] = [:],
+        tileCount: Int? = nil
+    ) -> [Phase] {
+        var defaults = defaultCostsMs(photoCount: photoCount, engine: engine, tileCount: tileCount)
         let n = Double(max(1, photoCount))
         for (id, msPerPhoto) in measuredMsPerPhoto {
             guard defaults[id] != nil else { continue }
@@ -70,8 +102,16 @@ public enum MappingProgressPhases {
         return weightsFromCosts(defaults)
     }
 
-    public static func tracker(engine: String, photoCount: Int = 50, measuredMsPerPhoto: [String: Double] = [:]) -> Tracker {
-        Tracker(phases: phases(engine: engine, photoCount: photoCount, measuredMsPerPhoto: measuredMsPerPhoto), photoCount: photoCount)
+    public static func tracker(
+        engine: String,
+        photoCount: Int = 50,
+        measuredMsPerPhoto: [String: Double] = [:],
+        tileCount: Int? = nil
+    ) -> Tracker {
+        Tracker(
+            phases: phases(engine: engine, photoCount: photoCount, measuredMsPerPhoto: measuredMsPerPhoto, tileCount: tileCount),
+            photoCount: photoCount
+        )
     }
 
     public enum Costs {
@@ -206,9 +246,21 @@ public enum MappingProgressPhases {
             return value
         }
 
-        public mutating func overall(_ phase: String, unitIndex: Int, unitTotal: Int) -> Double {
+        public mutating func overall(
+            _ phase: String,
+            unitIndex: Int,
+            unitTotal: Int,
+            workDone: Double? = nil,
+            workTotal: Double? = nil
+        ) -> Double {
             precondition(unitTotal > 0 && unitIndex >= 0 && unitIndex <= unitTotal)
-            return overall(phase, local: Double(unitIndex) / Double(unitTotal))
+            let local: Double
+            if phase == projectTiles {
+                local = tileLocalFraction(unitIndex: unitIndex, unitTotal: unitTotal, workDone: workDone, workTotal: workTotal)
+            } else {
+                local = Double(unitIndex) / Double(unitTotal)
+            }
+            return overall(phase, local: local)
         }
 
         public func stage(_ phase: String, unitIndex: Int? = nil, unitTotal: Int? = nil) -> String {

@@ -99,8 +99,10 @@ object MappingProcessingManager {
                 val now=System.nanoTime()
                 val phaseElapsedMs=(now-phaseStarted)/1_000_000
                 val estimated=phases.estimatedPhaseMs(phase)
-                val timeHint=if(local==null && estimated>1.0) (phaseElapsedMs.toDouble()/estimated).coerceIn(0.0,0.85) else null
-                val fraction=phases.overall(phase,local,timeHint)
+                val timeHint=if(local==null && unitIndex==null && estimated>1.0) (phaseElapsedMs.toDouble()/estimated).coerceIn(0.0,0.85) else null
+                // Prefer unit counts so PROJECT_TILES can apply the back-loaded local curve.
+                val fraction=if(unitIndex!=null&&unitTotal!=null&&unitTotal>0) phases.overall(phase,unitIndex,unitTotal)
+                    else phases.overall(phase,local,timeHint)
                 val stage=stageOverride ?: phases.stage(phase,unitIndex,unitTotal)
                 if(phase!=lastPhase){
                     val ended=lastPhase

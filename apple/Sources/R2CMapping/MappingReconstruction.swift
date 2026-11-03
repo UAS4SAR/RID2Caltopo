@@ -139,8 +139,14 @@ public enum MappingReconstruction {
             let phaseElapsedMs=now.timeIntervalSince(phaseStarted)*1000
             let defaults=MappingProgressPhases.defaultCostsMs(photoCount:photoCount, engine:"rtk-surface")
             let estimated=defaults[phase] ?? 1
-            let timeHint: Double? = local == nil && estimated > 1 ? min(0.85, max(0, phaseElapsedMs / estimated)) : nil
-            let fraction=phases.overall(phase, local: local, timeHint: timeHint)
+            let timeHint: Double? = local == nil && unitIndex == nil && estimated > 1 ? min(0.85, max(0, phaseElapsedMs / estimated)) : nil
+            // Prefer unit counts so projectTiles can apply the back-loaded local curve.
+            let fraction: Double
+            if let unitIndex, let unitTotal, unitTotal > 0 {
+                fraction=phases.overall(phase, unitIndex: unitIndex, unitTotal: unitTotal)
+            } else {
+                fraction=phases.overall(phase, local: local, timeHint: timeHint)
+            }
             let stage=stageOverride ?? phases.stage(phase, unitIndex: unitIndex, unitTotal: unitTotal)
             if phase != lastPhase {
                 if let lastPhase {

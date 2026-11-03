@@ -38,6 +38,17 @@ final class MappingProgressPhasesTests: XCTestCase {
         XCTAssertGreaterThan(seams, 0.15)
     }
 
+    func testCalibratedDefaultsMatchFullRunMagnitudes() {
+        let n = 134
+        let tiles = 195
+        let costs = MappingProgressPhases.defaultCostsMs(photoCount: n, engine: "rtk-surface", tileCount: tiles)
+        XCTAssertEqual(costs[MappingProgressPhases.matchSeams]!, 26_300.0 * Double(n), accuracy: 1)
+        XCTAssertEqual(costs[MappingProgressPhases.projectTiles]!, 12_800.0 * Double(tiles), accuracy: 1)
+        XCTAssertEqual(costs[MappingProgressPhases.prepareColors]!, 1_350.0 * Double(n), accuracy: 1)
+        let sum = costs.values.reduce(0, +)
+        XCTAssertEqual(sum, 6_490_000, accuracy: 50_000)
+    }
+
     func testPrepareColorsAtPartialCannotReachNextStageStart() {
         var tracker = MappingProgressPhases.tracker(engine: "rtk-surface", photoCount: 134)
         let at54 = tracker.overall(MappingProgressPhases.prepareColors, unitIndex: 54, unitTotal: 134)
@@ -56,6 +67,13 @@ final class MappingProgressPhasesTests: XCTestCase {
             XCTAssertLessThanOrEqual((next - previous) * 100, 30.0 + 1e-9)
             previous = next
         }
+    }
+
+    func testTileLocalPrefersWorkUnitsOverUniformCount() {
+        let byCount = MappingProgressPhases.tileLocalFraction(unitIndex: 100, unitTotal: 195)
+        let byWork = MappingProgressPhases.tileLocalFraction(unitIndex: 100, unitTotal: 195, workDone: 200, workTotal: 2500)
+        XCTAssertLessThan(byCount, 0.20)
+        XCTAssertEqual(byWork, 0.08, accuracy: 1e-9)
     }
 
     func testIndeterminateStaysAtBandStart() {
@@ -118,5 +136,88 @@ final class MappingProgressPhasesTests: XCTestCase {
         MappingProgressPhases.Costs.record(supportRoot: root, phaseId: MappingProgressPhases.reconstruct, elapsedMs: 20_000, photoCount: 10)
         let blended = MappingProgressPhases.Costs.load(supportRoot: root)[MappingProgressPhases.reconstruct]!
         XCTAssertTrue((1300...1900).contains(blended))
+    }
+
+    /// Replay the measured A5 Pro full run (134 photos, 195 tiles, ~6490 s).
+    func testCalibratedFullRunReplayMatchesWallShareAndEta() {
+        let n = 134
+        let tiles = 195
+        let totalSec = 6490.0
+        let earlySec = 167.0
+        let colorsSec = 180.0
+        let seamsSec = 3527.0
+        let tilesSec = 2500.0
+        let zoomSec = 12.0
+        var tracker = MappingProgressPhases.tracker(engine: "rtk-surface", photoCount: n, tileCount: tiles)
+        let t0 = Date(timeIntervalSince1970: 1_700_000_000)
+        func at(_ elapsedSec: Double) -> Date { t0.addingTimeInterval(elapsedSec) }
+
+        _ = tracker.overall(MappingProgressPhases.checkOriginals, local: 1)
+        _ = tracker.etaSeconds(overall: tracker.band(MappingProgressPhases.checkOriginals).upperBound, now: at(10))
+        let afterEarly = tracker.overall(MappingProgressPhases.reconstruct, local: 1)
+        _ = tracker.etaSeconds(overall: afterEarly, now: at(earlySec))
+        XCTAssertLessThanOrEqual(afterEarly, 0.15)
+
+        let afterColors = tracker.overall(MappingProgressPhases.prepareColors, local: 1)
+        let colorsShare = (earlySec + colorsSec) / totalSec
+        _ = tracker.etaSeconds(overall: afterColors, now: at(earlySec + colorsSec))
+        XCTAssertLessThanOrEqual(afterColors, 0.15)
+        XCTAssertLessThanOrEqual(abs(afterColors - colorsShare), 0.10)
+
+        var overall = afterColors
+        let seamsStartElapsed = earlySec + colorsSec
+        for step in 1...20 {
+            let local = Double(step) / 20.0
+            overall = tracker.overall(MappingProgressPhases.matchSeams, local: local)
+            _ = tracker.etaSeconds(overall: overall, now: at(seamsStartElapsed + seamsSec * local))
+        }
+        let afterSeams = overall
+        let seamsShare = (earlySec + colorsSec + seamsSec) / totalSec
+        XCTAssertTrue((0.55...0.70).contains(afterSeams), "afterSeams=\(afterSeams)")
+        XCTAssertLessThanOrEqual(abs(afterSeams - seamsShare), 0.10)
+
+        func tileElapsed(_ completed: Int) -> Double {
+            var sum = 0.0
+            for i in 1...completed {
+                if i <= 100 { sum += 2 }
+                else if i <= 157 { sum += 10 }
+                else { sum += 45 }
+            }
+            return sum
+        }
+        let tilesStartElapsed = seamsStartElapsed + seamsSec
+        var midTileOverall = afterSeams
+        var midTileEta: Int64?
+        var midTileRemaining: Double?
+        for i in 1...tiles {
+            overall = tracker.overall(MappingProgressPhases.projectTiles, unitIndex: i, unitTotal: tiles)
+            let elapsed = tilesStartElapsed + tileElapsed(i)
+            let eta = tracker.etaSeconds(overall: overall, now: at(elapsed))
+            if midTileRemaining == nil && tileElapsed(i) >= tilesSec / 2 {
+                midTileOverall = overall
+                midTileEta = eta
+                midTileRemaining = totalSec - elapsed
+            }
+        }
+        let afterTiles = overall
+        let tilesShare = (earlySec + colorsSec + seamsSec + tilesSec) / totalSec
+        XCTAssertGreaterThanOrEqual(afterTiles, 0.95)
+        XCTAssertLessThanOrEqual(abs(afterTiles - tilesShare), 0.10)
+
+        XCTAssertNotNil(midTileEta, "mid-tile ETA should be available")
+        XCTAssertNotNil(midTileRemaining)
+        let remaining = midTileRemaining!
+        let eta = Double(midTileEta!)
+        XCTAssertTrue(
+            (remaining / 2)...(remaining * 2) ~= eta,
+            "midTile overall=\(midTileOverall) eta=\(eta) remaining=\(remaining)"
+        )
+
+        overall = tracker.overall(MappingProgressPhases.zoomLevels, local: 1)
+        _ = tracker.etaSeconds(overall: overall, now: at(tilesStartElapsed + tilesSec + zoomSec))
+        overall = tracker.overall(MappingProgressPhases.package, local: 1)
+        _ = tracker.etaSeconds(overall: overall, now: at(totalSec - 5))
+        let done = tracker.overall(MappingProgressPhases.publish, local: 1)
+        XCTAssertEqual(done, 1, accuracy: 1e-9)
     }
 }

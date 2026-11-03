@@ -44,6 +44,17 @@ class MappingProgressPhasesTest {
         assertTrue("seams=$seams", seams > 0.15)
     }
 
+    @Test fun calibratedDefaultsMatchFullRunMagnitudes() {
+        val n = 134
+        val tiles = 195
+        val costs = MappingProgressPhases.defaultCostsMs(n, "rtk-surface", tiles)
+        assertEquals(26_300.0 * n, costs.getValue(MappingProgressPhases.MATCH_SEAMS), 1.0)
+        assertEquals(12_800.0 * tiles, costs.getValue(MappingProgressPhases.PROJECT_TILES), 1.0)
+        assertEquals(1_350.0 * n, costs.getValue(MappingProgressPhases.PREPARE_COLORS), 1.0)
+        val sum = costs.values.sum()
+        assertEquals(6_490_000.0, sum, 50_000.0)
+    }
+
     @Test fun prepareColorsAtPartialCannotReachNextStageStart() {
         val tracker = MappingProgressPhases.tracker("rtk-surface", photoCount = 134)
         val at54 = tracker.overall(MappingProgressPhases.PREPARE_COLORS, 54, 134)
@@ -62,6 +73,14 @@ class MappingProgressPhasesTest {
             assertTrue("jump=${(next - previous) * 100}", (next - previous) * 100 <= 30.0 + 1e-9)
             previous = next
         }
+    }
+
+    @Test fun tileLocalPrefersWorkUnitsOverUniformCount() {
+        val byCount = MappingProgressPhases.tileLocalFraction(100, 195)
+        val byWork = MappingProgressPhases.tileLocalFraction(100, 195, workDone = 200.0, workTotal = 2500.0)
+        assertTrue("count=$byCount", byCount < 0.20)
+        assertEquals(0.08, byWork, 1e-9)
+        assertTrue(byWork < byCount || abs(byWork - 200.0 / 2500.0) < 1e-9)
     }
 
     @Test fun indeterminateStaysAtBandStartUntilTimeHint() {
@@ -129,5 +148,107 @@ class MappingProgressPhasesTest {
         MappingProgressPhases.Costs.record(root, MappingProgressPhases.RECONSTRUCT, elapsedMs = 20_000, photoCount = 10)
         val blended = MappingProgressPhases.Costs.load(root).getValue(MappingProgressPhases.RECONSTRUCT)
         assertTrue(blended in 1300.0..1900.0)
+    }
+
+    /**
+     * Replay the measured A5 Pro full run (134 photos, 195 tiles, ~6490 s) and assert
+     * phase-boundary progress stays within ±10 pp of real elapsed share, with mid-tile ETA
+     * within 2× of actual remaining.
+     */
+    @Test fun calibratedFullRunReplayMatchesWallShareAndEta() {
+        val n = 134
+        val tiles = 195
+        val totalSec = 6490.0
+        val earlySec = 167.0
+        val colorsSec = 180.0
+        val seamsSec = 3527.0
+        val tilesSec = 2500.0
+        val zoomSec = 12.0
+        val packageSec = 102.0
+        val tracker = MappingProgressPhases.tracker("rtk-surface", photoCount = n, tileCount = tiles)
+        val t0 = 1_000_000_000_000L
+        fun nanosAt(elapsedSec: Double) = t0 + (elapsedSec * 1_000_000_000.0).toLong()
+
+        tracker.overall(MappingProgressPhases.CHECK_ORIGINALS, 1.0)
+        tracker.etaSeconds(tracker.band(MappingProgressPhases.CHECK_ORIGINALS).endInclusive, nanosAt(10.0))
+        val afterEarly = tracker.overall(MappingProgressPhases.RECONSTRUCT, 1.0)
+        tracker.etaSeconds(afterEarly, nanosAt(earlySec))
+        assertTrue("afterEarly=$afterEarly", afterEarly <= 0.15)
+
+        val afterColors = tracker.overall(MappingProgressPhases.PREPARE_COLORS, 1.0)
+        val colorsShare = (earlySec + colorsSec) / totalSec
+        tracker.etaSeconds(afterColors, nanosAt(earlySec + colorsSec))
+        assertTrue("afterColors=$afterColors", afterColors <= 0.15)
+        assertTrue(
+            "afterColors=$afterColors real=$colorsShare",
+            abs(afterColors - colorsShare) <= 0.10,
+        )
+
+        // Seams report a real intra-phase fraction.
+        var overall = afterColors
+        val seamsStartElapsed = earlySec + colorsSec
+        for (step in 1..20) {
+            val local = step / 20.0
+            overall = tracker.overall(MappingProgressPhases.MATCH_SEAMS, local)
+            tracker.etaSeconds(overall, nanosAt(seamsStartElapsed + seamsSec * local))
+        }
+        val afterSeams = overall
+        val seamsShare = (earlySec + colorsSec + seamsSec) / totalSec
+        assertTrue("afterSeams=$afterSeams", afterSeams in 0.55..0.70)
+        assertTrue(
+            "afterSeams=$afterSeams real=$seamsShare",
+            abs(afterSeams - seamsShare) <= 0.10,
+        )
+
+        // Non-uniform tile timings: 1–100 ~2 s, 101–157 ~10 s, 158–195 ~45 s.
+        fun tileElapsed(completed: Int): Double {
+            var sum = 0.0
+            for (i in 1..completed) {
+                sum += when {
+                    i <= 100 -> 2.0
+                    i <= 157 -> 10.0
+                    else -> 45.0
+                }
+            }
+            return sum
+        }
+        val tilesStartElapsed = seamsStartElapsed + seamsSec
+        var midTileOverall = afterSeams
+        var midTileEta: Long? = null
+        var midTileRemaining: Double? = null
+        for (i in 1..tiles) {
+            overall = tracker.overall(MappingProgressPhases.PROJECT_TILES, i, tiles)
+            val elapsed = tilesStartElapsed + tileElapsed(i)
+            val eta = tracker.etaSeconds(overall, nanosAt(elapsed))
+            // Mid-tile phase by wall time (~1250 s into tiles).
+            if (midTileRemaining == null && tileElapsed(i) >= tilesSec / 2.0) {
+                midTileOverall = overall
+                midTileEta = eta
+                midTileRemaining = totalSec - elapsed
+            }
+        }
+        val afterTiles = overall
+        val tilesShare = (earlySec + colorsSec + seamsSec + tilesSec) / totalSec
+        assertTrue("afterTiles=$afterTiles", afterTiles >= 0.95)
+        assertTrue(
+            "afterTiles=$afterTiles real=$tilesShare",
+            abs(afterTiles - tilesShare) <= 0.10,
+        )
+
+        assertNotNull("mid-tile ETA should be available", midTileEta)
+        assertNotNull(midTileRemaining)
+        val remaining = midTileRemaining!!
+        val eta = midTileEta!!.toDouble()
+        assertTrue(
+            "midTile overall=$midTileOverall eta=$eta remaining=$remaining",
+            eta in (remaining / 2.0)..(remaining * 2.0),
+        )
+
+        overall = tracker.overall(MappingProgressPhases.ZOOM_LEVELS, 1.0)
+        tracker.etaSeconds(overall, nanosAt(tilesStartElapsed + tilesSec + zoomSec))
+        overall = tracker.overall(MappingProgressPhases.PACKAGE, 1.0)
+        tracker.etaSeconds(overall, nanosAt(totalSec - 5))
+        val done = tracker.overall(MappingProgressPhases.PUBLISH, 1.0)
+        assertEquals(1.0, done, 1e-9)
     }
 }

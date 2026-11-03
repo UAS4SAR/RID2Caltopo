@@ -6,6 +6,7 @@ import kotlin.math.exp
 import kotlin.math.ln
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.pow
 
 /**
  * Phase-weighted mapping progress. Weights come from measured per-phase cost
@@ -23,6 +24,9 @@ internal object MappingProgressPhases {
     const val ZOOM_LEVELS = "zoom-levels"
     const val PACKAGE = "package"
     const val PUBLISH = "publish"
+
+    /** Late tiles dominate wall time (A5 Pro: early ~2 s, late ~45 s). Count alone runs ahead. */
+    const val TILE_LOCAL_EXPONENT = 3.5
 
     data class Phase(val id: String, val weight: Double, val title: String)
 
@@ -43,23 +47,46 @@ internal object MappingProgressPhases {
     )
 
     /**
-     * Initial measured cost table (A5 Pro, ~134 photos):
-     * prepare-colors ≈ 3.4 s/photo; matching seams is a multi-minute fixed-heavy stage.
-     * Per-photo stages scale with N; packaging/zoom/publish keep a fixed floor.
+     * Full-run calibration (A5 Pro, 134 photos, 195 tiles, ~6490 s wall):
+     * early ~167 s; colors ~180 s (~1.35 s/photo); seams ~3527 s (~26.3 s/photo);
+     * tiles ~2500 s (~12.8 s/tile); zoom ~12 s; package ~102 s.
+     * Per-photo stages ∝ N; tile stage ∝ tile count (or estimate from N); fixed stages constant.
      */
-    fun defaultCostsMs(photoCount: Int, engine: String): Map<String, Double> {
+    fun estimateTileCount(photoCount: Int): Int =
+        max(1, (photoCount.coerceAtLeast(1) * 3 + 1) / 2) // ≈ 1.5 × N
+
+    fun defaultCostsMs(photoCount: Int, engine: String, tileCount: Int = estimateTileCount(photoCount)): Map<String, Double> {
         val n = photoCount.coerceAtLeast(1).toDouble()
-        val reconstruct = if (engine == "rtk-surface") 3500.0 * n else 900.0 * n
+        val tiles = tileCount.coerceAtLeast(1).toDouble()
+        val reconstruct = if (engine == "rtk-surface") 1170.0 * n else 900.0 * n
         return mapOf(
             CHECK_ORIGINALS to 80.0 * n,
             RECONSTRUCT to reconstruct,
-            PREPARE_COLORS to 3400.0 * n,
-            MATCH_SEAMS to 5500.0 * n,
-            PROJECT_TILES to 600.0 * n,
-            ZOOM_LEVELS to 12_000.0 + 20.0 * n,
-            PACKAGE to 25_000.0 + 40.0 * n,
+            PREPARE_COLORS to 1350.0 * n,
+            MATCH_SEAMS to 26_300.0 * n,
+            PROJECT_TILES to 12_800.0 * tiles,
+            ZOOM_LEVELS to 12_000.0,
+            PACKAGE to 102_000.0,
             PUBLISH to 8_000.0,
         )
+    }
+
+    /**
+     * Intra-phase fraction for tile projection. Prefers work units (pixels/area) when known;
+     * otherwise applies a back-loaded curve so early cheap tiles do not run ahead of wall time.
+     */
+    fun tileLocalFraction(
+        unitIndex: Int,
+        unitTotal: Int,
+        workDone: Double? = null,
+        workTotal: Double? = null,
+    ): Double {
+        if (workDone != null && workTotal != null && workTotal > 0.0) {
+            return (workDone / workTotal).coerceIn(0.0, 1.0)
+        }
+        if (unitTotal <= 0) return 0.0
+        val f = (unitIndex.toDouble() / unitTotal.toDouble()).coerceIn(0.0, 1.0)
+        return f.pow(TILE_LOCAL_EXPONENT).coerceIn(0.0, 1.0)
     }
 
     fun weightsFromCosts(costs: Map<String, Double>): List<Phase> {
@@ -68,8 +95,14 @@ internal object MappingProgressPhases {
         return ordered.map { (id, cost) -> Phase(id, cost / sum, titles.getValue(id)) }
     }
 
-    fun phases(engine: String, photoCount: Int = 50, measuredMsPerPhoto: Map<String, Double> = emptyMap()): List<Phase> {
-        val defaults = defaultCostsMs(photoCount, engine).toMutableMap()
+    fun phases(
+        engine: String,
+        photoCount: Int = 50,
+        measuredMsPerPhoto: Map<String, Double> = emptyMap(),
+        tileCount: Int? = null,
+    ): List<Phase> {
+        val tiles = tileCount ?: estimateTileCount(photoCount)
+        val defaults = defaultCostsMs(photoCount, engine, tiles).toMutableMap()
         val n = photoCount.coerceAtLeast(1).toDouble()
         for ((id, msPerPhoto) in measuredMsPerPhoto) {
             if (id !in defaults) continue
@@ -80,8 +113,12 @@ internal object MappingProgressPhases {
         return weightsFromCosts(defaults)
     }
 
-    fun tracker(engine: String, photoCount: Int = 50, measuredMsPerPhoto: Map<String, Double> = emptyMap()): Tracker =
-        Tracker(phases(engine, photoCount, measuredMsPerPhoto), photoCount)
+    fun tracker(
+        engine: String,
+        photoCount: Int = 50,
+        measuredMsPerPhoto: Map<String, Double> = emptyMap(),
+        tileCount: Int? = null,
+    ): Tracker = Tracker(phases(engine, photoCount, measuredMsPerPhoto, tileCount), photoCount)
 
     /** Compact persistence of ms-per-photo by phase id. */
     object Costs {
@@ -195,7 +232,7 @@ internal object MappingProgressPhases {
             val range = band(phase)
             val raw = when {
                 local != null -> range.start + min(1.0, max(0.0, local)) * (range.endInclusive - range.start)
-                timeHint != null -> range.start + min(0.95, max(0.0, timeHint)) * (range.endInclusive - range.start)
+                timeHint != null -> range.start + min(0.85, max(0.0, timeHint)) * (range.endInclusive - range.start)
                 else -> range.start
             }
             val value = max(floor, raw)
@@ -203,9 +240,20 @@ internal object MappingProgressPhases {
             return value
         }
 
-        fun overall(phase: String, unitIndex: Int, unitTotal: Int): Double {
+        fun overall(
+            phase: String,
+            unitIndex: Int,
+            unitTotal: Int,
+            workDone: Double? = null,
+            workTotal: Double? = null,
+        ): Double {
             require(unitTotal > 0 && unitIndex in 0..unitTotal)
-            return overall(phase, unitIndex.toDouble() / unitTotal)
+            val local = if (phase == PROJECT_TILES) {
+                tileLocalFraction(unitIndex, unitTotal, workDone, workTotal)
+            } else {
+                unitIndex.toDouble() / unitTotal
+            }
+            return overall(phase, local)
         }
 
         fun stage(phase: String, unitIndex: Int? = null, unitTotal: Int? = null): String {
