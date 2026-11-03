@@ -30,6 +30,41 @@ internal fun DownloadMapChoice(selected: String, choices: List<String>, enabled:
     }
 }
 
+@Composable
+internal fun DownloadMapZoomRow(
+    label: String,
+    minZoom: Int,
+    maxZoom: Int,
+    sourceMin: Int,
+    sourceMax: Int,
+    enabled: Boolean,
+    onMinChange: (Int) -> Unit,
+    onMaxChange: (Int) -> Unit,
+) {
+    val zooms = (sourceMin..sourceMax).map { it.toString() }
+    Column(modifier = Modifier.fillMaxWidth().padding(start = 12.dp, bottom = 4.dp)) {
+        Text(label, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text("Min", style = MaterialTheme.typography.bodySmall)
+            DownloadMapChoice(minZoom.toString(), zooms, enabled, modifier = Modifier.weight(1f)) { value ->
+                val next = value.toInt().coerceIn(sourceMin, sourceMax)
+                onMinChange(next)
+                if (next > maxZoom) onMaxChange(next)
+            }
+            Text("Max", style = MaterialTheme.typography.bodySmall)
+            DownloadMapChoice(maxZoom.toString(), zooms, enabled, modifier = Modifier.weight(1f)) { value ->
+                val next = value.toInt().coerceIn(sourceMin, sourceMax)
+                onMaxChange(next)
+                if (next < minZoom) onMinChange(next)
+            }
+        }
+    }
+}
+
 /** Stacks at large text sizes or narrow widths instead of squeezing the value. */
 @Composable
 internal fun DownloadMapSummaryRow(label: String, value: String) {

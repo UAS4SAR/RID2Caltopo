@@ -2598,6 +2598,18 @@ private func proximityDrone(
     #expect(OperationalMapBaseLayer.usfsTopo.sourceMaximumZoom == 16)
     #expect(OperationalMapBaseLayer.usgsScannedTopo.attribution.contains("Historical Topographic"))
     #expect(OperationalMapBaseLayer.usfsTopo.attribution.contains("USGSTopo"))
+    #expect(OperationalMapBaseLayer.openStreetMap.packageId == "OSM-Standard")
+    #expect(OperationalMapBaseLayer.imagery.packageId == "ArcGIS-WorldImagery")
+    #expect(OperationalMapBaseLayer.usgsScannedTopo.packageId == "USGS-ScannedTopo")
+    #expect(OperationalMapBaseLayer.usfsTopo.packageId == "USFS-Topo")
+    #expect(OperationalMapTileSourceRegistry.crossPlatformIds == [
+        "ArcGIS-WorldImagery", "OSM-Standard", "USFS-Topo", "USGS-Contours", "USGS-ScannedTopo",
+    ])
+    #expect(OperationalMapTileSourceRegistry.descriptor(id: "USGS-Contours")?.offlineAllowed == true)
+    #expect(OperationalMapTileSourceRegistry.descriptor(id: "OSM-Standard")?.offlineAllowed == false)
+    #expect(OperationalMapTileSourceRegistry.descriptor(id: "ArcGIS-WorldImagery")?.offlineAllowed == false)
+    #expect(OperationalMapTilePolicy.offlineFetchThreadPool
+        == OperationalMapTilePolicy.usgsHostedFetchConcurrency * 2 + 1)
 }
 
 @Test func operationalMapOverzoomSelectsAndOffsetsTheLevelNineteenParent() throws {

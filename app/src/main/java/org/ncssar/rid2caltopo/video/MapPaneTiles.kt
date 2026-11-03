@@ -137,30 +137,45 @@ internal fun tileSourceForBaseLayer(baseLayer: BaseLayerOption): OnlineTileSourc
     }
 
 internal fun offlinePrepTileSources(
-    baseLayer: BaseLayerOption,
+    includeUsgsScannedTopo: Boolean,
+    includeUsfsTopo: Boolean,
     includeContours: Boolean
-): List<OnlineTileSourceBase> {
-    val sources = mutableListOf<OnlineTileSourceBase>()
-    val baseSource = tileSourceForBaseLayer(baseLayer)
-    val probeUrl = baseSource.getTileURLString(MapTileIndex.getTileIndex(0, 0, 0))
-    if (org.ncssar.rid2caltopo.video.mapcache.MapTileUsagePolicy.allowsOfflineDownload(baseSource.name(), probeUrl)) {
-        sources += baseSource
-    }
-    if (includeContours) sources += UsgsContoursTileSource
-    return sources
-}
-
-internal fun offlinePrepTileSources(
-    includeImagery: Boolean,
-    includeOsm: Boolean,
-    includeContours: Boolean,
-    includeUsgsScannedTopo: Boolean = false,
-    includeUsfsTopo: Boolean = false
 ): List<OnlineTileSourceBase> = buildList {
-    // Imagery/OSM flags are retained for old callers; public OSM/Esri cannot be prefetched.
     if (includeUsgsScannedTopo) add(UsgsScannedTopoTileSource)
     if (includeUsfsTopo) add(UsfsTopoTileSource)
     if (includeContours) add(UsgsContoursTileSource)
+}
+
+internal fun offlinePrepZoomRange(
+    source: OnlineTileSourceBase,
+    minZoom: Int,
+    maxZoom: Int
+): IntRange =
+    org.ncssar.rid2caltopo.video.mapcache.MapTileSourceRegistry.clampZoomRange(
+        source.name(),
+        minZoom,
+        maxZoom
+    )
+
+internal fun offlinePrepSourceZoom(
+    sourceName: String,
+    includeUsgsScannedTopo: Boolean,
+    usgsMin: Int,
+    usgsMax: Int,
+    includeUsfsTopo: Boolean,
+    usfsMin: Int,
+    usfsMax: Int,
+    includeContours: Boolean,
+    contoursMin: Int,
+    contoursMax: Int
+): IntRange? = when (sourceName) {
+    UsgsScannedTopoTileSource.name() ->
+        if (includeUsgsScannedTopo) offlinePrepZoomRange(UsgsScannedTopoTileSource, usgsMin, usgsMax) else null
+    UsfsTopoTileSource.name() ->
+        if (includeUsfsTopo) offlinePrepZoomRange(UsfsTopoTileSource, usfsMin, usfsMax) else null
+    UsgsContoursTileSource.name() ->
+        if (includeContours) offlinePrepZoomRange(UsgsContoursTileSource, contoursMin, contoursMax) else null
+    else -> null
 }
 
 internal fun offlinePrepTileOperationCount(baseTileCount: Int, sourceCount: Int): Int =

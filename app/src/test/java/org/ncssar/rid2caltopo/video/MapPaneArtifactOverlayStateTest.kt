@@ -370,49 +370,61 @@ class MapPaneArtifactOverlayStateTest {
     }
 
     @Test
-    fun offlinePrepTileSources_addsContoursWhenRequested() {
+    fun offlinePrepTileSources_includeOnlySelectedOfflineAllowedSuppliers() {
         assertEquals(
             emptyList<String>(),
-            offlinePrepTileSources(BaseLayerOption.Imagery, includeContours = false).map { it.name() }
+            offlinePrepTileSources(
+                includeUsgsScannedTopo = false,
+                includeUsfsTopo = false,
+                includeContours = false
+            ).map { it.name() }
         )
         assertEquals(
             listOf(UsgsContoursTileSource.name()),
-            offlinePrepTileSources(BaseLayerOption.Imagery, includeContours = true).map { it.name() }
+            offlinePrepTileSources(
+                includeUsgsScannedTopo = false,
+                includeUsfsTopo = false,
+                includeContours = true
+            ).map { it.name() }
         )
         assertEquals(
             listOf(UsgsScannedTopoTileSource.name()),
-            offlinePrepTileSources(BaseLayerOption.UsgsScannedTopo, includeContours = false).map { it.name() }
+            offlinePrepTileSources(
+                includeUsgsScannedTopo = true,
+                includeUsfsTopo = false,
+                includeContours = false
+            ).map { it.name() }
         )
         assertEquals(
             listOf(UsfsTopoTileSource.name(), UsgsContoursTileSource.name()),
-            offlinePrepTileSources(BaseLayerOption.UsfsTopo, includeContours = true).map { it.name() }
+            offlinePrepTileSources(
+                includeUsgsScannedTopo = false,
+                includeUsfsTopo = true,
+                includeContours = true
+            ).map { it.name() }
         )
-    }
-
-    @Test
-    fun offlinePrepIndependentLayers_includeOnlySelectedSuppliers() {
-        for (mask in 0..7) {
-            val imagery = mask and 1 != 0
-            val osm = mask and 2 != 0
-            val contours = mask and 4 != 0
-            val expected = buildList {
-                if (contours) add(UsgsContoursTileSource.name())
-            }
-            val sources = offlinePrepTileSources(imagery, osm, contours)
-            assertEquals(expected, sources.map { it.name() })
-            assertEquals(12 * expected.size, offlinePrepTileOperationCount(12, sources.size))
-        }
         assertEquals(
             listOf(UsgsScannedTopoTileSource.name(), UsfsTopoTileSource.name(), UsgsContoursTileSource.name()),
             offlinePrepTileSources(
-                includeImagery = false,
-                includeOsm = false,
-                includeContours = true,
                 includeUsgsScannedTopo = true,
-                includeUsfsTopo = true
+                includeUsfsTopo = true,
+                includeContours = true
             ).map { it.name() }
         )
         assertEquals(Int.MAX_VALUE, offlinePrepTileOperationCount(Int.MAX_VALUE, 3))
+    }
+
+    @Test
+    fun offlinePrepZoomRange_clampsToSourceNativeMaximum() {
+        val usgs = offlinePrepZoomRange(UsgsScannedTopoTileSource, minZoom = 8, maxZoom = 22)
+        assertEquals(8, usgs.first)
+        assertEquals(16, usgs.last)
+        val usfs = offlinePrepZoomRange(UsfsTopoTileSource, minZoom = 0, maxZoom = 16)
+        assertEquals(0, usfs.first)
+        assertEquals(16, usfs.last)
+        val overMax = offlinePrepZoomRange(UsgsScannedTopoTileSource, 20, 22)
+        assertEquals(16, overMax.first)
+        assertEquals(16, overMax.last)
     }
 
     @Test
@@ -447,9 +459,21 @@ class MapPaneArtifactOverlayStateTest {
 
     @Test
     fun publicOsmIsInteractiveOnlyEvenWithLegacyOfflineSelection() {
-        assertTrue(offlinePrepTileSources(BaseLayerOption.OpenStreetMap, false).isEmpty())
-        assertEquals(listOf(UsgsContoursTileSource.name()),
-            offlinePrepTileSources(BaseLayerOption.OpenStreetMap, true).map { it.name() })
+        assertTrue(
+            offlinePrepTileSources(
+                includeUsgsScannedTopo = false,
+                includeUsfsTopo = false,
+                includeContours = false
+            ).isEmpty()
+        )
+        assertEquals(
+            listOf(UsgsContoursTileSource.name()),
+            offlinePrepTileSources(
+                includeUsgsScannedTopo = false,
+                includeUsfsTopo = false,
+                includeContours = true
+            ).map { it.name() }
+        )
         val index = MapTileIndex.getTileIndex(8, 40, 80)
         val url = OsmStandardTileSource.getTileURLString(index)
         assertTrue(url.startsWith("https://tile.openstreetmap.org/"))

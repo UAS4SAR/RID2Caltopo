@@ -800,9 +800,8 @@ internal fun SplitMapPane(
     var showOfflinePrepDialog by offlinePrepCoordinator.showDialog
     var showMutualAidPackageDialog by remember { mutableStateOf(false) }
     var offlinePrepInFlight by offlinePrepCoordinator.inFlight
-    var offlinePrepPreset by offlinePrepCoordinator.preset
-    var offlinePrepIncludeImagery by offlinePrepCoordinator.includeImagery
-    var offlinePrepIncludeOsm by offlinePrepCoordinator.includeOsm
+    var offlinePrepIncludeUsgsScannedTopo by offlinePrepCoordinator.includeUsgsScannedTopo
+    var offlinePrepIncludeUsfsTopo by offlinePrepCoordinator.includeUsfsTopo
     var offlinePrepIncludeDem by offlinePrepCoordinator.includeDem
     var offlinePrepIncludeAol by offlinePrepCoordinator.includeAol
     var offlinePrepAolReport by offlinePrepCoordinator.aolReport
@@ -819,6 +818,13 @@ internal fun SplitMapPane(
     val offlinePrepAolWorkingBytes = if(offlinePrepIncludeAol) offlinePrepAolPlan?.let { if(it.reused) 0L else it.advertisedBytes*3/2+it.tiles*16_000_000L } ?: 0L else 0L
     var offlinePrepDemResolution by offlinePrepCoordinator.demResolution
     var offlinePrepIncludeContours by offlinePrepCoordinator.includeContours
+    var offlinePrepLayerSelectionInitialized by offlinePrepCoordinator.layerSelectionInitialized
+    var offlinePrepUsgsMinZoom by offlinePrepCoordinator.usgsScannedTopoMinZoom
+    var offlinePrepUsgsMaxZoom by offlinePrepCoordinator.usgsScannedTopoMaxZoom
+    var offlinePrepUsfsMinZoom by offlinePrepCoordinator.usfsTopoMinZoom
+    var offlinePrepUsfsMaxZoom by offlinePrepCoordinator.usfsTopoMaxZoom
+    var offlinePrepContoursMinZoom by offlinePrepCoordinator.contoursMinZoom
+    var offlinePrepContoursMaxZoom by offlinePrepCoordinator.contoursMaxZoom
     var offlinePrepAreaMode by offlinePrepCoordinator.areaMode
     var offlinePrepBoundaryId by offlinePrepCoordinator.boundaryId
     var offlinePrepProgress by offlinePrepCoordinator.progress
@@ -1482,13 +1488,18 @@ internal fun SplitMapPane(
         showOfflinePrepDialog,
         offlinePrepAreaMode,
         offlinePrepBoundaryId,
-        offlinePrepPreset,
         offlinePrepIncludeDem,
         offlinePrepIncludeAol,
         offlinePrepDemResolution,
-        offlinePrepIncludeImagery,
-        offlinePrepIncludeOsm,
+        offlinePrepIncludeUsgsScannedTopo,
+        offlinePrepIncludeUsfsTopo,
         offlinePrepIncludeContours,
+        offlinePrepUsgsMinZoom,
+        offlinePrepUsgsMaxZoom,
+        offlinePrepUsfsMinZoom,
+        offlinePrepUsfsMaxZoom,
+        offlinePrepContoursMinZoom,
+        offlinePrepContoursMaxZoom,
         offlinePrepMapBounds(),
         offlineBoundaryOptions
     ) {
@@ -1507,17 +1518,38 @@ internal fun SplitMapPane(
             offlinePrepEstimate = OfflinePrepEstimate(ready = false)
             return@LaunchedEffect
         }
+        val includeUsgs = offlinePrepIncludeUsgsScannedTopo
+        val includeUsfs = offlinePrepIncludeUsfsTopo
+        val includeContours = offlinePrepIncludeContours
+        val usgsZoom = offlinePrepZoomRange(UsgsScannedTopoTileSource, offlinePrepUsgsMinZoom, offlinePrepUsgsMaxZoom)
+        val usfsZoom = offlinePrepZoomRange(UsfsTopoTileSource, offlinePrepUsfsMinZoom, offlinePrepUsfsMaxZoom)
+        val contoursZoom = offlinePrepZoomRange(UsgsContoursTileSource, offlinePrepContoursMinZoom, offlinePrepContoursMaxZoom)
         val computed = withContext(Dispatchers.Default) {
-            val baseTileEstimate = estimateTileCountApproximate(
-                bounds = estimateBounds,
-                minZoom = offlinePrepPreset.minZoom,
-                maxZoom = offlinePrepPreset.maxZoom,
-                clipBoundary = selectedBoundary
-            )
-            val tileEstimate = offlinePrepTileOperationCount(
-                baseTileEstimate,
-                offlinePrepTileSources(baseLayer, offlinePrepIncludeContours).size
-            )
+            var tileEstimate = 0
+            if (includeUsgs && !usgsZoom.isEmpty()) {
+                tileEstimate += estimateTileCountApproximate(
+                    bounds = estimateBounds,
+                    minZoom = usgsZoom.first,
+                    maxZoom = usgsZoom.last,
+                    clipBoundary = selectedBoundary
+                )
+            }
+            if (includeUsfs && !usfsZoom.isEmpty()) {
+                tileEstimate += estimateTileCountApproximate(
+                    bounds = estimateBounds,
+                    minZoom = usfsZoom.first,
+                    maxZoom = usfsZoom.last,
+                    clipBoundary = selectedBoundary
+                )
+            }
+            if (includeContours && !contoursZoom.isEmpty()) {
+                tileEstimate += estimateTileCountApproximate(
+                    bounds = estimateBounds,
+                    minZoom = contoursZoom.first,
+                    maxZoom = contoursZoom.last,
+                    clipBoundary = selectedBoundary
+                )
+            }
             val demEstimate = if (offlinePrepIncludeDem) {
                 estimateDemDownloadCount(estimateBounds, offlinePrepDemResolution)
             } else 0
@@ -1549,14 +1581,18 @@ internal fun SplitMapPane(
         showOfflinePrepDialog,
         offlinePrepAreaMode,
         offlinePrepBoundaryId,
-        offlinePrepPreset,
         offlinePrepIncludeDem,
         offlinePrepIncludeAol,
         offlinePrepDemResolution,
-        offlinePrepIncludeImagery,
-        offlinePrepIncludeOsm,
+        offlinePrepIncludeUsgsScannedTopo,
+        offlinePrepIncludeUsfsTopo,
         offlinePrepIncludeContours,
-        baseLayer,
+        offlinePrepUsgsMinZoom,
+        offlinePrepUsgsMaxZoom,
+        offlinePrepUsfsMinZoom,
+        offlinePrepUsfsMaxZoom,
+        offlinePrepContoursMinZoom,
+        offlinePrepContoursMaxZoom,
         offlinePrepMapBounds(),
         offlineBoundaryOptions,
         offlinePrepInFlight,
@@ -1582,17 +1618,30 @@ internal fun SplitMapPane(
             return@LaunchedEffect
         }
         offlinePrepCacheStatus = OfflinePrepCacheStatus(checked = false)
-        val tileSources = offlinePrepTileSources(baseLayer, offlinePrepIncludeContours)
+        val tileSources = offlinePrepTileSources(
+            includeUsgsScannedTopo = offlinePrepIncludeUsgsScannedTopo,
+            includeUsfsTopo = offlinePrepIncludeUsfsTopo,
+            includeContours = offlinePrepIncludeContours
+        )
+        val usgsZoom = offlinePrepZoomRange(UsgsScannedTopoTileSource, offlinePrepUsgsMinZoom, offlinePrepUsgsMaxZoom)
+        val usfsZoom = offlinePrepZoomRange(UsfsTopoTileSource, offlinePrepUsfsMinZoom, offlinePrepUsfsMaxZoom)
+        val contoursZoom = offlinePrepZoomRange(UsgsContoursTileSource, offlinePrepContoursMinZoom, offlinePrepContoursMaxZoom)
         val includeDem = offlinePrepIncludeDem
         val computed = withContext(Dispatchers.IO) {
             var tileMissing = 0
-            forEachTileIndexForBounds(
-                bounds = prepBounds,
-                minZoom = offlinePrepPreset.minZoom,
-                maxZoom = offlinePrepPreset.maxZoom,
-                clipBoundary = selectedBoundary
-            ) { tileIndex ->
-                for (tileSource in tileSources) {
+            for (tileSource in tileSources) {
+                val zoom = when (tileSource.name()) {
+                    UsgsScannedTopoTileSource.name() -> usgsZoom
+                    UsfsTopoTileSource.name() -> usfsZoom
+                    else -> contoursZoom
+                }
+                if (zoom.isEmpty()) continue
+                forEachTileIndexForBounds(
+                    bounds = prepBounds,
+                    minZoom = zoom.first,
+                    maxZoom = zoom.last,
+                    clipBoundary = selectedBoundary
+                ) { tileIndex ->
                     if (!tileCacheWriter.exists(tileSource, tileIndex)) {
                         tileMissing++
                     }
@@ -1640,13 +1689,15 @@ internal fun SplitMapPane(
                 "viewport"
             }
         return listOf(
-            "imagery=$offlinePrepIncludeImagery",
-            "osm=$offlinePrepIncludeOsm",
-            "preset=${offlinePrepPreset.label}",
+            "usgs=$offlinePrepIncludeUsgsScannedTopo",
+            "usgsZoom=$offlinePrepUsgsMinZoom-$offlinePrepUsgsMaxZoom",
+            "usfs=$offlinePrepIncludeUsfsTopo",
+            "usfsZoom=$offlinePrepUsfsMinZoom-$offlinePrepUsfsMaxZoom",
             "dem=$offlinePrepIncludeDem",
             "aol=$offlinePrepIncludeAol",
             "demResolution=${offlinePrepDemResolution.meters}m",
             "contours=$offlinePrepIncludeContours",
+            "contoursZoom=$offlinePrepContoursMinZoom-$offlinePrepContoursMaxZoom",
             areaKey,
             "n=${"%.5f".format(Locale.US, bounds.latNorth)}",
             "s=${"%.5f".format(Locale.US, bounds.latSouth)}",
@@ -1719,14 +1770,18 @@ internal fun SplitMapPane(
         offlinePrepCompletedSelectionKey,
         offlinePrepAreaMode,
         offlinePrepBoundaryId,
-        offlinePrepPreset,
         offlinePrepIncludeDem,
         offlinePrepIncludeAol,
         offlinePrepDemResolution,
-        offlinePrepIncludeImagery,
-        offlinePrepIncludeOsm,
+        offlinePrepIncludeUsgsScannedTopo,
+        offlinePrepIncludeUsfsTopo,
         offlinePrepIncludeContours,
-        baseLayer,
+        offlinePrepUsgsMinZoom,
+        offlinePrepUsgsMaxZoom,
+        offlinePrepUsfsMinZoom,
+        offlinePrepUsfsMaxZoom,
+        offlinePrepContoursMinZoom,
+        offlinePrepContoursMaxZoom,
         offlinePrepMapBounds(),
         offlineBoundaryOptions
     ) {
@@ -1788,7 +1843,22 @@ internal fun SplitMapPane(
         offlinePrepActiveCalls.clear()
         offlinePrepCancelRequested = false
         offlinePrepInFlight = true
-        val tileSources = offlinePrepTileSources(baseLayer, offlinePrepIncludeContours)
+        val tileSources = offlinePrepTileSources(
+            includeUsgsScannedTopo = offlinePrepIncludeUsgsScannedTopo,
+            includeUsfsTopo = offlinePrepIncludeUsfsTopo,
+            includeContours = offlinePrepIncludeContours
+        )
+        val sourceZoomByName = tileSources.associate { source ->
+            val zoom = when (source.name()) {
+                UsgsScannedTopoTileSource.name() ->
+                    offlinePrepZoomRange(source, offlinePrepUsgsMinZoom, offlinePrepUsgsMaxZoom)
+                UsfsTopoTileSource.name() ->
+                    offlinePrepZoomRange(source, offlinePrepUsfsMinZoom, offlinePrepUsfsMaxZoom)
+                else ->
+                    offlinePrepZoomRange(source, offlinePrepContoursMinZoom, offlinePrepContoursMaxZoom)
+            }
+            source.name() to zoom
+        }
         val tileLayerLabels = buildList {
             for (source in tileSources) {
                 when (source.name()) {
@@ -1805,7 +1875,6 @@ internal fun SplitMapPane(
             aolFilesTotal = aolPlan?.sources?.size ?: 0, aolTilesTotal = aolPlan?.tiles ?: 0
         )
         val offlinePrepTileFetchScheduler = offlinePrepCoordinator.begin(context)
-        val preset = offlinePrepPreset
         val includeDem = offlinePrepIncludeDem
         val demResolution = offlinePrepDemResolution
         val includeContours = offlinePrepIncludeContours
@@ -2150,17 +2219,19 @@ internal fun SplitMapPane(
 
                     if (!maximizeThroughput) {
                         // Per-source concurrency: OSM/Esri/contours stay serial; USGS/USFS may use a bound.
-                        // Independent suppliers can still progress together.
-                        val orderedTileIndexes = if (tileSources.isEmpty()) emptyList() else orderedTileIndexesForOfflinePrep(
-                            bounds = bounds,
-                            minZoom = preset.minZoom,
-                            maxZoom = preset.maxZoom,
-                            clipBoundary = clipBoundary,
-                            tabletLocation = tabletLocation,
-                            dronePathPoints = dronePathPoints
-                        )
+                        // Independent suppliers can still progress together. Pool sized for both + contours.
                         tileSources.map { source ->
                             launch {
+                                val zoom = sourceZoomByName[source.name()] ?: return@launch
+                                if (zoom.isEmpty()) return@launch
+                                val orderedTileIndexes = orderedTileIndexesForOfflinePrep(
+                                    bounds = bounds,
+                                    minZoom = zoom.first,
+                                    maxZoom = zoom.last,
+                                    clipBoundary = clipBoundary,
+                                    tabletLocation = tabletLocation,
+                                    dronePathPoints = dronePathPoints
+                                )
                                 val concurrency = MapTileUsagePolicy.offlineFetchConcurrency(source.name())
                                 if (concurrency <= 1) {
                                     for (tileIndex in orderedTileIndexes) {
@@ -2211,17 +2282,19 @@ internal fun SplitMapPane(
                         val demWorkers = mutableListOf<Job>()
 
                         val tileProducer = launch {
-                            val orderedTileIndexes = orderedTileIndexesForOfflinePrep(
-                                bounds = bounds,
-                                minZoom = preset.minZoom,
-                                maxZoom = preset.maxZoom,
-                                clipBoundary = clipBoundary,
-                                tabletLocation = tabletLocation,
-                                dronePathPoints = dronePathPoints
-                            )
-                            for (tileIndex in orderedTileIndexes) {
-                                currentCoroutineContext().ensureActive()
-                                for (source in tileSources) {
+                            for (source in tileSources) {
+                                val zoom = sourceZoomByName[source.name()] ?: continue
+                                if (zoom.isEmpty()) continue
+                                val orderedTileIndexes = orderedTileIndexesForOfflinePrep(
+                                    bounds = bounds,
+                                    minZoom = zoom.first,
+                                    maxZoom = zoom.last,
+                                    clipBoundary = clipBoundary,
+                                    tabletLocation = tabletLocation,
+                                    dronePathPoints = dronePathPoints
+                                )
+                                for (tileIndex in orderedTileIndexes) {
+                                    currentCoroutineContext().ensureActive()
                                     tileQueue.send(source to tileIndex)
                                 }
                             }
@@ -4842,6 +4915,11 @@ internal fun SplitMapPane(
                     if (!offlinePrepInFlight) {
                         offlinePrepIncludeContours = contourOverlayEnabled
                         offlinePrepViewportBounds = viewportSnapshot.bounds
+                        if (!offlinePrepLayerSelectionInitialized) {
+                            offlinePrepIncludeUsgsScannedTopo = baseLayer == BaseLayerOption.UsgsScannedTopo
+                            offlinePrepIncludeUsfsTopo = baseLayer == BaseLayerOption.UsfsTopo
+                            offlinePrepLayerSelectionInitialized = true
+                        }
                     }
                     settingsMenuExpanded = false
                     showOfflinePrepDialog = true
@@ -5113,11 +5191,53 @@ internal fun SplitMapPane(
                         }
                         HorizontalDivider()
                         Text("Map layers", style = MaterialTheme.typography.titleSmall)
+                        DownloadMapCheckbox("USGS Scanned Topo", offlinePrepIncludeUsgsScannedTopo, !offlinePrepInFlight) {
+                            offlinePrepIncludeUsgsScannedTopo = it
+                            offlinePrepLayerSelectionInitialized = true
+                        }
+                        if (offlinePrepIncludeUsgsScannedTopo) {
+                            val usgs = org.ncssar.rid2caltopo.video.mapcache.MapTileSourceRegistry.descriptor("USGS-ScannedTopo")!!
+                            DownloadMapZoomRow(
+                                label = "USGS Scanned Topo zoom",
+                                minZoom = offlinePrepUsgsMinZoom,
+                                maxZoom = offlinePrepUsgsMaxZoom,
+                                sourceMin = usgs.minZoom,
+                                sourceMax = usgs.maxZoom,
+                                enabled = !offlinePrepInFlight,
+                                onMinChange = { offlinePrepUsgsMinZoom = it },
+                                onMaxChange = { offlinePrepUsgsMaxZoom = it },
+                            )
+                        }
+                        DownloadMapCheckbox("USFS Topo", offlinePrepIncludeUsfsTopo, !offlinePrepInFlight) {
+                            offlinePrepIncludeUsfsTopo = it
+                            offlinePrepLayerSelectionInitialized = true
+                        }
+                        if (offlinePrepIncludeUsfsTopo) {
+                            val usfs = org.ncssar.rid2caltopo.video.mapcache.MapTileSourceRegistry.descriptor("USFS-Topo")!!
+                            DownloadMapZoomRow(
+                                label = "USFS Topo zoom",
+                                minZoom = offlinePrepUsfsMinZoom,
+                                maxZoom = offlinePrepUsfsMaxZoom,
+                                sourceMin = usfs.minZoom,
+                                sourceMax = usfs.maxZoom,
+                                enabled = !offlinePrepInFlight,
+                                onMinChange = { offlinePrepUsfsMinZoom = it },
+                                onMaxChange = { offlinePrepUsfsMaxZoom = it },
+                            )
+                        }
                         DownloadMapCheckbox("Contours", offlinePrepIncludeContours, !offlinePrepInFlight) { offlinePrepIncludeContours = it }
-                        HorizontalDivider()
-                        Text("Detail", style = MaterialTheme.typography.titleSmall)
-                        DownloadMapChoice(offlinePrepPreset.label, OFFLINE_PREP_PRESETS.reversed().map { it.label }, !offlinePrepInFlight) { label ->
-                            offlinePrepPreset = OFFLINE_PREP_PRESETS.first { it.label == label }
+                        if (offlinePrepIncludeContours) {
+                            val contours = org.ncssar.rid2caltopo.video.mapcache.MapTileSourceRegistry.descriptor("USGS-Contours")!!
+                            DownloadMapZoomRow(
+                                label = "Contours zoom",
+                                minZoom = offlinePrepContoursMinZoom,
+                                maxZoom = offlinePrepContoursMaxZoom,
+                                sourceMin = contours.minZoom,
+                                sourceMax = contours.maxZoom,
+                                enabled = !offlinePrepInFlight,
+                                onMinChange = { offlinePrepContoursMinZoom = it },
+                                onMaxChange = { offlinePrepContoursMaxZoom = it },
+                            )
                         }
                         HorizontalDivider()
                         Text("Elevation data", style = MaterialTheme.typography.titleSmall)
@@ -5430,7 +5550,7 @@ internal fun SplitMapPane(
                                     }
                                 }
                             },
-                            enabled = !offlinePrepInFlight && !offlinePrepAolCatalogChecking && !offlinePrepStartChecking && (offlinePrepIncludeImagery || offlinePrepIncludeOsm || offlinePrepIncludeContours || offlinePrepIncludeDem || offlinePrepIncludeAol) && offlinePrepEstimate.ready &&
+                            enabled = !offlinePrepInFlight && !offlinePrepAolCatalogChecking && !offlinePrepStartChecking && (offlinePrepIncludeUsgsScannedTopo || offlinePrepIncludeUsfsTopo || offlinePrepIncludeContours || offlinePrepIncludeDem || offlinePrepIncludeAol) && offlinePrepEstimate.ready &&
                                 (offlinePrepMapBounds() != null || selectedBoundary != null)
                         ) { Text(if(offlinePrepProgress.phase.startsWith("Failed") || offlinePrepProgress.phase == "Complete with failures") "Retry" else "Start") }
                     }

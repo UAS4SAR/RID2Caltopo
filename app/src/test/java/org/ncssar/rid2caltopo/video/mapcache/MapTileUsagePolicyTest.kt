@@ -52,7 +52,7 @@ class MapTileUsagePolicyTest {
         assertEquals(5, MapTileUsagePolicy.offlineFetchConcurrency("USFS-Topo"))
         assertTrue(MapTileUsagePolicy.USGS_HOSTED_FETCH_CONCURRENCY in 4..6)
         assertEquals(
-            MapTileUsagePolicy.USGS_HOSTED_FETCH_CONCURRENCY + 1,
+            MapTileUsagePolicy.USGS_HOSTED_FETCH_CONCURRENCY * 2 + 1,
             MapTileUsagePolicy.OFFLINE_FETCH_THREAD_POOL
         )
     }

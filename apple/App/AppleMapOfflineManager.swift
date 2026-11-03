@@ -844,19 +844,35 @@ final class AppleMapOfflineManager: ObservableObject {
 
     func estimate(
         bounds: OperationalMapBounds,
-        preset: OperationalOfflinePreset,
+        includeUsgsScannedTopo: Bool,
+        usgsScannedTopoZoom: OperationalOfflineSourceZoom,
+        includeUsfsTopo: Bool,
+        usfsTopoZoom: OperationalOfflineSourceZoom,
         includeContours: Bool,
+        contoursZoom: OperationalOfflineSourceZoom,
         includeDEM: Bool,
-        demResolution: OperationalDEMResolution = .maximum1m,
-        baseLayerCount: Int = 1
+        demResolution: OperationalDEMResolution = .maximum1m
     ) -> (tiles: Int, dem: Int, tileBytes: Int64, demBytes: Int64, bytes: Int64) {
-        let tiles = OperationalOfflineMapPlanner.tileCount(
-            bounds: bounds,
-            minimumZoom: preset.minimumZoom,
-            maximumZoom: preset.maximumZoom
-        )
+        var tileOperations = 0
+        if includeUsgsScannedTopo {
+            let zoom = usgsScannedTopoZoom.clamped(to: "USGS-ScannedTopo")
+            tileOperations += OperationalOfflineMapPlanner.tileCount(
+                bounds: bounds, minimumZoom: zoom.minZoom, maximumZoom: zoom.maxZoom
+            )
+        }
+        if includeUsfsTopo {
+            let zoom = usfsTopoZoom.clamped(to: "USFS-Topo")
+            tileOperations += OperationalOfflineMapPlanner.tileCount(
+                bounds: bounds, minimumZoom: zoom.minZoom, maximumZoom: zoom.maxZoom
+            )
+        }
+        if includeContours {
+            let zoom = contoursZoom.clamped(to: "USGS-Contours")
+            tileOperations += OperationalOfflineMapPlanner.tileCount(
+                bounds: bounds, minimumZoom: zoom.minZoom, maximumZoom: zoom.maxZoom
+            )
+        }
         let dem = includeDEM ? OperationalOfflineMapPlanner.estimatedDEMTileCount(bounds: bounds, resolution: demResolution) : 0
-        let tileOperations = OperationalOfflineMapPlanner.tileOperationCount(baseTileCount: tiles, baseLayerCount: baseLayerCount, includeContours: includeContours)
         let mapBytes = Int64(tileOperations) * 32_000
         let demBytes = includeDEM
             ? OperationalOfflineMapPlanner.estimatedDEMBytes(bounds: bounds, resolution: demResolution)
@@ -876,31 +892,66 @@ final class AppleMapOfflineManager: ObservableObject {
 
     func start(
         bounds: OperationalMapBounds,
-        preset: OperationalOfflinePreset,
-        baseLayer: OperationalMapBaseLayer,
-        selectedBaseLayers: [OperationalMapBaseLayer]? = nil,
+        includeUsgsScannedTopo: Bool,
+        usgsScannedTopoZoom: OperationalOfflineSourceZoom,
+        includeUsfsTopo: Bool,
+        usfsTopoZoom: OperationalOfflineSourceZoom,
         includeContours: Bool,
+        contoursZoom: OperationalOfflineSourceZoom,
         includeDEM: Bool,
         demResolution: OperationalDEMResolution = .maximum1m,
         selectionDescription: String = "Selected map area",
         aolPlan: OperationalSurfacePreparationPlan? = nil
     ) {
         guard !isRunning else { return }
-        // Public OSM and Esri basemaps are interactive-only, including legacy selections.
-        let baseLayers = (selectedBaseLayers ?? [baseLayer]).filter(OperationalMapTilePolicy.allowsOfflineDownload)
+        var baseLayers: [(layer: OperationalMapBaseLayer, zoom: OperationalOfflineSourceZoom)] = []
+        if includeUsgsScannedTopo {
+            baseLayers.append((.usgsScannedTopo, usgsScannedTopoZoom.clamped(to: "USGS-ScannedTopo")))
+        }
+        if includeUsfsTopo {
+            baseLayers.append((.usfsTopo, usfsTopoZoom.clamped(to: "USFS-Topo")))
+        }
+        let clampedContours = contoursZoom.clamped(to: "USGS-Contours")
         guard !baseLayers.isEmpty || includeContours || includeDEM || aolPlan != nil else {
             status = "Select at least one map layer or elevation data type."
             return
         }
         let aolRun=UUID();aolProgressRun=aolRun
         maintenanceTask?.cancel()
-        guard let tiles = (baseLayers.isEmpty && !includeContours ? [] : OperationalOfflineMapPlanner.tiles(
-            bounds: bounds,
-            minimumZoom: preset.minimumZoom,
-            maximumZoom: preset.maximumZoom
-        )) else {
-            status = "Selection exceeds the 250,000-tile safety limit. Choose a smaller area or preset."
-            return
+        var layerTiles: [(layer: OperationalMapBaseLayer, tiles: [OperationalOfflineTile])] = []
+        var tileOperationCount = 0
+        for entry in baseLayers {
+            guard let tiles = OperationalOfflineMapPlanner.tiles(
+                bounds: bounds,
+                minimumZoom: entry.zoom.minZoom,
+                maximumZoom: entry.zoom.maxZoom
+            ) else {
+                status = "Selection exceeds the 250,000-tile safety limit. Choose a smaller area or fewer zoom levels."
+                return
+            }
+            tileOperationCount += tiles.count
+            if tileOperationCount > 250_000 {
+                status = "Selection exceeds the 250,000-tile safety limit. Choose a smaller area or fewer zoom levels."
+                return
+            }
+            layerTiles.append((entry.layer, tiles))
+        }
+        var contourTiles: [OperationalOfflineTile] = []
+        if includeContours {
+            guard let tiles = OperationalOfflineMapPlanner.tiles(
+                bounds: bounds,
+                minimumZoom: clampedContours.minZoom,
+                maximumZoom: clampedContours.maxZoom
+            ) else {
+                status = "Selection exceeds the 250,000-tile safety limit. Choose a smaller area or fewer zoom levels."
+                return
+            }
+            tileOperationCount += tiles.count
+            if tileOperationCount > 250_000 {
+                status = "Selection exceeds the 250,000-tile safety limit. Choose a smaller area or fewer zoom levels."
+                return
+            }
+            contourTiles = tiles
         }
         let estimatedDEMCount = includeDEM
             ? OperationalOfflineMapPlanner.estimatedDEMTileCount(bounds: bounds, resolution: demResolution)
@@ -910,7 +961,6 @@ final class AppleMapOfflineManager: ObservableObject {
         // Suspends the idle timeout for the whole run, including AOL; job end restarts the countdown.
         AppleApplicationCleanupCenter.shared.setIdleShutdownDeferral(active: true)
         activeSelectionDescription = selectionDescription
-        let tileOperationCount = OperationalOfflineMapPlanner.tileOperationCount(baseTileCount: tiles.count, baseLayerCount: baseLayers.count, includeContours: includeContours)
         let operationCount = tileOperationCount + estimatedDEMCount + (aolPlan?.tiles ?? 0)
         let estimatedTileBytes = Int64(tileOperationCount) * 32_000
         let estimatedDEMBytes = includeDEM
@@ -927,12 +977,15 @@ final class AppleMapOfflineManager: ObservableObject {
             includesAOL: aolPlan != nil,
             estimatedBytesTotal: Self.saturatedAdd(estimatedTileBytes, estimatedDEMBytes),
             startedAt: Date(),
-            tileLayers: baseLayers.map(\.label) + (includeContours ? ["Contours"] : []),
+            tileLayers: layerTiles.map(\.layer.label) + (includeContours ? ["Contours"] : []),
             includesDEM: includeDEM,
             aolFilesTotal: aolPlan?.sources.count ?? 0,
             aolTilesTotal: aolPlan?.tiles ?? 0
         )
         status = "Preparing \(operationCount) offline items"
+        // Immutable copies for the download worker; avoids MainActor region-isolation errors on vars.
+        let plannedLayerTiles = layerTiles
+        let plannedContourTiles = contourTiles
         downloadTask = Task { [weak self] in
             guard let self else { return }
             let timing = AppleOfflineTiming("offline-job")
@@ -962,17 +1015,17 @@ final class AppleMapOfflineManager: ObservableObject {
             }
             let aolWeight=(aolPlan?.advertisedBytes ?? 0)+Int64(aolPlan?.tiles ?? 0)*8_000_000
             self.progress.estimatedBytesTotal += aolWeight
-            // Per-source concurrency: OSM/Esri stay interactive-only; USGS/USFS may use a
-            // bounded parallel fetch. Contours remain serial. Different suppliers progress together.
+            // USGS/USFS may run in parallel (policy concurrency 5 each); contours stay serial.
+            // offlineFetchThreadPool covers both topo workers plus one contours worker.
             await withTaskGroup(of: Void.self) { group in
-                for layer in baseLayers {
+                for entry in plannedLayerTiles {
                     group.addTask {
-                        await self.fetchTilesBounded(tiles, baseLayer: layer)
+                        await self.fetchTilesBounded(entry.tiles, baseLayer: entry.layer)
                     }
                 }
                 if includeContours {
                     group.addTask {
-                        for tile in tiles {
+                        for tile in plannedContourTiles {
                             guard !Task.isCancelled else { return }
                             await self.fetchContour(tile)
                         }
@@ -1548,14 +1601,16 @@ struct AppleOfflineMapPreparationView: View {
     let contoursInitiallyEnabled: Bool
 
     @Environment(\.dismiss) private var dismiss
-    @State private var preset = OperationalOfflinePreset.operations
     @State private var selectedBoundaryID = ""
     /// Visible-map bounds captured when the sheet opens, so map movement underneath it
     /// (for example follow-drone) cannot change the selection. Matches Android.
     @State private var frozenViewportBounds: OperationalMapBounds
-    @State private var includeImagery: Bool
-    @State private var includeOSM: Bool
+    @State private var includeUsgsScannedTopo: Bool
+    @State private var includeUsfsTopo: Bool
     @State private var includeContours: Bool
+    @State private var usgsScannedTopoZoom: OperationalOfflineSourceZoom
+    @State private var usfsTopoZoom: OperationalOfflineSourceZoom
+    @State private var contoursZoom: OperationalOfflineSourceZoom
     @State private var includeDEM = true
     @State private var includeAOL = false
     @State private var aolPlan: OperationalSurfacePreparationPlan?
@@ -1598,12 +1653,14 @@ struct AppleOfflineMapPreparationView: View {
             baseLayer: baseLayer,
             boundaryIDs: boundaries.map(\.id)
         )
-        _preset = State(initialValue: options.preset)
         _selectedBoundaryID = State(initialValue: options.selectedBoundaryID)
         _frozenViewportBounds = State(initialValue: options.viewportBounds)
-        _includeImagery = State(initialValue: options.includeImagery)
-        _includeOSM = State(initialValue: options.includeOSM)
+        _includeUsgsScannedTopo = State(initialValue: options.includeUsgsScannedTopo)
+        _includeUsfsTopo = State(initialValue: options.includeUsfsTopo)
         _includeContours = State(initialValue: options.includeContours)
+        _usgsScannedTopoZoom = State(initialValue: options.usgsScannedTopoZoom)
+        _usfsTopoZoom = State(initialValue: options.usfsTopoZoom)
+        _contoursZoom = State(initialValue: options.contoursZoom)
         _includeDEM = State(initialValue: options.includeDEM)
         _includeAOL = State(initialValue: options.includeAOL)
         _demResolution = State(initialValue: options.demResolution)
@@ -1620,17 +1677,26 @@ struct AppleOfflineMapPreparationView: View {
     }
 
     private var selectedBaseLayers: [OperationalMapBaseLayer] {
-        // OSM/Esri stay interactive-only; USGS/USFS government topo layers may prefetch.
-        [baseLayer].filter(OperationalMapTilePolicy.allowsOfflineDownload)
+        var layers: [OperationalMapBaseLayer] = []
+        if includeUsgsScannedTopo { layers.append(.usgsScannedTopo) }
+        if includeUsfsTopo { layers.append(.usfsTopo) }
+        return layers
     }
 
     private var aolWorkingBytes: Int64 { includeAOL ? (aolPlan.map { $0.reused ? 0 : $0.advertisedBytes*3/2+Int64($0.tiles)*16_000_000 } ?? 0) : 0 }
     private var estimate: (tiles: Int, dem: Int, tileBytes: Int64, demBytes: Int64, bytes: Int64) {
-        let base=manager.estimate(
-            bounds: bounds, preset: preset, includeContours: includeContours,
-            includeDEM: includeDEM, demResolution: demResolution, baseLayerCount: selectedBaseLayers.count
+        let base = manager.estimate(
+            bounds: bounds,
+            includeUsgsScannedTopo: includeUsgsScannedTopo,
+            usgsScannedTopoZoom: usgsScannedTopoZoom,
+            includeUsfsTopo: includeUsfsTopo,
+            usfsTopoZoom: usfsTopoZoom,
+            includeContours: includeContours,
+            contoursZoom: contoursZoom,
+            includeDEM: includeDEM,
+            demResolution: demResolution
         )
-        return (base.tiles,base.dem,base.tileBytes,base.demBytes,base.bytes+aolWorkingBytes)
+        return (base.tiles, base.dem, base.tileBytes, base.demBytes, base.bytes + aolWorkingBytes)
     }
 
     private var capacity: OperationalOfflineCapacity {
@@ -1692,10 +1758,17 @@ struct AppleOfflineMapPreparationView: View {
                     },
                     start: { plan in
                         manager.start(
-                            bounds: requestedBounds, preset: preset, baseLayer: baseLayer,
-                            selectedBaseLayers: selectedBaseLayers, includeContours: includeContours,
-                            includeDEM: includeDEM, demResolution: demResolution,
-                            selectionDescription: requestedSelection, aolPlan: plan
+                            bounds: requestedBounds,
+                            includeUsgsScannedTopo: includeUsgsScannedTopo,
+                            usgsScannedTopoZoom: usgsScannedTopoZoom,
+                            includeUsfsTopo: includeUsfsTopo,
+                            usfsTopoZoom: usfsTopoZoom,
+                            includeContours: includeContours,
+                            contoursZoom: contoursZoom,
+                            includeDEM: includeDEM,
+                            demResolution: demResolution,
+                            selectionDescription: requestedSelection,
+                            aolPlan: plan
                         )
                     }
                 )
@@ -1719,13 +1792,13 @@ struct AppleOfflineMapPreparationView: View {
     private var selectionDescription: String {
         let area = boundaries.first(where: { $0.id == selectedBoundaryID })?.title ?? "Current visible map"
         let contents = [
-            includeImagery ? "Imagery" : nil,
-            includeOSM ? "OSM" : nil,
-            includeAOL ? "AOL 1 m" : nil,
+            includeUsgsScannedTopo ? "USGS Scanned Topo" : nil,
+            includeUsfsTopo ? "USFS Topo" : nil,
             includeContours ? "contours" : nil,
             includeDEM ? "DEM \(demResolution.label)" : nil,
+            includeAOL ? "AOL 1 m" : nil,
         ].compactMap { $0 }.joined(separator: ", ")
-        return "\(area) · \(preset.label)" + (contents.isEmpty ? "" : " · \(contents)")
+        return contents.isEmpty ? area : "\(area) · \(contents)"
     }
 
     var body: some View {
@@ -1743,12 +1816,31 @@ struct AppleOfflineMapPreparationView: View {
                     }
                 }.disabled(manager.isRunning)
                 Section("Map layers") {
+                    // Checkboxes come from offlineAllowedBaseSources (USGS Scanned Topo, USFS Topo) plus Contours.
+                    DownloadMapCheckbox("USGS Scanned Topo", isOn: $includeUsgsScannedTopo)
+                    if includeUsgsScannedTopo {
+                        DownloadMapZoomRow(
+                            label: "USGS Scanned Topo zoom",
+                            zoom: $usgsScannedTopoZoom,
+                            sourceId: "USGS-ScannedTopo"
+                        )
+                    }
+                    DownloadMapCheckbox("USFS Topo", isOn: $includeUsfsTopo)
+                    if includeUsfsTopo {
+                        DownloadMapZoomRow(
+                            label: "USFS Topo zoom",
+                            zoom: $usfsTopoZoom,
+                            sourceId: "USFS-Topo"
+                        )
+                    }
                     DownloadMapCheckbox("Contours", isOn: $includeContours)
-                }.disabled(manager.isRunning)
-                Section("Detail") {
-                    Picker("Map detail", selection: $preset) {
-                        ForEach(OperationalOfflinePreset.all.reversed()) { Text($0.label).tag($0) }
-                    }.pickerStyle(.menu)
+                    if includeContours {
+                        DownloadMapZoomRow(
+                            label: "Contours zoom",
+                            zoom: $contoursZoom,
+                            sourceId: "USGS-Contours"
+                        )
+                    }
                 }.disabled(manager.isRunning)
                 Section("Elevation data") {
                     HStack {
@@ -1967,9 +2059,16 @@ struct AppleOfflineMapPreparationView: View {
         // everything; the manager drops them when the run ends with the sheet still hidden.
         .onDisappear {
             manager.rememberedPreparationOptions = OperationalOfflineSheetOptions(
-                preset: preset, includeImagery: includeImagery, includeOSM: includeOSM,
-                includeContours: includeContours, includeDEM: includeDEM, includeAOL: includeAOL,
-                demResolution: demResolution, selectedBoundaryID: selectedBoundaryID,
+                includeUsgsScannedTopo: includeUsgsScannedTopo,
+                includeUsfsTopo: includeUsfsTopo,
+                includeContours: includeContours,
+                usgsScannedTopoZoom: usgsScannedTopoZoom,
+                usfsTopoZoom: usfsTopoZoom,
+                contoursZoom: contoursZoom,
+                includeDEM: includeDEM,
+                includeAOL: includeAOL,
+                demResolution: demResolution,
+                selectedBoundaryID: selectedBoundaryID,
                 viewportBounds: frozenViewportBounds
             )
             manager.rememberedAOLPlan = aolPlan
@@ -2775,6 +2874,55 @@ private struct DownloadMapCheckbox: View {
             }.frame(minHeight: 44).contentShape(Rectangle())
         }.buttonStyle(.plain)
         .accessibilityLabel(title).accessibilityValue(isOn ? "Selected" : "Not selected")
+    }
+}
+
+private struct DownloadMapZoomRow: View {
+    let label: String
+    @Binding var zoom: OperationalOfflineSourceZoom
+    let sourceId: String
+
+    private var sourceRange: ClosedRange<Int> {
+        guard let source = OperationalMapTileSourceRegistry.descriptor(id: sourceId) else { return 0...16 }
+        return source.minZoom...source.maxZoom
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(label).font(.footnote).foregroundStyle(.secondary)
+            HStack(spacing: 8) {
+                Text("Min").font(.footnote)
+                Picker("Min zoom", selection: Binding(
+                    get: { zoom.minZoom },
+                    set: { next in
+                        let clamped = min(sourceRange.upperBound, max(sourceRange.lowerBound, next))
+                        zoom.minZoom = clamped
+                        if clamped > zoom.maxZoom { zoom.maxZoom = clamped }
+                        zoom = zoom.clamped(to: sourceId)
+                    }
+                )) {
+                    ForEach(Array(sourceRange), id: \.self) { Text("\($0)").tag($0) }
+                }
+                .pickerStyle(.menu)
+                .labelsHidden()
+                Text("Max").font(.footnote)
+                Picker("Max zoom", selection: Binding(
+                    get: { zoom.maxZoom },
+                    set: { next in
+                        let clamped = min(sourceRange.upperBound, max(sourceRange.lowerBound, next))
+                        zoom.maxZoom = clamped
+                        if clamped < zoom.minZoom { zoom.minZoom = clamped }
+                        zoom = zoom.clamped(to: sourceId)
+                    }
+                )) {
+                    ForEach(Array(sourceRange), id: \.self) { Text("\($0)").tag($0) }
+                }
+                .pickerStyle(.menu)
+                .labelsHidden()
+            }
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(label)
     }
 }
 

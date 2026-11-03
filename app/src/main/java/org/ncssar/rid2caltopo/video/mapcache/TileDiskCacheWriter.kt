@@ -15,7 +15,6 @@ class TileDiskCacheWriter(context: Context) : IFilesystemCache {
     private val appContext = context.applicationContext
     private companion object {
         private const val OSM_STANDARD_SOURCE = "OSM-Standard"
-        private val LEGACY_OSM_SOURCE_NAMES = listOf("Mapnik", "MAPNIK")
         private const val OSM_UNIFORM_WINDOW_MS = 120_000L
         private const val OSM_UNIFORM_TILE_THRESHOLD = 8
         private const val MISS_LOG_MIN_INTERVAL_MS = 30_000L
@@ -27,6 +26,9 @@ class TileDiskCacheWriter(context: Context) : IFilesystemCache {
             var firstSeenMs: Long,
             val tileIds: MutableSet<String>
         )
+
+        private fun legacySourceNames(sourceName: String): List<String> =
+            MapTileSourceRegistry.legacyCacheNames(sourceName)
     }
 
     // Construction occurs on the UI thread; opening the store may wait for cache maintenance.
@@ -167,12 +169,10 @@ class TileDiskCacheWriter(context: Context) : IFilesystemCache {
         return null
     }
 
-    /** Enumerate actual cached coordinates, including legacy OSM keys, at every zoom. */
+    /** Enumerate actual cached coordinates, including legacy source-name keys, at every zoom. */
     fun cachedTileIndices(tileSource: ITileSource): List<Long> {
         diskCache.prewarm()
-        val names = if (tileSource.name() == OSM_STANDARD_SOURCE) {
-            LEGACY_OSM_SOURCE_NAMES + OSM_STANDARD_SOURCE
-        } else listOf(tileSource.name())
+        val names = listOf(tileSource.name()) + legacySourceNames(tileSource.name())
         return (org.ncssar.rid2caltopo.mapping.LocalMappingTiles.indices(appContext,tileSource) + diskCache.cacheKeys().mapNotNull { key ->
             val parts = key.split('|')
             if (parts.size != 5 || parts[0] != "v${MapCachePolicy.TILE_CACHE_VERSION}" || parts[1] !in names) return@mapNotNull null
@@ -237,10 +237,11 @@ class TileDiskCacheWriter(context: Context) : IFilesystemCache {
 
     private fun tileKeysForLookup(tileSource: ITileSource, mapTileIndex: Long): List<String> {
         val primary = tileKey(tileSource, mapTileIndex)
-        if (tileSource.name() != OSM_STANDARD_SOURCE) return listOf(primary)
-        val keys = ArrayList<String>(1 + LEGACY_OSM_SOURCE_NAMES.size)
+        val legacy = legacySourceNames(tileSource.name())
+        if (legacy.isEmpty()) return listOf(primary)
+        val keys = ArrayList<String>(1 + legacy.size)
         keys.add(primary)
-        for (legacyName in LEGACY_OSM_SOURCE_NAMES) {
+        for (legacyName in legacy) {
             keys.add(tileKeyForName(legacyName, mapTileIndex))
         }
         return keys

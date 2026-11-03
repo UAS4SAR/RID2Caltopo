@@ -4,6 +4,7 @@ Latest changes:
 - Don't Publish now only stops CalTopo and tracker publishing; the flight track, video and clues are still saved locally.
 - Flights marked Don't Publish and finished flights stay out of recovery and tracker upload.
 - New USGS Scanned Topo and USFS Topo base layers, with faster tile fill that no longer stalls the map.
+- Download Map lets you choose USGS Scanned Topo and/or USFS Topo and their zoom levels, independent of the map currently shown.
 - Smaller flight-archive records for receive times and drone clock data.
 - Discarding an awaiting map is final, even after a power loss or journal recovery.
 - Mapping no longer reports storage full at publish when space is available, and shows a realistic storage estimate before processing.

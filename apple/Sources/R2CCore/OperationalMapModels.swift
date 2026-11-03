@@ -95,28 +95,50 @@ public enum OperationalMapBaseLayer: String, CaseIterable, Codable, Sendable, Eq
         }
     }
 
-    public var cacheKey: String { rawValue }
-    public var fileExtension: String {
+    /// Cross-platform package / Android tile-source id (OperationalMapTileSourceRegistry).
+    public var packageId: String {
         switch self {
-        case .imagery, .usfsTopo: "jpg"
-        case .openStreetMap, .usgsScannedTopo: "png"
+        case .openStreetMap: "OSM-Standard"
+        case .imagery: "ArcGIS-WorldImagery"
+        case .usgsScannedTopo: "USGS-ScannedTopo"
+        case .usfsTopo: "USFS-Topo"
+        }
+    }
+
+    public var cacheKey: String {
+        OperationalMapTileSourceRegistry.descriptor(id: packageId)?.cacheKey ?? rawValue
+    }
+
+    public var fileExtension: String {
+        if let format = OperationalMapTileSourceRegistry.descriptor(id: packageId)?.format {
+            return format
+        }
+        switch self {
+        case .imagery, .usfsTopo: return "jpg"
+        case .openStreetMap, .usgsScannedTopo: return "png"
         }
     }
 
     /// Native tile cache maximum before MapKit overzoom.
     public var sourceMaximumZoom: Int {
+        if let maxZoom = OperationalMapTileSourceRegistry.descriptor(id: packageId)?.maxZoom {
+            return maxZoom
+        }
         switch self {
-        case .openStreetMap, .imagery: 19
-        case .usgsScannedTopo, .usfsTopo: 16
+        case .openStreetMap, .imagery: return 19
+        case .usgsScannedTopo, .usfsTopo: return 16
         }
     }
 
     public var attribution: String {
+        if let attribution = OperationalMapTileSourceRegistry.descriptor(id: packageId)?.attribution {
+            return attribution
+        }
         switch self {
-        case .openStreetMap: "© OpenStreetMap contributors"
-        case .imagery: "Tiles © Esri"
-        case .usgsScannedTopo: "USGS Historical Topographic Map Collection"
-        case .usfsTopo: "USGS The National Map (USGSTopo)"
+        case .openStreetMap: return "© OpenStreetMap contributors"
+        case .imagery: return "Tiles © Esri"
+        case .usgsScannedTopo: return "USGS Historical Topographic Map Collection"
+        case .usfsTopo: return "USGS The National Map (USGSTopo)"
         }
     }
 
