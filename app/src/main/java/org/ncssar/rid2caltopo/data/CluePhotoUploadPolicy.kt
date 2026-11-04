@@ -45,7 +45,15 @@ object CluePhotoUploadPolicy {
         val text = lastUploadError?.trim().orEmpty()
         if (text.isEmpty()) return false
         return text.contains(NEEDS_ATTENTION_MESSAGE, ignoreCase = true) ||
-            text.contains(PHOTO_MISSING_MESSAGE, ignoreCase = true) ||
+            isPhotoMissing(text)
+    }
+
+    /** True when the durable last-error means the JPEG is gone. */
+    @JvmStatic
+    fun isPhotoMissing(lastUploadError: String?): Boolean {
+        val text = lastUploadError?.trim().orEmpty()
+        if (text.isEmpty()) return false
+        return text.contains(PHOTO_MISSING_MESSAGE, ignoreCase = true) ||
             text.equals("missing-photo", ignoreCase = true)
     }
 

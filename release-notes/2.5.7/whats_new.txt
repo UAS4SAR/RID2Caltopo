@@ -21,3 +21,7 @@ Latest changes:
 - Fewer redundant log messages, in a more compact format.
 - Device marker cleanup only removes markers this tablet published, and stops retrying once they are gone.
 - Clue photos now stay on their clue marker after terrain correction, and existing drifted photos are repaired.
+- Clues live in each flight’s log folder; every flight KMZ keeps its clues with a local-only flag when not published.
+- Pending clues list every map’s unfinished uploads, including photo-missing, with Retry, Upload as new marker, and Discard.
+- Deleting old flight logs also deletes their clues, with a warning when any were never uploaded.
+- Marker cleanup success now matches verified removal, and never touches markers this tablet did not publish.

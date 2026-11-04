@@ -25,7 +25,8 @@ public enum ClueTrackDurabilityIntegrity {
     }
 
     /// IDs that should resume upload after reload (pending / failed / interrupted uploading).
-    /// Confirmed uploads and map-deleted clues are excluded — never auto re-POST.
+    /// Confirmed uploads, map-deleted clues, and photo-missing / needs-attention stops are
+    /// excluded — never auto re-POST; the operator Retry / Upload-as-new path wakes those.
     public static func pendingUploadIDs(in records: [OperationalClueRecord]) -> [UUID] {
         records.compactMap { record in
             if CluePhotoUploadPolicy.stopsAutoRetry(record.lastUploadError) { return nil }
@@ -39,8 +40,33 @@ public enum ClueTrackDurabilityIntegrity {
         }
     }
 
+    /// Publish-intended but unconfirmed clues for the pending chip/list across every map.
+    /// Includes photo-missing / needs-attention failed rows; excludes Don't Publish / localOnly.
+    public static func pendingListRecords(in records: [OperationalClueRecord]) -> [OperationalClueRecord] {
+        records
+            .filter {
+                ClueUploadConfirmation.mayAutoUpload(
+                    uploadState: $0.uploadState,
+                    confirmed: $0.uploadConfirmed,
+                    remotelyDeleted: $0.caltopoRemotelyDeleted == true
+                )
+            }
+            .sorted { $0.capturedAt > $1.capturedAt }
+    }
+
+    /// Chip/list count — aligned with `pendingListRecords` (includes photo-missing).
     public static func pendingUploadCount(in records: [OperationalClueRecord]) -> Int {
-        pendingUploadIDs(in: records).count
+        pendingListRecords(in: records).count
+    }
+
+    /// Map label for a pending row: each clue's own saved title, else its map id.
+    public static func pendingRowMapName(
+        destinationMapTitle: String?,
+        destinationMapID: String?
+    ) -> String {
+        let title = (destinationMapTitle ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if !title.isEmpty { return title }
+        return (destinationMapID ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// HTTP 4xx that historically looked "permanent". Callers must reconcile map state

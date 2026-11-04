@@ -338,8 +338,16 @@ object FlightStorage {
         cancelled()
         if (root.exists()) root.walkTopDown().onEnter { cancelled(); true }.filter { cancelled(); it.isFile }.toList() else emptyList()
     }
-    private fun fileDay(file: File) = if (file.name == "clues.json") todayArchiveDirectoryName()
-        else todayArchiveDirectoryName(Date(file.lastModified()))
+    private fun fileDay(file: File): String {
+        // Prefer dated parent (Archive Dir day or files/clues/<tracks-…>/).
+        var current: File? = file.parentFile
+        while (current != null) {
+            if (isDatedArchiveDirectoryName(current.name)) return current.name
+            current = current.parentFile
+        }
+        if (file.name == "clues.json") return todayArchiveDirectoryName()
+        return todayArchiveDirectoryName(Date(file.lastModified()))
+    }
     fun documentsForDay(context: Context, name: String): List<DocumentFile> = storageIo(context) {
         CaltopoClient.GetArchiveDir()?.findFile(name)?.listFiles().orEmpty().toList() +
             auxiliaryFiles(context).filter { fileDay(it) == name }.map(DocumentFile::fromFile)
@@ -375,21 +383,55 @@ object FlightStorage {
         listOf(auxiliaryRoots(context)[0], auxiliaryRoots(context)[2]).any { file.path.startsWith(it.path + "/") } &&
             RecordingStagingPolicy.mayBeActive(file.lastModified(), System.currentTimeMillis())
 
-    /** Upload states of CalTopo-bound clues whose image files belong to this day. */
+    /** Upload states of CalTopo-bound clues belonging to this flight day. */
     private fun clueStates(context: Context, name: String, auxiliary: List<File>): List<String> {
         val clues = File(context.filesDir, "clues")
-        val dayFiles = auxiliary.filter { it.parentFile == clues && it.name != "clues.json" && fileDay(it) == name }
-            .map { it.name }.toSet()
-        if (dayFiles.isEmpty()) return emptyList()
-        val index = runCatching { org.json.JSONArray(File(clues, "clues.json").readText()) }.getOrNull()
-            // Unreadable index: treat the day's clue files as still queued (safe for cleanup).
-            ?: return listOf("pending")
-        return (0 until index.length()).mapNotNull { i ->
-            val entry = index.optJSONObject(i) ?: return@mapNotNull null
-            if (!entry.optBoolean("publishToCaltopo")) return@mapNotNull null
-            if (listOf(entry.optString("imageFilename"), entry.optString("thumbnailFilename")).none { it in dayFiles }) return@mapNotNull null
-            entry.optString("uploadState")
+        val states = mutableListOf<String>()
+        var unreadable = false
+        fun ingest(indexFile: File, belongs: (org.json.JSONObject) -> Boolean) {
+            if (!indexFile.isFile) return
+            val index = runCatching { org.json.JSONArray(indexFile.readText()) }.getOrNull()
+            if (index == null) {
+                unreadable = true
+                return
+            }
+            for (i in 0 until index.length()) {
+                val entry = index.optJSONObject(i) ?: continue
+                if (!entry.optBoolean("publishToCaltopo")) continue
+                if (!belongs(entry)) continue
+                states.add(entry.optString("uploadState"))
+            }
         }
+        // Per-day index under files/clues/<day>/clues.json
+        ingest(File(File(clues, name), "clues.json")) { true }
+        // Legacy flat root clues.json: match by day-prefixed path, flat file mtime day, or ownership time.
+        val dayFiles = auxiliary.filter {
+            it.parentFile == clues && it.name != "clues.json" && fileDay(it) == name
+        }.map { it.name }.toSet()
+        ingest(File(clues, "clues.json")) { entry ->
+            val img = entry.optString("imageFilename")
+            val thumb = entry.optString("thumbnailFilename")
+            when {
+                img.startsWith("$name/") || thumb.startsWith("$name/") -> true
+                img in dayFiles || thumb in dayFiles -> true
+                !img.contains('/') -> {
+                    val binding = entry.optJSONObject("binding")
+                    val ownership = binding?.optLong("captureTimeMs")?.takeIf { it > 0 }
+                        ?: entry.optLong("createdAtMs")
+                    todayArchiveDirectoryName(Date(ownership)) == name
+                }
+                else -> false
+            }
+        }
+        if (unreadable && states.isEmpty()) return listOf("pending")
+        // Day folder with photos but no readable index: still treat as queued.
+        val hasDayArtifacts = auxiliary.any { fileDay(it) == name && it.path.startsWith(clues.path + "/") }
+        if (states.isEmpty() && hasDayArtifacts && File(File(clues, name), "clues.json").isFile.not() &&
+            dayFiles.isNotEmpty()
+        ) {
+            return listOf("pending")
+        }
+        return states
     }
 
     fun deleteDays(context: Context, names: List<String>): ArchiveCleanupDeleteResult = storageIo(context) {
@@ -405,7 +447,28 @@ object FlightStorage {
             val folder = CaltopoClient.GetArchiveDir()?.findFile(name)
             var ok = folder == null || folder.delete()
             if (ok) auxiliary.filter { fileDay(it) == name }.forEach { if (!org.ncssar.rid2caltopo.storage.OperationalStorage.removeIfManaged(it)) ok = false }
-            if (ok) deleted++ else failures.add(name)
+            // Matching per-day clue folder under files/clues/<day>/.
+            if (ok) {
+                val clueDay = File(File(context.filesDir, "clues"), name)
+                if (clueDay.isDirectory) {
+                    clueDay.walkBottomUp().forEach { child ->
+                        if (child == clueDay) return@forEach
+                        if (!org.ncssar.rid2caltopo.storage.OperationalStorage.removeIfManaged(child) && child.exists()) {
+                            ok = false
+                        }
+                    }
+                    if (ok) {
+                        val leftover = clueDay.listFiles().orEmpty()
+                        if (leftover.isEmpty()) clueDay.delete()
+                        else leftover.forEach { if (!it.deleteRecursively()) ok = false }
+                        if (ok && clueDay.exists()) clueDay.delete()
+                    }
+                }
+            }
+            if (ok) {
+                org.ncssar.rid2caltopo.video.AndroidClueStore.invalidateSharedLoaded()
+                deleted++
+            } else failures.add(name)
         }
         if (deleted > 0 || failures.isNotEmpty()) changes.value++
         requestCheck(context)
@@ -459,10 +522,15 @@ object FlightStorage {
             val ok = folder == null || runCatching { requireNotNull(tree).delete(name); true }.getOrDefault(false)
             var allDeleted = ok
             if (ok) auxiliary.filter { fileDay(it) == name }.forEach { if (!org.ncssar.rid2caltopo.storage.OperationalStorage.removeIfManaged(it)) allDeleted = false }
+            if (ok) {
+                val clueDay = File(File(context.filesDir, "clues"), name)
+                if (clueDay.isDirectory && !clueDay.deleteRecursively()) allDeleted = false
+            }
             if (allDeleted) {
                 used -= sizes.getValue(name)
                 ledgerKeys.forEach { ledger.remove(it) }
                 auxiliary.filter { fileDay(it) == name }.forEach { ledger.remove(it.path) }
+                org.ncssar.rid2caltopo.video.AndroidClueStore.invalidateSharedLoaded()
             } else failures.add(name)
         }
         if (purge && used != sizes.values.sum()) changes.value++

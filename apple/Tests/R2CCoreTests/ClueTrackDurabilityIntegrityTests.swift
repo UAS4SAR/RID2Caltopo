@@ -119,6 +119,130 @@ import Testing
         #expect(CluePhotoUploadPolicy.stopsAutoRetry(flagged.lastUploadError))
     }
 
+    @Test func pendingListIncludesPhotoMissingAndExcludesLocalOnly() {
+        var photoMissing = sampleRecord(imageFilename: "day/gone.jpg", uploadState: .failed)
+        photoMissing.lastUploadError = CluePhotoUploadPolicy.photoMissingMessage
+        photoMissing.destinationMapID = "map-a"
+        photoMissing.destinationMapTitle = "Alpha Range"
+        var pending = sampleRecord(imageFilename: "day/ok.jpg", uploadState: .pending)
+        pending.destinationMapID = "map-b"
+        pending.destinationMapTitle = "Bravo Sector"
+        var localOnly = sampleRecord(imageFilename: "day/local.jpg", uploadState: .localOnly)
+        localOnly.destinationMapID = "map-a"
+        let published = sampleRecord(imageFilename: "day/done.jpg", uploadState: .published)
+
+        let list = ClueTrackDurabilityIntegrity.pendingListRecords(
+            in: [photoMissing, pending, localOnly, published]
+        )
+        #expect(Set(list.map(\.id)) == Set([photoMissing.id, pending.id]))
+        #expect(ClueTrackDurabilityIntegrity.pendingUploadCount(
+            in: [photoMissing, pending, localOnly, published]
+        ) == 2)
+        // Auto-resume still skips photo-missing; chip/list count includes it.
+        #expect(ClueTrackDurabilityIntegrity.pendingUploadIDs(
+            in: [photoMissing, pending, localOnly, published]
+        ) == [pending.id])
+        #expect(CluePhotoUploadPolicy.isPhotoMissing(photoMissing.lastUploadError))
+        #expect(!CluePhotoUploadPolicy.isPhotoMissing(pending.lastUploadError))
+    }
+
+    @Test func pendingRowsUsePerClueMapTitle() {
+        #expect(
+            ClueTrackDurabilityIntegrity.pendingRowMapName(
+                destinationMapTitle: "Alpha Range",
+                destinationMapID: "map-a"
+            ) == "Alpha Range"
+        )
+        #expect(
+            ClueTrackDurabilityIntegrity.pendingRowMapName(
+                destinationMapTitle: "  ",
+                destinationMapID: "map-b"
+            ) == "map-b"
+        )
+        #expect(
+            ClueTrackDurabilityIntegrity.pendingRowMapName(
+                destinationMapTitle: nil,
+                destinationMapID: "map-c"
+            ) == "map-c"
+        )
+        var older = sampleRecord(imageFilename: "day/a.jpg", uploadState: .pending)
+        older.destinationMapID = "map-older"
+        older.destinationMapTitle = "Older Incident"
+        var newer = sampleRecord(imageFilename: "day/b.jpg", uploadState: .failed)
+        newer.lastUploadError = CluePhotoUploadPolicy.photoMissingMessage
+        newer.destinationMapID = "map-newer"
+        newer.destinationMapTitle = "Newer Incident"
+        let rows = ClueTrackDurabilityIntegrity.pendingListRecords(in: [older, newer])
+        #expect(rows.count == 2)
+        let names = Set(rows.map {
+            ClueTrackDurabilityIntegrity.pendingRowMapName(
+                destinationMapTitle: $0.destinationMapTitle,
+                destinationMapID: $0.destinationMapID
+            )
+        })
+        #expect(names == Set(["Older Incident", "Newer Incident"]))
+    }
+
+    @Test func destinationMapTitleRoundTripsInClueIndex() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("clue-map-title-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let day = AppleFlightStorage.dayName(Date())
+        let dayURL = root.appendingPathComponent(day, isDirectory: true)
+        try FileManager.default.createDirectory(at: dayURL, withIntermediateDirectories: true)
+        var record = sampleRecord(
+            imageFilename: "\(day)/title.jpg",
+            uploadState: .pending
+        )
+        record.destinationMapID = "map-round"
+        record.destinationMapTitle = "Round Trip Map"
+        try JSONEncoder().encode([record]).write(to: dayURL.appendingPathComponent("clues.json"))
+        let loaded = try OperationalClueIndex.load(root: root)
+        #expect(loaded.count == 1)
+        #expect(loaded[0].destinationMapID == "map-round")
+        #expect(loaded[0].destinationMapTitle == "Round Trip Map")
+
+        // Older indexes without the field decode as nil.
+        var legacyRecord = sampleRecord(
+            imageFilename: "\(day)/legacy.jpg",
+            uploadState: .pending
+        )
+        legacyRecord.destinationMapID = "map-legacy"
+        legacyRecord.destinationMapTitle = "strip-me"
+        let encoded = try JSONEncoder().encode([legacyRecord])
+        var json = try JSONSerialization.jsonObject(with: encoded) as! [[String: Any]]
+        json[0].removeValue(forKey: "destinationMapTitle")
+        try JSONSerialization.data(withJSONObject: json)
+            .write(to: dayURL.appendingPathComponent("clues.json"))
+        let legacy = try OperationalClueIndex.load(root: root)
+        #expect(legacy.count == 1)
+        #expect(legacy[0].destinationMapID == "map-legacy")
+        #expect(legacy[0].destinationMapTitle == nil)
+    }
+
+    @Test func discardTombstonePersistsAcrossReload() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("clue-tomb-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let day = AppleFlightStorage.dayName(Date())
+        let dayURL = root.appendingPathComponent(day, isDirectory: true)
+        try FileManager.default.createDirectory(at: dayURL, withIntermediateDirectories: true)
+        let keep = sampleRecord(imageFilename: "\(day)/keep.jpg", uploadState: .pending)
+        let discarded = sampleRecord(imageFilename: "\(day)/gone.jpg", uploadState: .failed)
+        try JSONEncoder().encode([keep, discarded])
+            .write(to: dayURL.appendingPathComponent("clues.json"))
+        try OperationalClueDeletionTombstone.persist([discarded.id], root: root)
+
+        let deleted = OperationalClueDeletionTombstone.load(root: root)
+        #expect(deleted == [discarded.id])
+        let loaded = OperationalClueDeletionTombstone.excludingDeleted(
+            try OperationalClueIndex.load(root: root),
+            deleted: deleted
+        )
+        #expect(loaded.map(\.id) == [keep.id])
+        #expect(ClueTrackDurabilityIntegrity.pendingListRecords(in: loaded).map(\.id) == [keep.id])
+    }
+
     @Test func liveTrackEnqueueNotGatedOnAwaitingMapHistoryInViewModel() throws {
         let appleRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()

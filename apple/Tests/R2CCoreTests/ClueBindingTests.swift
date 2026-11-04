@@ -283,6 +283,30 @@ private func record(capture: Date = Date(timeIntervalSince1970: 1_790_553_873), 
     #expect(kml.contains("<img src=\"files/clue_0.jpg\"/>"))
 }
 
+@Test func flightKMZIncludesUnpublishedPublishIntendedCluesWithLocalOnlyFlag() throws {
+    let pending = OperationalFlightKMZClue(
+        record: record(state: .pending),
+        jpegData: Data([0xFF, 0xD8, 0xFF, 0xD9])
+    )
+    let failed = OperationalFlightKMZClue(record: record(state: .failed), jpegData: nil)
+    let localOnly = OperationalFlightKMZClue(record: record(state: .localOnly), jpegData: nil)
+    #expect(!pending.localOnly)
+    #expect(!failed.localOnly)
+    #expect(localOnly.localOnly)
+    let data = try OperationalFlightKMZ.archive(
+        title: "Unpublished",
+        points: [],
+        clues: [pending, failed, localOnly]
+    )
+    let entries = try OperationalZipArchive.decode(data)
+    #expect(entries.map(\.path) == ["doc.kml", "files/clue_0.jpg"])
+    let kml = String(decoding: entries[0].data, as: UTF8.self)
+    // Publish-intended but unconfirmed clues are embedded; Don't Publish stays local-only.
+    #expect(kml.contains("<Data name=\"r2c_local_only\"><value>false</value></Data>"))
+    #expect(kml.contains("<Data name=\"r2c_local_only\"><value>true</value></Data>"))
+    #expect(kml.components(separatedBy: "<Placemark>").count - 1 == 3)
+}
+
 @Test func archivedFlightOwnershipAndBindingFallback() throws {
     func archive(_ start: Int64, _ count: Int) -> RidTrackGeoJSON.ArchiveContents {
         RidTrackGeoJSON.ArchiveContents(title: "T", remoteID: "RID-1",

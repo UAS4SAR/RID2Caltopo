@@ -6,7 +6,6 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import org.ncssar.rid2caltopo.data.ClueUploadBackoffTable
-import java.io.File
 
 class ClueUploadDurabilityTest {
     @get:Rule val temporaryFolder = TemporaryFolder()
@@ -50,21 +49,21 @@ class ClueUploadDurabilityTest {
         val root = temporaryFolder.newFolder("clue-4xx")
         val store = AndroidClueStore.forDirectory(root)
         val record = clueRecord("b", "map:alpha")
-        store.saveEncoded(record, byteArrayOf(1), byteArrayOf(2))
+        val saved = store.saveEncoded(record, byteArrayOf(1), byteArrayOf(2))
         // 4xx alone is not permanent; keep retryable until reconcile proves presence.
-        store.recordUploadResult(record.id, false, "Forbidden", terminal = false)
-        val kept = store.record(record.id)!!
+        store.recordUploadResult(saved.id, false, "Forbidden", terminal = false)
+        val kept = store.record(saved.id)!!
         assertEquals("pending", kept.uploadState)
         assertEquals("Forbidden", kept.lastUploadError)
-        assertEquals(listOf(record.id), store.pendingForMap("alpha", "team-a").map { it.id })
-        assertEquals(listOf(record.id), store.unpublishedForMap("alpha", "team-a").map { it.id })
-        assertTrue(File(root, record.imageFilename).isFile)
+        assertEquals(listOf(saved.id), store.pendingForMap("alpha", "team-a").map { it.id })
+        assertEquals(listOf(saved.id), store.unpublishedForMap("alpha", "team-a").map { it.id })
+        assertTrue(store.imageFile(kept).isFile)
 
-        store.recordUploadResult(record.id, false, "Forbidden", terminal = true)
-        val failed = store.record(record.id)!!
+        store.recordUploadResult(saved.id, false, "Forbidden", terminal = true)
+        val failed = store.record(saved.id)!!
         assertEquals("failed", failed.uploadState)
-        assertEquals(listOf(record.id), store.pendingForMap("alpha", "team-a").map { it.id })
-        assertTrue(File(root, record.imageFilename).isFile)
+        assertEquals(listOf(saved.id), store.pendingForMap("alpha", "team-a").map { it.id })
+        assertTrue(store.imageFile(failed).isFile)
     }
 
     @Test

@@ -42,6 +42,7 @@ public final class FakeCalTopoSessionGateway implements CalTopoSessionGateway {
         record("deleteMarker", id, null);
         CaltopoOp op = new CaltopoOp(null);
         op.responseCode = markerDeleteResponseCode;
+        op.markerCleanupDeleteCode = markerDeleteResponseCode;
         op.setOperationIsDone(markerDeleteSucceeds);
         if (done != null) {
             if(holdMarkerDeletes)markerDeleteCallbacks.add(done);

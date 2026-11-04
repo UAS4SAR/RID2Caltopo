@@ -54,6 +54,12 @@ public class CaltopoOp implements Future <CaltopoOp> {
     public int[] acceptedErrorCodes; // response codes to treat as success rather than firing CaltopoOpFailed
     /** Response codes that stay failures for success() but must not emit CaltopoOpFailed. */
     public int[] quietErrorCodes;
+    /**
+     * Marker cleanup only: HTTP status of the DELETE that preceded a since-GET verify.
+     * When &gt; 0, logs must report this separately from the verify responseCode so a verify
+     * GET 200 with absent=false is not misread as a successful DELETE.
+     */
+    public int markerCleanupDeleteCode;
     public String response;    // if receivedTimestampInMsec && goodResponse == false;
     /** Raw HTTP body before availability wording rewrite (clue media 400 classification). */
     public String serverResponseBody;

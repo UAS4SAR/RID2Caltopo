@@ -1145,20 +1145,31 @@ public class CaltopoSession {
         final long beforeDelete = System.currentTimeMillis();
         if (beforeDelete <= 500L) throw new IllegalStateException("Clock unavailable; marker cleanup retained");
         CaltopoOp op=new CaltopoOp(deleted -> {
-            if (!deleted.success()) { if (done != null) done.accept(deleted); return; }
-            // 400/404 mean the feature is already gone; do not require a tombstone delta.
-            if (deleted.responseCode == 400 || deleted.responseCode == 404) {
+            int deleteCode = deleted.responseCode;
+            deleted.markerCleanupDeleteCode = deleteCode;
+            CaltopoMarkerCleanupPolicy.AfterDelete plan =
+                    CaltopoMarkerCleanupPolicy.afterDelete(deleteCode, deleted.success());
+            if (plan.getTerminal()) {
+                deleted.goodResponse = plan.getSuccess();
                 if (done != null) done.accept(deleted);
                 return;
             }
-            // Require explicit absence evidence after a successful DELETE; an empty delta is inconclusive.
+            if (!plan.getNeedsVerify()) {
+                if (done != null) done.accept(deleted);
+                return;
+            }
+            // Require explicit absence evidence after DELETE 200 or inconclusive 400.
             CaltopoOp verification = new CaltopoOp(snapshot -> {
-                boolean absent = snapshot.success() && CaltopoMarkerVerification.confirmsAbsent(snapshot.responseJson, id);
-                snapshot.goodResponse = absent;
+                boolean absent = snapshot.success()
+                        && CaltopoMarkerVerification.confirmsAbsent(snapshot.responseJson, id);
+                snapshot.markerCleanupDeleteCode = deleteCode;
+                snapshot.goodResponse = CaltopoMarkerCleanupPolicy.afterVerify(absent);
                 if (done != null) done.accept(snapshot);
             });
             SendCleanupRequest(verification,CtsMethod_t.GET,CALTOPO_MAP_API_V1+mapId+"/since/"+(beforeDelete-500L),domain,credentials,personal);
         });
+        // 400 stays accepted so the HTTP layer does not fire CaltopoOpFailed; success still
+        // requires absence verification above. 404 is treated as already-absent.
         op.acceptedErrorCodes=new int[]{400,404};
         SendCleanupRequest(op,CtsMethod_t.DELETE,CALTOPO_MAP_API_V1+mapId+"/Marker/"+id,domain,credentials,personal);
         return op;

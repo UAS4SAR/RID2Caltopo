@@ -7,6 +7,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
+import java.io.File
 
 class AndroidClueStoreTest {
     @get:Rule
@@ -16,25 +17,25 @@ class AndroidClueStoreTest {
         val root = temporaryFolder.newFolder("corrupt-index")
         val record = clueRecord("retained", "map:alpha").copy(destinationTeamId = "team-a", uploadState = "pending")
         val store = AndroidClueStore.forDirectory(root)
-        store.saveEncoded(record, byteArrayOf(1), byteArrayOf(2))
-        val index = java.io.File(root, "clues.json")
+        val saved = store.saveEncoded(record, byteArrayOf(1), byteArrayOf(2))
+        val index = File(root, saved.imageFilename.substringBefore('/') + "/clues.json")
         val original = index.readBytes()
         index.writeText("{damaged original")
         // Already-loaded process memory remains authoritative; a fresh open must refuse.
-        assertEquals(record, store.pendingForMap("alpha", "team-a").single())
-        assertTrue(store.imageFile(record).isFile)
+        assertEquals(saved, store.pendingForMap("alpha", "team-a").single())
+        assertTrue(store.imageFile(saved).isFile)
         org.junit.Assert.assertThrows(java.io.IOException::class.java) {
             AndroidClueStore.forDirectory(root).pendingForMap("alpha", "team-a")
         }
         org.junit.Assert.assertThrows(java.io.IOException::class.java) {
-            AndroidClueStore.forDirectory(root).recordUploadResult(record.id, true)
+            AndroidClueStore.forDirectory(root).recordUploadResult(saved.id, true)
         }
         assertEquals("{damaged original", index.readText())
-        assertTrue(java.io.File(root, record.imageFilename).isFile)
+        assertTrue(File(root, saved.imageFilename).isFile)
         index.writeBytes(original)
         val recovered = AndroidClueStore.forDirectory(root)
-        assertEquals(record, recovered.pendingForMap("alpha", "team-a").single())
-        recovered.recordUploadResult(record.id, true)
+        assertEquals(saved, recovered.pendingForMap("alpha", "team-a").single())
+        recovered.recordUploadResult(saved.id, true)
     }
 
     @Test fun unrelatedIndexWriteRetainsMetadataForTemporarilyMissingImage() {
@@ -42,50 +43,50 @@ class AndroidClueStoreTest {
         val store = AndroidClueStore.forDirectory(root)
         val missing = clueRecord("missing", "map:alpha").copy(destinationTeamId = "team-a", uploadState = "pending")
         val other = clueRecord("other", "map:alpha").copy(destinationTeamId = "team-a", uploadState = "pending")
-        store.saveEncoded(missing, byteArrayOf(1), byteArrayOf(2))
-        store.saveEncoded(other, byteArrayOf(1), byteArrayOf(2))
-        store.imageFile(missing).delete()
+        val savedMissing = store.saveEncoded(missing, byteArrayOf(1), byteArrayOf(2))
+        val savedOther = store.saveEncoded(other, byteArrayOf(1), byteArrayOf(2))
+        store.imageFile(savedMissing).delete()
         val reopened = AndroidClueStore.forDirectory(root)
-        reopened.recordUploadResult(other.id, true)
-        assertEquals(missing, AndroidClueStore.forDirectory(root).record(missing.id))
-        store.imageFile(missing).writeBytes(byteArrayOf(1))
-        assertEquals(missing, AndroidClueStore.forDirectory(root).pendingForMap("alpha", "team-a").single())
+        reopened.recordUploadResult(savedOther.id, true)
+        assertEquals(savedMissing, AndroidClueStore.forDirectory(root).record(savedMissing.id))
+        store.imageFile(savedMissing).writeBytes(byteArrayOf(1))
+        assertEquals(savedMissing, AndroidClueStore.forDirectory(root).pendingForMap("alpha", "team-a").single())
     }
 
     @Test fun failedUploadResultWritePreservesPendingStateAndPhotoForRetry() {
         val root = temporaryFolder.newFolder("failed-upload-result")
         val record = clueRecord("retry", "map:alpha").copy(destinationTeamId = "team-a", uploadState = "pending")
         val store = AndroidClueStore.forDirectory(root)
-        store.saveEncoded(record, byteArrayOf(1), byteArrayOf(2))
-        val index = java.io.File(root, "clues.json").readBytes()
-        val blocked = java.io.File(root, "clues.json.partial")
+        val saved = store.saveEncoded(record, byteArrayOf(1), byteArrayOf(2))
+        val day = saved.imageFilename.substringBefore('/')
+        val indexFile = File(File(root, day), "clues.json")
+        val index = indexFile.readBytes()
+        val blocked = File(File(root, day), "clues.json.partial")
         assertTrue(blocked.mkdir())
-        java.io.File(blocked, "fault").writeText("keep directory nonempty")
-        org.junit.Assert.assertThrows(java.io.IOException::class.java) { store.recordUploadResult(record.id, true) }
-        assertEquals(record, store.record(record.id))
-        assertArrayEquals(index, java.io.File(root, "clues.json").readBytes())
-        assertTrue(store.imageFile(record).isFile)
-        assertEquals(record, AndroidClueStore.forDirectory(root).pendingForMap("alpha", "team-a").single())
+        File(blocked, "fault").writeText("keep directory nonempty")
+        org.junit.Assert.assertThrows(java.io.IOException::class.java) { store.recordUploadResult(saved.id, true) }
+        assertEquals(saved, store.record(saved.id))
+        assertArrayEquals(index, indexFile.readBytes())
+        assertTrue(store.imageFile(saved).isFile)
+        assertEquals(saved, AndroidClueStore.forDirectory(root).pendingForMap("alpha", "team-a").single())
         blocked.deleteRecursively()
-        store.recordUploadResult(record.id, true)
+        store.recordUploadResult(saved.id, true)
         assertTrue(AndroidClueStore.forDirectory(root).pendingForMap("alpha", "team-a").isEmpty())
     }
 
     @Test
     fun mapAssignmentRefreshesPhotoEvenWhenUploadAlreadyFinished() {
         val root = temporaryFolder.newFolder("published-refresh")
-        // Production uses one shared store; assignment must refresh that same process memory.
         val store = AndroidClueStore.forDirectory(root)
         val record = clueRecord("photo", "unassigned").copy(destinationTeamId = "team-a")
-        store.saveEncoded(record, byteArrayOf(1), byteArrayOf(2))
+        val saved = store.saveEncoded(record, byteArrayOf(1), byteArrayOf(2))
         assertTrue(store.recordsForMap("map:alpha").isEmpty())
-        val published = record.copy(mapKey = "map:alpha", uploadState = "published")
-        store.saveEncoded(published, byteArrayOf(1), byteArrayOf(2))
+        val published = saved.copy(mapKey = "map:alpha", uploadState = "published")
+        val republished = store.saveEncoded(published, byteArrayOf(1), byteArrayOf(2))
         assertTrue(store.pendingForMap("alpha", "team-a").isEmpty())
-        assertEquals(listOf(published), store.recordsForMap("map:alpha"))
+        assertEquals(listOf(republished), store.recordsForMap("map:alpha"))
         assertTrue(store.imageFile(store.record(record.id)!!).isFile)
-        // Durable index: a later open also sees the published assignment.
-        assertEquals(listOf(published), AndroidClueStore.forDirectory(root).recordsForMap("map:alpha"))
+        assertEquals(listOf(republished), AndroidClueStore.forDirectory(root).recordsForMap("map:alpha"))
     }
 
     @Test fun localOnlyShareReportPreservesPrivacyAndUploadState() {
@@ -93,31 +94,31 @@ class AndroidClueStoreTest {
         val record = clueRecord("share", "map:alpha").copy(
             title = "Sensitive clue", description = "found by: 1SAR7\nDetails entered at capture",
             publishToCaltopo = false, uploadState = "local", destinationTeamId = "private-credential")
-        store.saveEncoded(record, byteArrayOf(1), byteArrayOf(2))
-        val before = store.record(record.id)
+        val saved = store.saveEncoded(record, byteArrayOf(1), byteArrayOf(2))
+        val before = store.record(saved.id)
         for (format in CoordinateDisplayFormat.values()) {
-            val report = clueShareReport(record, format)
+            val report = clueShareReport(saved, format)
             assertTrue(report.contains("Sensitive clue"))
             assertTrue(report.contains("found by: 1SAR7"))
-            assertTrue(report.contains(CoordinateFormatter.format(record.lat, record.lng, format)))
+            assertTrue(report.contains(CoordinateFormatter.format(saved.lat, saved.lng, format)))
             assertFalse(report.contains("private-credential"))
         }
-        assertEquals(before, store.record(record.id))
+        assertEquals(before, store.record(saved.id))
         assertTrue(store.pendingForMap("alpha", "private-credential").isEmpty())
     }
 
     @Test fun personalQueueSurvivesRelaunchButNeverSwitchesAccountOrMap() {
         val root = temporaryFolder.newFolder("personal")
         val record = clueRecord("personal", "map:ABC123").copy(destinationTeamId = "personal:USER01", uploadState = "pending")
-        AndroidClueStore.forDirectory(root).saveEncoded(record, byteArrayOf(1), byteArrayOf(2))
+        val saved = AndroidClueStore.forDirectory(root).saveEncoded(record, byteArrayOf(1), byteArrayOf(2))
         val reopened = AndroidClueStore.forDirectory(root)
         assertEquals(1, reopened.pendingForMap("ABC123", "personal:USER01").size)
         assertTrue(reopened.pendingForMap("ABC123", "personal:USER02").isEmpty())
         assertTrue(reopened.pendingForMap("ABC123", "USER01").isEmpty())
         assertTrue(reopened.pendingForMap("DEF456", "personal:USER01").isEmpty())
-        reopened.recordUploadResult(record.id, false, "lost response")
-        assertEquals(record.id, reopened.pendingForMap("ABC123", "personal:USER01").single().id)
-        reopened.recordUploadResult(record.id, true)
+        reopened.recordUploadResult(saved.id, false, "lost response")
+        assertEquals(saved.id, reopened.pendingForMap("ABC123", "personal:USER01").single().id)
+        reopened.recordUploadResult(saved.id, true)
         assertTrue(reopened.pendingForMap("ABC123", "personal:USER01").isEmpty())
     }
 
@@ -129,11 +130,10 @@ class AndroidClueStoreTest {
             destinationTeamId = "team-a",
             uploadState = "local",
         )
-        AndroidClueStore.forDirectory(root).saveEncoded(local, byteArrayOf(1), byteArrayOf(2))
+        val saved = AndroidClueStore.forDirectory(root).saveEncoded(local, byteArrayOf(1), byteArrayOf(2))
         val reopened = AndroidClueStore.forDirectory(root)
-        assertEquals(listOf(local), reopened.recordsForMap("map:alpha"))
+        assertEquals(listOf(saved), reopened.recordsForMap("map:alpha"))
         assertTrue(reopened.pendingForMap("alpha", "team-a").isEmpty())
-        // Even a stale retry callback must not turn a local-only marker into an upload.
         reopened.recordUploadResult(local.id, false, "offline")
         val reloaded = AndroidClueStore.forDirectory(root)
         assertFalse(reloaded.record(local.id)!!.publishToCaltopo)
@@ -147,13 +147,16 @@ class AndroidClueStoreTest {
         val image = byteArrayOf(1, 2, 3, 4)
         val thumbnail = byteArrayOf(5, 6)
 
-        AndroidClueStore.forDirectory(root).saveEncoded(record, image, thumbnail)
+        val saved = AndroidClueStore.forDirectory(root).saveEncoded(record, image, thumbnail)
         val reopened = AndroidClueStore.forDirectory(root)
 
-        assertEquals(listOf(record), reopened.recordsForMap("map:alpha"))
+        assertEquals(listOf(saved), reopened.recordsForMap("map:alpha"))
         assertEquals(emptyList<AndroidClueRecord>(), reopened.recordsForMap("map:other"))
-        assertArrayEquals(image, reopened.imageFile(record).readBytes())
-        assertArrayEquals(thumbnail, reopened.thumbnailFile(record).readBytes())
+        assertArrayEquals(image, reopened.imageFile(saved).readBytes())
+        assertArrayEquals(thumbnail, reopened.thumbnailFile(saved).readBytes())
+        assertTrue(saved.imageFilename.contains('/'))
+        assertTrue(File(File(root, saved.imageFilename.substringBefore('/')), "clues.json").isFile)
+        assertFalse(File(root, "clues.json").exists())
     }
 
     @Test
@@ -162,28 +165,34 @@ class AndroidClueStoreTest {
         val store = AndroidClueStore.forDirectory(root)
         val deleted = clueRecord(id = "delete-me", mapKey = "map:alpha")
         val retained = clueRecord(id = "keep-me", mapKey = "map:alpha")
-        store.saveEncoded(deleted, byteArrayOf(1), byteArrayOf(2))
-        store.saveEncoded(retained, byteArrayOf(3), byteArrayOf(4))
+        val savedDeleted = store.saveEncoded(deleted, byteArrayOf(1), byteArrayOf(2))
+        val savedRetained = store.saveEncoded(retained, byteArrayOf(3), byteArrayOf(4))
 
-        assertTrue(store.delete(deleted.id))
+        assertTrue(store.delete(savedDeleted.id))
 
-        assertFalse(store.imageFile(deleted).exists())
-        assertFalse(store.thumbnailFile(deleted).exists())
-        assertEquals(listOf(retained), AndroidClueStore.forDirectory(root).recordsForMap("map:alpha"))
+        assertFalse(store.imageFile(savedDeleted).exists())
+        assertFalse(store.thumbnailFile(savedDeleted).exists())
+        assertEquals(listOf(savedRetained), AndroidClueStore.forDirectory(root).recordsForMap("map:alpha"))
     }
 
     @Test
-    fun retentionRemovalHidesClueAndNextWritePrunesItsMetadata() {
+    fun photoMissingRowsRemainVisibleAndIndexedAcrossWrites() {
         val root = temporaryFolder.newFolder("retention")
         val store = AndroidClueStore.forDirectory(root)
         val old = clueRecord("old", "map:alpha")
-        store.saveEncoded(old, byteArrayOf(1), byteArrayOf(2))
-        store.imageFile(old).delete()
-        store.thumbnailFile(old).delete()
-        assertTrue(store.recordsForMap("map:alpha").isEmpty())
+        val savedOld = store.saveEncoded(old, byteArrayOf(1), byteArrayOf(2))
+        store.imageFile(savedOld).delete()
+        store.thumbnailFile(savedOld).delete()
+        // Photo presence no longer hides the index row.
+        assertEquals(listOf(savedOld), store.recordsForMap("map:alpha"))
+        assertEquals(listOf(savedOld), store.allRecords())
         val current = clueRecord("new", "map:alpha")
-        store.saveEncoded(current, byteArrayOf(3), byteArrayOf(4))
-        assertEquals(listOf(current), AndroidClueStore.forDirectory(root).recordsForMap("map:alpha"))
+        val savedNew = store.saveEncoded(current, byteArrayOf(3), byteArrayOf(4))
+        assertEquals(
+            setOf("old", "new"),
+            AndroidClueStore.forDirectory(root).recordsForMap("map:alpha").map { it.id }.toSet(),
+        )
+        assertTrue(store.imageFile(savedNew).isFile)
     }
 
     @Test
@@ -191,14 +200,14 @@ class AndroidClueStoreTest {
         val root = temporaryFolder.newFolder("pending")
         val store = AndroidClueStore.forDirectory(root)
         val record = clueRecord("pending", "map:alpha").copy(destinationTeamId = "team-a", uploadState = "pending")
-        store.saveEncoded(record, byteArrayOf(1), byteArrayOf(2))
+        val saved = store.saveEncoded(record, byteArrayOf(1), byteArrayOf(2))
         val reopened = AndroidClueStore.forDirectory(root)
-        assertEquals(listOf(record), reopened.pendingForMap("alpha", "team-a"))
+        assertEquals(listOf(saved), reopened.pendingForMap("alpha", "team-a"))
         assertTrue(reopened.pendingForMap("other", "team-a").isEmpty())
         assertTrue(reopened.pendingForMap("alpha", "team-b").isEmpty())
-        reopened.recordUploadResult(record.id, false, "offline")
+        reopened.recordUploadResult(saved.id, false, "offline")
         assertEquals(1, reopened.pendingForMap("alpha", "team-a").size)
-        reopened.recordUploadResult(record.id, true)
+        reopened.recordUploadResult(saved.id, true)
         assertTrue(AndroidClueStore.forDirectory(root).pendingForMap("alpha", "team-a").isEmpty())
     }
 
@@ -222,17 +231,15 @@ class AndroidClueStoreTest {
         val store = AndroidClueStore.forDirectory(temporaryFolder.newFolder("legacy"))
         val old = clueRecord("old", "map:alpha").copy(destinationTeamId="team-a")
         store.saveEncoded(old, byteArrayOf(1), byteArrayOf(2))
-        // Legacy uploadState is not pending/failed/uploading.
         assertTrue(store.pendingForMap("alpha", "team-a").isEmpty())
         val pending = clueRecord("retryable", "map:alpha").copy(
             destinationTeamId = "team-a",
             uploadState = "pending",
         )
-        store.saveEncoded(pending, byteArrayOf(1), byteArrayOf(2))
-        store.recordUploadResult(pending.id, false, "Forbidden", terminal = true)
-        // Failed remains retryable until map reconciliation proves presence.
-        assertEquals(listOf(pending.id), store.pendingForMap("alpha", "team-a").map { it.id })
-        assertEquals("failed", store.record(pending.id)!!.uploadState)
+        val savedPending = store.saveEncoded(pending, byteArrayOf(1), byteArrayOf(2))
+        store.recordUploadResult(savedPending.id, false, "Forbidden", terminal = true)
+        assertEquals(listOf(savedPending.id), store.pendingForMap("alpha", "team-a").map { it.id })
+        assertEquals("failed", store.record(savedPending.id)!!.uploadState)
     }
 
     @Test
@@ -240,7 +247,6 @@ class AndroidClueStoreTest {
         val root = temporaryFolder.newFolder("bound")
         val store = AndroidClueStore.forDirectory(root)
         val point = org.ncssar.rid2caltopo.data.ClueBindingPoint(500L, 800L, 39.153, -121.132, 100.0, "rid", true)
-        // The only fix so far is before the capture; Submit uses it without waiting for a later one.
         val binding = org.ncssar.rid2caltopo.data.ClueBinder.bind("RID-1", "flight-1", 1_000L, "stream-pts", 1_400L,
             listOf(point), null, false)
         val record = clueRecord("bound", "map:alpha").copy(destinationTeamId = "team-a", uploadState = "pending", binding = binding)
@@ -248,14 +254,15 @@ class AndroidClueStoreTest {
         val reopened = AndroidClueStore.forDirectory(root)
         assertEquals(binding, reopened.record("bound")!!.binding)
         assertEquals(1_000L, reopened.record("bound")!!.ownershipTimeMs)
-        // Publishable right away.
         assertEquals(listOf("bound"), reopened.pendingForMap("alpha", "team-a").map { it.id })
         assertTrue(record.publishedDescription.startsWith("Found beside trail\n\nWaypoint binding:\n  Offset: -0.500 s"))
-        // Records saved before binding existed still load and publish their plain description.
         val legacy = clueRecord("legacy", "map:alpha").copy(destinationTeamId = "team-a", uploadState = "pending")
-        store.saveEncoded(legacy, byteArrayOf(1), byteArrayOf(2))
-        val index = java.io.File(root, "clues.json").readText()
-        assertFalse(org.json.JSONArray(index).getJSONObject(1).has("binding"))
+        val savedLegacy = store.saveEncoded(legacy, byteArrayOf(1), byteArrayOf(2))
+        val day = savedLegacy.imageFilename.substringBefore('/')
+        val index = File(File(root, day), "clues.json").readText()
+        val array = org.json.JSONArray(index)
+        val legacyJson = (0 until array.length()).map { array.getJSONObject(it) }.first { it.getString("id") == "legacy" }
+        assertFalse(legacyJson.has("binding"))
         val loaded = AndroidClueStore.forDirectory(root).record("legacy")!!
         assertEquals(null, loaded.binding)
         assertEquals("Found beside trail", loaded.publishedDescription)
@@ -268,10 +275,87 @@ class AndroidClueStoreTest {
         store.saveEncoded(clueRecord("a", "map:alpha"), byteArrayOf(1), byteArrayOf(2))
         store.saveEncoded(clueRecord("b", "unassigned"), byteArrayOf(1), byteArrayOf(2))
         store.saveEncoded(clueRecord("c", "map:bravo"), byteArrayOf(1), byteArrayOf(2))
-        // Display path matches iPad: every local clue is visible with no incident map selected.
         val all = store.allRecords().map { it.id }.toSet()
         assertEquals(setOf("a", "b", "c"), all)
         assertEquals(listOf("b"), store.recordsForMap("unassigned").map { it.id })
+    }
+
+    @Test
+    fun allRecords_includesPhotoMissingRows() {
+        val root = temporaryFolder.newFolder("all-records-missing")
+        val store = AndroidClueStore.forDirectory(root)
+        val saved = store.saveEncoded(clueRecord("ghost", "map:alpha"), byteArrayOf(1), byteArrayOf(2))
+        store.imageFile(saved).delete()
+        assertEquals(listOf("ghost"), store.allRecords().map { it.id })
+        assertEquals(listOf("ghost"), store.recordsForMap("map:alpha").map { it.id })
+        assertFalse(store.imageFile(saved).isFile)
+    }
+
+    @Test
+    fun destinationMapTitleRoundTripsThroughIndex() {
+        val root = temporaryFolder.newFolder("map-title")
+        val record = clueRecord("titled", "map:alpha").copy(destinationMapTitle = "Incident Alpha")
+        val saved = AndroidClueStore.forDirectory(root).saveEncoded(record, byteArrayOf(1), byteArrayOf(2))
+        assertEquals("Incident Alpha", saved.destinationMapTitle)
+        assertEquals("Incident Alpha", AndroidClueStore.forDirectory(root).record("titled")!!.destinationMapTitle)
+    }
+
+    @Test
+    fun discardTombstonePersistsAcrossReload() {
+        val root = temporaryFolder.newFolder("discard")
+        val store = AndroidClueStore.forDirectory(root)
+        val saved = store.saveEncoded(
+            clueRecord("gone", "map:alpha").copy(destinationTeamId = "team-a", uploadState = "pending"),
+            byteArrayOf(1),
+            byteArrayOf(2),
+        )
+        assertTrue(store.delete(saved.id))
+        assertTrue(store.isUserDeleted(saved.id))
+        assertTrue(store.allRecords().none { it.id == saved.id })
+        val reopened = AndroidClueStore.forDirectory(root)
+        assertTrue(reopened.isUserDeleted(saved.id))
+        assertTrue(reopened.allRecords().none { it.id == saved.id })
+        org.junit.Assert.assertThrows(IllegalStateException::class.java) {
+            reopened.saveEncoded(saved, byteArrayOf(1), byteArrayOf(2))
+        }
+    }
+
+    @Test
+    fun markLocalOnlyRemovesFromPendingButKeepsRecord() {
+        val root = temporaryFolder.newFolder("local-only")
+        val store = AndroidClueStore.forDirectory(root)
+        val saved = store.saveEncoded(
+            clueRecord("keep", "map:alpha").copy(destinationTeamId = "team-a", uploadState = "pending"),
+            byteArrayOf(1),
+            byteArrayOf(2),
+        )
+        store.markLocalOnly(saved.id)
+        assertTrue(store.pendingForMap("alpha", "team-a").isEmpty())
+        val kept = store.record(saved.id)!!
+        assertFalse(kept.publishToCaltopo)
+        assertEquals("local", kept.uploadState)
+        assertTrue(store.imageFile(kept).isFile)
+    }
+
+    @Test
+    fun loadsLegacyFlatIndexAlongsideDayFolders() {
+        val root = temporaryFolder.newFolder("legacy-flat")
+        val day = AndroidClueStore.dayDirectoryName(2_000L)
+        File(File(root, day), "clues.json").parentFile!!.mkdirs()
+        File(File(root, day), "clues.json").writeText(
+            """[{"id":"day","mapKey":"map:alpha","lat":39.0,"lng":-121.0,"title":"day",""" +
+                """"description":"","createdAtMs":2000,"sourceDesignator":"1SAR7",""" +
+                """"imageFilename":"$day/day.jpg","thumbnailFilename":"$day/day-thumb.jpg",""" +
+                """"publishToCaltopo":true,"uploadState":"pending"}]""",
+        )
+        File(root, "clues.json").writeText(
+            """[{"id":"flat","mapKey":"map:alpha","lat":39.0,"lng":-121.0,"title":"flat",""" +
+                """"description":"","createdAtMs":1000,"sourceDesignator":"1SAR7",""" +
+                """"imageFilename":"flat.jpg","thumbnailFilename":"flat-thumb.jpg",""" +
+                """"publishToCaltopo":true,"uploadState":"pending"}]""",
+        )
+        val ids = AndroidClueStore.forDirectory(root).allRecords().map { it.id }.toSet()
+        assertEquals(setOf("day", "flat"), ids)
     }
 
     private fun clueRecord(id: String, mapKey: String) = AndroidClueRecord(

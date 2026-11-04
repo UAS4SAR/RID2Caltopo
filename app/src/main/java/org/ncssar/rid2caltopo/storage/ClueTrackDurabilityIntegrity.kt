@@ -3,6 +3,7 @@ package org.ncssar.rid2caltopo.storage
 import android.content.Context
 import org.json.JSONArray
 import org.json.JSONObject
+import org.ncssar.rid2caltopo.app.isDatedArchiveDirectoryName
 import org.ncssar.rid2caltopo.data.CaltopoClient
 import org.ncssar.rid2caltopo.data.PlainFileSafeWriter
 import org.ncssar.rid2caltopo.data.WaypointTrackJournal
@@ -72,12 +73,54 @@ object ClueTrackDurabilityIntegrity {
         )
     }
 
-    /** Orphan photos → stub index rows; index without photo → keep and flag failed/orphan. */
+    /**
+     * Orphan photos → stub index rows; index without photo → keep and flag failed/orphan.
+     * Scans per-day folders plus a legacy flat root index.
+     */
     internal fun reconcileClueDirectory(root: File): Summary {
         if (!root.isDirectory && !root.mkdirs()) {
             return Summary()
         }
-        val indexFile = File(root, "clues.json")
+        var orphansReindexed = 0
+        var missingPhotos = 0
+
+        val dayDirs = root.listFiles()
+            ?.filter { it.isDirectory && isDatedArchiveDirectoryName(it.name) }
+            .orEmpty()
+        for (dayDir in dayDirs) {
+            val daySummary = reconcileOneIndex(
+                root = root,
+                indexFile = File(dayDir, "clues.json"),
+                photoFiles = dayDir.listFiles()
+                    ?.filter { it.isFile && it.name.endsWith(".jpg") && !it.name.endsWith("-thumb.jpg") }
+                    .orEmpty(),
+                relativePrefix = "${dayDir.name}/",
+            )
+            orphansReindexed += daySummary.orphansReindexed
+            missingPhotos += daySummary.missingPhotos
+        }
+
+        // Legacy flat root (pre-migration / mid-handoff).
+        val flatSummary = reconcileOneIndex(
+            root = root,
+            indexFile = File(root, "clues.json"),
+            photoFiles = root.listFiles()
+                ?.filter { it.isFile && it.name.endsWith(".jpg") && !it.name.endsWith("-thumb.jpg") }
+                .orEmpty(),
+            relativePrefix = "",
+        )
+        orphansReindexed += flatSummary.orphansReindexed
+        missingPhotos += flatSummary.missingPhotos
+
+        return Summary(orphansReindexed = orphansReindexed, missingPhotos = missingPhotos)
+    }
+
+    private fun reconcileOneIndex(
+        root: File,
+        indexFile: File,
+        photoFiles: List<File>,
+        relativePrefix: String,
+    ): Summary {
         val byId = linkedMapOf<String, JSONObject>()
         if (indexFile.isFile) {
             runCatching {
@@ -91,19 +134,19 @@ object ClueTrackDurabilityIntegrity {
                 CaltopoClient.CTWarn(TAG, "clues.json unreadable; leaving as-is for manual recovery", it as? Exception)
                 return Summary()
             }
+        } else if (photoFiles.isEmpty()) {
+            return Summary()
         }
         var orphansReindexed = 0
         var missingPhotos = 0
-        val photoIds = root.listFiles()
-            ?.filter { it.isFile && it.name.endsWith(".jpg") && !it.name.endsWith("-thumb.jpg") }
-            ?.mapNotNull { file ->
-                val name = file.name.removeSuffix(".jpg")
-                if (name.isBlank() || name.contains("-thumb")) null else name to file
-            }
-            .orEmpty()
-        for ((id, file) in photoIds) {
-            if (byId.containsKey(id)) continue
-            val thumb = File(root, "$id-thumb.jpg")
+        val indexedFilenames = byId.values.map { it.optString("imageFilename") }.toSet()
+        for (file in photoFiles) {
+            val relative = relativePrefix + file.name
+            if (relative in indexedFilenames || file.name in indexedFilenames) continue
+            val id = file.name.removeSuffix(".jpg")
+            if (id.isBlank() || id.contains("-thumb")) continue
+            val thumbName = "$id-thumb.jpg"
+            val thumb = File(file.parentFile, thumbName)
             val stub = JSONObject()
                 .put("id", id)
                 .put("mapKey", "unassigned")
@@ -114,8 +157,11 @@ object ClueTrackDurabilityIntegrity {
                 .put("description", "")
                 .put("createdAtMs", file.lastModified().takeIf { it > 0 } ?: System.currentTimeMillis())
                 .put("sourceDesignator", "")
-                .put("imageFilename", file.name)
-                .put("thumbnailFilename", if (thumb.isFile) thumb.name else file.name)
+                .put("imageFilename", relative)
+                .put(
+                    "thumbnailFilename",
+                    if (thumb.isFile) relativePrefix + thumbName else relative,
+                )
                 .put("publishToCaltopo", true)
                 .put("destinationTeamId", "")
                 .put("uploadState", "pending")
@@ -123,7 +169,7 @@ object ClueTrackDurabilityIntegrity {
             byId[id] = stub
             orphansReindexed++
         }
-        for ((id, json) in byId) {
+        for ((_, json) in byId) {
             val imageName = json.optString("imageFilename")
             if (imageName.isBlank()) continue
             val image = File(root, imageName)
@@ -141,6 +187,7 @@ object ClueTrackDurabilityIntegrity {
             }
         }
         if (orphansReindexed > 0 || missingPhotos > 0 || !indexFile.isFile) {
+            indexFile.parentFile?.mkdirs()
             val out = JSONArray()
             byId.values.forEach { out.put(it) }
             PlainFileSafeWriter.replace(indexFile, out.toString(2).toByteArray(Charsets.UTF_8)) { it.isNotEmpty() }

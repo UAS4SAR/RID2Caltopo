@@ -237,8 +237,9 @@ object AwaitingMapFlights {
         if (map != null && bindItem != null && bindOthers != null) {
             val ctxt = R2CApplication.getAppCtxt()
             if (ctxt != null) {
+                val mapTitle = org.ncssar.rid2caltopo.data.CaltopoMap.GetMapName().orEmpty()
                 org.ncssar.rid2caltopo.video.AndroidClueStore.shared(ctxt)
-                    .bindAwaitingFlight(bindItem, bindOthers, map, team)
+                    .bindAwaitingFlight(bindItem, bindOthers, map, team, mapTitle)
             }
             if (finishedPublish != null) queueCompleted(finishedPublish)
         }
@@ -265,8 +266,12 @@ object AwaitingMapFlights {
                 .map { JSONObject(it.toString()) to others }
         }
         // Clue-store file checks must not run while this journal lock is held.
-        if (ctxt != null) bindings.forEach { (item, others) ->
-            org.ncssar.rid2caltopo.video.AndroidClueStore.shared(ctxt).bindAwaitingFlight(item, others, map, team)
+        if (ctxt != null) {
+            val mapTitle = org.ncssar.rid2caltopo.data.CaltopoMap.GetMapName().orEmpty()
+            bindings.forEach { (item, others) ->
+                org.ncssar.rid2caltopo.video.AndroidClueStore.shared(ctxt)
+                    .bindAwaitingFlight(item, others, map, team, mapTitle)
+            }
         }
         synchronized(this) {
             load()

@@ -151,4 +151,28 @@ struct FlightFolderProtectionTests {
         #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("2019-05-01").path))
         #expect(FileManager.default.fileExists(atPath: root.appendingPathComponent("2019-05-02").path))
     }
+
+    @Test func dayFolderDeletionRemovesCluesJsonWithTheDay() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let day = "2018-04-01"
+        let folder = root.appendingPathComponent(day)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let clue = OperationalClueRecord(
+            capturedAt: Date(timeIntervalSince1970: 0), aircraftID: "A", designator: "D",
+            droneLatitude: 39, droneLongitude: -121, droneAltitudeMeters: nil, clueLatitude: 39, clueLongitude: -121,
+            clueAltitudeMeters: nil, headingDegrees: nil, aglMeters: nil, atoMeters: nil, gimbalAngleDegrees: -90,
+            title: "t", clueDescription: "d", imageFilename: "\(day)/i.jpg", thumbnailFilename: "\(day)/t.jpg",
+            uploadState: .pending
+        )
+        try JSONEncoder().encode([clue]).write(to: folder.appendingPathComponent("clues.json"))
+        try Data(repeating: 1, count: 40).write(to: folder.appendingPathComponent("i.jpg"))
+        #expect(AppleFlightStorage.unuploadedClueCount(day, at: root) == 1)
+        #expect(ArchiveFolderDisplay.deleteConfirmation(folderCount: 1, sizeLabel: "40 B", unuploadedClueCount: 1)
+            .contains("never uploaded"))
+        // Whole-day removal is how Manage Storage deletes flight logs — clues.json goes with it.
+        try FileManager.default.removeItem(at: folder)
+        #expect(!FileManager.default.fileExists(atPath: folder.appendingPathComponent("clues.json").path))
+        #expect(AppleFlightStorage.unuploadedClueCount(day, at: root) == 0)
+    }
 }

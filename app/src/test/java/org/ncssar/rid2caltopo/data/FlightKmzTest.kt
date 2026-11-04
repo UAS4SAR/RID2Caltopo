@@ -127,5 +127,30 @@ class FlightKmzTest {
         assertTrue(kmzClue.localOnly)
     }
 
+    @Test fun kmzIncludesUnpublishedAndLocalOnlyCluesEvenWhenPhotoMissingFromAllRecords() {
+        // allRecords no longer drops photo-missing rows; ownership + KMZ still include
+        // unpublished / localOnly clues the same way FlightArchiveStore does.
+        val archives = mapOf(
+            "day/a.json" to FlightArchiveContents(
+                "1SAR7_x",
+                "RID-1",
+                listOf(ClueBindingPoint(t0, null, 39.0, -121.0, 100.0, "track", true)),
+            ),
+        )
+        val unpublished = record("pending", t0).copy(uploadState = "pending", publishToCaltopo = true)
+        val localOnly = record("local", t0 + 1_000).copy(publishToCaltopo = false, uploadState = "local")
+        val owned = FlightArchiveRebuild.ownedClues("day/a.json", archives, listOf(unpublished, localOnly))
+        assertEquals(listOf("pending", "local"), owned.map { it.id })
+        val kmz = FlightKmz.archive(
+            "Flight",
+            listOf(FlightKmzPoint(39.0, -121.0, 100.0)),
+            owned.map { FlightArchiveRebuild.kmzClue(it, jpeg = null) },
+        )
+        val kml = String(FlightKmz.entries(kmz).getValue("doc.kml"))
+        assertTrue(kml.contains("Clue pending"))
+        assertTrue(kml.contains("Clue local"))
+        assertTrue(kml.contains("<Data name=\"r2c_local_only\"><value>true</value></Data>"))
+    }
+
     private fun <T> assertNotNullAndGet(value: T?): T { assertNotNull(value); return value!! }
 }

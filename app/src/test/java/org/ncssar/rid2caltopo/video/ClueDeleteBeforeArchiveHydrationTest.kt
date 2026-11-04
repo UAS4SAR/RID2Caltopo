@@ -34,14 +34,14 @@ class ClueDeleteBeforeArchiveHydrationTest {
             destinationTeamId = "personal:BCL66J",
             uploadState = "pending",
         )
-        store.saveEncoded(record, byteArrayOf(1, 2, 3), byteArrayOf(4, 5))
-        assertTrue(store.imageFile(record).isFile)
-        assertTrue(store.thumbnailFile(record).isFile)
+        val saved = store.saveEncoded(record, byteArrayOf(1, 2, 3), byteArrayOf(4, 5))
+        assertTrue(store.imageFile(saved).isFile)
+        assertTrue(store.thumbnailFile(saved).isFile)
 
         // Archive storage is intentionally unprepared (no Context → no OperationalStorage).
-        assertTrue(store.delete(record.id))
-        assertNull(store.record(record.id))
-        assertFalse(store.imageFile(record).exists())
-        assertFalse(store.thumbnailFile(record).exists())
+        assertTrue(store.delete(saved.id))
+        assertNull(store.record(saved.id))
+        assertFalse(store.imageFile(saved).exists())
+        assertFalse(store.thumbnailFile(saved).exists())
     }
 }

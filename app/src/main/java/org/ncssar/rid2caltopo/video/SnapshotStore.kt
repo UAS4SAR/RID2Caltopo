@@ -5,12 +5,15 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import org.json.JSONArray
 import org.json.JSONObject
+import org.ncssar.rid2caltopo.app.isDatedArchiveDirectoryName
+import org.ncssar.rid2caltopo.app.todayArchiveDirectoryName
 import org.ncssar.rid2caltopo.data.AwaitingMapClueMatch
 import org.ncssar.rid2caltopo.data.ClueBinding
 import org.ncssar.rid2caltopo.data.ClueBindingText
 import org.ncssar.rid2caltopo.data.PlainFileSafeWriter
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.util.Date
 import java.util.UUID
 import kotlin.math.roundToInt
 
@@ -29,6 +32,8 @@ data class AndroidClueRecord(
     val thumbnailFilename: String,
     val publishToCaltopo: Boolean,
     val destinationTeamId: String = "",
+    /** Display title of the chosen incident map (optional; blank when unknown). */
+    val destinationMapTitle: String = "",
     val uploadState: String = "legacy",
     val lastUploadError: String = "",
     val uploadAttempts: Int = 0,
@@ -92,13 +97,11 @@ class AndroidClueStore private constructor(
 
     fun recordsForMap(mapKey: String): List<AndroidClueRecord> {
         ensureLoaded()
-        // File existence stays outside the store monitor (same as awaitingFlightClues).
+        // Photo presence gates rendering/JPEG load only — keep photo-missing index rows
+        // (including while prepare/merge briefly renames the durable tree).
         val snapshot = synchronized(this) { storedRecords.values.toList() }
-        // During prepare/merge the durable tree may be briefly renamed; keep serving index
-        // rows so the UI never flashes empty while images are mid-move.
-        val prepareBusy = org.ncssar.rid2caltopo.storage.OperationalStorage.cluesPrepareInProgress()
         return snapshot
-            .filter { it.mapKey == mapKey && (prepareBusy || imageFile(it).isFile) }
+            .filter { it.mapKey == mapKey }
             .sortedByDescending { it.createdAtMs }
     }
 
@@ -114,12 +117,14 @@ class AndroidClueStore private constructor(
         bitmap: Bitmap,
         publishToCaltopo: Boolean,
         destinationTeamId: String = "",
+        destinationMapTitle: String = "",
         binding: ClueBinding? = null,
     ): AndroidClueRecord {
         // JPEG encode must not hold the store monitor — upload flush shares that lock.
         val id = UUID.randomUUID().toString().lowercase()
-        val imageFilename = "$id.jpg"
-        val thumbnailFilename = "$id-thumb.jpg"
+        val day = dayDirectoryName(binding?.captureTimeMs ?: createdAtMs)
+        val imageFilename = "$day/$id.jpg"
+        val thumbnailFilename = "$day/$id-thumb.jpg"
         val record = AndroidClueRecord(
             id = id,
             mapKey = mapKey,
@@ -134,6 +139,7 @@ class AndroidClueStore private constructor(
             thumbnailFilename = thumbnailFilename,
             publishToCaltopo = publishToCaltopo,
             destinationTeamId = destinationTeamId,
+            destinationMapTitle = destinationMapTitle.trim(),
             uploadState = if (publishToCaltopo) "pending" else "local",
             binding = binding,
         )
@@ -142,23 +148,23 @@ class AndroidClueStore private constructor(
         val thumbnailBytes = encodeJpeg(clueThumbnail(bitmap), 78)
         if (context != null) org.ncssar.rid2caltopo.data.CaltopoClient.CTDebug("ClueStore",
             "Save id=$id encodedMs=${(System.nanoTime() - encodeStarted) / 1_000_000}")
-        saveEncoded(record, imageBytes, thumbnailBytes)
-        return record
+        return saveEncoded(record, imageBytes, thumbnailBytes)
     }
 
     internal fun saveEncoded(
         record: AndroidClueRecord,
         imageBytes: ByteArray,
         thumbnailBytes: ByteArray,
-    ) {
+    ): AndroidClueRecord {
         val started = System.nanoTime()
         require(record.lat.isFinite() && record.lng.isFinite()) { "Clue location is invalid" }
         require(imageBytes.isNotEmpty()) { "Clue image is empty" }
         require(thumbnailBytes.isNotEmpty()) { "Clue thumbnail is empty" }
         ensureLoaded()
+        val stored = withDayRelativePaths(record)
         synchronized(this) {
-            if (deletedIds.contains(record.id)) {
-                throw IllegalStateException("Refusing write to user-deleted clue id=${record.id}")
+            if (deletedIds.contains(stored.id)) {
+                throw IllegalStateException("Refusing write to user-deleted clue id=${stored.id}")
             }
         }
         val directory = synchronized(this) { selectRoot(); root }
@@ -170,8 +176,10 @@ class AndroidClueStore private constructor(
             )
         }
         directory.mkdirs()
-        val imageFile = File(directory, record.imageFilename)
-        val thumbnailFile = File(directory, record.thumbnailFilename)
+        val imageFile = File(directory, stored.imageFilename)
+        val thumbnailFile = File(directory, stored.thumbnailFilename)
+        imageFile.parentFile?.mkdirs()
+        thumbnailFile.parentFile?.mkdirs()
         val preparedAt = System.nanoTime()
         try {
             replaceFileAtomically(imageFile, imageBytes)
@@ -184,19 +192,21 @@ class AndroidClueStore private constructor(
             val indexRoot: File
             synchronized(this) {
                 selectRoot()
-                storedRecords[record.id] = record
+                storedRecords[stored.id] = stored
                 indexSnapshot = storedRecords.values.toList()
                 indexRoot = root
             }
             persistIndexSnapshot(indexSnapshot, indexRoot)
             // Archive Dir retain must not wait on the save path; cache wipe must not be the only copy.
-            retainClueArtifacts(imageFile, thumbnailFile, File(indexRoot, "clues.json"))
+            val dayIndex = File(File(indexRoot, stored.imageFilename.substringBefore('/')), "clues.json")
+            retainClueArtifacts(imageFile, thumbnailFile, dayIndex)
             if (context != null) org.ncssar.rid2caltopo.data.CaltopoClient.CTDebug("ClueStore",
-                "Save id=${record.id} storageCheckMs=${(preparedAt - started) / 1_000_000} " +
+                "Save id=${stored.id} storageCheckMs=${(preparedAt - started) / 1_000_000} " +
                     "imageMs=${(imageAt - preparedAt) / 1_000_000} thumbnailMs=${(thumbnailAt - imageAt) / 1_000_000} " +
                     "indexMs=${(System.nanoTime() - thumbnailAt) / 1_000_000}")
+            return stored
         } catch (error: Exception) {
-            synchronized(this) { storedRecords.remove(record.id) }
+            synchronized(this) { storedRecords.remove(stored.id) }
             imageFile.delete()
             thumbnailFile.delete()
             throw error
@@ -272,14 +282,26 @@ class AndroidClueStore private constructor(
      * Assigns the unassigned publishable clues owned by [flight] (shared rule in AwaitingMapClueMatch,
      * with [otherFlights] competing for them) to the chosen map.
      */
-    fun bindAwaitingFlight(flight: JSONObject, otherFlights: List<JSONObject>, mapId: String, teamId: String) {
+    fun bindAwaitingFlight(
+        flight: JSONObject,
+        otherFlights: List<JSONObject>,
+        mapId: String,
+        teamId: String,
+        mapTitle: String = "",
+    ) {
         val owned = awaitingFlightClues(flight, otherFlights).map { it.id }.toSet()
         val indexSnapshot: List<AndroidClueRecord>?
         val indexRoot: File?
+        val boundTitle = mapTitle.trim()
         synchronized(this) {
             var changed = false
             storedRecords.values.toList().filter { it.id in owned && it.mapKey == "unassigned" && it.publishToCaltopo }.forEach {
-                val updated = it.copy(mapKey = "map:$mapId", destinationTeamId = teamId, uploadState = "pending")
+                val updated = it.copy(
+                    mapKey = "map:$mapId",
+                    destinationTeamId = teamId,
+                    destinationMapTitle = boundTitle.ifBlank { it.destinationMapTitle },
+                    uploadState = "pending",
+                )
                 if (storedRecords[it.id] != updated) {
                     storedRecords[it.id] = updated
                     changed = true
@@ -298,22 +320,19 @@ class AndroidClueStore private constructor(
         }
     }
 
-    /** Clue photos that belong to an awaiting-map flight (shared rule in AwaitingMapClueMatch). */
+    /** Clues that belong to an awaiting-map flight (shared rule in AwaitingMapClueMatch). */
     fun awaitingFlightClues(flight: JSONObject, otherFlights: List<JSONObject>): List<AndroidClueRecord> {
         ensureLoaded()
-        // File checks stay outside the store monitor. Flight recovery was holding it across
-        // image existence checks, and pending uploads waited on that same monitor.
+        // Photo-missing metadata still belongs to the flight; JPEG presence gates rendering only.
         val snapshot = synchronized(this) { storedRecords.values.toList() }
-        val present = snapshot.filter { imageFile(it).isFile }
-        return AwaitingMapClueMatch.ownedClues(present, flight, otherFlights,
+        return AwaitingMapClueMatch.ownedClues(snapshot, flight, otherFlights,
             { it.sourceDesignator }, { it.ownershipTimeMs }, { it.binding?.flightId })
     }
 
-    /** Every stored clue and local marker whose image is present. */
+    /** Every stored clue and local marker. Photo presence gates rendering only. */
     fun allRecords(): List<AndroidClueRecord> {
         ensureLoaded()
-        val snapshot = synchronized(this) { storedRecords.values.toList() }
-        return snapshot.filter { imageFile(it).isFile }
+        return synchronized(this) { storedRecords.values.toList() }
     }
 
     fun record(id: String): AndroidClueRecord? {
@@ -662,6 +681,11 @@ class AndroidClueStore private constructor(
                 directory = root
             }
             org.ncssar.rid2caltopo.storage.OperationalStorage.requireFor(directory)
+            // One-time flat → day-folder migration (off Main only).
+            val app = context
+            if (app != null && android.os.Looper.myLooper() != android.os.Looper.getMainLooper()) {
+                AndroidClueFlightFolderMigration.migrateIfNeeded(app, directory)
+            }
             val prepared = LinkedHashMap<String, AndroidClueRecord>()
             val preparedTombs = LinkedHashSet<String>()
             val tombstoneFile = File(directory, TOMBSTONE_FILENAME)
@@ -676,26 +700,34 @@ class AndroidClueStore private constructor(
                     throw java.io.IOException("Clue delete tombstones unavailable; index preserved", error)
                 }
             }
-            val index = File(directory, "clues.json")
-            if (index.exists()) {
-                try {
-                    val array = JSONArray(index.readText())
-                    for (i in 0 until array.length()) {
-                        val json = array.optJSONObject(i) ?: throw java.io.IOException("Invalid clue index entry")
-                        val record = json.toAndroidClueRecord() ?: throw java.io.IOException("Unreadable clue index entry")
-                        if (preparedTombs.contains(record.id)) continue
-                        // A process kill mid-upload leaves "uploading"; treat as pending on reload.
-                        val normalized = if (record.uploadState == "uploading") {
-                            record.copy(uploadState = "pending")
-                        } else record
-                        // Missing media can be temporary. Never discard its retained metadata.
-                        // Legacy published rows stay !reconciled so one-shot connect probe can
-                        // backfill reconciled or mark map-deleted — never re-POST (see ViewModel).
+            fun ingestIndex(index: File) {
+                if (!index.exists()) return
+                val array = JSONArray(index.readText())
+                for (i in 0 until array.length()) {
+                    val json = array.optJSONObject(i) ?: throw java.io.IOException("Invalid clue index entry")
+                    val record = json.toAndroidClueRecord() ?: throw java.io.IOException("Unreadable clue index entry")
+                    if (preparedTombs.contains(record.id)) continue
+                    // A process kill mid-upload leaves "uploading"; treat as pending on reload.
+                    val normalized = if (record.uploadState == "uploading") {
+                        record.copy(uploadState = "pending")
+                    } else record
+                    // Missing media can be temporary. Never discard its retained metadata.
+                    // Newest createdAtMs wins when the same id appears in day + legacy indexes.
+                    val prior = prepared[record.id]
+                    if (prior == null || normalized.createdAtMs >= prior.createdAtMs) {
                         prepared[record.id] = normalized
                     }
-                } catch (error: Exception) {
-                    throw java.io.IOException("Clue index unavailable; original index and photos preserved", error)
                 }
+            }
+            try {
+                // Per-day indexes (iOS OperationalClueIndex layout).
+                directory.listFiles()
+                    ?.filter { it.isDirectory && isDatedArchiveDirectoryName(it.name) }
+                    ?.forEach { dayDir -> ingestIndex(File(dayDir, "clues.json")) }
+                // Legacy flat root index, if still present pre-migration / mid-handoff.
+                ingestIndex(File(directory, "clues.json"))
+            } catch (error: Exception) {
+                throw java.io.IOException("Clue index unavailable; original index and photos preserved", error)
             }
             synchronized(this) {
                 if (loaded) return
@@ -736,20 +768,54 @@ class AndroidClueStore private constructor(
     }
 
     /**
-     * Atomic index write. Must not run while holding the store monitor — fsync can
-     * block for seconds and stall clue upload / connectivity flush on the same lock.
+     * Atomic per-day index write (Apple persistIndex pattern). Must not run while holding
+     * the store monitor — fsync can block for seconds and stall clue upload / connectivity
+     * flush on the same lock. Does not keep writing a single root clues.json after day layout.
      */
     private fun persistIndexSnapshot(snapshot: List<AndroidClueRecord>, directory: File) {
         directory.mkdirs()
-        val array = JSONArray()
-        snapshot.forEach { array.put(it.toJson()) }
-        val indexFile = File(directory, "clues.json")
-        replaceFileAtomically(
-            indexFile,
-            array.toString(2).toByteArray(Charsets.UTF_8),
-        )
-        if (context != null) {
-            org.ncssar.rid2caltopo.storage.OperationalStorage.retainLater(indexFile)
+        val dayPrefixed = snapshot.filter { it.imageFilename.contains('/') }
+        val flat = snapshot.filter { !it.imageFilename.contains('/') }
+        val byDay = dayPrefixed.groupBy { it.imageFilename.substringBefore('/') }
+        val existingDays = directory.listFiles()
+            ?.filter { it.isDirectory && isDatedArchiveDirectoryName(it.name) }
+            ?.map { it.name }
+            .orEmpty()
+        val days = (byDay.keys.filter { isDatedArchiveDirectoryName(it) } + existingDays).toSet()
+        for (day in days) {
+            val dayRecords = byDay[day].orEmpty()
+            val dayDir = File(directory, day)
+            val indexFile = File(dayDir, "clues.json")
+            if (dayRecords.isEmpty()) {
+                if (indexFile.isFile) indexFile.delete()
+                // Leave photos/other files; empty indexes are cleared.
+                continue
+            }
+            dayDir.mkdirs()
+            val array = JSONArray()
+            dayRecords.forEach { array.put(it.toJson()) }
+            replaceFileAtomically(
+                indexFile,
+                array.toString(2).toByteArray(Charsets.UTF_8),
+            )
+            if (context != null) {
+                org.ncssar.rid2caltopo.storage.OperationalStorage.retainLater(indexFile)
+            }
+        }
+        // Legacy flat handoff only: keep root clues.json while unmigrated flat rows remain.
+        val legacyFile = File(directory, "clues.json")
+        if (flat.isNotEmpty()) {
+            val array = JSONArray()
+            flat.forEach { array.put(it.toJson()) }
+            replaceFileAtomically(
+                legacyFile,
+                array.toString(2).toByteArray(Charsets.UTF_8),
+            )
+            if (context != null) {
+                org.ncssar.rid2caltopo.storage.OperationalStorage.retainLater(legacyFile)
+            }
+        } else if (legacyFile.isFile) {
+            legacyFile.delete()
         }
     }
 
@@ -801,6 +867,25 @@ class AndroidClueStore private constructor(
 
         internal fun forDirectory(root: File): AndroidClueStore = AndroidClueStore(root)
 
+        /** Flight-day folder name matching [todayArchiveDirectoryName] / FlightStorage archives. */
+        internal fun dayDirectoryName(timeMs: Long): String =
+            todayArchiveDirectoryName(Date(timeMs))
+
+        /**
+         * Ensure image/thumbnail paths are `tracks-ddMMMyyyy/<file>` relative to the clues root.
+         * Already day-prefixed paths are left unchanged.
+         */
+        internal fun withDayRelativePaths(record: AndroidClueRecord): AndroidClueRecord {
+            if (record.imageFilename.contains('/')) return record
+            val day = dayDirectoryName(record.ownershipTimeMs)
+            val imageBase = record.imageFilename.substringAfterLast('\\')
+            val thumbBase = record.thumbnailFilename.substringAfterLast('/').substringAfterLast('\\')
+            return record.copy(
+                imageFilename = "$day/$imageBase",
+                thumbnailFilename = "$day/$thumbBase",
+            )
+        }
+
         private fun thumbnailSampleSize(width: Int, height: Int): Int {
             val longest = maxOf(width, height)
             var sampleSize = 1
@@ -839,6 +924,7 @@ private fun AndroidClueRecord.toJson(): JSONObject = JSONObject()
     .put("thumbnailFilename", thumbnailFilename)
     .put("publishToCaltopo", publishToCaltopo)
     .put("destinationTeamId", destinationTeamId)
+    .put("destinationMapTitle", destinationMapTitle)
     .put("uploadState", uploadState)
     .put("lastUploadError", lastUploadError)
     .put("uploadAttempts", uploadAttempts)
@@ -867,6 +953,7 @@ private fun JSONObject.toAndroidClueRecord(): AndroidClueRecord? {
         thumbnailFilename = thumbnailFilename,
         publishToCaltopo = optBoolean("publishToCaltopo"),
         destinationTeamId = optString("destinationTeamId"),
+        destinationMapTitle = optString("destinationMapTitle"),
         uploadState = optString("uploadState", "legacy"),
         lastUploadError = optString("lastUploadError"),
         uploadAttempts = optInt("uploadAttempts", 0),

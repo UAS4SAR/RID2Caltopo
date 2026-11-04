@@ -111,9 +111,9 @@ struct PendingClueUploadsSheet: View {
     let actionFeedback: String?
     let onRetryNow: () -> Void
     let onUploadAsNewMarker: (UUID) -> Void
-    let onDismissKeepLocal: (UUID) -> Void
+    let onDiscard: (UUID) -> Void
     let onClose: () -> Void
-    @State private var confirmDismissID: UUID?
+    @State private var confirmDiscardID: UUID?
 
     var body: some View {
         NavigationStack {
@@ -128,8 +128,20 @@ struct PendingClueUploadsSheet: View {
                 Section {
                     ForEach(rows) { row in
                         VStack(alignment: .leading, spacing: 6) {
-                            Text(row.title)
-                                .font(.headline)
+                            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                                Text(row.title)
+                                    .font(.headline)
+                                if row.photoMissing {
+                                    Text("Photo missing")
+                                        .font(.caption.weight(.semibold))
+                                        .padding(.horizontal, 8)
+                                        .padding(.vertical, 2)
+                                        .background(Color.orange.opacity(0.2))
+                                        .foregroundStyle(.orange)
+                                        .clipShape(Capsule())
+                                        .accessibilityLabel("Photo missing")
+                                }
+                            }
                             Text(row.designator.isEmpty ? "Captured \(row.capturedAt.formatted(date: .abbreviated, time: .shortened))" : "\(row.designator) · \(row.capturedAt.formatted(date: .abbreviated, time: .shortened))")
                                 .font(.subheadline)
                                 .foregroundStyle(.secondary)
@@ -143,12 +155,12 @@ struct PendingClueUploadsSheet: View {
                                 .font(.footnote)
                                 .foregroundStyle(.secondary)
                             HStack(spacing: 12) {
-                                Button("Upload as new marker") {
+                                Button(row.photoMissing ? "Upload as new marker (marker only)" : "Upload as new marker") {
                                     onUploadAsNewMarker(row.id)
                                 }
                                 .font(.footnote)
-                                Button("Dismiss (keep local copy)") {
-                                    confirmDismissID = row.id
+                                Button("Discard", role: .destructive) {
+                                    confirmDiscardID = row.id
                                 }
                                 .font(.footnote)
                             }
@@ -156,7 +168,7 @@ struct PendingClueUploadsSheet: View {
                         .padding(.vertical, 2)
                     }
                 } footer: {
-                    Text("Clue Submit still uploads immediately. Retry wakes pending uploads without waiting for the next automatic attempt. Dismiss keeps the local photo.")
+                    Text("Clue Submit still uploads immediately. Retry wakes pending uploads without waiting for the next automatic attempt. Discard permanently deletes the local clue.")
                 }
             }
             .navigationTitle(rows.count == 1 ? "1 clue pending" : "\(rows.count) clues pending")
@@ -170,24 +182,24 @@ struct PendingClueUploadsSheet: View {
                 }
             }
             .confirmationDialog(
-                "Keep the local copy and stop uploading this clue?",
+                "Permanently discard this clue?",
                 isPresented: Binding(
-                    get: { confirmDismissID != nil },
-                    set: { if !$0 { confirmDismissID = nil } }
+                    get: { confirmDiscardID != nil },
+                    set: { if !$0 { confirmDiscardID = nil } }
                 ),
                 titleVisibility: .visible
             ) {
-                Button("Dismiss (keep local copy)", role: .destructive) {
-                    if let id = confirmDismissID {
-                        onDismissKeepLocal(id)
+                Button("Discard", role: .destructive) {
+                    if let id = confirmDiscardID {
+                        onDiscard(id)
                     }
-                    confirmDismissID = nil
+                    confirmDiscardID = nil
                 }
                 Button("Cancel", role: .cancel) {
-                    confirmDismissID = nil
+                    confirmDiscardID = nil
                 }
             } message: {
-                Text("The photo and clue details stay on this device. Nothing is deleted.")
+                Text("This permanently deletes the photo and clue details from this device. It cannot be undone.")
             }
         }
     }
@@ -940,8 +952,8 @@ struct RIDTrackMapView: View {
                 onUploadAsNewMarker: { id in
                     clueStore.uploadPendingClueAsNewMarker(id)
                 },
-                onDismissKeepLocal: { id in
-                    clueStore.dismissPendingClueKeepLocal(id)
+                onDiscard: { id in
+                    clueStore.discardPendingClue(id)
                 },
                 onClose: { showPendingClueUploads = false }
             )

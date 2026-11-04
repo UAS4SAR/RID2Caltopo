@@ -40,6 +40,8 @@ public struct OperationalClueRecord: Codable, Sendable, Equatable, Identifiable 
     // Optional for compatibility with older indexes. Missing destinations require review.
     public var destinationMapID: String?
     public var destinationTeamID: String?
+    /// Map title known at save/bind time. Nil/absent on older indexes; UI falls back to map id.
+    public var destinationMapTitle: String?
     /// Waypoint binding (nil for clues saved before binding existed).
     public var binding: ClueBinding?
 
@@ -94,6 +96,7 @@ public struct OperationalClueRecord: Codable, Sendable, Equatable, Identifiable 
         caltopoRemotelyDeleted: Bool? = nil,
         destinationMapID: String? = nil,
         destinationTeamID: String? = nil,
+        destinationMapTitle: String? = nil,
         binding: ClueBinding? = nil
     ) {
         self.id = id
@@ -123,6 +126,7 @@ public struct OperationalClueRecord: Codable, Sendable, Equatable, Identifiable 
         self.caltopoRemotelyDeleted = caltopoRemotelyDeleted
         self.destinationMapID = destinationMapID
         self.destinationTeamID = destinationTeamID
+        self.destinationMapTitle = destinationMapTitle
         self.binding = binding
     }
 }

@@ -3633,7 +3633,12 @@ private struct AwaitingMapPublicationPanel: View {
                                 let map = destinationMap; let team = destinationTeam
                                 Task {
                                     if await tracks.decideAwaitingFlight(flight.id, mapID: map, teamID: team) {
-                                        await clues.bindAwaitingFlight(flight, mapID: map, teamID: team)
+                                        await clues.bindAwaitingFlight(
+                                            flight,
+                                            mapID: map,
+                                            teamID: team,
+                                            mapTitle: destinationTitle
+                                        )
                                     }
                                 }
                                 selected = nil

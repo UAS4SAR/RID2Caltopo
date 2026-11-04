@@ -21,6 +21,8 @@ struct PendingClueUploadRow: Identifiable, Equatable, Sendable {
     let mapName: String
     let mapID: String
     let credentialProfile: String
+    /// True when lastUploadError means the JPEG is gone (badge + marker-only upload).
+    let photoMissing: Bool
 }
 
 struct AppleClueDraft: Sendable {
@@ -100,9 +102,11 @@ final class AppleClueStore: ObservableObject {
         initialLoad = Task { [weak self] in
             do {
                 let loaded = try await disk.run { () -> (records: [OperationalClueRecord], deleted: Set<UUID>) in
-                    let deleted = Self.loadDeletedIds(root: root)
-                    let records = try OperationalClueIndex.load(root: root)
-                        .filter { !deleted.contains($0.id) }
+                    let deleted = OperationalClueDeletionTombstone.load(root: root)
+                    let records = OperationalClueDeletionTombstone.excludingDeleted(
+                        try OperationalClueIndex.load(root: root),
+                        deleted: deleted
+                    )
                     return (records, deleted)
                 }
                 guard let self else { return }
@@ -148,7 +152,12 @@ final class AppleClueStore: ObservableObject {
         folderResolver = CaltopoTrackFolderResolver()
         guard let live = configuration.liveConfiguration, !teamID.isEmpty else {
             client = nil
-            status = records.isEmpty ? "No local clues" : "\(records.count) local clues; CalTopo upload not configured"
+            updateStatus()
+            if !indexLoadFailed {
+                status = records.isEmpty
+                    ? "No local clues"
+                    : "\(records.count) local clues; CalTopo upload not configured"
+            }
             return
         }
         do {
@@ -233,6 +242,7 @@ final class AppleClueStore: ObservableObject {
     }
 
     /// Upload as a brand-new CalTopo marker (new marker + media ids); local record id unchanged.
+    /// When the photo is missing, posts a marker-only update instead of a full photo upload.
     func uploadPendingClueAsNewMarker(_ id: UUID) {
         guard let record = records.first(where: { $0.id == id }),
               record.uploadState != .published, record.uploadState != .localOnly else { return }
@@ -242,19 +252,58 @@ final class AppleClueStore: ObservableObject {
         permanentFailureStreak.removeValue(forKey: id)
         let freshMarker = UUID()
         let freshMedia = UUID()
+        let photoMissingFlag = CluePhotoUploadPolicy.isPhotoMissing(record.lastUploadError)
         mutate(id) { value in
             value.caltopoMarkerID = freshMarker.uuidString.lowercased()
             value.caltopoMediaID = freshMedia
             value.uploadState = .pending
-            value.lastUploadError = nil
+            if !photoMissingFlag {
+                value.lastUploadError = nil
+            }
         }
         Task { try? await persistIndex() }
         updateStatus()
-        enqueueUpload(id)
         AppleLog.info("Clue", "Clue upload as new marker id=\(id) marker=\(freshMarker)")
+        if photoMissingFlag {
+            Task { [weak self] in
+                guard let self else { return }
+                guard let updated = self.records.first(where: { $0.id == id }) else { return }
+                let result = await self.handleMissingCluePhoto(
+                    id: id, record: updated, forceMarkerUpload: true)
+                if result == "marker-without-photo" {
+                    self.pendingUploadActionFeedback = "Uploaded"
+                } else if let first = self.pendingUploadRows.first(where: { $0.id == id }) {
+                    self.pendingUploadActionFeedback = first.lastErrorPlain
+                } else {
+                    self.pendingUploadActionFeedback = CluePhotoUploadPolicy.photoMissingMessage
+                }
+            }
+            return
+        }
+        let imageURL = imageURL(for: record)
+        Task { [weak self] in
+            guard let self else { return }
+            let exists = (try? await self.disk.run {
+                FileManager.default.fileExists(atPath: imageURL.path)
+            }) ?? false
+            if exists {
+                self.enqueueUpload(id)
+                return
+            }
+            guard let updated = self.records.first(where: { $0.id == id }) else { return }
+            let result = await self.handleMissingCluePhoto(
+                id: id, record: updated, forceMarkerUpload: true)
+            if result == "marker-without-photo" {
+                self.pendingUploadActionFeedback = "Uploaded"
+            } else if let first = self.pendingUploadRows.first(where: { $0.id == id }) {
+                self.pendingUploadActionFeedback = first.lastErrorPlain
+            } else {
+                self.pendingUploadActionFeedback = CluePhotoUploadPolicy.photoMissingMessage
+            }
+        }
     }
 
-    /// Stop auto-upload; keep the local photo and metadata (never deletes).
+    /// Don't Publish path: stop auto-upload; keep the local photo and metadata (never deletes).
     func dismissPendingClueKeepLocal(_ id: UUID) {
         uploadTasks[id]?.cancel()
         uploadTasks.removeValue(forKey: id)
@@ -266,6 +315,11 @@ final class AppleClueStore: ObservableObject {
         Task { try? await persistIndex() }
         updateStatus()
         AppleLog.info("Clue", "Clue dismiss keep local id=\(id)")
+    }
+
+    /// Permanent discard from the pending sheet: tombstone + delete local photo (survives restart).
+    func discardPendingClue(_ id: UUID) {
+        Task { _ = await delete(id) }
     }
 
     func resumePendingUploads(generation: Int) async {
@@ -381,6 +435,11 @@ final class AppleClueStore: ObservableObject {
             uploadState: publishToCaltopo ? .pending : .localOnly,
             destinationMapID: publishToCaltopo ? flightDestination.map : nil,
             destinationTeamID: publishToCaltopo ? flightDestination.team : nil,
+            destinationMapTitle: publishToCaltopo ? Self.storedMapTitle(
+                currentTitle: mapTitle,
+                destinationMapID: flightDestination.map,
+                connectedMapID: mapID
+            ) : nil,
             binding: draft.binding
         )
         records.insert(record, at: 0)
@@ -596,8 +655,16 @@ final class AppleClueStore: ObservableObject {
     }
 
 
-    func bindAwaitingFlight(_ flight: AwaitingMapFlight, mapID: String, teamID: String) async {
+    func bindAwaitingFlight(
+        _ flight: AwaitingMapFlight,
+        mapID: String,
+        teamID: String,
+        mapTitle: String? = nil
+    ) async {
         await initialLoad?.value
+        let trimmedBoundTitle = (mapTitle ?? self.mapTitle)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let boundTitle: String? = trimmedBoundTitle.isEmpty ? nil : trimmedBoundTitle
         // Ownership matching scans complete track geometry. Prepare a snapshot on the
         // worker and retry if another clue changed while it was being prepared.
         var previous: [OperationalClueRecord] = []
@@ -610,6 +677,9 @@ final class AppleClueStore: ObservableObject {
                         AwaitingMapClueMatch.matches(next[index], flight: flight) {
                     next[index].destinationMapID = mapID
                     next[index].destinationTeamID = teamID
+                    if let boundTitle, !boundTitle.isEmpty {
+                        next[index].destinationMapTitle = boundTitle
+                    }
                 }
                 return next
             }.value
@@ -626,6 +696,22 @@ final class AppleClueStore: ObservableObject {
         for record in records where record.canAutomaticallyPublish(mapID: self.mapID, teamID: self.teamID) && record.uploadState == .pending {
             enqueueUpload(record.id)
         }
+    }
+
+    /// Title known for the destination at save/bind; nil when blank or mismatched.
+    private nonisolated static func storedMapTitle(
+        currentTitle: String?,
+        destinationMapID: String?,
+        connectedMapID: String
+    ) -> String? {
+        let title = (currentTitle ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !title.isEmpty else { return nil }
+        let dest = (destinationMapID ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        // Unknown destination yet (awaiting-map): leave title unset until bind.
+        guard !dest.isEmpty else { return nil }
+        let connected = connectedMapID.trimmingCharacters(in: .whitespacesAndNewlines)
+        if connected.isEmpty || dest == connected { return title }
+        return nil
     }
 
     func retry(_ id: UUID) async {
@@ -653,7 +739,7 @@ final class AppleClueStore: ObservableObject {
         let root = self.root
         let tombs = deletedIds
         let removed = (try? await disk.run {
-            try Self.persistDeletedIds(tombs, root: root)
+            try OperationalClueDeletionTombstone.persist(tombs, root: root)
             if let image { try? FileManager.default.removeItem(at: image) }
             if let thumbnail { try? FileManager.default.removeItem(at: thumbnail) }
             return image.map { !FileManager.default.fileExists(atPath: $0.path) } ?? true
@@ -1156,10 +1242,16 @@ final class AppleClueStore: ObservableObject {
     }
 
     /// Photo gone: upload marker-only with a lost-photo note, or stop on Photo missing. Log once.
-    private func handleMissingCluePhoto(id: UUID, record: OperationalClueRecord) async -> String {
+    /// Operator "Upload as new marker" passes `forceMarkerUpload` to retry marker-only even after
+    /// a prior Photo missing stop.
+    private func handleMissingCluePhoto(
+        id: UUID,
+        record: OperationalClueRecord,
+        forceMarkerUpload: Bool = false
+    ) async -> String {
         let alreadyNoted = CluePhotoUploadPolicy.descriptionNotesLostPhoto(record.clueDescription)
             || CluePhotoUploadPolicy.stopsAutoRetry(record.lastUploadError)
-        if alreadyNoted {
+        if alreadyNoted && !forceMarkerUpload {
             mutate(id) { value in
                 value.uploadState = .failed
                 value.lastUploadError = CluePhotoUploadPolicy.photoMissingMessage
@@ -1391,23 +1483,6 @@ final class AppleClueStore: ObservableObject {
         body(&records[index])
     }
 
-    private nonisolated static let tombstoneFilename = "deleted-clue-ids.json"
-
-    private nonisolated static func loadDeletedIds(root: URL) -> Set<UUID> {
-        let url = root.appendingPathComponent(tombstoneFilename)
-        guard let data = try? Data(contentsOf: url),
-              let raw = try? JSONDecoder().decode([String].self, from: data)
-        else { return [] }
-        return Set(raw.compactMap { UUID(uuidString: $0) })
-    }
-
-    private nonisolated static func persistDeletedIds(_ ids: Set<UUID>, root: URL) throws {
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        let sorted = ids.map { $0.uuidString.lowercased() }.sorted()
-        let data = try JSONEncoder().encode(sorted)
-        try data.write(to: root.appendingPathComponent(tombstoneFilename), options: .atomic)
-    }
-
     private var pruning = false
     func pruneDeletedStorage() async {
         guard !pruning else { return }
@@ -1491,30 +1566,29 @@ final class AppleClueStore: ObservableObject {
 
     private func updateStatus() {
         guard !indexLoadFailed else { return }
-        let pending = ClueTrackDurabilityIntegrity.pendingUploadCount(in: records)
+        let pendingRecords = ClueTrackDurabilityIntegrity.pendingListRecords(in: records)
+        let pending = pendingRecords.count
         pendingUploadCount = pending
-        pendingUploadRows = records
-            .filter {
-                ClueUploadConfirmation.mayAutoUpload(
-                    uploadState: $0.uploadState,
-                    confirmed: $0.uploadConfirmed,
-                    remotelyDeleted: $0.caltopoRemotelyDeleted == true
-                )
-            }
-            .sorted { $0.capturedAt > $1.capturedAt }
-            .map {
-                PendingClueUploadRow(
-                    id: $0.id,
-                    title: $0.title.isEmpty ? "Untitled clue" : $0.title,
-                    designator: $0.designator,
-                    capturedAt: $0.capturedAt,
-                    uploadAttempts: $0.uploadAttempts,
-                    lastErrorPlain: CluePhotoUploadPolicy.plainUploadError($0.lastUploadError),
-                    mapName: mapTitle.isEmpty ? mapID : mapTitle,
-                    mapID: $0.destinationMapID ?? mapID,
-                    credentialProfile: credentialProfile
-                )
-            }
+        // Each row keeps its own destination map name — never stamp the connected map onto every row.
+        pendingUploadRows = pendingRecords.map {
+            let mapID = ($0.destinationMapID ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            let mapName = ClueTrackDurabilityIntegrity.pendingRowMapName(
+                destinationMapTitle: $0.destinationMapTitle,
+                destinationMapID: mapID.isEmpty ? nil : mapID
+            )
+            return PendingClueUploadRow(
+                id: $0.id,
+                title: $0.title.isEmpty ? "Untitled clue" : $0.title,
+                designator: $0.designator,
+                capturedAt: $0.capturedAt,
+                uploadAttempts: $0.uploadAttempts,
+                lastErrorPlain: CluePhotoUploadPolicy.plainUploadError($0.lastUploadError),
+                mapName: mapName,
+                mapID: mapID,
+                credentialProfile: credentialProfile,
+                photoMissing: CluePhotoUploadPolicy.isPhotoMissing($0.lastUploadError)
+            )
+        }
         status = records.isEmpty ? "No local clues" : "\(records.count) local clues\(pending > 0 ? "; \(pending) awaiting CalTopo" : "")"
     }
 

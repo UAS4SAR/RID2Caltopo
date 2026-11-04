@@ -210,8 +210,14 @@ class AwaitingMapFlightReviewTest {
             )
             val remaining = AndroidClueStore.forDirectory(File(root, "clues"))
             assertEquals(listOf("c", "d"), remaining.recordsForMap("unassigned").map { it.id }.sorted())
-            listOf("a", "b").forEach { assertFalse(File(root, "clues/$it.jpg").exists()) }
-            listOf("c", "d").forEach { assertTrue(File(root, "clues/$it.jpg").exists()) }
+            listOf("a", "b").forEach { id ->
+                assertFalse(remaining.record(id)?.let { remaining.imageFile(it).exists() } == true)
+                assertTrue(File(root, "clues").walkTopDown().none { it.isFile && it.name == "$id.jpg" })
+            }
+            listOf("c", "d").forEach { id ->
+                val row = remaining.record(id)!!
+                assertTrue(remaining.imageFile(row).isFile)
+            }
             targetNames.forEach { assertFalse(it, File(day, it).exists()) }
             keepNames.forEach { assertTrue(it, File(day, it).exists()) }
             assertTrue(result.logSummary(target).contains("clues=2[a,b]"))

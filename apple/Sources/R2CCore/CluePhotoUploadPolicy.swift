@@ -34,6 +34,14 @@ public enum CluePhotoUploadPolicy {
         let text = (lastUploadError ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         if text.isEmpty { return false }
         if text.localizedCaseInsensitiveContains(needsAttentionMessage) { return true }
+        if isPhotoMissing(lastUploadError) { return true }
+        return false
+    }
+
+    /// True when the last-error text means the JPEG is gone (pending-row badge / marker-only).
+    public static func isPhotoMissing(_ lastUploadError: String?) -> Bool {
+        let text = (lastUploadError ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if text.isEmpty { return false }
         if text.localizedCaseInsensitiveContains(photoMissingMessage) { return true }
         if text.caseInsensitiveCompare("missing-photo") == .orderedSame { return true }
         if text.caseInsensitiveCompare("Missing photo") == .orderedSame { return true }

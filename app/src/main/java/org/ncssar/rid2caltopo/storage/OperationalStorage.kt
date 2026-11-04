@@ -1993,6 +1993,15 @@ internal object OperationalStorage {
             }
             markCluesPrepared(generation)
             CaltopoClient.CTDebug("OperationalStorage", "Clue storage ready independently of bulk storage")
+            // Flat → per-day clue folders (off Main; already on the storage worker).
+            runCatching {
+                org.ncssar.rid2caltopo.video.AndroidClueFlightFolderMigration.migrateIfNeeded(
+                    context,
+                    File(context.filesDir, "clues"),
+                )
+            }.onFailure {
+                CaltopoClient.CTWarn("OperationalStorage", "Clue flight-folder migration deferred", it as? Exception)
+            }
             cluesPrepare.unlock()
             // After the rename window closes, reload the in-memory index and wake the UI
             // that may have kept a last-good snapshot during prepare.

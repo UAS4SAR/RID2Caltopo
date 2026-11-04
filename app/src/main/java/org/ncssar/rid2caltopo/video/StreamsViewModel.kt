@@ -270,6 +270,7 @@ data class PendingClueUploadRow(
     val mapName: String = "",
     val mapId: String = "",
     val credentialProfile: String = "",
+    val photoMissing: Boolean = false,
 )
 
 data class ClueSnapshotRef(
@@ -294,10 +295,18 @@ private fun AndroidClueRecord.toLocalMapMarker(): LocalMapMarker = LocalMapMarke
 )
 
 private fun AndroidClueRecord.toPendingClueUploadRow(
-    mapName: String = "",
+    connectedMapName: String = "",
     credentialProfile: String = "",
 ): PendingClueUploadRow {
     val mapId = mapKey.removePrefix("map:")
+    val ownTitle = destinationMapTitle.trim()
+    // Prefer the clue's own stored destination title; never stamp every row with the connected map.
+    val rowMapName = when {
+        ownTitle.isNotEmpty() -> ownTitle
+        mapId.isNotEmpty() && mapId == connectedMapName -> connectedMapName
+        mapId.isNotEmpty() -> mapId
+        else -> connectedMapName
+    }
     return PendingClueUploadRow(
         id = id,
         title = title.ifBlank { "Untitled clue" },
@@ -305,11 +314,12 @@ private fun AndroidClueRecord.toPendingClueUploadRow(
         createdAtMs = createdAtMs,
         uploadAttempts = uploadAttempts,
         lastErrorPlain = org.ncssar.rid2caltopo.data.CluePhotoUploadPolicy.plainUploadError(lastUploadError),
-        mapName = mapName.ifBlank { mapId },
+        mapName = rowMapName.ifBlank { mapId },
         mapId = mapId,
         credentialProfile = credentialProfile.ifBlank {
             if (destinationTeamId.startsWith("personal:")) "Personal" else "Team"
         },
+        photoMissing = org.ncssar.rid2caltopo.data.CluePhotoUploadPolicy.isPhotoMissing(lastUploadError),
     )
 }
 
@@ -3082,17 +3092,22 @@ class StreamsViewModel(
             val credential = publicationTeamId().let {
                 if (it.startsWith("personal:")) "Personal" else "Team"
             }
+            // Pending across ALL maps (including photo-missing). Local-only / Don't Publish never listed.
             _pendingClueUploads.value = filtered
                 .map { it.first }
                 .filter {
-                    it.mapKey == mapKey &&
-                        it.publishToCaltopo &&
+                    it.publishToCaltopo &&
                         !it.caltopoRemotelyDeleted &&
                         !it.uploadConfirmed() &&
                         (it.uploadState == "pending" || it.uploadState == "uploading" || it.uploadState == "failed")
                 }
                 .sortedByDescending { it.createdAtMs }
-                .map { it.toPendingClueUploadRow(mapName = connectedMapName, credentialProfile = credential) }
+                .map {
+                    it.toPendingClueUploadRow(
+                        connectedMapName = connectedMapName,
+                        credentialProfile = credential,
+                    )
+                }
             activeLocalClueMapKey = mapKey
             CTDebug(tag, "Loaded ${localMapMarkers.size} local clue(s) for $mapKey")
         }
@@ -3143,28 +3158,56 @@ class StreamsViewModel(
         }
     }
 
-    /** Upload as a brand-new CalTopo marker; local record id and photo stay. */
+    /** Upload as a brand-new CalTopo marker; local record id and photo stay. Marker-only when photo missing. */
     fun uploadPendingClueAsNewMarker(id: String) {
         _pendingClueActionFeedback.value = "Retrying…"
         viewModelScope.launch {
             clueUploadBackoff.reset(id)
             clueUploadBackoff.markDelayedUntil(id, 0L)
             permanentClueFailureStreak.remove(id)
+            missingCluePhotoLogged.remove(id)
             val mediaId = java.util.UUID.randomUUID().toString()
             val linkId = java.util.UUID.randomUUID().toString()
             // New marker id: persist as media/link regeneration plus a marker-id override in media slot
             // is insufficient — rewrite the record id used for CalTopo by saving a publish override.
-            clueStorage {
+            val photoMissing = clueStorage {
                 clueDiskMutex.withLock {
                     localClueStore.markUploadAsNewMarker(id, mediaId, linkId)
+                    val record = localClueStore.record(id)
+                    record != null && (
+                        org.ncssar.rid2caltopo.data.CluePhotoUploadPolicy.isPhotoMissing(record.lastUploadError) ||
+                            !localClueStore.imageFile(record).isFile
+                        )
+                }
+            }.getOrDefault(false)
+            hydrateLocalClues(currentLocalClueMapKey())
+            if (photoMissing) {
+                // Clear terminal Photo missing so handleMissingCluePhoto can upload marker-only.
+                clueStorage {
+                    clueDiskMutex.withLock {
+                        localClueStore.recordUploadResult(id, false, "", terminal = false)
+                        localClueStore.record(id)?.let { latest ->
+                            if (!org.ncssar.rid2caltopo.data.CluePhotoUploadPolicy.descriptionNotesLostPhoto(latest.description)) {
+                                localClueStore.update(
+                                    listOf(
+                                        latest.copy(
+                                            description = org.ncssar.rid2caltopo.data.CluePhotoUploadPolicy
+                                                .descriptionWithLostPhotoNote(latest.description),
+                                            uploadState = "pending",
+                                            lastUploadError = "",
+                                        ),
+                                    ),
+                                )
+                            }
+                        }
+                    }
                 }
             }
-            hydrateLocalClues(currentLocalClueMapKey())
             retryPendingClues()
         }
     }
 
-    /** Stop auto-upload; keep the local photo (never deletes). */
+    /** Stop auto-upload; keep the local photo (Don't Publish / keep-local path). */
     fun dismissPendingClueKeepLocal(id: String) {
         viewModelScope.launch {
             clueUploadBackoff.reset(id)
@@ -3174,6 +3217,25 @@ class StreamsViewModel(
                     localClueStore.markLocalOnly(id)
                 }
             }
+            hydrateLocalClues(currentLocalClueMapKey())
+        }
+    }
+
+    /** Permanent discard from the pending sheet; tombstone survives restart. */
+    fun discardPendingClue(id: String) {
+        viewModelScope.launch {
+            clueUploadBackoff.reset(id)
+            permanentClueFailureStreak.remove(id)
+            missingCluePhotoLogged.remove(id)
+            clueStorage {
+                clueDiskMutex.withLock {
+                    localClueStore.delete(id)
+                }
+            }
+            removeLocalMapMarkerById(localMapMarkers, id)
+            localClueRecordsById.remove(id)
+            localClueSnapshotsById.remove(id)
+            _pendingClueUploads.value = _pendingClueUploads.value.filter { it.id != id }
             hydrateLocalClues(currentLocalClueMapKey())
         }
     }
@@ -3246,11 +3308,22 @@ class StreamsViewModel(
                     // credentials/map are captured before dispatch, not read later from UI state.
                     val destination = context.acceptedDestination
                     val destinationMapKey = destination?.first?.let { if (it.isBlank()) "unassigned" else "map:$it" } ?: context.fallbackMapKey
+                    val connectedTitle = _mapName.value.orEmpty().trim()
+                    val destinationId = destinationMapKey.removePrefix("map:")
+                    val mapTitleForRecord = when {
+                        !publish -> ""
+                        connectedTitle.isNotEmpty() &&
+                            (destination == null || destination.first == destinationId ||
+                                context.fallbackMapKey == destinationMapKey) -> connectedTitle
+                        else -> ""
+                    }
                     val record = localClueStore.save(
                         mapKey = destinationMapKey, lat = clue.lat, lng = clue.lng, alt = clue.alt,
                         title = title, description = description, createdAtMs = clue.timestamp,
                         sourceDesignator = clue.designator, bitmap = bitmap, publishToCaltopo = publish,
-                        destinationTeamId = destination?.second ?: context.fallbackTeam, binding = clue.binding,
+                        destinationTeamId = destination?.second ?: context.fallbackTeam,
+                        destinationMapTitle = mapTitleForRecord,
+                        binding = clue.binding,
                     )
                     CTDebug(tag, "Clue save stage=durable id=${record.id} elapsedMs=${android.os.SystemClock.elapsedRealtime() - startedAt}")
                     record to ClueSnapshotRef(record.title, makeClueSnapshotThumbnail(bitmap), bitmap,

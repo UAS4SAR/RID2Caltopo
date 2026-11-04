@@ -2858,21 +2858,52 @@ public class CaltopoMap {
     private static ClueCleanupIds readClueCleanupIds() {
         android.content.Context context = org.ncssar.rid2caltopo.app.R2CApplication.getAppCtxt();
         if (context == null) return new ClueCleanupIds(true, java.util.List.of());
-        java.io.File index = new java.io.File(new java.io.File(context.getFilesDir(), "clues"), "clues.json");
-        if (!index.isFile()) return new ClueCleanupIds(true, java.util.List.of());
-        try {
-            org.json.JSONArray array = new org.json.JSONArray(new String(java.nio.file.Files.readAllBytes(index.toPath()), java.nio.charset.StandardCharsets.UTF_8));
-            java.util.ArrayList<String> ids = new java.util.ArrayList<>();
-            for (int i = 0; i < array.length(); i++) {
-                org.json.JSONObject row = array.optJSONObject(i);
-                if (row == null) continue;
-                String id = row.optString("id", "");
-                if (!id.isEmpty()) ids.add(id);
+        java.io.File cluesRoot = new java.io.File(context.getFilesDir(), "clues");
+        java.util.ArrayList<String> ids = new java.util.ArrayList<>();
+        java.util.LinkedHashSet<String> seen = new java.util.LinkedHashSet<>();
+        boolean readable = true;
+        java.util.ArrayList<java.io.File> indexes = new java.util.ArrayList<>();
+        java.io.File[] children = cluesRoot.listFiles();
+        if (children != null) {
+            for (java.io.File child : children) {
+                // Per-day clues.json under files/clues/tracks-ddMMMyyyy/ (same layout as FlightStorage).
+                if (child.isDirectory() && isTracksDayDirectoryName(child.getName())) {
+                    indexes.add(new java.io.File(child, "clues.json"));
+                }
             }
-            return new ClueCleanupIds(true, ids);
-        } catch (Exception error) {
-            CTWarn(TAG, "Clue index unreadable; marker cleanup will not delete extra ids", error);
-            return new ClueCleanupIds(false, java.util.List.of());
+        }
+        // Legacy flat root index (pre-migration handoff).
+        indexes.add(new java.io.File(cluesRoot, "clues.json"));
+        for (java.io.File index : indexes) {
+            if (!index.isFile()) continue;
+            try {
+                org.json.JSONArray array = new org.json.JSONArray(new String(
+                    java.nio.file.Files.readAllBytes(index.toPath()), java.nio.charset.StandardCharsets.UTF_8));
+                for (int i = 0; i < array.length(); i++) {
+                    org.json.JSONObject row = array.optJSONObject(i);
+                    if (row == null) continue;
+                    String id = row.optString("id", "");
+                    if (!id.isEmpty() && seen.add(id)) ids.add(id);
+                }
+            } catch (Exception error) {
+                CTWarn(TAG, "Clue index unreadable; marker cleanup will not delete extra ids", error);
+                readable = false;
+            }
+        }
+        if (!readable) return new ClueCleanupIds(false, java.util.List.of());
+        return new ClueCleanupIds(true, ids);
+    }
+    /** Mirrors ArchiveCleanup.isDatedArchiveDirectoryName without crossing internal Kotlin visibility. */
+    private static boolean isTracksDayDirectoryName(String name) {
+        if (name == null || !name.startsWith("tracks-")) return false;
+        String datePart = name.substring("tracks-".length());
+        if (datePart.length() != "ddMMMyyyy".length()) return false;
+        try {
+            java.text.SimpleDateFormat format = new java.text.SimpleDateFormat("ddMMMyyyy", java.util.Locale.US);
+            format.setLenient(false);
+            return format.parse(datePart) != null;
+        } catch (Exception ignored) {
+            return false;
         }
     }
     private static boolean protectedClueId(@NonNull String markerId, @NonNull ClueCleanupIds clues) {
@@ -2914,10 +2945,15 @@ public class CaltopoMap {
         try {
             return cleanup.apply(entry.marker,op->CaltopoMarkerWork.execute(()->{
                 try {
+                    // success means verified absent (or terminal auth). deleteCode is the DELETE
+                    // status; responseCode may be the since-GET verify status after a 200/400 DELETE.
                     boolean ok = op != null && op.success();
-                    int code = op != null ? op.responseCode : -1;
+                    int verifyCode = op != null ? op.responseCode : -1;
+                    int deleteCode = op != null && op.markerCleanupDeleteCode > 0
+                            ? op.markerCleanupDeleteCode : verifyCode;
                     // 401/403: cannot delete (gone-as-forbidden or not ours) — stop retrying.
-                    boolean terminalAuth = code == 401 || code == 403;
+                    boolean terminalAuth = deleteCode == 401 || deleteCode == 403
+                            || verifyCode == 401 || verifyCode == 403;
                     boolean done = ok || terminalAuth;
                     if (!done) {
                         int attempts = markerCleanupAttempts.merge(entry.key(), 1, Integer::sum);
@@ -2925,7 +2961,7 @@ public class CaltopoMap {
                             done = true;
                             CTWarn(TAG, "Marker cleanup gave up after " + attempts
                                     + " attempts map=" + entry.map + " id=" + entry.marker
-                                    + " responseCode=" + code);
+                                    + " deleteCode=" + deleteCode + " responseCode=" + verifyCode);
                         }
                     }
                     if (done) {
@@ -2933,7 +2969,8 @@ public class CaltopoMap {
                         markerCleanupAttempts.remove(entry.key());
                     }
                     CTDebug(TAG, "Marker cleanup map=" + entry.map + " id=" + entry.marker
-                            + " success=" + ok + " responseCode=" + code
+                            + " success=" + ok + " deleteCode=" + deleteCode
+                            + " responseCode=" + verifyCode
                             + (terminalAuth ? " terminal=auth" : "")
                             + (done && !ok ? " recorded=done" : ""));
                 }catch(Exception error){CTWarn(TAG,"Marker cleanup acknowledgement not persisted",error);}
