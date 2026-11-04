@@ -3040,14 +3040,30 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
         if (out != null) CTDebug(TAG, out);
     }
 
-    private static boolean shouldSuppressMapTracking(@NonNull CtDroneSpec droneSpec) {
+    /**
+     * True when this device must keep the flight local-archive-only (no LiveTrack create/update
+     * / Shape POST). Active peer owner lease alone is enough — never enter CalTopo write paths.
+     * Package-visible for unit tests.
+     */
+    static boolean shouldSuppressMapTracking(@NonNull CtDroneSpec droneSpec) {
         String remoteId = droneSpec.getRemoteId().trim();
         String mappedId = droneSpec.getMappedId().trim();
-        return !(droneSpec.isCurrentFlightConfirmed() || IsCurrentPeerDroneConfirmed(remoteId))
+        return hasActivePeerOwnerSuppressingMap(remoteId)
+                || !(droneSpec.isCurrentFlightConfirmed() || IsCurrentPeerDroneConfirmed(remoteId))
                 || droneSpec.isLocalArchiveOnly()
                 || SessionUnknownDroneRemoteIds.contains(remoteId)
                 || mappedId.isEmpty()
                 || mappedId.equals(remoteId);
+    }
+
+    /** Peer (not this device) holds the owner lease → suppress map publication. */
+    private static boolean hasActivePeerOwnerSuppressingMap(@NonNull String remoteId) {
+        if (remoteId.isEmpty()) return false;
+        try {
+            return R2cRuntimeRegistry.getDefaultRuntime().getPeerCoordinator().hasActivePeerOwner(remoteId);
+        } catch (Exception ignored) {
+            return false;
+        }
     }
 
     private static boolean isTeamDroneOrg(@Nullable String orgName) {

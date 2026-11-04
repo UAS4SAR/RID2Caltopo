@@ -27,3 +27,9 @@ Latest changes:
 - Marker cleanup success now matches verified removal, and never touches markers this tablet did not publish.
 - Mapping storage is its own managed repository (separate from map cache), with a project list and sizes in Manage Storage.
 - Local Maps data moves into a dedicated Mapping archive folder, keeping originals safe during the move.
+- Confirming a team drone near flight end no longer creates a second CalTopo archive under the raw serial.
+- A tablet that does not own a flight no longer starts a CalTopo live track for it.
+- Mapping archive migration starts promptly at launch and reports progress, without risking originals.
+- Flight KMZ files keep migrated clue photos after rewrite.
+- Deleting a day’s flight logs also removes that day’s clue folders, including midnight edge cases.
+- Smoother map response while sharing video presence with other tablets.

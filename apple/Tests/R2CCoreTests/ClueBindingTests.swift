@@ -346,6 +346,38 @@ private func record(capture: Date = Date(timeIntervalSince1970: 1_790_553_873), 
         .map(\.id)) == [unbound.id, unknown.id])
 }
 
+@Test func kmzRewriteKeepsMigratedFlightFolderClueWhenMemoryIncomplete() {
+    let archives = ["flight-a": RidTrackGeoJSON.ArchiveContents(
+        title: "T", remoteID: "RID-1",
+        points: (0..<7).map { point(Int64($0) * 10_000, 39 + Double($0) * 0.001, -121) },
+        flightID: "flight-a")]
+    // Migrated path; time alone would not match if memory were empty and folder recovery absent.
+    var folder = record(
+        capture: Date(timeIntervalSince1970: Double(t0 + 20_000) / 1_000),
+        binding: bind(moving([0, 10_000, 20_000]), capture: 20_000, flightID: "flight-a"))
+    folder.imageFilename = "2026-11-04/flight-a/\(folder.id.uuidString.lowercased()).jpg"
+    let owned = OperationalFlightKMZ.cluesForRewrite(
+        archiveID: "flight-a", archives: archives, memoryClues: [],
+        flightFolderClues: [folder], tombstonedIDs: [])
+    #expect(owned.map(\.id) == [folder.id])
+    #expect(owned.first?.imageFilename.contains("flight-a/") == true)
+}
+
+@Test func kmzRewriteEmptiesWhenClueTombstonedAfterDelete() {
+    let archives = ["flight-a": RidTrackGeoJSON.ArchiveContents(
+        title: "T", remoteID: "RID-1",
+        points: (0..<7).map { point(Int64($0) * 10_000, 39 + Double($0) * 0.001, -121) },
+        flightID: "flight-a")]
+    var folder = record(
+        capture: Date(timeIntervalSince1970: Double(t0 + 20_000) / 1_000),
+        binding: bind(moving([0, 10_000, 20_000]), capture: 20_000, flightID: "flight-a"))
+    folder.imageFilename = "2026-11-04/flight-a/\(folder.id.uuidString.lowercased()).jpg"
+    let owned = OperationalFlightKMZ.cluesForRewrite(
+        archiveID: "flight-a", archives: archives, memoryClues: [folder],
+        flightFolderClues: [folder], tombstonedIDs: [folder.id])
+    #expect(owned.isEmpty)
+}
+
 @Test func flightIDIsStableAndWrittenToArchives() async throws {
     let start = Date(timeIntervalSince1970: 1_790_553_873.25)
     let id = RidFlightID.make(aircraftID: "RID01", startedAt: start)

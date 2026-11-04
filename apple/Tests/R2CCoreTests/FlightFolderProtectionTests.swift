@@ -216,4 +216,37 @@ struct FlightFolderProtectionTests {
         #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("2019-06-01").path))
         #expect(FileManager.default.fileExists(atPath: root.appendingPathComponent("2019-06-02").path))
     }
+
+    @Test func dayDeleteRemovesCrossDayClueFoldersForFlightsInDeletedGeoJSON() throws {
+        typealias Support = ClueFlightFolderTestSupport
+        let root = Support.tempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let archiveDay = "2018-05-01"
+        let clueDay = "2018-04-30"
+        let flight = "flight-f"
+        let unrelated = "flight-other"
+        let archiveFolder = root.appendingPathComponent(archiveDay)
+        try FileManager.default.createDirectory(at: archiveFolder, withIntermediateDirectories: true)
+        let geoJSON = """
+        {"type":"FeatureCollection","features":[{"type":"Feature","geometry":{"type":"LineString","coordinates":[[-121,39,100,1000]]},
+        "properties":{"title":"t","r2c_flight_id":"\(flight)","r2c_prop":{"rid":"RID-1"}}}]}
+        """
+        try Data(geoJSON.utf8).write(to: archiveFolder.appendingPathComponent("track.json"))
+        let orphan = root.appendingPathComponent(clueDay).appendingPathComponent(flight)
+        try Support.write([Support.record(image: "\(clueDay)/\(flight)/i.jpg", flightID: flight)], to: orphan)
+        try Support.photo("i.jpg", in: orphan)
+        let keep = root.appendingPathComponent(clueDay).appendingPathComponent(unrelated)
+        try Support.write([Support.record(image: "\(clueDay)/\(unrelated)/j.jpg", flightID: unrelated)], to: keep)
+        try Support.photo("j.jpg", in: keep)
+
+        #expect(AppleClueFlightFolder.flightIDsInArchiveDay(archiveFolder) == [flight])
+        let cross = AppleClueFlightFolder.crossDayClueFoldersToRemove(
+            root: root, dayName: archiveDay, archiveFlightIDs: [flight], nestedFolderNames: [])
+        #expect(Set(cross.map { $0.standardizedFileURL.path }) == [orphan.standardizedFileURL.path])
+
+        try FileManager.default.removeItem(at: archiveFolder)
+        for folder in cross { try FileManager.default.removeItem(at: folder) }
+        #expect(!Support.exists(orphan.appendingPathComponent("clues.json")))
+        #expect(Support.exists(keep.appendingPathComponent("clues.json")))
+    }
 }

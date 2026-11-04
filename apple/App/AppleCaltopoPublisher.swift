@@ -478,20 +478,80 @@ actor AppleCaltopoPublisher {
     }
 
     func seedDeferredFlight(_ entry: CaltopoInterruptedPublication) async {
-        guard configuredConfiguration?.mapID == entry.mapID, requestedLiveTrackIDs[entry.remoteID] == nil else { return }
-        requestedLiveTrackIDs[entry.remoteID] = entry.liveTrackID
-        labels[entry.remoteID] = entry.label
-        observations[entry.remoteID] = entry.observations
+        guard configuredConfiguration?.mapID == entry.mapID else { return }
+        if requestedLiveTrackIDs[entry.remoteID] == nil {
+            requestedLiveTrackIDs[entry.remoteID] = entry.liveTrackID
+        }
+        if labels[entry.remoteID] == nil || labels[entry.remoteID] == entry.remoteID {
+            labels[entry.remoteID] = entry.label
+        }
+        if observations[entry.remoteID] == nil {
+            observations[entry.remoteID] = entry.observations
+        }
+    }
+
+    /// Seeds the stable RidFlightID and confirmed team label before the first point or finish.
+    func seedLiveTrackIdentity(remoteID: String, liveTrackID: String, label: String) async {
+        guard !liveTrackID.isEmpty else { return }
+        if requestedLiveTrackIDs[remoteID] == nil {
+            requestedLiveTrackIDs[remoteID] = liveTrackID
+        }
+        let trimmed = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty {
+            labels[remoteID] = CaltopoTrackLabel.androidCompatible(
+                baseLabel: trimmed,
+                firstWaypointAt: observations[remoteID]?.first?.receivedAt ?? Date()
+            )
+        }
     }
 
     func queueDeferredArchive(_ entry: CaltopoInterruptedPublication) async throws {
         guard configuredConfiguration?.mapID == entry.mapID else { return }
-        // An active publication owns its finalization; it will retain the latest geometry.
+        // Live / finishing / already-archived ownership wins over a deferred Shape upload.
+        guard !ownsOrArchivedFlight(entry) else { return }
         try await interruptedJournal.upsert(entry)
-        guard !requestedLiveTrackIDs.values.contains(entry.liveTrackID) else { return }
-        pendingInterruptedRecoveries.removeAll { $0.liveTrackID == entry.liveTrackID }
+        guard !ownsOrArchivedFlight(entry) else { return }
+        pendingInterruptedRecoveries.removeAll { Self.sameFlight($0, entry) }
         pendingInterruptedRecoveries.append(entry)
         await retryInterruptedPublications(generation: configurationGeneration)
+    }
+
+    /// Same aircraft + same flight start (first waypoint receive time), independent of LiveTrack UUID.
+    private static func sameFlight(_ a: CaltopoInterruptedPublication, _ b: CaltopoInterruptedPublication) -> Bool {
+        a.remoteID == b.remoteID
+            && a.points.first?.receivedAt != nil
+            && a.points.first?.receivedAt == b.points.first?.receivedAt
+    }
+
+    private static func sameFlight(_ archived: AppleArchivedCaltopoTrack, _ entry: CaltopoInterruptedPublication) -> Bool {
+        archived.remoteID == entry.remoteID
+            && archived.observations.first?.receivedAt != nil
+            && archived.observations.first?.receivedAt == entry.points.first?.receivedAt
+    }
+
+    private func ownsOrArchivedFlight(_ entry: CaltopoInterruptedPublication) -> Bool {
+        if requestedLiveTrackIDs.values.contains(entry.liveTrackID)
+            || liveTrackIDs.values.contains(entry.liveTrackID) {
+            return true
+        }
+        if finishingRemoteIDs.contains(entry.remoteID) { return true }
+        if requestedLiveTrackIDs[entry.remoteID] != nil || liveTrackIDs[entry.remoteID] != nil {
+            return true
+        }
+        if recentArchivedTracks.contains(where: { Self.sameFlight($0, entry) }) { return true }
+        if pendingInterruptedRecoveries.contains(where: {
+            $0.liveTrackID != entry.liveTrackID && Self.sameFlight($0, entry)
+        }) {
+            return true
+        }
+        return false
+    }
+
+    private func stableLiveTrackID(remoteID: String, from observations: [RidObservation], fallback: Date) -> String {
+        if let existing = requestedLiveTrackIDs[remoteID] { return existing }
+        if let existing = liveTrackIDs[remoteID] { return existing }
+        let started = observations.first?.receivedAt ?? fallback
+        return RidFlightID.make(aircraftID: remoteID, startedAt: started)
     }
 
     func publish(track: RidAircraftTrack) async {
@@ -518,11 +578,12 @@ actor AppleCaltopoPublisher {
         if observations[remoteID]?.last != observation {
             observations[remoteID, default: []].append(observation)
         }
-        let id = requestedLiveTrackIDs[remoteID] ?? UUID().uuidString.lowercased()
+        let saved = observations[remoteID] ?? [observation]
+        let id = stableLiveTrackID(remoteID: remoteID, from: saved, fallback: observation.receivedAt)
         requestedLiveTrackIDs[remoteID] = id
         if labels[remoteID] == nil {
             labels[remoteID] = CaltopoTrackLabel.androidCompatible(
-                baseLabel: label, firstWaypointAt: observations[remoteID]?.first?.receivedAt ?? observation.receivedAt)
+                baseLabel: label, firstWaypointAt: saved.first?.receivedAt ?? observation.receivedAt)
         }
         Task {
             await self.publishBuffered(remoteID: remoteID, label: label,
@@ -547,7 +608,8 @@ actor AppleCaltopoPublisher {
                 firstWaypointAt: saved.first?.receivedAt ?? observation.receivedAt
             )
             labels[remoteID] = trackLabel
-            let requestedID = requestedLiveTrackIDs[remoteID] ?? UUID().uuidString.lowercased()
+            let requestedID = stableLiveTrackID(
+                remoteID: remoteID, from: saved, fallback: observation.receivedAt)
             requestedLiveTrackIDs[remoteID] = requestedID
             publicationID = requestedID
             // Persist the identity and observations before any network request.
@@ -655,7 +717,6 @@ actor AppleCaltopoPublisher {
         guard !finishingRemoteIDs.contains(remoteID) else { return nil }
         finishingRemoteIDs.insert(remoteID)
         let generation = configurationGeneration
-        let label = labels[remoteID] ?? remoteID
         var saved = observations[remoteID] ?? []
         // Queued points from a flight that never received a LiveTrack id must still
         // publish through the archive when a map is configured.
@@ -676,10 +737,14 @@ actor AppleCaltopoPublisher {
             }
         }
         if id == nil && !saved.isEmpty && configuredConfiguration != nil {
-            let assigned = UUID().uuidString.lowercased()
+            let assigned = stableLiveTrackID(
+                remoteID: remoteID, from: saved, fallback: saved.first?.receivedAt ?? Date())
             requestedLiveTrackIDs[remoteID] = assigned
             id = assigned
         }
+        let label = labels[remoteID]
+            ?? CaltopoTrackLabel.androidCompatible(
+                baseLabel: remoteID, firstWaypointAt: saved.first?.receivedAt ?? Date())
         let pendingStart = startTasks[remoteID]
         let finishingClient = client
         let finishingConfiguration = configuredConfiguration
@@ -1122,8 +1187,7 @@ actor AppleCaltopoPublisher {
         var completed: Set<String> = []
         for entry in batch {
             guard generation == configurationGeneration else { break }
-            guard !requestedLiveTrackIDs.values.contains(entry.liveTrackID),
-                  !liveTrackIDs.values.contains(entry.liveTrackID) else { continue }
+            guard !ownsOrArchivedFlight(entry) else { continue }
             do {
                 let flightDate = CaltopoTrackFolderResolver.flightArchiveDate(
                     observations: entry.observations

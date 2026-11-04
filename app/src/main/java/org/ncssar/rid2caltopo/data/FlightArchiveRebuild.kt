@@ -1,7 +1,11 @@
 package org.ncssar.rid2caltopo.data
 
+import org.json.JSONArray
 import org.json.JSONObject
+import org.ncssar.rid2caltopo.video.AndroidClueFlightFolders
 import org.ncssar.rid2caltopo.video.AndroidClueRecord
+import org.ncssar.rid2caltopo.video.toAndroidClueRecord
+import java.io.File
 
 /** What a flight's archived GeoJSON holds that the KMZ and late clue binding need. */
 data class FlightArchiveContents(
@@ -56,13 +60,75 @@ object FlightArchiveRebuild {
             .sortedBy { it.ownershipTimeMs }
     }
 
+    /** Merge memory + per-flight index; drop tombstones; prefer migrated `<flightId>/…` paths. */
+    fun mergeCluesForRewrite(
+        memory: List<AndroidClueRecord>,
+        flightFolder: List<AndroidClueRecord>,
+        tombstoned: Set<String>,
+    ): List<AndroidClueRecord> {
+        val byId = LinkedHashMap<String, AndroidClueRecord>()
+        for (record in memory) {
+            if (record.id in tombstoned) continue
+            byId[record.id] = record
+        }
+        for (record in flightFolder) {
+            if (record.id in tombstoned) continue
+            val prior = byId[record.id]
+            if (prior == null) {
+                byId[record.id] = record
+            } else {
+                val nested = record.imageFilename.contains('/')
+                val priorNested = prior.imageFilename.contains('/')
+                if (nested && !priorNested) byId[record.id] = record
+            }
+        }
+        return byId.values.toList()
+    }
+
+    fun belongsToFlightFolder(record: AndroidClueRecord, archiveId: String): Boolean {
+        if (record.binding?.flightId == archiveId) return true
+        val folder = runCatching { AndroidClueFlightFolders.folderNameFor(archiveId) }.getOrNull() ?: return false
+        return record.imageFilename.substringBefore('/') == folder
+    }
+
+    /**
+     * Clues to embed for a KMZ rewrite: ownership (binding.flightId preferred) plus non-tombstoned
+     * flight-folder recovery so a migrated index is never silently stripped.
+     */
+    fun cluesForRewrite(
+        archiveId: String,
+        archives: Map<String, FlightArchiveContents>,
+        memoryClues: List<AndroidClueRecord>,
+        flightFolderClues: List<AndroidClueRecord>,
+        tombstonedIds: Set<String>,
+    ): List<AndroidClueRecord> {
+        val merged = mergeCluesForRewrite(memoryClues, flightFolderClues, tombstonedIds)
+        val byId = LinkedHashMap<String, AndroidClueRecord>()
+        for (record in ownedClues(archiveId, archives, merged)) byId[record.id] = record
+        for (record in merged) {
+            if (belongsToFlightFolder(record, archiveId)) byId[record.id] = record
+        }
+        return byId.values.sortedBy { it.ownershipTimeMs }
+    }
+
+    /** Loads `files/clues/<flightId>/clues.json` for [flightId]. */
+    fun loadFlightFolderClues(cluesRoot: File, flightId: String): List<AndroidClueRecord> {
+        val folder = runCatching { AndroidClueFlightFolders.folderNameFor(flightId) }.getOrNull() ?: return emptyList()
+        val index = File(File(cluesRoot, folder), AndroidClueFlightFolders.INDEX_FILENAME)
+        if (!index.isFile) return emptyList()
+        return runCatching {
+            val array = JSONArray(index.readText())
+            (0 until array.length()).mapNotNull { array.optJSONObject(it)?.toAndroidClueRecord() }
+        }.getOrDefault(emptyList())
+    }
+
     /** Binds a clue saved without a usable binding to the archived flight's nearest stored point. */
-    fun bindingFallback(record: AndroidClueRecord, contents: FlightArchiveContents): AndroidClueRecord {
+    fun bindingFallback(record: AndroidClueRecord, contents: FlightArchiveContents, archiveFlightId: String? = null): AndroidClueRecord {
         val existing = record.binding
         if (existing?.nearest != null) return record
         val binding = ClueBinder.bind(
             aircraftId = existing?.aircraftId ?: contents.remoteId.ifEmpty { record.sourceDesignator },
-            flightId = existing?.flightId,
+            flightId = existing?.flightId ?: archiveFlightId,
             captureTimeMs = existing?.captureTimeMs ?: record.createdAtMs,
             captureTimeSource = existing?.captureTimeSource ?: "app-receive",
             captureReceivedAtMs = existing?.captureReceivedAtMs ?: record.createdAtMs,

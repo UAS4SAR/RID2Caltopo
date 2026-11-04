@@ -78,6 +78,37 @@ struct TrackArchiveConfirmationTests {
     #expect((await journal.entries)[0].mapID == "map-a")
 }
 
+/// Confirm ~9s before end with no post-confirm points: publicationStarted + team label must
+/// prevent bound→publish promotion so live finish owns the single RidFlightID archive.
+@Test @MainActor func confirmThenImmediateEndDoesNotPromoteBoundToDeferredPublish() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let journal = await AwaitingMapFlightJournal.loaded(fileURL: root.appendingPathComponent("pending.json"))
+    let startedAt = Date(timeIntervalSince1970: 1_730_000_000)
+    let sample = RidObservation(
+        source: .bluetoothLegacy, aircraftId: "1581F5FJC23A0000001",
+        receivedAt: startedAt,
+        latitude: 39, longitude: -121, altitudeMeters: 100)
+    let flightID = RidFlightID.make(aircraftID: "1581F5FJC23A0000001", startedAt: startedAt)
+    try await journal.record(
+        remoteID: "1581F5FJC23A0000001", label: "1581F5FJC23A0000001", observations: [sample],
+        mapID: "map-a", teamID: "team-a", finished: false, flightID: flightID)
+    #expect((await journal.entries)[0].decision == "bound")
+    #expect((await journal.entries)[0].publicationStarted != true)
+
+    try await journal.notePublication(
+        remoteID: "1581F5FJC23A0000001", mapID: "map-a", label: "1sar7Avata2")
+    #expect((await journal.entries)[0].publicationStarted == true)
+    #expect((await journal.entries)[0].label == "1sar7Avata2")
+    #expect((await journal.entries)[0].id == flightID)
+
+    try await journal.record(
+        remoteID: "1581F5FJC23A0000001", label: "1sar7Avata2", observations: [sample],
+        mapID: "map-a", teamID: "team-a", finished: true, flightID: flightID)
+    // Bound + publicationStarted → removed (live finish owns archive); not promoted to publish.
+    #expect((await journal.entries).isEmpty)
+}
+
 @Test @MainActor func confirmArchivePrunesAndBlocksInbox() async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }

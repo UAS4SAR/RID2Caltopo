@@ -59,6 +59,34 @@ class OperationalStorageTest {
         assertEquals("private credentials", File(context.filesDir, "datastore/access.preferences_pb").readText())
     }
 
+    @Test fun mappingRelocateRunsBeforeHeavyHydrateAndMovesLegacyOriginals() = fixture { context, archive ->
+        // Sierra Buttes-style legacy tree under cache/local-maps (pre-mapping/ layout).
+        val mission = "2e30e0b4"
+        for (i in 1..8) {
+            write(archive, "cache/local-maps/mapping-missions/$mission/originals/DJI_%04d.jpg".format(i), "orig-$i")
+        }
+        write(archive, "cache/local-maps/mapping-missions/$mission/mission.json", """{"id":"$mission"}""")
+        write(archive, "cache/local-maps/mapping-missions/$mission/processing-status.json", """{"active":false}""")
+        write(archive, "cache/local-maps/mapping-layers/layer-1/tiles/0/0.png", "tile")
+        val probe = mutableListOf<String>()
+        OperationalStorage.installMappingRelocateProbeForTesting(probe)
+        try {
+            OperationalStorage.prepare(context, DocumentFile.fromFile(archive))
+            // Heavy hydrate is async on startup; wait for relocate + heavy markers.
+            val deadline = System.currentTimeMillis() + 30_000
+            while (probe.size < 2 && System.currentTimeMillis() < deadline) Thread.sleep(50)
+            assertTrue(
+                "expected relocate before heavy, got $probe",
+                probe.take(2) == MappingRepositoryRelocateTiming.BEFORE_HEAVY_HYDRATE,
+            )
+            assertTrue(File(archive, "mapping/.mapping-repo-migration-v1-done").isFile)
+            assertEquals("orig-1", File(archive, "mapping/missions/$mission/originals/DJI_0001.jpg").readText())
+            assertFalse(File(archive, "cache/local-maps/mapping-missions").exists())
+        } finally {
+            OperationalStorage.installMappingRelocateProbeForTesting(null)
+        }
+    }
+
     @Test fun conflictDoesNotRemoveEitherOriginal() = fixture { context, archive ->
         val original = write(context.filesDir, "clues/picture.jpg", "local original")
         val retained = write(archive, "application-logs/operational/clues/picture.jpg", "different retained original")

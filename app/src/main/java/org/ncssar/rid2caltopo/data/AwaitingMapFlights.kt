@@ -14,13 +14,22 @@ object AwaitingMapFlights {
     @JvmStatic fun selectedPublicationScope(): String = CluePublicationIdentity.publicationTeamId()
 
     private var testFile: File? = null
-    internal fun useFileForTesting(file: File?) { testFile = file; loaded = false; entries = JSONArray(); lastWrite.clear(); publicationChoices = null; pendingPublicationChoices.clear() }
+    internal fun useFileForTesting(file: File?) {
+        testFile = file; loaded = false; entries = JSONArray(); lastWrite.clear()
+        publicationChoices = null; pendingPublicationChoices.clear(); pendingPublicationStarted.clear()
+    }
     private val pendingPublicationChoices = java.util.concurrent.ConcurrentHashMap<String, String>()
+    /** Confirm/enqueue marked publicationStarted before the durable write lands. */
+    private val pendingPublicationStarted = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
     /** A queued first intent must suppress publication until its destination/consent is durable. */
     @JvmStatic fun reservePublication(remote: String, id: String) { pendingPublicationChoices[remote] = id }
     /** Reserved flight id while the first durable intent write is still in flight; null when none. */
     @JvmStatic fun reservedPublicationId(remote: String): String? = pendingPublicationChoices[remote]
     private fun intentSaved(remote: String, id: String) { pendingPublicationChoices.remove(remote, id) }
+    /** Hot confirm/enqueue: finished bound must not promote to deferred publish while this is set. */
+    @JvmStatic fun markPublicationStarted(remote: String) {
+        if (remote.isNotEmpty()) pendingPublicationStarted.add(remote)
+    }
 
     private data class PublicationChoice(val id: String, val map: String, val team: String, val decision: String)
     @Volatile private var publicationChoices: Map<String, PublicationChoice>? = null
@@ -106,6 +115,10 @@ object AwaitingMapFlights {
         if (finished && item.optString("decision") == "published" && points.length() > 1) {
             item.put("points", JSONArray().put(points.get(0)).put(points.get(points.length() - 1)))
         }
+        // Confirm/enqueue may have marked publicationStarted before this durable write.
+        if (pendingPublicationStarted.remove(remote)) {
+            item.put("publicationStarted", true)
+        }
         if (finished && item.optString("decision") == "bound" && !item.optBoolean("publicationStarted")) {
             // A flight that already had a connected map should publish through the archive,
             // not wait in the review inbox while that same map is still up.
@@ -160,7 +173,9 @@ object AwaitingMapFlights {
             "Bound open review intent remote=$remote map=$map id=${item.optString("id")}")
         return item.optString("id").ifEmpty { null }
     }
-    @JvmStatic @Synchronized fun notePublication(remote: String, map: String) {
+    @JvmStatic @JvmOverloads @Synchronized fun notePublication(
+        remote: String, map: String, label: String? = null,
+    ) {
         if (map.isEmpty()) return
         load()
         // Live publish to a connected map must bind an empty-map review intent captured before
@@ -179,8 +194,36 @@ object AwaitingMapFlights {
             entry.put("publicationStarted", true)
             changed = true
         }
+        pendingPublicationStarted.remove(remote)
+        val trimmedLabel = label?.trim().orEmpty()
+        if (trimmedLabel.isNotEmpty() && entry.optString("label") != trimmedLabel) {
+            entry.put("label", trimmedLabel)
+            changed = true
+        }
         if (changed) save()
         if (changed) publishChoices()
+    }
+
+    /**
+     * Stable RidFlightID for an open bound/publish intent (or a reserved first write).
+     * Unlike [publicationId], bound flights still return their id so LiveTrack create/finish
+     * never mint a random UUID that races the deferred archive path.
+     */
+    @JvmStatic @JvmOverloads fun stableFlightId(
+        remote: String, map: String = org.ncssar.rid2caltopo.data.CaltopoMap.GetMapId() ?: "",
+    ): String? {
+        reservedPublicationId(remote)?.let { return it }
+        val choices = publicationChoices ?: synchronized(this) {
+            CaltopoRecoveryWork.requireOffMain()
+            load()
+            publicationChoices.orEmpty()
+        }
+        val item = choices[remote] ?: return null
+        if (item.map.isNotEmpty() && item.map != map) return null
+        return when (item.decision) {
+            "bound", "publish" -> item.id.ifEmpty { null }
+            else -> null
+        }
     }
     @Synchronized fun clueDestination(remote: String): Pair<String, String>? {
         load()
@@ -245,17 +288,21 @@ object AwaitingMapFlights {
         }
     }
     private fun queueCompleted(item: JSONObject) {
-        // An already-started live publication owns finalization and its full buffered geometry.
+        // An already-started / finishing / archived publication owns finalization.
         val id = item.optString("id")
+        val remote = item.optString("remote")
+        val started = firstTime(item)
         if (CaltopoLiveTrack.hasActivePublication(id)) return
+        if (CaltopoLiveTrack.hasActiveOrFinishingFlight(remote, started)) return
+        if (CaltopoInterruptedTrackJournal.hasFlight(remote, started, id)) return
         val source = item.getJSONArray("points")
         val geometry = JSONArray()
         for (index in 0 until source.length()) {
             val point = source.getJSONArray(index)
             geometry.put(JSONArray().put(point.getDouble(0)).put(point.getDouble(1)).put(point.getDouble(2)))
         }
-        CaltopoInterruptedTrackJournal.save(item.optString("map"), item.optString("remote"), id,
-            item.optString("label"), "", geometry, firstTime(item))
+        CaltopoInterruptedTrackJournal.save(item.optString("map"), remote, id,
+            item.optString("label"), "", geometry, started)
     }
     @JvmStatic fun reconcile(map: String, team: String) {
         val ctxt = R2CApplication.getAppCtxt()

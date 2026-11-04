@@ -68,7 +68,7 @@ private struct ApplePeerVideoRecording: Equatable {
     let recordedAt: Date
 }
 
-private struct AppleManagedVideoStreamAdvertisement: Codable, Equatable {
+private struct AppleManagedVideoStreamAdvertisement: Equatable, Sendable {
     let sessionId: String
     let droneDesignator: String
     let sourceWidth: Int
@@ -81,9 +81,10 @@ private struct AppleManagedVideoStreamAdvertisement: Codable, Equatable {
     let recordedAt: String?
     let durationMs: Int64
     let thumbnailRevision: String
-    let thumbnailJpegBase64: String?
+    /// JPEG bytes kept off the wire until presence packaging (avoid large String on Main).
+    let thumbnailJpegData: Data?
 
-    func withThumbnail(revision: String, jpegBase64: String) -> Self {
+    func withThumbnail(revision: String, jpegData: Data) -> Self {
         .init(
             sessionId: sessionId,
             droneDesignator: droneDesignator,
@@ -97,9 +98,35 @@ private struct AppleManagedVideoStreamAdvertisement: Codable, Equatable {
             recordedAt: recordedAt,
             durationMs: durationMs,
             thumbnailRevision: revision,
-            thumbnailJpegBase64: jpegBase64
+            thumbnailJpegData: jpegData
         )
     }
+}
+
+/// Immutable presence snapshot built on Main, encoded off MainActor.
+private struct AppleManagedVideoPresenceStreamSnapshot: Sendable {
+    let sessionId: String
+    let droneDesignator: String
+    let sourceWidth: Int
+    let sourceHeight: Int
+    let sourceFps: Double
+    let sourceBitrateBps: Int64
+    let sourceSizeBytes: Int64
+    let sourceCodec: String
+    let mediaKind: String
+    let recordedAt: String?
+    let durationMs: Int64
+    let thumbnailRevision: String
+    let thumbnailJpegData: Data?
+    let includeThumbnailJpeg: Bool
+}
+
+private struct AppleManagedVideoPresenceSnapshot: Sendable {
+    let remoteControlEnabled: Bool
+    let incidentName: String
+    let deviceName: String
+    let timeZone: String
+    let streams: [AppleManagedVideoPresenceStreamSnapshot]
 }
 
 private struct AppleManagedVideoRecording: Equatable, Sendable {
@@ -451,11 +478,6 @@ enum AppleManagedOrganizationConfig {
 
 }
 
-private struct SendableJSONObject: @unchecked Sendable {
-    let value: NSDictionary
-    init(_ value: NSDictionary) { self.value = value }
-}
-
 @MainActor
 final class AppleTrackerCoordinator: ObservableObject {
     static let reenrollmentRequiredStatusDetail =
@@ -643,6 +665,8 @@ final class AppleTrackerCoordinator: ObservableObject {
     private var mediaRouteKindByRequestID: [String: String] = [:]
     private var sourceEndGraceTasks: [String: Task<Void, Never>] = [:]
     private var videoPreflightWatchdogTask: Task<Void, Never>?
+    /// Last thumbnailRevision whose JPEG bytes were included in a presence send.
+    private var lastSentThumbnailRevisionBySessionID: [String: String] = [:]
     private lazy var videoPreflightPeer = AppleManagedVideoPreflightPeer(
         answerSink: { [weak self] requestID, sdp in
             Task { @MainActor [weak self] in
@@ -1261,6 +1285,8 @@ final class AppleTrackerCoordinator: ObservableObject {
         }
         replayFirstSightings()
         flushPendingConfirmations()
+        // New transport may not have prior JPEG bodies; force include on next presence.
+        lastSentThumbnailRevisionBySessionID.removeAll(keepingCapacity: true)
         sendManagedVideoPresence()
         startLivenessTasks(generation: generation)
         AppleLog.info("TrackerPeer", "WebSocket opened mapId='\(mapID)' zoneId='\(zoneID)'")
@@ -1868,9 +1894,9 @@ final class AppleTrackerCoordinator: ObservableObject {
                 thumbnailRevision: managedVideoStreams.first(where: {
                     $0.sessionId == sessionID
                 })?.thumbnailRevision ?? "",
-                thumbnailJpegBase64: managedVideoStreams.first(where: {
+                thumbnailJpegData: managedVideoStreams.first(where: {
                     $0.sessionId == sessionID
-                })?.thumbnailJpegBase64
+                })?.thumbnailJpegData
             )
         }
         // Keep an actively viewed stream advertised during the same bounded
@@ -1932,7 +1958,7 @@ final class AppleTrackerCoordinator: ObservableObject {
                 recordedAt: ISO8601DateFormatter().string(from: recording.recordedAt),
                 durationMs: recording.durationMs,
                 thumbnailRevision: previous?.thumbnailRevision ?? "",
-                thumbnailJpegBase64: previous?.thumbnailJpegBase64
+                thumbnailJpegData: previous?.thumbnailJpegData
             )
         }
         updatedStreams.sort {
@@ -2015,11 +2041,10 @@ final class AppleTrackerCoordinator: ObservableObject {
                       self.managedVideoThumbnailAttempts[sessionID] == attemptID
                 else { return }
                 ClueTerrainDiagnostics.noteMainWork("thumb.await")
-                // Base64 + presence JSON packaging off MainActor (was hitching Main).
+                // Keep JPEG as Data; base64 only when presence packaging includes it.
                 let packaged = await Task.detached(priority: .utility) {
                     let revision = String(Int64(Date().timeIntervalSince1970 * 1_000))
-                    let base64 = jpeg.base64EncodedString()
-                    return (revision: revision, base64: base64)
+                    return (revision: revision, jpeg: jpeg)
                 }.value
                 guard !Task.isCancelled,
                       self.managedVideoThumbnailAttempts[sessionID] == attemptID,
@@ -2027,11 +2052,11 @@ final class AppleTrackerCoordinator: ObservableObject {
                           $0.sessionId == sessionID
                       })
                 else { return }
-                ClueTerrainDiagnostics.noteMainWork("thumb.apply", bytes: packaged.base64.utf8.count)
+                ClueTerrainDiagnostics.noteMainWork("thumb.apply", bytes: packaged.jpeg.count)
                 self.managedVideoStreams[index] = self.managedVideoStreams[index]
                     .withThumbnail(
                         revision: packaged.revision,
-                        jpegBase64: packaged.base64
+                        jpegData: packaged.jpeg
                     )
                 let droneDesignator = self.managedVideoStreams[index].droneDesignator
                 let now = Date()
@@ -3097,54 +3122,95 @@ final class AppleTrackerCoordinator: ObservableObject {
         else {
             return
         }
-        let incidentName = managedVideoIncidentName
-        let remoteControlEnabled = remoteControlPreference.enabled
-        let deviceName = AppleDeviceIdentity.displayName
-        let timeZone = TimeZone.current.identifier
-        let streams = managedVideoStreams.map { stream -> [String: Any] in
+        let lastSent = lastSentThumbnailRevisionBySessionID
+        let streamSnapshots: [AppleManagedVideoPresenceStreamSnapshot] = managedVideoStreams.map { stream in
             let source = managedVideoSourcesBySessionID[stream.sessionId]
             let width = source?.sourceWidth ?? stream.sourceWidth
             let height = source?.sourceHeight ?? stream.sourceHeight
             let frameRate = source?.sourceFrameRate ?? stream.sourceFps
-            var advertised: [String: Any] = [
-                "sessionId": stream.sessionId,
-                "droneDesignator": stream.droneDesignator,
-                "sourceWidth": width,
-                "sourceHeight": height,
-                "sourceFps": frameRate,
-                "sourceBitrateBps": stream.sourceBitrateBps,
-                "sourceSizeBytes": stream.sourceSizeBytes,
-                "sourceCodec": stream.mediaKind == "recording" ? stream.sourceCodec : (width > 0 ? "H264" : stream.sourceCodec),
-                "mediaKind": stream.mediaKind,
-                "durationMs": stream.durationMs,
-                "thumbnailRevision": stream.thumbnailRevision,
-            ]
-            if let recordedAt = stream.recordedAt {
-                advertised["recordedAt"] = recordedAt
-            }
-            if let thumbnailJpegBase64 = stream.thumbnailJpegBase64 {
-                advertised["thumbnailJpegBase64"] = thumbnailJpegBase64
-            }
-            return advertised
+            let includeThumbnail = ManagedVideoPresencePolicy.shouldIncludeThumbnailJpeg(
+                revision: stream.thumbnailRevision,
+                hasJpegBytes: stream.thumbnailJpegData.map { !$0.isEmpty } ?? false,
+                lastSentRevision: lastSent[stream.sessionId]
+            )
+            return AppleManagedVideoPresenceStreamSnapshot(
+                sessionId: stream.sessionId,
+                droneDesignator: stream.droneDesignator,
+                sourceWidth: width,
+                sourceHeight: height,
+                sourceFps: frameRate,
+                sourceBitrateBps: stream.sourceBitrateBps,
+                sourceSizeBytes: stream.sourceSizeBytes,
+                sourceCodec: stream.mediaKind == "recording"
+                    ? stream.sourceCodec
+                    : (width > 0 ? "H264" : stream.sourceCodec),
+                mediaKind: stream.mediaKind,
+                recordedAt: stream.recordedAt,
+                durationMs: stream.durationMs,
+                thumbnailRevision: stream.thumbnailRevision,
+                thumbnailJpegData: includeThumbnail ? stream.thumbnailJpegData : nil,
+                includeThumbnailJpeg: includeThumbnail
+            )
         }
-        let payload: [String: Any] = [
-            "type": "video_stream_advertisement",
-            "remoteControlEnabled": remoteControlEnabled,
-            "incidentName": incidentName,
-            "deviceName": deviceName,
-            "timeZone": timeZone,
-            "streams": streams,
-        ]
-        // Copy into an unchecked-Sendable box so JSON encoding can leave MainActor.
-        let boxed = SendableJSONObject((payload as NSDictionary).copy() as! NSDictionary)
+        let snapshot = AppleManagedVideoPresenceSnapshot(
+            remoteControlEnabled: remoteControlPreference.enabled,
+            incidentName: managedVideoIncidentName,
+            deviceName: AppleDeviceIdentity.displayName,
+            timeZone: TimeZone.current.identifier,
+            streams: streamSnapshots
+        )
         ClueTerrainDiagnostics.noteMainWork("presence.schedule")
         Task { [weak self] in
-            let data = await Task.detached(priority: .utility) {
-                try? JSONSerialization.data(withJSONObject: boxed.value)
+            let prepared = await Task.detached(priority: .utility) { () -> (text: String, sentRevisions: [String: String])? in
+                var streams: [[String: Any]] = []
+                var sentRevisions: [String: String] = [:]
+                for stream in snapshot.streams {
+                    var advertised: [String: Any] = [
+                        "sessionId": stream.sessionId,
+                        "droneDesignator": stream.droneDesignator,
+                        "sourceWidth": stream.sourceWidth,
+                        "sourceHeight": stream.sourceHeight,
+                        "sourceFps": stream.sourceFps,
+                        "sourceBitrateBps": stream.sourceBitrateBps,
+                        "sourceSizeBytes": stream.sourceSizeBytes,
+                        "sourceCodec": stream.sourceCodec,
+                        "mediaKind": stream.mediaKind,
+                        "durationMs": stream.durationMs,
+                        "thumbnailRevision": stream.thumbnailRevision,
+                    ]
+                    if let recordedAt = stream.recordedAt {
+                        advertised["recordedAt"] = recordedAt
+                    }
+                    if stream.includeThumbnailJpeg,
+                       let jpeg = stream.thumbnailJpegData,
+                       !jpeg.isEmpty {
+                        advertised["thumbnailJpegBase64"] = jpeg.base64EncodedString()
+                        sentRevisions[stream.sessionId] = stream.thumbnailRevision
+                    }
+                    streams.append(advertised)
+                }
+                let payload: [String: Any] = [
+                    "type": "video_stream_advertisement",
+                    "remoteControlEnabled": snapshot.remoteControlEnabled,
+                    "incidentName": snapshot.incidentName,
+                    "deviceName": snapshot.deviceName,
+                    "timeZone": snapshot.timeZone,
+                    "streams": streams,
+                ]
+                guard let data = try? JSONSerialization.data(withJSONObject: payload),
+                      let text = String(data: data, encoding: .utf8)
+                else { return nil }
+                return (text, sentRevisions)
             }.value
-            guard let self, let data else { return }
-            ClueTerrainDiagnostics.noteMainWork("presence.send", bytes: data.count)
-            self.send(data)
+            guard let self, let prepared else { return }
+            for (sessionID, revision) in prepared.sentRevisions {
+                self.lastSentThumbnailRevisionBySessionID[sessionID] = revision
+            }
+            let activeSessionIDs = Set(snapshot.streams.map(\.sessionId))
+            self.lastSentThumbnailRevisionBySessionID = self.lastSentThumbnailRevisionBySessionID
+                .filter { activeSessionIDs.contains($0.key) }
+            ClueTerrainDiagnostics.noteMainWork("presence.send", bytes: prepared.text.utf8.count)
+            self.sendText(prepared.text)
         }
     }
 

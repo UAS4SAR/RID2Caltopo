@@ -296,7 +296,16 @@ public final class AppleFlightStorage: @unchecked Sendable {
         let outcome: Outcome = runOnWorkQueue {
             guard date(name) != nil, protectionReason(name) == nil else { return .denied }
             do {
-                try FileManager.default.removeItem(at: root.appendingPathComponent(name))
+                let dayURL = root.appendingPathComponent(name, isDirectory: true)
+                // Capture before removal: GeoJSON flight ids + nested clue folders (midnight orphans).
+                let archiveIDs = AppleClueFlightFolder.flightIDsInArchiveDay(dayURL)
+                let nested = AppleClueFlightFolder.nestedFlightFolderNames(inDay: dayURL)
+                let crossDay = AppleClueFlightFolder.crossDayClueFoldersToRemove(
+                    root: root, dayName: name, archiveFlightIDs: archiveIDs, nestedFolderNames: nested)
+                try FileManager.default.removeItem(at: dayURL)
+                for folder in crossDay {
+                    try? FileManager.default.removeItem(at: folder)
+                }
                 return .ok
             } catch {
                 return .failed(error.localizedDescription)

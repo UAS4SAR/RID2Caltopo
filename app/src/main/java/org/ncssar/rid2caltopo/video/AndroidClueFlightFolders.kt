@@ -1,6 +1,7 @@
 package org.ncssar.rid2caltopo.video
 
 import org.json.JSONArray
+import org.json.JSONObject
 import org.ncssar.rid2caltopo.app.isDatedArchiveDirectoryName
 import org.ncssar.rid2caltopo.app.todayArchiveDirectoryName
 import java.io.File
@@ -82,5 +83,32 @@ internal object AndroidClueFlightFolders {
         if (relative.startsWith("..") || !relative.contains('/')) return null
         val first = relative.substringBefore('/')
         return first.takeIf { isFlightFolderName(it) }
+    }
+
+    /** `properties.r2c_flight_id` from one archive GeoJSON feature collection, or null. */
+    fun flightIdInGeoJson(bytes: ByteArray): String? = runCatching {
+        JSONObject(String(bytes, Charsets.UTF_8))
+            .optJSONArray("features")
+            ?.optJSONObject(0)
+            ?.optJSONObject("properties")
+            ?.optString("r2c_flight_id")
+            ?.takeIf { it.isNotEmpty() }
+    }.getOrNull()
+
+    /**
+     * Clue trees to remove when deleting archive day [day]: folders whose index maps to [day],
+     * union folders for flight ids found in that day's GeoJSON (orphan / midnight mismatch).
+     */
+    fun foldersForDayDeletion(
+        root: File,
+        day: String,
+        archiveFlightIds: Collection<String>,
+        flightDays: Map<String, String> = flightDays(root),
+    ): List<File> {
+        val fromIndex = flightDays.filterValues { it == day }.keys.map { File(root, it) }
+        val fromArchive = archiveFlightIds.mapNotNull { id ->
+            runCatching { folderNameFor(id) }.getOrNull()?.let { File(root, it) }
+        }
+        return (fromIndex + fromArchive).distinctBy { it.canonicalPath }.filter { it.isDirectory }
     }
 }

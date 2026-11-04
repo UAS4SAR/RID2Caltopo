@@ -561,6 +561,16 @@ public final class BluetoothRIDScanner: ObservableObject, RidObservationProvider
         if let observation = event.observation {
             continuation.yield(observation)
         }
+        // Log off MainActor (Android Ludicrous detail + 5s DEBUG summary). UI publish stays below.
+        if let bridgePacket = event.bridgePacket {
+            OperationalBridgePacketLog.note(
+                classification: bridgePacket.classification.rawValue,
+                transmitterID: bridgePacket.transmitterID.uuidString,
+                messageCounter: bridgePacket.messageCounter,
+                aircraftID: bridgePacket.aircraftID,
+                bridgeRssiDbm: bridgePacket.rssi
+            )
+        }
         await MainActor.run { [weak self] in
             self?.applyPublishedState(event)
         }

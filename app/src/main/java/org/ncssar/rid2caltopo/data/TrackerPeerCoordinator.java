@@ -183,6 +183,9 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
     @NonNull private volatile String managedVideoIncidentName = "";
     @NonNull private volatile List<ManagedVideoStreamAdvertisement> managedVideoStreams =
             Collections.emptyList();
+    /** Last thumbnailRevision whose JPEG bytes were included in a presence send. */
+    @NonNull private final ConcurrentHashMap<String, String> lastSentThumbnailRevisionBySessionId =
+            new ConcurrentHashMap<>();
     private volatile long managedVideoThumbnailPreviewUntilMs;
     @Nullable private volatile HardFailureListener hardFailureListener;
 
@@ -1304,6 +1307,8 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
         markAllPendingFirstSightingsDirty();
         replayPendingFirstSightings();
         flushPendingConfirmations();
+        // New transport may not have prior JPEG bodies; force include on next presence.
+        lastSentThumbnailRevisionBySessionId.clear();
         sendManagedVideoPresence();
         videoPresenceTimer.start(
                 this::sendManagedVideoPresence,
@@ -1535,7 +1540,9 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
         JSONObject message = new JSONObject();
         JSONArray streams = new JSONArray();
         try {
+            java.util.HashSet<String> activeSessionIds = new java.util.HashSet<>();
             for (ManagedVideoStreamAdvertisement stream : snapshot) {
+                activeSessionIds.add(stream.sessionId);
                 JSONObject advertised = new JSONObject();
                 advertised.put("sessionId", stream.sessionId);
                 advertised.put("droneDesignator", stream.droneDesignator);
@@ -1553,12 +1560,17 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
                 if (!stream.thumbnailRevision.isEmpty()) {
                     advertised.put("thumbnailRevision", stream.thumbnailRevision);
                 }
-                if (stream.thumbnailJpegBase64 != null &&
-                        !stream.thumbnailJpegBase64.isEmpty()) {
+                if (ManagedVideoPresencePolicy.shouldIncludeThumbnailJpeg(
+                        stream.thumbnailRevision,
+                        stream.thumbnailJpegBase64,
+                        lastSentThumbnailRevisionBySessionId.get(stream.sessionId))) {
                     advertised.put("thumbnailJpegBase64", stream.thumbnailJpegBase64);
+                    lastSentThumbnailRevisionBySessionId.put(
+                            stream.sessionId, stream.thumbnailRevision.trim());
                 }
                 streams.put(advertised);
             }
+            lastSentThumbnailRevisionBySessionId.keySet().retainAll(activeSessionIds);
             message.put("type", "video_stream_advertisement");
             message.put(
                     "deviceName",
@@ -2834,6 +2846,7 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
         INSTANCE.seenVideoStreamRequestIds.clear();
         INSTANCE.managedVideoIncidentName = "";
         INSTANCE.managedVideoStreams = Collections.emptyList();
+        INSTANCE.lastSentThumbnailRevisionBySessionId.clear();
         INSTANCE.managedVideoThumbnailPreviewUntilMs = 0L;
         INSTANCE.hardFailureListener = null;
         INSTANCE.hardFailureNotified = false;

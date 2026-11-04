@@ -190,7 +190,6 @@ struct ContentView: View {
     @State private var automaticPairingOfferedStreamIDs: Set<String> = []
     @State private var controllerRTMPURL = "Connect this device to Wi-Fi or Ethernet"
     @State private var appStartedAt = Date()
-    @State private var lastBridgePacketDiagnosticLogAt = Date.distantPast
     @State private var dismissedUpdateVersionCode = 0
     @State private var pendingCredentialProfileID: String?
     @State private var showCredentialSwitchConfirmation = false
@@ -1089,21 +1088,8 @@ struct ContentView: View {
             .onChange(of: bluetoothScanner.lastDecodeError) { _, error in
                 if let error { AppleLog.error("BluetoothRID", "Rejected advertisement: \(error)") }
             }
-            .onChange(of: bluetoothScanner.bridgeEventCount) { _, _ in
-                guard let diagnostic = bluetoothScanner.lastBridgePacketDiagnostic else { return }
-                let now = Date()
-                guard now.timeIntervalSince(lastBridgePacketDiagnosticLogAt) >= 5 else { return }
-                lastBridgePacketDiagnosticLogAt = now
-                AppleLog.info(
-                    "DroneScoutBridge",
-                    "Bridge event=\(diagnostic.eventCount) " +
-                        "classification=\(diagnostic.classification.rawValue) " +
-                        "transmitter=\(diagnostic.transmitterID.uuidString) " +
-                        "messageCounter=\(diagnostic.messageCounter) " +
-                        "aircraft=\(diagnostic.aircraftID) " +
-                        "bridgeRssiDbm=\(diagnostic.bridgeToDeviceRssiDbm)"
-                )
-            }
+            // Bridge packet detail/summary is logged off MainActor in BluetoothRIDScanner
+            // (Ludicrous detail + 5s DEBUG summary via OperationalBridgePacketLog).
             // Bluetooth ingress and scan-restart diagnostics are logged by
             // AppleAlertCoordinator so they continue while the display is locked.
             .onChange(of: mediaMTX.status) { _, status in
@@ -3076,7 +3062,10 @@ struct ContentView: View {
     }
 
     private func confirmDrone(_ identity: RidAircraftIdentity) {
-        ridTracks.capturePublicationIntent(remoteID: identity.remoteID)
+        // Pass the confirmed team label explicitly — identityProvider may not yet
+        // reflect this session confirmation when capture runs.
+        ridTracks.capturePublicationIntent(
+            remoteID: identity.remoteID, label: identity.displayLabel)
         peerCoordinator.confirm(identity)
         automaticStreamPairingAircraftID = identity.remoteID
         guard let flightEpoch = ridTracks.peerTrafficFlightEpoch(remoteID: identity.remoteID) else {

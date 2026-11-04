@@ -269,6 +269,95 @@ class TrackerPeerCoordinatorTest {
     }
 
     @Test
+    fun managedVideoPresence_omitsUnchangedThumbnailJpegBase64() {
+        coordinator.start("MAP1", "zone-alpha", "Alpha", null)
+        val sessionId = "00000000-0000-0000-0000-000000000001"
+        val jpeg = "qqqq"
+        coordinator.updateManagedVideoStreams(
+            "Training",
+            listOf(
+                ManagedVideoStreamAdvertisement(
+                    sessionId,
+                    "1sar7DjMn4Pr",
+                    1920,
+                    1080,
+                    30.0,
+                    4_000_000,
+                    "h264",
+                    "live",
+                    null,
+                    0L,
+                    "rev-1",
+                    jpeg,
+                )
+            ),
+        )
+        val first = transport.sentMessages
+            .map(::JSONObject)
+            .last { it.optString("type") == "video_stream_advertisement" }
+            .getJSONArray("streams")
+            .getJSONObject(0)
+        assertEquals("rev-1", first.getString("thumbnailRevision"))
+        assertEquals(jpeg, first.getString("thumbnailJpegBase64"))
+
+        transport.sentMessages.clear()
+        coordinator.updateManagedVideoStreams(
+            "Training",
+            listOf(
+                ManagedVideoStreamAdvertisement(
+                    sessionId,
+                    "1sar7DjMn4Pr",
+                    1920,
+                    1080,
+                    30.0,
+                    4_000_000,
+                    "h264",
+                    "live",
+                    null,
+                    0L,
+                    "rev-1",
+                    jpeg,
+                )
+            ),
+        )
+        val second = transport.sentMessages
+            .map(::JSONObject)
+            .last { it.optString("type") == "video_stream_advertisement" }
+            .getJSONArray("streams")
+            .getJSONObject(0)
+        assertEquals("rev-1", second.getString("thumbnailRevision"))
+        assertFalse(second.has("thumbnailJpegBase64"))
+
+        transport.sentMessages.clear()
+        coordinator.updateManagedVideoStreams(
+            "Training",
+            listOf(
+                ManagedVideoStreamAdvertisement(
+                    sessionId,
+                    "1sar7DjMn4Pr",
+                    1920,
+                    1080,
+                    30.0,
+                    4_000_000,
+                    "h264",
+                    "live",
+                    null,
+                    0L,
+                    "rev-2",
+                    "wwww",
+                )
+            ),
+        )
+        val third = transport.sentMessages
+            .map(::JSONObject)
+            .last { it.optString("type") == "video_stream_advertisement" }
+            .getJSONArray("streams")
+            .getJSONObject(0)
+        assertEquals("rev-2", third.getString("thumbnailRevision"))
+        assertEquals("wwww", third.getString("thumbnailJpegBase64"))
+    }
+
+    @Test
     fun managedVideoPresence_sendsEmptySnapshotToClearTracker() {
         coordinator.start("MAP1", "zone-alpha", "Alpha", null)
         coordinator.updateManagedVideoStreams("Training", emptyList())

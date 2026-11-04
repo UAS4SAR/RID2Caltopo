@@ -8,7 +8,12 @@ import org.junit.After
 import java.io.File
 
 class AwaitingMapFlightsTest {
-    @After fun reset() { AwaitingMapFlights.useFileForTesting(null) }
+    @After fun reset() {
+        AwaitingMapFlights.useFileForTesting(null)
+        FlightPublicationLedger.useFileForTesting(null)
+        FlightPublicationLedger.clearForTesting()
+        CaltopoInterruptedTrackJournal.setFileForTesting(null)
+    }
     private val now = 1_000_000_000L
     private fun flight(time: Long = now) = JSONObject().put("points", JSONArray().put(JSONArray().put(-121.0).put(39.0).put(10).put(time)))
     private fun feature(title: String, type: String = "Point", lat: Double = 39.0) = JSONObject()
@@ -106,6 +111,48 @@ class AwaitingMapFlightsTest {
         } finally {
             CaltopoInterruptedTrackJournal.setFileForTesting(null)
             file.delete()
+            journal.delete()
+        }
+    }
+
+    @Test fun stableFlightIdReturnsBoundAsWellAsPublish() {
+        val file = File.createTempFile("stable-flight-id", ".json").also { it.delete() }
+        try {
+            AwaitingMapFlights.useFileForTesting(file)
+            val points = flight().getJSONArray("points")
+            AwaitingMapFlights.record("stable-1", "RID", "TeamDrone", points, false, "map-a", "team-a")
+            assertNull(AwaitingMapFlights.publicationId("RID", "map-a", "team-a"))
+            assertEquals("stable-1", AwaitingMapFlights.stableFlightId("RID", "map-a"))
+
+            AwaitingMapFlights.record("stable-2", "RID2", "TeamDrone", points, false, "", "team-a")
+            AwaitingMapFlights.decide("stable-2", "map-a", "team-a")
+            assertEquals("stable-2", AwaitingMapFlights.publicationId("RID2", "map-a", "team-a"))
+            assertEquals("stable-2", AwaitingMapFlights.stableFlightId("RID2", "map-a"))
+        } finally {
+            file.delete()
+        }
+    }
+
+    @Test fun interruptedJournalDedupesSameFlightUnderDifferentLiveTrackIds() {
+        val journal = File.createTempFile("flight-dedupe", ".json").also { it.delete() }
+        try {
+            CaltopoInterruptedTrackJournal.setFileForTesting(journal)
+            val geometry = JSONArray().put(JSONArray().put(-121.0).put(39.0).put(10.0))
+            assertTrue(
+                CaltopoInterruptedTrackJournal.save(
+                    "map-a", "RID", "id-stable", "TeamDrone", "", geometry, now,
+                ),
+            )
+            assertTrue(
+                CaltopoInterruptedTrackJournal.save(
+                    "map-a", "RID", "id-random", "TeamDrone", "", geometry, now,
+                ),
+            )
+            assertEquals(1, CaltopoInterruptedTrackJournal.entriesForTesting().length())
+            assertTrue(CaltopoInterruptedTrackJournal.hasFlight("RID", now, "id-other"))
+            assertFalse(CaltopoInterruptedTrackJournal.hasFlight("RID", now, "id-random"))
+        } finally {
+            CaltopoInterruptedTrackJournal.setFileForTesting(null)
             journal.delete()
         }
     }

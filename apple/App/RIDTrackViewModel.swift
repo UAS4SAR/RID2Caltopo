@@ -87,9 +87,39 @@ final class RIDTrackViewModel: ObservableObject {
     private var publicationTeamID = ""
     private var lastDeferredSnapshot: [String: Date] = [:]
 
-    func capturePublicationIntent(remoteID: String) {
+    /// Confirm-time handoff: persist the team label, mark publicationStarted when a map is
+    /// connected, and seed the publisher with the stable RidFlightID so finish cannot mint a
+    /// second archive id. Chains onto `awaitingFlightWrites` so flight-end awaits this write.
+    func capturePublicationIntent(remoteID: String, label: String? = nil) {
         lastDeferredSnapshot.removeValue(forKey: remoteID)
-        if let track = tracks.first(where: { $0.aircraftID == remoteID }) { recordAwaitingFlight(track) }
+        let confirmedLabel = {
+            let trimmed = label?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if !trimmed.isEmpty { return trimmed }
+            return identityProvider?(remoteID)?.displayLabel ?? remoteID
+        }()
+        let track = tracks.first(where: { $0.aircraftID == remoteID })
+        let previous = track.flatMap { recordAwaitingFlight($0) }
+        let mapID = publicationMapID
+        let flightID = track.map {
+            RidFlightID.make(aircraftID: $0.aircraftID, startedAt: $0.flightStartedAt)
+        }
+        let task = Task {
+            await previous?.value
+            if !mapID.isEmpty {
+                do {
+                    try await awaitingMapJournal.notePublication(
+                        remoteID: remoteID, mapID: mapID, label: confirmedLabel)
+                } catch {
+                    archiveStatus = "Publication handoff could not be saved"
+                }
+            }
+            if let flightID {
+                await caltopoPublisher.seedLiveTrackIdentity(
+                    remoteID: remoteID, liveTrackID: flightID, label: confirmedLabel)
+            }
+            await refreshAwaitingMapState()
+        }
+        awaitingFlightWrites[remoteID] = task
     }
 
     private var awaitingFlightWrites: [String: Task<Void, Never>] = [:]
@@ -2069,6 +2099,11 @@ final class RIDTrackViewModel: ObservableObject {
         if let deferred, !["publish", "bound"].contains(deferred.decision) || deferred.mapID != publicationMapID || deferred.teamID != publicationTeamID {
             return Task { }
         }
+        // Defense in depth: never POST LiveTrack create/update without publicationAllowed.
+        // Callers also gate, but ownership can flip while a chain is queued.
+        if peerCoordinator?.publicationAllowed(remoteID: remoteID) == false {
+            return Task { }
+        }
         let previous = publicationChains[remoteID]
         let publicationObservation = RidObservation(
             source: observation.source,
@@ -2090,10 +2125,13 @@ final class RIDTrackViewModel: ObservableObject {
         )
         let routingDesignator = identityProvider?(remoteID)?.mappedID ?? remoteID
         let cameraMetadata = peerCoordinator?.caltopoCameraMetadata(droneDesignator: routingDesignator)
-        let task = Task { [caltopoPublisher] in
+        let task = Task { [weak self, caltopoPublisher] in
             _ = await previous?.value
-            guard !Task.isCancelled else { return }
-            if let deferred, deferred.decision == "publish" {
+            guard !Task.isCancelled, let self else { return }
+            // Re-check after prior chain work: peer may have taken ownership mid-queue.
+            guard self.peerCoordinator?.publicationAllowed(remoteID: remoteID) != false else { return }
+            // Seed RidFlightID for bound as well as publish so finish never mints a random UUID.
+            if let deferred, deferred.decision == "publish" || deferred.decision == "bound" {
                 let prepared = await Task.detached(priority: .utility) { deferred.publication }.value
                 guard !Task.isCancelled else { return }
                 await caltopoPublisher.seedDeferredFlight(prepared)
@@ -2105,8 +2143,10 @@ final class RIDTrackViewModel: ObservableObject {
                 cameraMetadata: cameraMetadata
             )
             if await caltopoPublisher.hasBufferedPublication(remoteID: remoteID, mapID: self.publicationMapID) {
-                do { try await self.awaitingMapJournal.notePublication(remoteID: remoteID, mapID: self.publicationMapID) }
-                catch { self.archiveStatus = "Publication handoff could not be saved" }
+                do {
+                    try await self.awaitingMapJournal.notePublication(
+                        remoteID: remoteID, mapID: self.publicationMapID, label: label)
+                } catch { self.archiveStatus = "Publication handoff could not be saved" }
             }
         }
         publicationChains[remoteID] = task

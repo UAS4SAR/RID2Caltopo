@@ -210,7 +210,7 @@ public actor AwaitingMapFlightJournal {
         try await commit(next)
         return next[index].id
     }
-    public func notePublication(remoteID: String, mapID: String) async throws {
+    public func notePublication(remoteID: String, mapID: String, label: String? = nil) async throws {
         try await beginMutation()
         defer { endMutation() }
         guard !mapID.isEmpty else { return }
@@ -230,6 +230,13 @@ public actor AwaitingMapFlightJournal {
         if next[index].publicationStarted != true {
             next[index].publicationStarted = true
             changed = true
+        }
+        if let label {
+            let trimmed = label.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty, next[index].label != trimmed {
+                next[index].label = trimmed
+                changed = true
+            }
         }
         guard changed else { return }
         try await commit(next)

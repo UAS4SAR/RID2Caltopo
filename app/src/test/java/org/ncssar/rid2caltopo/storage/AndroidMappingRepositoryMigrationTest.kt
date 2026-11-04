@@ -217,6 +217,46 @@ class AndroidMappingRepositoryMigrationTest {
         assertFalse(migration.needsWork(tree))
     }
 
+    @Test fun migrateAlwaysLogsStartAndOutcomeNeverSilent() = withTree { tree, _ ->
+        val logs = mutableListOf<String>()
+        seedSierraButtes(tree, active = true)
+        assertEquals(
+            AndroidMappingRepositoryMigration.Outcome.DEFERRED_ACTIVE,
+            migration.migrate(tree, log = { logs += it }).outcome,
+        )
+        assertTrue(logs.any { it.startsWith("Mapping repository migration start") && it.contains("needsWork=true") })
+        assertTrue(logs.any { it.contains("deferred-active") })
+
+        logs.clear()
+        File(tree.root, "cache/local-maps/mapping-missions/$mission/processing-status.json")
+            .writeText("""{"active":false}""")
+        assertEquals(
+            AndroidMappingRepositoryMigration.Outcome.COMPLETED,
+            migration.migrate(tree, log = { logs += it }).outcome,
+        )
+        assertTrue(logs.any { it.startsWith("Mapping repository migration start") })
+        assertTrue(logs.any { it.contains("migrated files=") })
+
+        logs.clear()
+        assertEquals(
+            AndroidMappingRepositoryMigration.Outcome.NOTHING_TO_DO,
+            migration.migrate(tree, log = { logs += it }).outcome,
+        )
+        assertTrue(logs.any { it.startsWith("Mapping repository migration start") })
+        assertTrue(logs.any { it.contains("skip: nothing to do") || it.contains("no legacy data") })
+    }
+
+    @Test fun relocateTiming_runsBeforeHeavyAndRetriesWhileDeferred() {
+        assertEquals(
+            listOf("relocate-start", "heavy-start"),
+            MappingRepositoryRelocateTiming.BEFORE_HEAVY_HYDRATE,
+        )
+        assertTrue(MappingRepositoryRelocateTiming.shouldRetry(AndroidMappingRepositoryMigration.Outcome.DEFERRED_ACTIVE))
+        assertTrue(MappingRepositoryRelocateTiming.shouldRetry(AndroidMappingRepositoryMigration.Outcome.DEFERRED_UNSTABLE))
+        assertFalse(MappingRepositoryRelocateTiming.shouldRetry(AndroidMappingRepositoryMigration.Outcome.COMPLETED))
+        assertFalse(MappingRepositoryRelocateTiming.shouldRetry(AndroidMappingRepositoryMigration.Outcome.NOTHING_TO_DO))
+    }
+
     @Test fun categoriesCountMappingAsProjectsNotCacheImagery() {
         assertEquals(StorageCategory.PROJECTS, storageCategory("mapping/missions/$mission/originals/DJI_0001.jpg"))
         assertEquals(StorageCategory.PROJECTS, storageCategory("cache/local-maps/mapping-missions/$mission/originals/DJI_0001.jpg"))

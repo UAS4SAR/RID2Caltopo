@@ -127,6 +127,40 @@ class FlightKmzTest {
         assertTrue(kmzClue.localOnly)
     }
 
+    @Test fun kmzRewriteKeepsMigratedFlightFolderClueWhenMemoryIncomplete() {
+        val archives = mapOf(
+            "flight-a" to FlightArchiveContents(
+                "1SAR7_x", "RID-1",
+                (0 until 7).map { ClueBindingPoint(t0 + it * 10_000L, null, 39.0 + it * 0.001, -121.0, 100.0, "track", true) },
+            ),
+        )
+        val folder = record("migrated", t0 + 20_000, binding = ClueBinding(
+            "RID-1", "flight-a", t0, t0 + 20_000, "stream-pts", t0 + 20_000,
+        )).copy(imageFilename = "flight-a/migrated.jpg", thumbnailFilename = "flight-a/migrated-t.jpg")
+        val owned = FlightArchiveRebuild.cluesForRewrite(
+            "flight-a", archives, memoryClues = emptyList(), flightFolderClues = listOf(folder), tombstonedIds = emptySet(),
+        )
+        assertEquals(listOf("migrated"), owned.map { it.id })
+        assertTrue(owned.single().imageFilename.startsWith("flight-a/"))
+    }
+
+    @Test fun kmzRewriteEmptiesWhenClueTombstonedAfterDelete() {
+        val archives = mapOf(
+            "flight-a" to FlightArchiveContents(
+                "1SAR7_x", "RID-1",
+                listOf(ClueBindingPoint(t0, null, 39.0, -121.0, 100.0, "track", true)),
+            ),
+        )
+        val folder = record("gone", t0, binding = ClueBinding(
+            "RID-1", "flight-a", t0, t0, "stream-pts", t0,
+        )).copy(imageFilename = "flight-a/gone.jpg", thumbnailFilename = "flight-a/gone-t.jpg")
+        val owned = FlightArchiveRebuild.cluesForRewrite(
+            "flight-a", archives, memoryClues = listOf(folder), flightFolderClues = listOf(folder),
+            tombstonedIds = setOf("gone"),
+        )
+        assertTrue(owned.isEmpty())
+    }
+
     @Test fun kmzIncludesUnpublishedAndLocalOnlyCluesEvenWhenPhotoMissingFromAllRecords() {
         // allRecords no longer drops photo-missing rows; ownership + KMZ still include
         // unpublished / localOnly clues the same way FlightArchiveStore does.

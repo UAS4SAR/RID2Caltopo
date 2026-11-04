@@ -141,6 +141,75 @@ public extension OperationalFlightKMZ {
             .sorted { $0.capturedAt < $1.capturedAt }
     }
 
+    /// Merge in-memory clues with per-flight `clues.json` rows, drop tombstones, prefer migrated paths.
+    static func mergeCluesForRewrite(
+        memory: [OperationalClueRecord],
+        flightFolder: [OperationalClueRecord],
+        tombstoned: Set<UUID>
+    ) -> [OperationalClueRecord] {
+        var byID: [UUID: OperationalClueRecord] = [:]
+        for record in memory where !tombstoned.contains(record.id) {
+            byID[record.id] = record
+        }
+        for record in flightFolder where !tombstoned.contains(record.id) {
+            if let prior = byID[record.id] {
+                let nested = AppleClueFlightFolder.flightFolder(ofRelativePath: record.imageFilename) != nil
+                let priorNested = AppleClueFlightFolder.flightFolder(ofRelativePath: prior.imageFilename) != nil
+                if nested && !priorNested { byID[record.id] = record }
+            } else {
+                byID[record.id] = record
+            }
+        }
+        return Array(byID.values)
+    }
+
+    /// True when the clue is bound to `archiveID` or stored under that flight's folder.
+    static func belongsToFlightFolder(_ record: OperationalClueRecord, archiveID: String) -> Bool {
+        if record.binding?.flightID == archiveID { return true }
+        guard let folder = AppleClueFlightFolder.folderName(flightID: archiveID) else { return false }
+        return AppleClueFlightFolder.flightFolder(ofRelativePath: record.imageFilename) == folder
+    }
+
+    /// Clues to embed for a KMZ rewrite: ownership (binding.flightID preferred) plus non-tombstoned
+    /// flight-folder recovery so a migrated index is never silently stripped.
+    static func cluesForRewrite(
+        archiveID: String,
+        archives: [String: RidTrackGeoJSON.ArchiveContents],
+        memoryClues: [OperationalClueRecord],
+        flightFolderClues: [OperationalClueRecord],
+        tombstonedIDs: Set<UUID>
+    ) -> [OperationalClueRecord] {
+        let merged = mergeCluesForRewrite(
+            memory: memoryClues, flightFolder: flightFolderClues, tombstoned: tombstonedIDs)
+        var byID = Dictionary(uniqueKeysWithValues: ownedClues(
+            archiveID: archiveID, archives: archives, clues: merged).map { ($0.id, $0) })
+        for record in merged where belongsToFlightFolder(record, archiveID: archiveID) {
+            byID[record.id] = record
+        }
+        return byID.values.sorted { $0.capturedAt < $1.capturedAt }
+    }
+
+    /// Loads `<day>/<flightId>/clues.json` for `flightID` from every day under FlightStorage `root`.
+    static func loadFlightFolderClues(root: URL, flightID: String) -> [OperationalClueRecord] {
+        guard let folder = AppleClueFlightFolder.folderName(flightID: flightID) else { return [] }
+        let fm = FileManager.default
+        guard let days = try? fm.contentsOfDirectory(
+            at: root, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]
+        ) else { return [] }
+        var result: [OperationalClueRecord] = []
+        for day in days {
+            guard AppleFlightStorage.date(day.lastPathComponent) != nil,
+                  AppleClueFlightFolder.isDirectory(day) else { continue }
+            let index = day.appendingPathComponent(folder, isDirectory: true)
+                .appendingPathComponent(AppleClueFlightFolder.indexFilename)
+            guard let data = try? Data(contentsOf: index),
+                  let records = try? JSONDecoder().decode([OperationalClueRecord].self, from: data)
+            else { continue }
+            result.append(contentsOf: records)
+        }
+        return result
+    }
+
     /// Binds clues saved without a usable binding to the archived flight's nearest stored point.
     static func bindingFallback(_ record: OperationalClueRecord,
                                 contents: RidTrackGeoJSON.ArchiveContents) -> OperationalClueRecord {
@@ -148,7 +217,8 @@ public extension OperationalFlightKMZ {
         var updated = record
         let captureMs = record.binding?.captureTimeMs ?? ClueBindingPoint.milliseconds(record.capturedAt)
         updated.binding = ClueBinder.bind(
-            aircraftID: record.aircraftID, flightID: record.binding?.flightID, captureTimeMs: captureMs,
+            aircraftID: record.aircraftID, flightID: record.binding?.flightID ?? contents.flightID,
+            captureTimeMs: captureMs,
             captureTimeSource: record.binding?.captureTimeSource ?? "app-receive",
             captureReceivedAtMs: record.binding?.captureReceivedAtMs ?? ClueBindingPoint.milliseconds(record.capturedAt),
             points: contents.points, framePosition: record.binding?.framePosition,

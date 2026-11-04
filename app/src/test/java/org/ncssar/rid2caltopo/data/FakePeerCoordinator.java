@@ -32,6 +32,8 @@ public final class FakePeerCoordinator implements PeerCoordinator {
     @NonNull private final List<Event> events = Collections.synchronizedList(new ArrayList<>());
     @NonNull private final List<R2CMqttManager.PeerState> peers = Collections.synchronizedList(new ArrayList<>());
     @NonNull private final Set<String> locallyOwnedRemoteIds = ConcurrentHashMap.newKeySet();
+    /** Remote ids whose owner lease is held by a peer zone (not this device). */
+    @NonNull private final ConcurrentHashMap<String, String> peerOwnerByRemoteId = new ConcurrentHashMap<>();
     @NonNull private volatile List<ManagedVideoStreamAdvertisement> managedVideoStreams = Collections.emptyList();
 
     @Nullable private volatile R2CMqttManager.PeerListChangedListener peerListChangedListener;
@@ -102,6 +104,22 @@ public final class FakePeerCoordinator implements PeerCoordinator {
     @Override
     public boolean isLocalOwner(@NonNull String remoteId) {
         return locallyOwnedRemoteIds.contains(remoteId);
+    }
+
+    @Override
+    public boolean hasActivePeerOwner(@NonNull String remoteId) {
+        String owner = peerOwnerByRemoteId.get(remoteId);
+        return owner != null && !owner.isEmpty() && !locallyOwnedRemoteIds.contains(remoteId);
+    }
+
+    @Override
+    @NonNull
+    public String ownerGuidForRemoteId(@NonNull String remoteId) {
+        if (locallyOwnedRemoteIds.contains(remoteId)) {
+            return startedGuid != null ? startedGuid : "local-zone";
+        }
+        String owner = peerOwnerByRemoteId.get(remoteId);
+        return owner == null ? "" : owner;
     }
 
     @Override
@@ -228,8 +246,20 @@ public final class FakePeerCoordinator implements PeerCoordinator {
     public void setLocalOwnership(@NonNull String remoteId, boolean isOwner) {
         if (isOwner) {
             locallyOwnedRemoteIds.add(remoteId);
+            peerOwnerByRemoteId.remove(remoteId);
         } else {
             locallyOwnedRemoteIds.remove(remoteId);
+        }
+    }
+
+    /** Marks {@code remoteId} as owned by a peer zone (localOwner=false, hasActivePeerOwner=true). */
+    public void setPeerOwner(@NonNull String remoteId, @NonNull String peerZoneGuid) {
+        locallyOwnedRemoteIds.remove(remoteId);
+        String zone = peerZoneGuid.trim();
+        if (zone.isEmpty()) {
+            peerOwnerByRemoteId.remove(remoteId);
+        } else {
+            peerOwnerByRemoteId.put(remoteId, zone);
         }
     }
 
@@ -257,6 +287,7 @@ public final class FakePeerCoordinator implements PeerCoordinator {
         events.clear();
         peers.clear();
         locallyOwnedRemoteIds.clear();
+        peerOwnerByRemoteId.clear();
         started = false;
         startedMapId = null;
         startedGuid = null;

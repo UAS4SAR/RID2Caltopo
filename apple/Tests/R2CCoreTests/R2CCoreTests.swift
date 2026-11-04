@@ -786,6 +786,64 @@ import Testing
     ))
 }
 
+@Test func managedVideoPresenceOmitsUnchangedThumbnailJpeg() {
+    #expect(!ManagedVideoPresencePolicy.shouldIncludeThumbnailJpeg(
+        revision: "100",
+        hasJpegBytes: true,
+        lastSentRevision: "100"
+    ))
+    #expect(ManagedVideoPresencePolicy.shouldIncludeThumbnailJpeg(
+        revision: "101",
+        hasJpegBytes: true,
+        lastSentRevision: "100"
+    ))
+    #expect(ManagedVideoPresencePolicy.shouldIncludeThumbnailJpeg(
+        revision: "100",
+        hasJpegBytes: true,
+        lastSentRevision: nil
+    ))
+    #expect(!ManagedVideoPresencePolicy.shouldIncludeThumbnailJpeg(
+        revision: "100",
+        hasJpegBytes: false,
+        lastSentRevision: nil
+    ))
+    #expect(!ManagedVideoPresencePolicy.shouldIncludeThumbnailJpeg(
+        revision: "",
+        hasJpegBytes: true,
+        lastSentRevision: nil
+    ))
+}
+
+@Test func aircraftMapAnnotationDiffSkipsNoOpVisualUpdates() {
+    let base = AircraftMapAnnotationVisualKey(
+        latitude: 39.5,
+        longitude: -120.25,
+        headingDegrees: 90,
+        title: "1sar7",
+        statusText: "ATO 120",
+        focused: false,
+        positionIconAlpha: 1,
+        inset: false,
+        labelSide: 1
+    )
+    var same = base
+    same.latitude += AircraftMapAnnotationDiff.coordinateEpsilonDegrees / 2
+    same.headingDegrees = 90.2
+    #expect(AircraftMapAnnotationDiff.isVisuallyUnchanged(base, same))
+
+    var moved = base
+    moved.longitude += AircraftMapAnnotationDiff.coordinateEpsilonDegrees * 10
+    #expect(!AircraftMapAnnotationDiff.isVisuallyUnchanged(base, moved))
+
+    var retitled = base
+    retitled.title = "other"
+    #expect(!AircraftMapAnnotationDiff.isVisuallyUnchanged(base, retitled))
+
+    var turned = base
+    turned.headingDegrees = 120
+    #expect(!AircraftMapAnnotationDiff.isVisuallyUnchanged(base, turned))
+}
+
 @Test func managedVideoSourceGraceTreatsCatalogedRecordingAsAvailable() {
     let unavailable = ManagedVideoPresencePolicy.unavailableApprovedSessionIDs(
         approvedSessionIDs: ["live", "recording", "missing"],

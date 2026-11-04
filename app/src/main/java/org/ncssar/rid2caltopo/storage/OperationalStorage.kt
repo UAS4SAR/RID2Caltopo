@@ -65,6 +65,13 @@ internal object OperationalStorage {
     @Volatile private var store: Store? = null
     private val selectionGeneration = java.util.concurrent.atomic.AtomicLong()
     private val startup = java.util.concurrent.Executors.newSingleThreadExecutor { r -> Thread(r, "archive-storage-setup").apply { isDaemon = true } }
+    /** Serializes deferred mapping-repo relocate retries on [startup] (compareAndSet gate). */
+    private val mappingRelocateRetryScheduled = java.util.concurrent.atomic.AtomicBoolean(false)
+    /**
+     * Test probe: records compact stage tags when set (`relocate-start`, `heavy-start`,
+     * `relocate-retry-scheduled`). Plain JVM unit tests use this to assert early trigger order.
+     */
+    @Volatile private var mappingRelocateProbeForTesting: MutableList<String>? = null
     private data class Area(val id: String, val retained: String, val alias: File, val sources: List<File>)
     private data class Store(val uri: String, val work: File, val tree: ArchiveTree, val writer: VerifiedArchiveTree, val areas: List<Area>, val migrated: MutableMap<String, String> = mutableMapOf(), val growingOffsets: MutableMap<String, Long> = mutableMapOf(), val mappingCurrentLayout: Boolean = true)
     /**
@@ -76,6 +83,11 @@ internal object OperationalStorage {
     @androidx.annotation.VisibleForTesting
     fun installWorkerAssertForTesting(assert: (() -> Unit)?) {
         workerAssertForTesting = assert
+    }
+
+    @androidx.annotation.VisibleForTesting
+    fun installMappingRelocateProbeForTesting(probe: MutableList<String>?) {
+        mappingRelocateProbeForTesting = probe
     }
 
     private fun worker() {
@@ -379,9 +391,37 @@ internal object OperationalStorage {
         fun checkSelection() = check(selectionGeneration.get() == generation) {
             "Archive Dir changed during heavy-area preparation."
         }
-        for (area in heavy) {
+        // Mapping relocate runs BEFORE mission/layer hydrate so a multi-minute recordings/DEM
+        // walk cannot starve relocation (p77: empty mapping/ + intact legacy with zero migrate logs).
+        mappingRelocateProbeForTesting?.add("relocate-start")
+        var working = value
+        var workingHeavy = heavy
+        val relocateResult = runCatching {
+            relocateMappingRepository(context, value, archiveRoot, generation)
+        }.onFailure { error ->
+            if (error is kotlinx.coroutines.CancellationException) throw error
+            CaltopoClient.CTWarn(
+                "OperationalStorage",
+                "Mapping repository relocation failed; legacy copies retained: ${error.javaClass.simpleName}",
+            )
+        }.getOrNull()
+        if (relocateResult != null && MappingRepositoryRelocateTiming.shouldRetry(relocateResult.outcome)) {
+            scheduleMappingRelocateRetry(context, value.uri, generation)
+        }
+        if (relocateResult?.committed == true && !value.mappingCurrentLayout) {
+            working = value.copy(areas = areas(context, true), mappingCurrentLayout = true)
+            workingHeavy = working.areas.filter { area -> heavy.any { it.id == area.id } }
+            synchronized(gate) {
+                val current = store
+                if (current != null && current.uri == value.uri && !current.mappingCurrentLayout) {
+                    store = current.copy(areas = working.areas, mappingCurrentLayout = true)
+                }
+            }
+        }
+        mappingRelocateProbeForTesting?.add("heavy-start")
+        for (area in workingHeavy) {
             try {
-                migrateAreaSources(context, value, area, ::checkSelection, announce = false)
+                migrateAreaSources(context, working, area, ::checkSelection, announce = false)
             } catch (error: Exception) {
                 if (!isTransientPrepareFailure(error)) throw error
                 CaltopoClient.CTWarn(
@@ -390,10 +430,10 @@ internal object OperationalStorage {
                 )
             }
         }
-        for (area in heavy) {
-            value.tree.refresh()
+        for (area in workingHeavy) {
+            working.tree.refresh()
             try {
-                prepareAreaProjection(context, value, area, hydrationScratch, ::checkSelection)
+                prepareAreaProjection(context, working, area, hydrationScratch, ::checkSelection)
             } catch (error: Exception) {
                 if (!isTransientPrepareFailure(error)) throw error
                 CaltopoClient.CTWarn(
@@ -405,11 +445,47 @@ internal object OperationalStorage {
         if (state.value.ready) {
             state.value = Status(ready = true, message = "Retained operational data is in Archive Dir.")
         }
-        CaltopoClient.CTDebug("OperationalStorage", "Deferred heavy areas ready count=${heavy.size}")
-        // After mission/layer hydrate so nothing hydrates from a half-moved tree. Never fatal.
-        runCatching { relocateMappingRepository(context, value, archiveRoot, generation) }.onFailure { error ->
-            if (error is kotlinx.coroutines.CancellationException) throw error
-            CaltopoClient.CTWarn("OperationalStorage", "Mapping repository relocation deferred; legacy copies retained: ${error.javaClass.simpleName}")
+        CaltopoClient.CTDebug("OperationalStorage", "Deferred heavy areas ready count=${workingHeavy.size}")
+    }
+
+    /**
+     * Retry mapping relocate when deferred for active reconstruction — does not wait for the
+     * full heavy hydrate (same single-thread [startup] queue as [schedulePrepareRetry]).
+     */
+    private fun scheduleMappingRelocateRetry(context: Context, archiveUri: String, generation: Long) {
+        if (!mappingRelocateRetryScheduled.compareAndSet(false, true)) return
+        mappingRelocateProbeForTesting?.add("relocate-retry-scheduled")
+        CaltopoClient.CTInfo(
+            "OperationalStorage",
+            "Mapping repository relocate retry scheduled (deferred-active)",
+        )
+        startup.execute {
+            var reschedule = false
+            try {
+                try {
+                    Thread.sleep(2_000L)
+                } catch (_: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    return@execute
+                }
+                if (selectionGeneration.get() != generation) return@execute
+                val current = synchronized(gate) { store } ?: return@execute
+                if (current.uri != archiveUri) return@execute
+                val root = CaltopoClient.GetArchiveDir() ?: return@execute
+                val result = runCatching {
+                    relocateMappingRepository(context, current, root, generation)
+                }.onFailure { error ->
+                    if (error is kotlinx.coroutines.CancellationException) throw error
+                    CaltopoClient.CTWarn(
+                        "OperationalStorage",
+                        "Mapping repository relocate retry failed; legacy retained: ${error.javaClass.simpleName}",
+                    )
+                }.getOrNull()
+                reschedule = result != null && MappingRepositoryRelocateTiming.shouldRetry(result.outcome)
+            } finally {
+                mappingRelocateRetryScheduled.set(false)
+                if (reschedule) scheduleMappingRelocateRetry(context, archiveUri, generation)
+            }
         }
     }
 
@@ -418,11 +494,31 @@ internal object OperationalStorage {
      * Leftover filesDir/external local-mapping sources are moved by the normal area migrate,
      * which already targets the current layout. Own tree instance: no lock shared with
      * publication or bulk hydrate. Switches the live store to the new paths once committed.
+     * Always logs start / skip / result (never silent).
      */
-    private fun relocateMappingRepository(context: Context, value: Store, archiveRoot: DocumentFile, generation: Long) {
+    private fun relocateMappingRepository(
+        context: Context,
+        value: Store,
+        archiveRoot: DocumentFile,
+        generation: Long,
+    ): AndroidMappingRepositoryMigration.Result {
         worker()
         val tree = DocumentArchiveTree(context, archiveRoot)
-        if (value.mappingCurrentLayout && !AndroidMappingRepositoryMigration.needsWork(tree)) return
+        val usesCurrent = value.mappingCurrentLayout
+        val needsWork = AndroidMappingRepositoryMigration.needsWork(tree)
+        if (usesCurrent && !needsWork) {
+            CaltopoClient.CTInfo(
+                "OperationalStorage",
+                "Mapping repository relocate skip usesCurrentLayout=true needsWork=false",
+            )
+            return AndroidMappingRepositoryMigration.Result(
+                AndroidMappingRepositoryMigration.Outcome.NOTHING_TO_DO,
+            )
+        }
+        CaltopoClient.CTInfo(
+            "OperationalStorage",
+            "Mapping repository relocate start usesCurrentLayout=$usesCurrent needsWork=$needsWork",
+        )
         val localMissions = areas(context).first { it.id == "missions" }.sources.map { source ->
             // Aliases are symlinks into the disposable projection; the status files live there.
             runCatching { source.canonicalFile }.getOrDefault(source)
@@ -445,9 +541,11 @@ internal object OperationalStorage {
             },
             log = { CaltopoClient.CTInfo("OperationalStorage", it) },
         )
-        if (!result.committed) {
-            CaltopoClient.CTDebug("OperationalStorage", "Mapping repository relocation outcome=${result.outcome}")
-        }
+        CaltopoClient.CTInfo(
+            "OperationalStorage",
+            "Mapping repository relocate result outcome=${result.outcome} files=${result.files} removed=${result.removed} retained=${result.retained} committed=${result.committed}",
+        )
+        return result
     }
     private fun recoverArchive(value: Store) = synchronized(recoveryGate) {
         recoveredUri?.let { check(it == value.uri) { "Restart the app after changing Archive Dir." }; return@synchronized }
@@ -1806,6 +1904,8 @@ internal object OperationalStorage {
     fun resetForTesting() {
         worker(); check(org.ncssar.rid2caltopo.BuildConfig.DEBUG)
         startup.submit {}.get()
+        mappingRelocateRetryScheduled.set(false)
+        mappingRelocateProbeForTesting = null
         synchronized(gate) { synchronized(queueGate) { synchronized(recorderGate) { synchronized(cluesGate) {
             store = null; preparedQueue = null; preparedRecorder = null; preparedClues = null
             cluesPreparedGeneration = -1L; recoveredUri = null; state.value = Status()

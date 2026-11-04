@@ -245,7 +245,9 @@ public class WaypointTrack {
 
     public static void CapturePublicationIntent(CtDroneSpec drone) {
         for (WaypointTrack track : new ArrayList<>(TrackMap.values())) {
-            if (track.droneSpec.getRemoteId().equals(drone.getRemoteId())) track.recordPublicationIntent(false);
+            if (track.droneSpec.getRemoteId().equals(drone.getRemoteId())) {
+                track.recordPublicationIntent(false, true);
+            }
         }
     }
 
@@ -261,12 +263,27 @@ public class WaypointTrack {
     private boolean publicationIntentRecorded; // recovery worker only
 
     private void recordPublicationIntent(boolean finished) {
+        recordPublicationIntent(finished, false);
+    }
+
+    private void recordPublicationIntent(boolean finished, boolean confirmIntent) {
         // Capture consent's destination before dispatch, including when no map is selected.
         if (publicationIntentScope.compareAndSet(null,
                 new PublicationScope(CaltopoMap.GetMapId(), AwaitingMapFlights.selectedPublicationScope()))) {
             AwaitingMapFlights.reservePublication(droneSpec.getRemoteId(), deferredPublicationId);
         }
         if (finished) publicationIntentFinished.set(true);
+        // Confirm with a connected map: mark publicationStarted immediately so a near-immediate
+        // flight end cannot promote bound → deferred publish before the durable write lands.
+        if (confirmIntent) {
+            AwaitingMapFlights.markPublicationStarted(droneSpec.getRemoteId());
+            PublicationScope scope = publicationIntentScope.get();
+            if (scope != null && !scope.map.isEmpty()) {
+                AwaitingMapFlights.notePublication(droneSpec.getRemoteId(), scope.map, trackLabel);
+            }
+            CaltopoLiveTrack.seedConfirmedPublication(
+                    droneSpec.getRemoteId(), deferredPublicationId, trackLabel);
+        }
         // Publication intent must use the start lane so a stalled archive cannot block
         // awaiting-map durability for the next airborne flight.
         CaltopoRecoveryWork.checkpointStart(this, () -> {
@@ -282,6 +299,9 @@ public class WaypointTrack {
                 }
                 AwaitingMapFlights.record(deferredPublicationId, droneSpec.getRemoteId(), trackLabel,
                         points, publicationIntentFinished.get(), scope.map, scope.team);
+                if (confirmIntent && !scope.map.isEmpty()) {
+                    AwaitingMapFlights.notePublication(droneSpec.getRemoteId(), scope.map, trackLabel);
+                }
             } catch (Exception error) {
                 CTError(TAG, "Could not persist publication intent; local track recording continues", error);
             }

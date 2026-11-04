@@ -222,7 +222,8 @@ actor AppleTrackArchiveStore {
 
     func pendingRewrites() -> [FlightArchiveRewriteJob] { rewriteQueue?.jobs() ?? [] }
 
-    /// Rebuilds one queued KMZ from the archived track and every clue (from `clues`) it owns.
+    /// Rebuilds one queued KMZ from the archived track and every clue it owns.
+    /// Loads per-flight `clues.json` when the in-memory list is incomplete; tombstones stay empty.
     /// Returns clues whose binding was filled in from the archive so the caller can persist them.
     func performRewrite(_ job: FlightArchiveRewriteJob, clues: [OperationalClueRecord]) -> [OperationalClueRecord] {
         guard let rootURL else { return [] }
@@ -235,12 +236,17 @@ actor AppleTrackArchiveStore {
                 return []
             }
             let firstTime = contents.points.map(\.timeMs).min().map { Date(timeIntervalSince1970: Double($0) / 1_000) } ?? Date()
-            // The rebuilt file is identified like every archive: by its flight id, else "day/file".
+            // Prefer archive r2c_flight_id so binding.flightID matches after per-flight migration.
             let selfID = contents.flightID ?? job.id
             var archives = archivedFlights(aircraftID: job.aircraftID, around: firstTime)
             archives[selfID] = contents
-            let owned = OperationalFlightKMZ.ownedClues(archiveID: selfID, archives: archives, clues: clues)
-                .map { OperationalFlightKMZ.bindingFallback($0, contents: contents) }
+            let folderClues = OperationalFlightKMZ.loadFlightFolderClues(root: rootURL, flightID: selfID)
+            let tombstoned = OperationalClueDeletionTombstone.load(root: rootURL)
+            let owned = OperationalFlightKMZ.cluesForRewrite(
+                archiveID: selfID, archives: archives, memoryClues: clues,
+                flightFolderClues: folderClues, tombstonedIDs: tombstoned
+            ).map { OperationalFlightKMZ.bindingFallback($0, contents: contents) }
+            // imageFilename is FlightStorage-root-relative (`day/flightId/...` after migration).
             try writeKMZ(
                 title: contents.title.isEmpty ? job.aircraftID : contents.title,
                 points: OperationalFlightKMZ.points(contents),

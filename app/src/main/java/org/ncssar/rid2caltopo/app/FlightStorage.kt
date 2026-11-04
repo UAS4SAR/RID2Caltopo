@@ -494,6 +494,30 @@ object FlightStorage {
         return ok
     }
 
+    /** Flight ids written into [day]'s archive GeoJSON (`properties.r2c_flight_id`). */
+    private fun archiveFlightIdsForDay(context: Context, day: String): Set<String> {
+        val dir = CaltopoClient.GetArchiveDir()?.findFile(day)?.takeIf { it.isDirectory } ?: return emptySet()
+        val ids = linkedSetOf<String>()
+        for (file in dir.listFiles().orEmpty()) {
+            val name = file.name ?: continue
+            if (!file.isFile || !name.endsWith(".json", ignoreCase = true)) continue
+            if (name.endsWith(".review.json", ignoreCase = true) || name == "clues.json") continue
+            val bytes = runCatching {
+                context.contentResolver.openInputStream(file.uri)?.use { it.readBytes() }
+            }.getOrNull() ?: continue
+            AndroidClueFlightFolders.flightIdInGeoJson(bytes)?.let { ids += it }
+        }
+        return ids
+    }
+
+    /** Index-mapped folders for [day] union folders for flights contained in that day's logs. */
+    private fun clueFoldersForDayDeletion(context: Context, days: ClueDays, day: String): List<File> =
+        AndroidClueFlightFolders.foldersForDayDeletion(
+            root = days.root,
+            day = day,
+            archiveFlightIds = archiveFlightIdsForDay(context, day),
+        )
+
     fun deleteDays(context: Context, names: List<String>): ArchiveCleanupDeleteResult = storageIo(context) {
         val failures = mutableListOf<String>()
         var deleted = 0
@@ -505,7 +529,8 @@ object FlightStorage {
             if (!isDatedArchiveDirectoryName(name) || protectionReason(context, name) != null) {
                 failures.add(name); continue
             }
-            val clueFolders = days.flightFoldersForDay(name)
+            // Capture before archive delete: GeoJSON flight ids + index-mapped folders.
+            val clueFolders = clueFoldersForDayDeletion(context, days, name)
             val folder = CaltopoClient.GetArchiveDir()?.findFile(name)
             var ok = folder == null || folder.delete()
             if (ok) auxiliary.filter { days.dayOf(it) == name }.forEach { if (!org.ncssar.rid2caltopo.storage.OperationalStorage.removeIfManaged(it)) ok = false }
@@ -566,9 +591,10 @@ object FlightStorage {
         if (purge) for (name in FlightRetentionPolicy.candidates(days, used, target, maximumDays(context), today)) {
             val folder = folders.firstOrNull { it.name == name }
             val ledgerKeys = folder?.fileSizes?.keys?.map { requireNotNull(tree).uri(it).toString() }.orEmpty()
+            // Capture flight ids from GeoJSON before the day tree is removed.
+            val clueFolders = clueFoldersForDayDeletion(context, clueDays, name)
             val ok = folder == null || runCatching { requireNotNull(tree).delete(name); true }.getOrDefault(false)
             var allDeleted = ok
-            val clueFolders = clueDays.flightFoldersForDay(name)
             if (ok) auxiliary.filter { clueDays.dayOf(it) == name }.forEach { if (!org.ncssar.rid2caltopo.storage.OperationalStorage.removeIfManaged(it)) allDeleted = false }
             if (ok && !removeClueDayTrees(context, name, clueFolders)) allDeleted = false
             if (allDeleted) {

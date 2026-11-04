@@ -19,4 +19,17 @@ public enum ManagedVideoPresencePolicy {
     ) -> Set<String> {
         approvedSessionIDs.subtracting(liveSessionIDs.union(recordingSessionIDs))
     }
+
+    /// Wire `thumbnailJpegBase64` only when this revision has JPEG bytes and was not
+    /// already delivered to the tracker. Presence still carries `thumbnailRevision`.
+    public static func shouldIncludeThumbnailJpeg(
+        revision: String,
+        hasJpegBytes: Bool,
+        lastSentRevision: String?
+    ) -> Bool {
+        guard hasJpegBytes else { return false }
+        let trimmed = revision.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        return trimmed != lastSentRevision
+    }
 }

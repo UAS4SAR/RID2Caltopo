@@ -115,10 +115,86 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
     @Nullable private String durableJournalFlightId;
 
     static boolean hasActivePublication(String id) {
+        if (id == null || id.isEmpty()) return false;
         for (CaltopoLiveTrack track : LiveTrackByRemoteId.values()) {
-            if (id.equals(track.liveTrackId) || id.equals(track.requestedLiveTrackId)) return true;
+            if (id.equals(track.liveTrackId)
+                    || id.equals(track.requestedLiveTrackId)
+                    || id.equals(track.durableJournalFlightId)) {
+                return true;
+            }
         }
         return false;
+    }
+
+    /**
+     * True when a LiveTrack for this aircraft is live, starting, finishing, or already claimed
+     * the same flight start — so awaiting-map deferred archive must not mint a second Shape.
+     */
+    static boolean hasActiveOrFinishingFlight(@Nullable String remoteId, long flightStartedAtMs) {
+        if (remoteId == null || remoteId.isEmpty()) return false;
+        for (CaltopoLiveTrack track : LiveTrackByRemoteId.values()) {
+            if (!remoteId.equals(track.myRemoteId)) continue;
+            boolean owned = track.liveTrackId != null
+                    || track.requestedLiveTrackId != null
+                    || track.startInFlight
+                    || track.shuttingDown
+                    || (track.active && track.ownsPublication());
+            if (!owned) continue;
+            if (flightStartedAtMs <= 0L || track.trackObservedStartedAtMs <= 0L) return true;
+            if (track.trackObservedStartedAtMs == flightStartedAtMs) return true;
+            // RidFlightID uses millisecond flight start; tolerate 1s clock skew between journals.
+            if (Math.abs(track.trackObservedStartedAtMs - flightStartedAtMs) <= 1_000L) return true;
+        }
+        return false;
+    }
+
+    /**
+     * Confirm-time seed: stable RidFlightID + team label so finish never falls back to a random
+     * UUID or raw-serial title when no post-confirm points arrive.
+     */
+    static void seedConfirmedPublication(
+            @NonNull String remoteId, @Nullable String flightId, @Nullable String label) {
+        CaltopoLiveTrack track = LiveTrackByRemoteId.get(remoteId);
+        if (track == null) return;
+        synchronized (track) {
+            if (track.requestedLiveTrackId == null && track.liveTrackId == null
+                    && flightId != null && !flightId.isEmpty()) {
+                track.requestedLiveTrackId = flightId;
+                if (track.publicationMapId == null || track.publicationMapId.isEmpty()) {
+                    String map = CaltopoMap.GetMapId();
+                    if (map != null && !map.isEmpty()) track.publicationMapId = map;
+                }
+            }
+            if (label != null && !label.isEmpty()) {
+                track.segmentTrackLabel = label;
+            }
+            if (track.durableJournalFlightId == null || track.durableJournalFlightId.isEmpty()) {
+                if (flightId != null && !flightId.isEmpty()) {
+                    track.durableJournalFlightId = flightId;
+                }
+            }
+        }
+    }
+
+    /** Prefer awaiting / durable RidFlightID over a random UUID for LiveTrack create and finish. */
+    @NonNull
+    private String resolveStableLiveTrackIdLocked(@Nullable String deferredId) {
+        if (deferredId != null && !deferredId.isEmpty()) return deferredId;
+        if (requestedLiveTrackId != null && !requestedLiveTrackId.isEmpty()) return requestedLiveTrackId;
+        if (liveTrackId != null && !liveTrackId.isEmpty()) return liveTrackId;
+        if (durableJournalFlightId != null && !durableJournalFlightId.isEmpty()) {
+            return durableJournalFlightId;
+        }
+        String map = publicationMapId != null ? publicationMapId : CaltopoMap.GetMapId();
+        if (map == null) map = "";
+        String awaiting = AwaitingMapFlights.stableFlightId(myRemoteId, map);
+        if (awaiting != null && !awaiting.isEmpty()) return awaiting;
+        String fromWaypoint = WaypointTrack.GetLiveFlightId(droneSpec);
+        if (fromWaypoint != null && !fromWaypoint.isEmpty()) return fromWaypoint;
+        long started = trackObservedStartedAtMs > 0L
+                ? trackObservedStartedAtMs : System.currentTimeMillis();
+        String aircraft = myRemoteId != null && !myRemoteId.isEmpty() ? myRemoteId : segmentTrackLabel;
+        return RidFlightId.make(aircraft, started);
     }
     private boolean startInFlight;
     private long nextStartAttemptAtMs;
@@ -959,7 +1035,7 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
                 else deferredId = AwaitingMapFlights.bindConnectedMapIfOpenReview(myRemoteId, destinationMap);
             }
             if (deferredId == null || !deferredId.isEmpty()) {
-                requestedLiveTrackId = deferredId != null ? deferredId : java.util.UUID.randomUUID().toString();
+                requestedLiveTrackId = resolveStableLiveTrackIdLocked(deferredId);
                 publicationMapId = destinationMap;
             }
         }
@@ -1567,7 +1643,7 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
                         effectiveFleetDeviceId(), liveTrackId, segmentTrackLabel));
                 return null;
             }
-            requestedLiveTrackId = deferredId != null ? deferredId : java.util.UUID.randomUUID().toString();
+            requestedLiveTrackId = resolveStableLiveTrackIdLocked(deferredId);
             publicationMapId = mapId;
         }
         String startFolderId = folderId != null ? folderId : CaltopoMap.GetFolderId();
@@ -1707,7 +1783,7 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
                         else deferredId = AwaitingMapFlights.bindConnectedMapIfOpenReview(myRemoteId, destinationMap);
                     }
                     if (deferredId == null || !deferredId.isEmpty()) {
-                        requestedLiveTrackId = deferredId != null ? deferredId : java.util.UUID.randomUUID().toString();
+                        requestedLiveTrackId = resolveStableLiveTrackIdLocked(deferredId);
                         publicationMapId = destinationMap;
                     }
                 }

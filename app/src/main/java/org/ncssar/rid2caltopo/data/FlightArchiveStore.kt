@@ -201,13 +201,22 @@ object FlightArchiveStore {
                     queue.complete(job.id)
                     continue
                 }
+                // Prefer archive r2c_flight_id so binding.flightId matches after per-flight migration.
                 val selfId = FlightArchiveRebuild.flightId(bytes) ?: job.id
                 val days = listOf(job.dayDirectory) + contents.points.firstOrNull()?.let { daysAround(it.timeMs) }.orEmpty()
                 val archives = archivesAround(days).filterKeys { it != selfId } + (selfId to ArchiveEntry(job.dayDirectory, job.geoJsonFilename, contents))
-                val owned = FlightArchiveRebuild.ownedClues(selfId,
-                    archives.mapValues { it.value.contents }, store.allRecords())
-                val bound = owned.map { FlightArchiveRebuild.bindingFallback(it, contents) }
+                val cluesRoot = File(context.filesDir, "clues")
+                val folderClues = FlightArchiveRebuild.loadFlightFolderClues(cluesRoot, selfId)
+                val owned = FlightArchiveRebuild.cluesForRewrite(
+                    selfId,
+                    archives.mapValues { it.value.contents },
+                    store.allRecords(),
+                    folderClues,
+                    store.userDeletedIds(),
+                )
+                val bound = owned.map { FlightArchiveRebuild.bindingFallback(it, contents, selfId) }
                 changedRecords += store.update(bound)
+                // imageFilename is clues-root-relative (`flightId/...` after migration).
                 val kmz = FlightKmz.archive(contents.title, contents.kmzPoints, bound.map { FlightArchiveRebuild.kmzClue(it, jpeg(store, it)) })
                 if (!writeFile(dir, job.kmzFilename, KMZ_MIME, kmz)) throw IOException("KMZ write failed")
                 queue.complete(job.id)

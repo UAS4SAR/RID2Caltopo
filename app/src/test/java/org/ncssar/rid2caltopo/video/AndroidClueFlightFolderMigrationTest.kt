@@ -348,4 +348,38 @@ class AndroidClueFlightFolderMigrationTest {
         assertFalse(AndroidClueFlightFolders.isFlightFolderName(".hidden"))
         assertThrows(IllegalArgumentException::class.java) { AndroidClueFlightFolders.folderNameFor("  ") }
     }
+
+    @Test
+    fun dayDeletionUsesArchiveFlightIdsEvenWhenIndexMapsElsewhere() {
+        val root = temporaryFolder.newFolder("clues-day-delete")
+        // Index says flight-f belongs to a different day than the archive being deleted.
+        val otherDay = todayArchiveDirectoryName(Date(at + 3 * 86_400_000L))
+        writeIndex(
+            File(root, "flight-f"),
+            row("a", at + 3 * 86_400_000L, "pending", flightId = "flight-f", prefix = "flight-f/"),
+        )
+        writeIndex(
+            File(root, "flight-other"),
+            row("b", at, "pending", flightId = "flight-other", prefix = "flight-other/"),
+        )
+        assertEquals(otherDay, AndroidClueFlightFolders.flightDays(root)["flight-f"])
+        assertEquals(day, AndroidClueFlightFolders.flightDays(root)["flight-other"])
+        val geo = """
+            {"type":"FeatureCollection","features":[{"type":"Feature",
+            "properties":{"title":"t","r2c_flight_id":"flight-f","r2c_prop":{"rid":"RID-1"}},
+            "geometry":{"type":"LineString","coordinates":[["-121","39","100","$at"]]}}]}
+        """.trimIndent().toByteArray()
+        assertEquals("flight-f", AndroidClueFlightFolders.flightIdInGeoJson(geo))
+        val folders = AndroidClueFlightFolders.foldersForDayDeletion(
+            root, day, archiveFlightIds = listOf("flight-f"),
+        )
+        assertEquals(setOf("flight-f", "flight-other"), folders.map { it.name }.toSet())
+        // Unrelated flight not in the archive list and not mapped to day stays out when only archive ids asked:
+        val onlyArchive = AndroidClueFlightFolders.foldersForDayDeletion(
+            root, "tracks-never", archiveFlightIds = listOf("flight-f"),
+            flightDays = emptyMap(),
+        )
+        assertEquals(listOf("flight-f"), onlyArchive.map { it.name })
+        assertFalse(onlyArchive.any { it.name == "flight-other" })
+    }
 }

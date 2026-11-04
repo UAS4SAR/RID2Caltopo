@@ -7,6 +7,19 @@ import java.io.FilterInputStream
 import java.security.MessageDigest
 
 /**
+ * Heavy-prepare ordering: mapping relocate must run before mission/layer hydrate so a long
+ * recordings/DEM walk cannot starve the one-time repository move.
+ */
+internal object MappingRepositoryRelocateTiming {
+    /** Probe tags emitted by [OperationalStorage] prepareHeavyAreas when testing. */
+    val BEFORE_HEAVY_HYDRATE: List<String> = listOf("relocate-start", "heavy-start")
+
+    fun shouldRetry(outcome: AndroidMappingRepositoryMigration.Outcome): Boolean =
+        outcome == AndroidMappingRepositoryMigration.Outcome.DEFERRED_ACTIVE ||
+            outcome == AndroidMappingRepositoryMigration.Outcome.DEFERRED_UNSTABLE
+}
+
+/**
  * Archive Dir layout for the Local Maps repository. Mapping data is a top-level
  * `mapping/` tree (consistent with iOS) instead of living under `cache/local-maps/`,
  * so cache cleanup and cache accounting can never see or touch it.
@@ -106,16 +119,22 @@ internal object AndroidMappingRepositoryMigration {
         tree.refresh()
         val alreadyCommitted = tree.exists(MappingRepositoryLayout.MARKER)
         val moves = MappingRepositoryLayout.MOVES.filter { tree.exists(it.legacy) }
+        log(
+            "Mapping repository migration start alreadyCommitted=$alreadyCommitted legacyMoves=${moves.size} " +
+                "usesCurrentLayout=${usesCurrentLayout(tree)} needsWork=${needsWork(tree)}",
+        )
         if (moves.isEmpty()) {
             if (!alreadyCommitted) {
                 ensureRoot(tree)
                 writeMarker(tree, 0, 0L)
                 log("Mapping repository: no legacy data; marker written")
+            } else {
+                log("Mapping repository migration skip: nothing to do")
             }
             return Result(Outcome.NOTHING_TO_DO)
         }
         if (isActive(tree, localMissionRoots, processingActive)) {
-            log("Mapping repository migration deferred: reconstruction active")
+            log("Mapping repository migration deferred: reconstruction active (deferred-active)")
             return Result(Outcome.DEFERRED_ACTIVE)
         }
 

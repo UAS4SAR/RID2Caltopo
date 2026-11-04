@@ -207,6 +207,17 @@ actor AppleDiagnosticLogStore {
 }
 
 enum AppleLog {
+    /// Lowest verbosity (Android Ludicrous / CTInfo). Off unless [ludicrousEnabled].
+    static var ludicrousEnabled: Bool {
+        get { OperationalBridgePacketLog.ludicrousEnabled }
+        set { OperationalBridgePacketLog.ludicrousEnabled = newValue }
+    }
+
+    static func ludicrous(_ category: String, _ message: String) {
+        guard ludicrousEnabled else { return }
+        write(level: "LUDICROUS", category: category, message: message)
+    }
+
     static func debug(_ category: String, _ message: String) {
         write(level: "DEBUG", category: category, message: message)
     }
@@ -221,6 +232,13 @@ enum AppleLog {
 
     static func error(_ category: String, _ message: String) {
         write(level: "ERROR", category: category, message: message)
+    }
+
+    /// Wire bridge-packet logging so BluetoothRIDScanner can emit without MainActor.
+    static func installBridgePacketLogSink() {
+        OperationalBridgePacketLog.write = { level, category, message in
+            write(level: level, category: category, message: message)
+        }
     }
 
     private static func write(level: String, category: String, message: String) {
@@ -276,6 +294,7 @@ final class AppleDiagnosticsCenter: ObservableObject {
     /// `.task`, so background relaunches (Bluetooth/location restoration) and
     /// any launch that stopped at the terms gate wrote no log at all.
     static func startAtLaunch(launchOptionKeys: [String]) async {
+        AppleLog.installBridgePacketLogSink()
         let state: String
         switch UIApplication.shared.applicationState {
         case .active: state = "active"

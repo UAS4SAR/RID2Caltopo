@@ -4518,6 +4518,18 @@ private struct AircraftAnnotationRenderState: Equatable {
         let longitude: Double
         let pointCount: Int
         let lastReceivedAt: Date?
+
+        static func == (lhs: Head, rhs: Head) -> Bool {
+            guard lhs.aircraftID == rhs.aircraftID,
+                  lhs.pointCount == rhs.pointCount
+            else { return false }
+            // Ignore lastReceivedAt: RID ticks with unchanged geometry must not
+            // force a full annotation pass. Staleness uses positionIconAlpha.
+            return abs(lhs.latitude - rhs.latitude)
+                    <= AircraftMapAnnotationDiff.coordinateEpsilonDegrees
+                && abs(lhs.longitude - rhs.longitude)
+                    <= AircraftMapAnnotationDiff.coordinateEpsilonDegrees
+        }
     }
     let heads: [Head]
     let display: [String: AircraftMapDisplay]
@@ -5542,6 +5554,23 @@ private struct OperationalMKMapView: UIViewRepresentable {
                     let anchorPoint = map.convert(aircraftCoordinate, toPointTo: map)
                     let annotation = aircraftAnnotationsByRemoteID[track.aircraftID]
                         ?? AircraftAnnotation(remoteID: track.aircraftID)
+                    let nextVisual = AircraftMapAnnotationVisualKey(
+                        latitude: aircraftCoordinate.latitude,
+                        longitude: aircraftCoordinate.longitude,
+                        headingDegrees: travelBearingDegrees,
+                        title: display.title,
+                        statusText: statusLabels[track.aircraftID] ?? "",
+                        focused: focusedAircraftID == track.aircraftID,
+                        positionIconAlpha: positionIconAlphaByAircraftID[track.aircraftID] ?? 1,
+                        inset: inset,
+                        labelSide: index.isMultiple(of: 2) ? -1 : 1
+                    )
+                    let colorChanged = annotation.color != iconColor
+                    let visuallyUnchanged = !colorChanged
+                        && AircraftMapAnnotationDiff.isVisuallyUnchanged(
+                            annotation.lastVisualKey,
+                            nextVisual
+                        )
                     annotation.update(
                         coordinate: aircraftCoordinate,
                         title: display.title,
@@ -5549,25 +5578,34 @@ private struct OperationalMKMapView: UIViewRepresentable {
                         cameraFov: cameraFovByAircraftID[track.aircraftID],
                         color: iconColor,
                         inset: inset,
-                        labelSide: index.isMultiple(of: 2) ? -1 : 1,
-                        statusText: statusLabels[track.aircraftID] ?? "",
+                        labelSide: nextVisual.labelSide,
+                        statusText: nextVisual.statusText,
                         labelLayout: labelLayouts[track.aircraftID],
                         anchorScreen: MapScreenPoint(x: anchorPoint.x, y: anchorPoint.y),
-                        focused: focusedAircraftID == track.aircraftID,
-                        positionIconAlpha: positionIconAlphaByAircraftID[track.aircraftID] ?? 1
+                        focused: nextVisual.focused,
+                        positionIconAlpha: nextVisual.positionIconAlpha
                     )
+                    annotation.lastVisualKey = nextVisual
                     if aircraftAnnotationsByRemoteID[track.aircraftID] == nil {
                         aircraftAnnotationsByRemoteID[track.aircraftID] = annotation
                         map.addAnnotation(annotation)
-                    } else if let view = map.view(for: annotation) as? AircraftAnnotationView {
+                    } else if !visuallyUnchanged,
+                              let view = map.view(for: annotation) as? AircraftAnnotationView {
                         view.configure(annotation)
                     }
                     if let receivedAt = renderedPoints.last?.receivedAt,
                        positionTimingByAircraftID[track.aircraftID] != receivedAt {
                         positionTimingByAircraftID[track.aircraftID] = receivedAt
-                        let receivedMs = Int64(receivedAt.timeIntervalSince1970 * 1_000)
-                        ClueTerrainDiagnostics.noteMainWork("map.annot")
-                        AppleLog.info("RIDTiming", "stage=annotation_update aircraft=\(track.aircraftID) inset=\(inset) receivedMs=\(receivedMs) receiveToAnnotationMs=\(Int(Date().timeIntervalSince(receivedAt) * 1_000))")
+                        if !visuallyUnchanged {
+                            ClueTerrainDiagnostics.noteMainWork("map.annot")
+                            if LogThrottle.shouldLog(key: "rid.annotation_update", intervalMs: 5_000) {
+                                let receivedMs = Int64(receivedAt.timeIntervalSince1970 * 1_000)
+                                AppleLog.debug(
+                                    "RIDTiming",
+                                    "stage=annotation_update aircraft=\(track.aircraftID) inset=\(inset) receivedMs=\(receivedMs) receiveToAnnotationMs=\(Int(Date().timeIntervalSince(receivedAt) * 1_000))"
+                                )
+                            }
+                        }
                     }
                     renderedAircraftIDs.insert(track.aircraftID)
                 }
@@ -6837,6 +6875,17 @@ private final class AircraftAnnotation: NSObject, MKAnnotation, MapLayerAnnotati
     var anchorScreen = MapScreenPoint(x: 0, y: 0)
     var focused = false
     var positionIconAlpha = 1.0
+    var lastVisualKey = AircraftMapAnnotationVisualKey(
+        latitude: 0,
+        longitude: 0,
+        headingDegrees: nil,
+        title: "",
+        statusText: "",
+        focused: false,
+        positionIconAlpha: 1,
+        inset: false,
+        labelSide: 1
+    )
 
     init(remoteID: String) {
         self.remoteID = remoteID

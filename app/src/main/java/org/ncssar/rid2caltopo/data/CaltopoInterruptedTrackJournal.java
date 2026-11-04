@@ -60,6 +60,21 @@ public final class CaltopoInterruptedTrackJournal {
                         break;
                     }
                 }
+                // Same aircraft + flight start under a different LiveTrack id is the
+                // confirm-then-end race; refresh the existing row instead of archiving twice.
+                if (entry == null && flightStartedAtMs > 0L && !remoteId.isEmpty()) {
+                    for (int index = 0; index < entries.length(); index++) {
+                        JSONObject candidate = entries.optJSONObject(index);
+                        if (candidate == null) continue;
+                        if (!remoteId.equals(candidate.optString("remoteId"))) continue;
+                        long existingStart = candidate.optLong("flightStartedAtMs", 0L);
+                        if (existingStart > 0L
+                                && Math.abs(existingStart - flightStartedAtMs) <= 1_000L) {
+                            entry = candidate;
+                            break;
+                        }
+                    }
+                }
                 if (entry == null) {
                     entry = new JSONObject();
                     entries.put(entry);
@@ -262,6 +277,32 @@ public final class CaltopoInterruptedTrackJournal {
         } catch (Exception error) {
             synchronized (LOCK) { cachedRoot = null; }
             CaltopoClient.CTError(TAG, "Could not clear interrupted LiveTrack " + liveTrackId, error);
+        }
+    }
+
+    /**
+     * True when the interrupted journal already holds this flight under {@code ignoreLiveTrackId}
+     * or another LiveTrack id (confirm→end duplicate-archive race).
+     */
+    public static boolean hasFlight(
+            @NonNull String remoteId, long flightStartedAtMs, @Nullable String ignoreLiveTrackId) {
+        if (remoteId.isEmpty() || flightStartedAtMs <= 0L) return false;
+        synchronized (LOCK) {
+            JSONArray entries = mutableRootLocked().optJSONArray("entries");
+            if (entries == null) return false;
+            for (int index = 0; index < entries.length(); index++) {
+                JSONObject entry = entries.optJSONObject(index);
+                if (entry == null) continue;
+                if (!remoteId.equals(entry.optString("remoteId"))) continue;
+                String existingId = entry.optString("liveTrackId");
+                if (ignoreLiveTrackId != null && ignoreLiveTrackId.equals(existingId)) continue;
+                long existingStart = entry.optLong("flightStartedAtMs", 0L);
+                if (existingStart > 0L
+                        && Math.abs(existingStart - flightStartedAtMs) <= 1_000L) {
+                    return true;
+                }
+            }
+            return false;
         }
     }
 

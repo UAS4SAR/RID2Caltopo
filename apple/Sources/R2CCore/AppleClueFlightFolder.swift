@@ -107,4 +107,71 @@ public enum AppleClueFlightFolder {
     static func isDirectory(_ url: URL) -> Bool {
         (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true
     }
+
+    /// `properties.r2c_flight_id` values from GeoJSON archives under a day folder.
+    public static func flightIDsInArchiveDay(_ dayURL: URL) -> Set<String> {
+        let fm = FileManager.default
+        guard let files = try? fm.contentsOfDirectory(
+            at: dayURL, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]
+        ) else { return [] }
+        var ids = Set<String>()
+        for file in files {
+            let name = file.lastPathComponent
+            guard file.pathExtension.lowercased() == "json",
+                  name != indexFilename,
+                  !name.hasSuffix(".review.json") else { continue }
+            guard let data = try? Data(contentsOf: file),
+                  let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let features = root["features"] as? [[String: Any]],
+                  let properties = features.first?["properties"] as? [String: Any],
+                  let flightID = properties["r2c_flight_id"] as? String,
+                  !flightID.isEmpty
+            else { continue }
+            ids.insert(flightID)
+        }
+        return ids
+    }
+
+    /// Nested flight-folder names directly under a day (`<day>/<flightId>/`).
+    public static func nestedFlightFolderNames(inDay dayURL: URL) -> Set<String> {
+        let children = (try? FileManager.default.contentsOfDirectory(
+            at: dayURL, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]
+        )) ?? []
+        return Set(children.compactMap { child -> String? in
+            guard isDirectory(child), !child.lastPathComponent.hasPrefix(".") else { return nil }
+            return child.lastPathComponent
+        })
+    }
+
+    /**
+     * Clue trees to remove when deleting archive day `dayName`: any `<otherDay>/<flightId>/`
+     * for flights contained in the day's GeoJSON or nested under it (midnight edge).
+     * Does not include the day folder itself.
+     */
+    public static func crossDayClueFoldersToRemove(
+        root: URL,
+        dayName: String,
+        archiveFlightIDs: Set<String>,
+        nestedFolderNames: Set<String>
+    ) -> [URL] {
+        var folderNames = nestedFolderNames
+        for id in archiveFlightIDs {
+            if let name = folderName(flightID: id) { folderNames.insert(name) }
+        }
+        guard !folderNames.isEmpty else { return [] }
+        let fm = FileManager.default
+        guard let days = try? fm.contentsOfDirectory(
+            at: root, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]
+        ) else { return [] }
+        var result: [URL] = []
+        for day in days {
+            let name = day.lastPathComponent
+            guard name != dayName, AppleFlightStorage.date(name) != nil, isDirectory(day) else { continue }
+            for folder in folderNames {
+                let url = day.appendingPathComponent(folder, isDirectory: true)
+                if isDirectory(url) { result.append(url) }
+            }
+        }
+        return result
+    }
 }

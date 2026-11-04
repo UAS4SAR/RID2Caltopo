@@ -73,4 +73,39 @@ struct LogThrottleTests {
         clock.nowMs += 1
         #expect(LogThrottle.shouldLog(key: "s", intervalMs: 1_000))
     }
+
+    @Test
+    func bridgePacketLogSummaryIsDebugAndDetailIsLudicrousGated() {
+        let clock = installClock()
+        OperationalBridgePacketLog.resetForTest()
+        LogThrottle.clockMs = { clock.nowMs }
+        final class Lines: @unchecked Sendable {
+            var values: [(String, String, String)] = []
+        }
+        let lines = Lines()
+        OperationalBridgePacketLog.write = { level, category, message in
+            lines.values.append((level, category, message))
+        }
+        OperationalBridgePacketLog.ludicrousEnabled = false
+        OperationalBridgePacketLog.note(
+            classification: "relayed-aircraft", transmitterID: "T",
+            messageCounter: 1, aircraftID: "A", bridgeRssiDbm: -60)
+        #expect(lines.values.count == 1)
+        #expect(lines.values[0].0 == "DEBUG")
+        #expect(lines.values[0].1 == "DroneScoutBridge")
+        #expect(lines.values[0].2.contains("(summary)"))
+        OperationalBridgePacketLog.note(
+            classification: "relayed-aircraft", transmitterID: "T",
+            messageCounter: 2, aircraftID: "A", bridgeRssiDbm: -61)
+        #expect(lines.values.count == 1) // throttled within 5s
+        clock.nowMs += 5_000
+        OperationalBridgePacketLog.ludicrousEnabled = true
+        OperationalBridgePacketLog.note(
+            classification: "relayed-aircraft", transmitterID: "T",
+            messageCounter: 3, aircraftID: "A", bridgeRssiDbm: -62)
+        #expect(lines.values.count == 3) // ludicrous detail + summary
+        #expect(lines.values.contains { $0.0 == "LUDICROUS" && !$0.2.contains("(summary)") })
+        #expect(lines.values.filter { $0.0 == "DEBUG" }.count == 2)
+        OperationalBridgePacketLog.resetForTest()
+    }
 }
