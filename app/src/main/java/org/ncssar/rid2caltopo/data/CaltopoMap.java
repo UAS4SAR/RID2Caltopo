@@ -218,6 +218,25 @@ public class CaltopoMap {
     private static final Object ArtifactLock = new Object();
     private static final Hashtable<String, JSONObject> ArtifactFeaturesById = new Hashtable<>();
     private static final HashSet<String> DuplicateLiveTrackArchivePending = new HashSet<>();
+    /** Peer (or prior-owner) LiveTracks seen on the map, keyed by fleet deviceId. */
+    private static final Hashtable<String, AdoptableLiveTrack> AdoptableLiveTracksByDeviceId =
+            new Hashtable<>();
+    /** LiveTrack ids minted by this device's zone for this process. */
+    private static final HashSet<String> LocallyCreatedLiveTrackIds = new HashSet<>();
+
+    static final class AdoptableLiveTrack {
+        @NonNull final String trackId;
+        @NonNull final String title;
+        @NonNull final String deviceId;
+        @NonNull final String creatorZoneId;
+        AdoptableLiveTrack(@NonNull String trackId, @NonNull String title,
+                           @NonNull String deviceId, @NonNull String creatorZoneId) {
+            this.trackId = trackId;
+            this.title = title;
+            this.deviceId = deviceId;
+            this.creatorZoneId = creatorZoneId == null ? "" : creatorZoneId;
+        }
+    }
 
     private static JSONArray MyLiveTracksInThisMap;   // Actual 'LiveTrack' objects in the current map
     private static String LastErrorString = null;
@@ -741,9 +760,48 @@ public class CaltopoMap {
     }
 
     public static void AddLiveTrack(@NonNull String trackId, @NonNull CaltopoLiveTrack track) {
+        AddLiveTrack(trackId, track, false);
+    }
+
+    public static void AddLiveTrack(@NonNull String trackId, @NonNull CaltopoLiveTrack track,
+                                    boolean mintedLocally) {
         CTDebug(TAG, "addLiveTrack(): adding liveTrack with id: " + trackId);
         LiveTracksById.put(trackId, track);
+        if (mintedLocally) LocallyCreatedLiveTrackIds.add(trackId);
+        AdoptableLiveTracksByDeviceId.remove(
+                CaltopoSession.liveTrackDeviceId(track.getRemoteId(), CaltopoClient.GetConnectKey()));
     }
+
+    public static void noteLocallyCreatedLiveTrackId(@NonNull String trackId) {
+        if (!trackId.isEmpty()) LocallyCreatedLiveTrackIds.add(trackId);
+    }
+
+    public static boolean wasLocallyCreatedLiveTrack(@Nullable String trackId) {
+        return trackId != null && !trackId.isEmpty() && LocallyCreatedLiveTrackIds.contains(trackId);
+    }
+
+    public static void rememberAdoptableLiveTrack(@NonNull String trackId,
+                                                  @NonNull String title,
+                                                  @NonNull String deviceId,
+                                                  @NonNull String creatorZoneId) {
+        if (trackId.isEmpty() || deviceId.isEmpty()) return;
+        if (LiveTracksById.containsKey(trackId)) return;
+        AdoptableLiveTracksByDeviceId.put(deviceId, new AdoptableLiveTrack(
+                trackId, title, deviceId, creatorZoneId));
+    }
+
+    @Nullable
+    public static AdoptableLiveTrack takeAdoptableLiveTrack(@NonNull String deviceId) {
+        if (deviceId.isEmpty()) return null;
+        return AdoptableLiveTracksByDeviceId.remove(deviceId);
+    }
+
+    @Nullable
+    public static AdoptableLiveTrack peekAdoptableLiveTrack(@NonNull String deviceId) {
+        if (deviceId.isEmpty()) return null;
+        return AdoptableLiveTracksByDeviceId.get(deviceId);
+    }
+
     public static void RemoveLiveTrack(@NonNull String trackId) {
         CaltopoLiveTrack liveTrack = LiveTracksById.remove(trackId);
         if (null != liveTrack) {
@@ -769,6 +827,15 @@ public class CaltopoMap {
         return null;
     }
 
+    @NonNull
+    static String remoteIdFromFleetDeviceId(@Nullable String deviceId) {
+        if (deviceId == null || deviceId.isEmpty()) return "";
+        if (!deviceId.regionMatches(true, 0, "FLEET:", 0, 6)) return "";
+        int dash = deviceId.lastIndexOf('-');
+        if (dash < 6 || dash + 1 >= deviceId.length()) return "";
+        return deviceId.substring(dash + 1).trim();
+    }
+
     private static boolean archiveDuplicateLiveTrackIfNeeded(@NonNull JSONObject feature,
                                                              @NonNull JSONObject prop,
                                                              @NonNull String featureClass,
@@ -780,6 +847,22 @@ public class CaltopoMap {
         String featureDeviceId = prop.optString("deviceId", "");
         CaltopoLiveTrack ownerTrack = findPublishingDuplicateOwner(featureDeviceId, trackId);
         if (ownerTrack == null) return false;
+
+        String remoteId = remoteIdFromFleetDeviceId(featureDeviceId);
+        String creatorZoneId = prop.optString("r2cZoneId", "");
+        PeerCoordinator peers = R2cRuntimeRegistry.getDefaultRuntime().getPeerCoordinator();
+        String localZoneId = peers.localZoneId();
+        boolean createdByThisZone = wasLocallyCreatedLiveTrack(trackId)
+                || (!creatorZoneId.isEmpty() && !localZoneId.isEmpty()
+                && creatorZoneId.equals(localZoneId));
+        boolean peerLeaseActive = !remoteId.isEmpty() && peers.hasActivePeerOwner(remoteId);
+        // Archive only own-zone duplicates, or orphans with no active peer owner lease.
+        if (!createdByThisZone) {
+            rememberAdoptableLiveTrack(trackId, title, featureDeviceId, creatorZoneId);
+            if (peerLeaseActive) return false;
+            // No active peer lease: orphan stale duplicate may be archived below.
+        }
+
         if (!DuplicateLiveTrackArchivePending.add(trackId)) return true;
 
         CTWarn(TAG, String.format(Locale.US,
@@ -1091,6 +1174,9 @@ public class CaltopoMap {
                 maxWaitInMilliseconds = (maxWaitInMilliseconds - (System.currentTimeMillis() - startTime));
         }
         LiveTracksById.clear();
+        AdoptableLiveTracksByDeviceId.clear();
+        LocallyCreatedLiveTrackIds.clear();
+        DuplicateLiveTrackArchivePending.clear();
         stopPeerCoordinationForMapDisconnect();
         PeerIdMap.clear();
         FolderId = null;
@@ -1221,6 +1307,11 @@ public class CaltopoMap {
                 } else if (archiveDuplicateLiveTrackIfNeeded(feature, prop, classString, idString, title)) {
                     CTDebug(TAG, "parseMapUpdate(): duplicate liveTrack matched local publisher - archiving");
                 } else {
+                    String deviceId = prop.optString("deviceId", "");
+                    if (!deviceId.isEmpty()) {
+                        rememberAdoptableLiveTrack(
+                                idString, title, deviceId, prop.optString("r2cZoneId", ""));
+                    }
                     CTDebug(TAG, "parseMapUpdate(): liveTrack is not one of ours - ignoring");
                     ignoreCount++;
                 }

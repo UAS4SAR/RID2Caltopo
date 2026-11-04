@@ -45,3 +45,44 @@ import Testing
     let recording = CaltopoRecordingAssociation(track: track, identity: nil)
     #expect(recording.designators == [track.aircraftID])
 }
+
+@Test func archiveDescriptionAlreadyContainsVideoLink() {
+    #expect(CaltopoArchiveDescription.alreadyContainsVideoLink("https://r2c-tracker.com/v/8fiw1A"))
+    #expect(!CaltopoArchiveDescription.alreadyContainsVideoLink(""))
+    #expect(!CaltopoArchiveDescription.alreadyContainsVideoLink("no link"))
+}
+
+@Test func recordingLinkRetryWindowRespectsAbsoluteLimitWhileFinalizing() {
+    var window = RecordingLinkRetryWindow(now: 0, grace: 30, absoluteLimit: 60)
+    let mid = window.shouldRetry(now: 50, finalizing: true)
+    let expired = window.shouldRetry(now: 60, finalizing: true)
+    #expect(mid)
+    #expect(!expired)
+}
+
+@Test func trackerArchiveEligibilityRejectsNonOwnerAuthorizedFlag() async throws {
+    let store = RidTrackStore()
+    _ = await store.ingest(RidObservation(
+        source: .bluetoothLegacy, aircraftId: "RID-OWNER",
+        receivedAt: Date(), latitude: 39, longitude: -121, horizontalAccuracyCode: 10))
+    let track = try #require(await store.snapshot().first)
+    let geoJSON = try RidTrackGeoJSON.encode(
+        track: track,
+        metadata: RidTrackArchiveMetadata(
+            mappedID: "mapped",
+            organization: "NCSSAR",
+            trackerUploadAuthorized: false
+        )
+    )
+    let eligibility = TrackerArchiveUploadContract.eligibility(
+        geoJSON: geoJSON,
+        configuration: TrackerArchiveUploadConfiguration(
+            urlPrefix: "https://r2c-tracker.com/ncssar",
+            apiKey: "token",
+            organization: "NCSSAR"
+        ),
+        knownRemoteIDs: ["RID-OWNER"]
+    )
+    #expect(eligibility == .notUploadAuthorized)
+    #expect(TrackerArchiveUploadContract.shouldMarkReported(statusCode: 409))
+}

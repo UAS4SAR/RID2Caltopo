@@ -139,6 +139,8 @@ public class CtDroneSpec implements Comparable<CtDroneSpec>, Serializable {
     private transient int[] transportCount = new int[TransportTypeEnum.values().length];
     private transient int totalCount; // all waypoints, including those with bad coords and altitude.
     private transient String trackLabel;
+    /** True when {@link #adoptSharedTrackLabel} set the flight title from a peer owner. */
+    private transient boolean trackLabelAdoptedFromPeer;
     public volatile transient double lastLat;  // may get updated by BLE thread
     public volatile transient double lastLng;
     public volatile transient double lastAlt;
@@ -184,6 +186,22 @@ public class CtDroneSpec implements Comparable<CtDroneSpec>, Serializable {
 
     @NonNull
     public String trackLabel() { return trackLabel;}
+
+    /**
+     * Adopt a peer/shared LiveTrack title (mappedId_HHmmssMMMdd) so every tablet
+     * keeps one flight label across ownership handoff.
+     */
+    public void adoptSharedTrackLabel(@Nullable String sharedLabel) {
+        if (sharedLabel == null) return;
+        String trimmed = sharedLabel.trim();
+        if (trimmed.isEmpty() || trimmed.equals(trackLabel)) return;
+        String oldTrackLabel = trackLabel;
+        trackLabel = trimmed;
+        trackLabelAdoptedFromPeer = true;
+        if (oldTrackLabel != null && !oldTrackLabel.isEmpty() && !oldTrackLabel.equals(trackLabel)) {
+            WaypointTrack.RenameTrack(oldTrackLabel, trackLabel, this);
+        }
+    }
 
     public JSONObject asJSONObject() {
         Util.SafeJSONObject retval = new Util.SafeJSONObject();
@@ -263,6 +281,7 @@ public class CtDroneSpec implements Comparable<CtDroneSpec>, Serializable {
         if (trackLabel.isEmpty()) return;
         CTDebug(TAG, "reset(): Advising dronespec inactive: " + trackLabel);
         trackLabel = EMPTY_STRING;
+        trackLabelAdoptedFromPeer = false;
         goodCount = 0;
         diagnosticInvalidPositions = diagnosticDuplicatePositions = diagnosticDistantPositions = diagnosticSpeedRejectedPositions = 0;
         lastTrackDiagnosticAtMs = 0;
@@ -831,7 +850,8 @@ public class CtDroneSpec implements Comparable<CtDroneSpec>, Serializable {
             startMsecTimestamp = acceptedWaypointTimestampMsec;
             takeoffLat = lat;
             takeoffLng = lng;
-            updateTrackLabel();
+            // Keep the peer owner's shared first-seen/confirm label for one flight = one track.
+            if (!trackLabelAdoptedFromPeer) updateTrackLabel();
         }
         maybeRecordHomeLocation(lat, lng, nowWallMsec, transportType);
         if (acceptedWaypointTimestampMsec > mostRecentFlightMsecTimestamp) {

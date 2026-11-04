@@ -400,12 +400,18 @@ final class RIDTrackViewModel: ObservableObject {
                 for track in inactive {
                     let recording = CaltopoRecordingAssociation(
                         track: track, identity: self.identityProvider?(track.aircraftID))
+                    // Snapshot publish gate before archive's flightEndConsumer clears DCP.
+                    let publicationDecision = self.publicationDecision(for: track.aircraftID)
                     await self.archive(track, publishFlightEnd: true)
                     self.pendingPublication.removeValue(forKey: track.aircraftID)
                     self.lastSEIPublicationAtByAircraftID.removeValue(
                         forKey: track.aircraftID
                     )
-                    await self.finishPublication(track: track, recording: recording)
+                    await self.finishPublication(
+                        track: track,
+                        recording: recording,
+                        publicationDecision: publicationDecision
+                    )
                     self.terrainTasks.removeValue(forKey: track.aircraftID)?.cancel()
                     self.terrainRequestKeyByAircraftID.removeValue(forKey: track.aircraftID)
                     self.terrainResolvedKeyByAircraftID.removeValue(forKey: track.aircraftID)
@@ -1645,9 +1651,30 @@ final class RIDTrackViewModel: ObservableObject {
         for track in await store.snapshot() {
             let recording = CaltopoRecordingAssociation(
                 track: track, identity: identityProvider?(track.aircraftID))
+            let publicationDecision = publicationDecision(for: track.aircraftID)
             await archive(track)
-            await finishPublication(track: track, recording: recording)
+            await finishPublication(
+                track: track,
+                recording: recording,
+                publicationDecision: publicationDecision
+            )
         }
+    }
+
+    /// Captured before flight-end observers clear confirmation / Don't Publish state.
+    private struct FlightPublicationDecision: Sendable {
+        let allowsPublication: Bool
+        let localOwner: Bool
+    }
+
+    private func publicationDecision(for remoteID: String) -> FlightPublicationDecision {
+        let suppressed = publicationSuppressionProvider?(remoteID) == true
+        let recordingAllowed = flightRecordingAllowed?(remoteID) != false
+        let localOwner = peerCoordinator?.isLocalOwner(remoteID: remoteID) ?? true
+        return FlightPublicationDecision(
+            allowsPublication: !suppressed && recordingAllowed,
+            localOwner: localOwner
+        )
     }
 
     func resubmitRecentTracks(days: Int) async -> String {
@@ -1680,6 +1707,9 @@ final class RIDTrackViewModel: ObservableObject {
         let alreadyDeclined =
             (try? await publicationLedger.isDeclinedOrSuppressed(flightID: flightID)) == true
         let localOnly = !recordingAllowed || publicationSuppressed || alreadyDeclined
+        // Only the local flight owner may upload this archive to the tracker.
+        let archiveDecision = publicationDecision(for: track.aircraftID)
+        let trackerUploadAuthorized = archiveDecision.localOwner && archiveDecision.allowsPublication && !alreadyDeclined
 
         if track.points.isEmpty {
             let disposition: FlightPublicationLedger.Disposition =
@@ -1769,7 +1799,8 @@ final class RIDTrackViewModel: ObservableObject {
             buildTime: AppleBuildMetadata.buildTime,
             flightReadiness: identity?.flightReadiness,
             flightID: flightID,
-            capturedVideoDescription: CaltopoArchiveDescription.build(capturedVideoURL: videoURL)
+            capturedVideoDescription: CaltopoArchiveDescription.build(capturedVideoURL: videoURL),
+            trackerUploadAuthorized: trackerUploadAuthorized
         )
         let start = track.points.first?.receivedAt ?? track.lastAircraftMessageAt
         let otherFlights = await archiveStore.archivedFlights(aircraftID: track.aircraftID, around: start)
@@ -1841,6 +1872,7 @@ final class RIDTrackViewModel: ObservableObject {
         case .eligible: "eligible"
         case .malformedArchive: "invalid archive"
         case .localArchiveOnly: "local only"
+        case .notUploadAuthorized: "not flight owner"
         case .missingOrganization: "organization missing"
         case .organizationMismatch: "organization mismatch"
         case .unknownTeamAircraft: "aircraft not in team config"
@@ -2136,19 +2168,22 @@ final class RIDTrackViewModel: ObservableObject {
         peerTrafficTracks = await peerTrafficStore.snapshot()
     }
 
-    private func finishPublication(track: RidAircraftTrack, recording: CaltopoRecordingAssociation) async {
+    private func finishPublication(
+        track: RidAircraftTrack,
+        recording: CaltopoRecordingAssociation,
+        publicationDecision: FlightPublicationDecision
+    ) async {
         let remoteID = track.aircraftID
         ownershipActivationTasks.removeValue(forKey: remoteID)?.cancel()
         let publication = publicationChains.removeValue(forKey: remoteID)
         _ = await publication?.value
         let flightID = liveFlightID(aircraftID: remoteID)
             ?? RidFlightID.make(aircraftID: track.aircraftID, startedAt: track.flightStartedAt)
-        // CalTopo video link and LiveTrack finish stay publish-only.
+        // Use the pre-flightEnd snapshot. Re-reading live confirmation after endFlight
+        // would discard a confirmed flight as gated_unconfirmed.
         let blockedByLedger =
             (try? await publicationLedger.isDeclinedOrSuppressed(flightID: flightID)) == true
-        if publicationSuppressionProvider?(remoteID) == true
-            || blockedByLedger
-            || flightRecordingAllowed?(remoteID) == false {
+        if !publicationDecision.allowsPublication || blockedByLedger {
             await caltopoPublisher.discard(remoteID: remoteID)
             return
         }
@@ -2163,8 +2198,15 @@ final class RIDTrackViewModel: ObservableObject {
                 droneTimestamp: $0.droneTime
             )
         }
-        let videoURL = peerCoordinator?.capturedVideoURL(matching: recording.designators,
-            trackStartedAt: recording.startedAt, trackEndedAt: recording.endedAt)
+        let videoURL = peerCoordinator?.capturedVideoURL(
+            matching: recording.designators,
+            trackStartedAt: recording.startedAt,
+            trackEndedAt: recording.endedAt
+        ) ?? peerCoordinator?.peerCapturedVideoURL(
+            matching: recording.designators,
+            trackStartedAt: recording.startedAt,
+            trackEndedAt: recording.endedAt
+        )
         let description = CaltopoArchiveDescription.build(capturedVideoURL: videoURL)
         var archivedTrack: AppleArchivedCaltopoTrack?
         for attempt in 0..<Self.caltopoFinishRetryCount {
@@ -2195,10 +2237,13 @@ final class RIDTrackViewModel: ObservableObject {
                 archiveStatus = "Archive confirmation could not be saved: \(error.localizedDescription)"
             }
         }
-        guard description.isEmpty, let archivedTrack else { return }
+        // Confirmed flights always schedule deferred /v/ attach when description is empty.
+        guard description.isEmpty else { return }
+        let remoteIDForLink = remoteID
         Task { [weak self] in
             await self?.attachDeferredVideoLink(
-                to: archivedTrack,
+                remoteID: remoteIDForLink,
+                archivedTrack: archivedTrack,
                 designators: recording.designators,
                 trackStartedAt: recording.startedAt,
                 trackEndedAt: recording.endedAt
@@ -2207,30 +2252,53 @@ final class RIDTrackViewModel: ObservableObject {
     }
 
     private func attachDeferredVideoLink(
-        to archivedTrack: AppleArchivedCaltopoTrack,
+        remoteID: String,
+        archivedTrack: AppleArchivedCaltopoTrack?,
         designators: [String],
         trackStartedAt: Date,
         trackEndedAt: Date
     ) async {
-        var retryWindow = RecordingLinkRetryWindow(now: ProcessInfo.processInfo.systemUptime)
+        var retryWindow = RecordingLinkRetryWindow(
+            now: ProcessInfo.processInfo.systemUptime,
+            grace: 30,
+            absoluteLimit: 10 * 60
+        )
         while retryWindow.shouldRetry(
             now: ProcessInfo.processInfo.systemUptime,
             finalizing: RecordingFinalizationActivity.shared.isActive(matching: designators)
+                || RecordingFinalizationActivity.shared.hasPending
         ) {
             guard !Task.isCancelled else { return }
-            guard await caltopoPublisher.acceptsDeferredUpdate(for: archivedTrack) else { return }
             do {
                 try await Task.sleep(nanoseconds: Self.deferredVideoLinkRetryNanoseconds)
             } catch { return }
-            guard let videoURL = peerCoordinator?.capturedVideoURL(
+            let videoURL = peerCoordinator?.capturedVideoURL(
                 matching: designators,
                 trackStartedAt: trackStartedAt,
                 trackEndedAt: trackEndedAt
-            ) else { continue }
+            ) ?? peerCoordinator?.peerCapturedVideoURL(
+                matching: designators,
+                trackStartedAt: trackStartedAt,
+                trackEndedAt: trackEndedAt
+            )
+            guard let videoURL else { continue }
             let description = CaltopoArchiveDescription.build(capturedVideoURL: videoURL)
-            guard !description.isEmpty else { return }
-            if await caltopoPublisher.updateArchivedDescription(
-                archivedTrack,
+            guard !description.isEmpty else { continue }
+            if let archivedTrack {
+                guard await caltopoPublisher.acceptsDeferredUpdate(for: archivedTrack) else { return }
+                if CaltopoArchiveDescription.alreadyContainsVideoLink(archivedTrack.description) {
+                    return
+                }
+                if await caltopoPublisher.updateArchivedDescription(
+                    archivedTrack,
+                    description: description
+                ) {
+                    return
+                }
+            } else if await caltopoPublisher.patchArchivedDescriptionByFlight(
+                remoteID: remoteID,
+                trackStartedAt: trackStartedAt,
+                trackEndedAt: trackEndedAt,
                 description: description
             ) {
                 return

@@ -23,6 +23,8 @@ public enum TrackerArchiveEligibility: Sendable, Equatable {
     case eligible
     case malformedArchive
     case localArchiveOnly
+    /// Archive explicitly marked `tracker_upload_authorized == false` (non-owner); never uploads.
+    case notUploadAuthorized
     case missingOrganization
     case organizationMismatch
     case unknownTeamAircraft
@@ -40,6 +42,8 @@ public enum TrackerArchiveUploadContract {
               let metadata = properties["r2c_prop"] as? [String: Any]
         else { return .malformedArchive }
         if (metadata["local_archive_only"] as? Bool) == true { return .localArchiveOnly }
+        // Archives written before this field existed omit it and keep prior behavior.
+        if (metadata["tracker_upload_authorized"] as? Bool) == false { return .notUploadAuthorized }
         let organization = normalize(metadata["org"] as? String)
         let trackerOrganization = normalize(configuration.organization)
         guard !organization.isEmpty, !trackerOrganization.isEmpty else { return .missingOrganization }

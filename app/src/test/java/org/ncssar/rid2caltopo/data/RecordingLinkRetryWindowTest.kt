@@ -43,4 +43,16 @@ class RecordingLinkRetryWindowTest {
         second.close()
         assertFalse(activity.isActive(arrayOf("camera")))
     }
+
+    @Test fun absoluteLimitBoundsRetryEvenWhileFinalizing() {
+        var now = 0L
+        val window = RecordingLinkRetryWindow(30_000, 60_000) { now }
+        val activity = RecordingFinalizationActivity()
+        activity.begin("camera").use {
+            now = 50_000
+            assertTrue(window.shouldRetry(true))
+            now = 60_000
+            assertFalse(window.shouldRetry(true))
+        }
+    }
 }

@@ -737,7 +737,13 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
             jo.put("guid", myGuid != null ? myGuid : "");
             jo.put("remoteId", remoteId);
             jo.put("mappedId", mappedId);
-            jo.put("trackLabel", mappedId);
+            String sharedLabel = mappedId;
+            CtDroneSpec labelSpec = confirmedSpec != null ? confirmedSpec : CaltopoClient.GetDroneSpec(remoteId);
+            if (labelSpec != null) {
+                String existing = labelSpec.trackLabel();
+                if (existing != null && !existing.isEmpty()) sharedLabel = existing;
+            }
+            jo.put("trackLabel", sharedLabel);
             jo.put("org", org);
             jo.put("model", model);
             jo.put("ownerName", owner);
@@ -760,6 +766,130 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
     public boolean isLocalOwner(@NonNull String remoteId) {
         String ownerGuid = ownerByRemoteId.get(remoteId);
         return ownerGuid != null && ownerGuid.equals(myGuid);
+    }
+
+    /** One recording advertised by a peer tablet. */
+    private static final class PeerRecording {
+        final String sessionId;
+        final String designator;
+        final long startedAtMs;
+        final long endedAtMs;
+        PeerRecording(String sessionId, String designator, long startedAtMs, long endedAtMs) {
+            this.sessionId = sessionId;
+            this.designator = designator;
+            this.startedAtMs = startedAtMs;
+            this.endedAtMs = endedAtMs;
+        }
+    }
+
+    private static final int PEER_VIDEO_DEVICE_LIMIT = 16;
+    private static final int PEER_VIDEO_RECORDINGS_PER_DEVICE = 64;
+    private static final long PEER_RECORDING_ASSOCIATION_GRACE_MS = 30_000L;
+    /** Peer recording presence by deviceName; in-memory only, replaced per advertisement. */
+    private final ConcurrentHashMap<String, List<PeerRecording>> peerRecordingsByDevice =
+            new ConcurrentHashMap<>();
+
+    private void onPeerVideoAdvertisement(@NonNull JSONObject message) {
+        String deviceName = message.optString("deviceName", "").trim();
+        if (deviceName.isEmpty()) return;
+        String localName = AndroidDeviceIdentity.selectDisplayName(
+                R2CActivity.MyDeviceName,
+                (Build.MANUFACTURER + " " + Build.MODEL).trim());
+        if (deviceName.equalsIgnoreCase(localName)) return;
+        JSONArray streams = message.optJSONArray("streams");
+        if (streams == null) return;
+        List<PeerRecording> recordings = new ArrayList<>();
+        for (int i = 0; i < streams.length(); i++) {
+            JSONObject stream = streams.optJSONObject(i);
+            if (stream == null || !"recording".equals(stream.optString("mediaKind"))) continue;
+            String sessionId = stream.optString("sessionId", "").trim();
+            String recordedAt = stream.optString("recordedAt", "").trim();
+            if (sessionId.isEmpty() || recordedAt.isEmpty()) continue;
+            long endedMs;
+            try {
+                endedMs = java.time.Instant.parse(recordedAt).toEpochMilli();
+            } catch (Exception ignored) {
+                continue;
+            }
+            long durationMs = Math.max(0L, stream.optLong("durationMs", 0L));
+            recordings.add(new PeerRecording(
+                    sessionId, stream.optString("droneDesignator", "").trim(),
+                    endedMs - durationMs, endedMs));
+            if (recordings.size() >= PEER_VIDEO_RECORDINGS_PER_DEVICE) break;
+        }
+        if (recordings.isEmpty()) {
+            peerRecordingsByDevice.remove(deviceName);
+            return;
+        }
+        if (!peerRecordingsByDevice.containsKey(deviceName)
+                && peerRecordingsByDevice.size() >= PEER_VIDEO_DEVICE_LIMIT) {
+            String oldest = null;
+            long oldestEnd = Long.MAX_VALUE;
+            for (Map.Entry<String, List<PeerRecording>> entry : peerRecordingsByDevice.entrySet()) {
+                long newest = 0L;
+                for (PeerRecording recording : entry.getValue()) newest = Math.max(newest, recording.endedAtMs);
+                if (newest < oldestEnd) { oldestEnd = newest; oldest = entry.getKey(); }
+            }
+            if (oldest != null) peerRecordingsByDevice.remove(oldest);
+        }
+        peerRecordingsByDevice.put(deviceName, Collections.unmodifiableList(recordings));
+    }
+
+    @Override
+    @Nullable
+    public String peerRecordingShortUrl(
+            @NonNull String[] candidates, long trackStartedAtMs, long trackEndedAtMs) {
+        if (trackStartedAtMs <= 0L || trackEndedAtMs < trackStartedAtMs) return null;
+        Set<String> wanted = new java.util.HashSet<>();
+        for (String candidate : candidates) {
+            if (candidate == null) continue;
+            String normalized = candidate.trim().toLowerCase(Locale.ROOT);
+            if (!normalized.isEmpty()) wanted.add(normalized);
+        }
+        if (wanted.isEmpty()) return null;
+        long allowedStart = trackStartedAtMs - PEER_RECORDING_ASSOCIATION_GRACE_MS;
+        long allowedEnd = trackEndedAtMs + PEER_RECORDING_ASSOCIATION_GRACE_MS;
+        String bestDevice = null;
+        PeerRecording best = null;
+        long bestOverlap = -1L;
+        for (Map.Entry<String, List<PeerRecording>> entry : peerRecordingsByDevice.entrySet()) {
+            for (PeerRecording recording : entry.getValue()) {
+                if (!wanted.contains(recording.designator.toLowerCase(Locale.ROOT))) continue;
+                if (recording.endedAtMs < allowedStart || recording.startedAtMs > allowedEnd) continue;
+                long overlap = Math.max(0L,
+                        Math.min(trackEndedAtMs, recording.endedAtMs)
+                                - Math.max(trackStartedAtMs, recording.startedAtMs));
+                if (overlap > bestOverlap
+                        || (overlap == bestOverlap && best != null && recording.endedAtMs > best.endedAtMs)) {
+                    bestOverlap = overlap;
+                    best = recording;
+                    bestDevice = entry.getKey();
+                }
+            }
+        }
+        if (best == null) return null;
+        return TrackerTabletLink.recordingShortUrl(
+                CaltopoClient.GetTrackerCoordinationUrlPfx(), bestDevice, best.sessionId);
+    }
+
+    @Override
+    public boolean hasActivePeerOwner(@NonNull String remoteId) {
+        String ownerGuid = ownerByRemoteId.get(remoteId);
+        return ownerGuid != null && !ownerGuid.isEmpty()
+                && (myGuid == null || !ownerGuid.equals(myGuid));
+    }
+
+    @Override
+    @NonNull
+    public String ownerGuidForRemoteId(@NonNull String remoteId) {
+        String ownerGuid = ownerByRemoteId.get(remoteId);
+        return ownerGuid == null ? "" : ownerGuid;
+    }
+
+    @Override
+    @NonNull
+    public String localZoneId() {
+        return myGuid == null ? "" : myGuid;
     }
 
     @Override
@@ -1223,7 +1353,8 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
     private void seedStoredConfirmation(@NonNull CtDroneSpec droneSpec) {
         String remoteId = droneSpec.getRemoteId();
         if (remoteId.isEmpty() || locallyConfirmedRemoteIds.containsKey(remoteId)) return;
-        if (!CaltopoClient.IsCurrentPeerDroneConfirmed(remoteId)) return;
+        // Peer drone_confirmed is not a local Save — replaying it steals LiveTrack ownership.
+        if (!CaltopoClient.IsCurrentLocallyConfirmedDrone(remoteId)) return;
         CTInfo(TAG, "seedStoredConfirmation(): replaying Save remoteId=" + remoteId +
                 " mappedId='" + droneSpec.getMappedId() + "'");
         onDroneConfirmed(
@@ -1669,6 +1800,9 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
                     break;
                 case "video_stream_request_cancelled":
                     onVideoStreamRequestCancelled(jo);
+                    break;
+                case "video_stream_advertisement":
+                    onPeerVideoAdvertisement(jo);
                     break;
                 case "video_stream_advertisement_ack":
                     if (jo.optBoolean("accepted", false)) {
@@ -2376,6 +2510,11 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
                 jo.optString("model"),
                 jo.optString("ownerName"),
                 jo.optString("mappedId"));
+        String sharedTrackLabel = jo.optString("trackLabel", "").trim();
+        if (!sharedTrackLabel.isEmpty() && !sharedTrackLabel.equals(jo.optString("mappedId", "").trim())) {
+            CtDroneSpec peerSpec = CaltopoClient.GetDroneSpec(remoteId);
+            if (peerSpec != null) peerSpec.adoptSharedTrackLabel(sharedTrackLabel);
+        }
         if (!confirmedByGuid.isEmpty()) {
             applyOwnerAssignment(
                     remoteId,

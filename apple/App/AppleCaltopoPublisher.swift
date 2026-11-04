@@ -19,6 +19,12 @@ struct AppleArchivedCaltopoTrack: Sendable {
     let folderID: String
     let folderTitle: String
     let configurationGeneration: Int
+    /// Description written with the archive (empty until a captured-video link is attached).
+    var description: String = ""
+    /// Aircraft remote id the Shape was archived for.
+    var remoteID: String = ""
+
+    var hasVideoLink: Bool { CaltopoArchiveDescription.alreadyContainsVideoLink(description) }
 }
 
 actor AppleCaltopoPublisher {
@@ -55,6 +61,10 @@ actor AppleCaltopoPublisher {
     private var deviceMarkerIdleWaiters: [CheckedContinuation<Void, Never>] = []
     private var lastInterruptedJournalWriteAt: [String: Date] = [:]
     private var pendingInterruptedRecoveries: [CaltopoInterruptedPublication] = []
+    /// Shapes archived by this process (live finish or recovery), newest last. In-memory and
+    /// bounded; lets a later recording link patch the archive without a map read.
+    private var recentArchivedTracks: [AppleArchivedCaltopoTrack] = []
+    private static let recentArchivedTrackLimit = 32
     private let interruptedJournal: CaltopoInterruptedPublicationJournal
     private var recoveryTask: Task<Void, Never>?
     private var recoveryInFlight = false
@@ -157,6 +167,7 @@ actor AppleCaltopoPublisher {
         startTasks.values.forEach { $0.cancel() }
         startTasks.removeAll()
         pendingInterruptedRecoveries.removeAll()
+        recentArchivedTracks.removeAll()
         configuredConfiguration = configuration
         self.trackFolderName = normalizedFolderName
         trackFolderID = nil
@@ -798,9 +809,12 @@ actor AppleCaltopoPublisher {
             continuation.yield(.trackArchived(
                 liveTrackID: id, remoteID: remoteID, folderTitle: archiveFolderTitle))
             continuation.yield(.trackStopped(remoteID))
-            return AppleArchivedCaltopoTrack(
+            let archived = AppleArchivedCaltopoTrack(
                 liveTrackID: id, label: label, observations: saved, folderID: archiveFolderID,
-                folderTitle: archiveFolderTitle, configurationGeneration: generation)
+                folderTitle: archiveFolderTitle, configurationGeneration: generation,
+                description: description, remoteID: remoteID)
+            rememberArchivedTrack(archived)
+            return archived
         } catch {
             if generation == configurationGeneration {
                 pendingInterruptedRecoveries.removeAll { $0.liveTrackID == id }
@@ -828,6 +842,9 @@ actor AppleCaltopoPublisher {
                 folderID: archivedTrack.folderID,
                 description: description
             )
+            if let index = recentArchivedTracks.firstIndex(where: { $0.liveTrackID == archivedTrack.liveTrackID }) {
+                recentArchivedTracks[index].description = description
+            }
             AppleLog.info(
                 "CalTopo",
                 "Added deferred recording link to archived track \(archivedTrack.liveTrackID)"
@@ -840,6 +857,90 @@ actor AppleCaltopoPublisher {
             )
             return false
         }
+    }
+
+    private func rememberArchivedTrack(_ track: AppleArchivedCaltopoTrack) {
+        recentArchivedTracks.removeAll { $0.liveTrackID == track.liveTrackID }
+        recentArchivedTracks.append(track)
+        if recentArchivedTracks.count > Self.recentArchivedTrackLimit {
+            recentArchivedTracks.removeFirst(recentArchivedTracks.count - Self.recentArchivedTrackLimit)
+        }
+    }
+
+    /// Attach a recording link to an already-archived (or archive-pending) flight Shape that was
+    /// not handed back to the caller. Best effort and never creates a new Shape: it PATCHes the
+    /// existing Shape id via `updateArchivedTrack`, or amends the durable interrupted entry so the
+    /// pending recovery archives it with the link. Matches by remoteID (title fallback) and a
+    /// flight-window overlap. Returns true when no further retry is needed.
+    func patchArchivedDescriptionByFlight(
+        remoteID: String,
+        trackStartedAt: Date,
+        trackEndedAt: Date,
+        description: String
+    ) async -> Bool {
+        guard !description.isEmpty else { return false }
+        let generation = configurationGeneration
+        let windowStart = trackStartedAt.addingTimeInterval(-ManagedVideoRecordingIdentity.trackAssociationGrace)
+        let windowEnd = trackEndedAt.addingTimeInterval(ManagedVideoRecordingIdentity.trackAssociationGrace)
+        func overlaps(_ observations: [RidObservation]) -> Bool {
+            guard let first = observations.map(\.receivedAt).min(),
+                  let last = observations.map(\.receivedAt).max() else { return false }
+            return first <= windowEnd && last >= windowStart
+        }
+        func matches(id: String, label: String) -> Bool {
+            id == remoteID || label == remoteID
+        }
+
+        // 1. Shape already archived by this process.
+        if let known = recentArchivedTracks.last(where: {
+            matches(id: $0.remoteID, label: $0.label) && overlaps($0.observations)
+        }) {
+            if known.hasVideoLink { return true }
+            guard known.configurationGeneration == generation, let client else { return false }
+            do {
+                try await client.updateArchivedTrack(
+                    liveTrackID: known.liveTrackID,
+                    label: known.label,
+                    observations: known.observations,
+                    folderID: known.folderID,
+                    description: description
+                )
+                if let index = recentArchivedTracks.firstIndex(where: { $0.liveTrackID == known.liveTrackID }) {
+                    recentArchivedTracks[index].description = description
+                }
+                AppleLog.info("CalTopo", "Added deferred recording link to archived track \(known.liveTrackID)")
+                return true
+            } catch {
+                AppleLog.warning(
+                    "CalTopo",
+                    "Deferred recording link update failed for \(known.liveTrackID): \(error.localizedDescription)"
+                )
+                return false
+            }
+        }
+
+        // 2. Archive still pending: amend the durable entry; recovery will archive with the link.
+        if let pending = await interruptedJournal.entry(remoteID: remoteID),
+           overlaps(pending.observations) {
+            guard generation == configurationGeneration else { return false }
+            if CaltopoArchiveDescription.alreadyContainsVideoLink(pending.description) { return true }
+            var amended = pending
+            amended.description = description
+            do {
+                try await interruptedJournal.upsert(amended)
+            } catch {
+                return false
+            }
+            if let index = pendingInterruptedRecoveries.firstIndex(where: { $0.liveTrackID == pending.liveTrackID }) {
+                pendingInterruptedRecoveries[index].description = description
+            }
+            AppleLog.info(
+                "CalTopo",
+                "Added deferred recording link to pending archive \(pending.liveTrackID)"
+            )
+            return true
+        }
+        return false
     }
 
     func acceptsDeferredUpdate(for archivedTrack: AppleArchivedCaltopoTrack) -> Bool {
@@ -1040,6 +1141,11 @@ actor AppleCaltopoPublisher {
                 )
                 try await interruptedJournal.remove(liveTrackID: entry.liveTrackID)
                 completed.insert(entry.liveTrackID)
+                rememberArchivedTrack(AppleArchivedCaltopoTrack(
+                    liveTrackID: entry.liveTrackID, label: entry.label,
+                    observations: entry.observations, folderID: archiveFolderID,
+                    folderTitle: archiveFolderTitle, configurationGeneration: generation,
+                    description: entry.description, remoteID: entry.remoteID))
                 AppleLog.info(
                     "CalTopo",
                     "CalTopo track archived id=\(entry.liveTrackID) folder=\(archiveFolderTitle)"

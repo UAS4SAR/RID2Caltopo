@@ -60,6 +60,14 @@ struct AppleVideoQualityChoice: Identifiable, Equatable, Sendable {
     let capacity: String
 }
 
+/// One recording advertised by a peer tablet (recordings only; live streams are not linkable).
+private struct ApplePeerVideoRecording: Equatable {
+    let sessionId: String
+    let droneDesignator: String
+    let startedAt: Date
+    let recordedAt: Date
+}
+
 private struct AppleManagedVideoStreamAdvertisement: Codable, Equatable {
     let sessionId: String
     let droneDesignator: String
@@ -606,6 +614,9 @@ final class AppleTrackerCoordinator: ObservableObject {
     private var managedVideoIncidentScopeKey = ""
     private var managedVideoIncidentStartedAt = Date()
     private var managedVideoRecordingsBySessionID: [String: AppleManagedVideoRecording] = [:]
+    /// Peer tablets' recording presence, keyed by deviceName. In-memory only; populated when a
+    /// peer `video_stream_advertisement` is received. Small, bounded, never touches disk.
+    private var peerManagedVideoRecordingsByDevice: [String: [ApplePeerVideoRecording]] = [:]
     private var managedVideoThumbnailTasks: [String: Task<Void, Never>] = [:]
     private var managedVideoThumbnailAttempts: [String: UUID] = [:]
     private var recordingThumbnailTaskIDs: Set<String> = []
@@ -2214,6 +2225,10 @@ final class AppleTrackerCoordinator: ObservableObject {
             }
             return true
         }
+        if type == "video_stream_advertisement" {
+            notePeerVideoAdvertisement(object)
+            return true
+        }
         if type == "video_stream_advertisement_ack" {
             let accepted = object["accepted"] as? Bool ?? false
             let sessionIDs = object["sessionIds"] as? [String] ?? []
@@ -3174,6 +3189,84 @@ final class AppleTrackerCoordinator: ObservableObject {
             tabletName: AppleDeviceIdentity.displayName,
             sessionID: match.sessionID
         )
+    }
+
+    /// Forwarded protocol state: true when this tablet owns the flight.
+    func isLocalOwner(remoteID: String) -> Bool {
+        protocolState.isLocalOwner(remoteID: remoteID)
+    }
+
+    private static let peerVideoDeviceLimit = 16
+    private static let peerVideoRecordingsPerDeviceLimit = 64
+
+    /// Stores a peer's recording presence (deviceName + streams). Replaces that device's entry.
+    private func notePeerVideoAdvertisement(_ object: [String: Any]) {
+        let deviceName = (object["deviceName"] as? String ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !deviceName.isEmpty,
+              deviceName.localizedCaseInsensitiveCompare(AppleDeviceIdentity.displayName) != .orderedSame,
+              let streams = object["streams"] as? [[String: Any]]
+        else { return }
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let plain = ISO8601DateFormatter()
+        let recordings: [ApplePeerVideoRecording] = streams.compactMap { stream in
+            guard (stream["mediaKind"] as? String) == "recording",
+                  let sessionId = stream["sessionId"] as? String, !sessionId.isEmpty,
+                  let recordedText = stream["recordedAt"] as? String,
+                  let recordedAt = fractional.date(from: recordedText) ?? plain.date(from: recordedText)
+            else { return nil }
+            let durationMs = (stream["durationMs"] as? NSNumber)?.int64Value ?? 0
+            return ApplePeerVideoRecording(
+                sessionId: sessionId,
+                droneDesignator: stream["droneDesignator"] as? String ?? "",
+                startedAt: recordedAt.addingTimeInterval(-Double(max(0, durationMs)) / 1_000),
+                recordedAt: recordedAt
+            )
+        }
+        .suffix(Self.peerVideoRecordingsPerDeviceLimit).map { $0 }
+        if recordings.isEmpty {
+            peerManagedVideoRecordingsByDevice.removeValue(forKey: deviceName)
+            return
+        }
+        if peerManagedVideoRecordingsByDevice[deviceName] == nil,
+           peerManagedVideoRecordingsByDevice.count >= Self.peerVideoDeviceLimit,
+           let oldest = peerManagedVideoRecordingsByDevice.min(by: {
+               ($0.value.map(\.recordedAt).max() ?? .distantPast)
+                   < ($1.value.map(\.recordedAt).max() ?? .distantPast)
+           })?.key {
+            peerManagedVideoRecordingsByDevice.removeValue(forKey: oldest)
+        }
+        peerManagedVideoRecordingsByDevice[deviceName] = recordings
+    }
+
+    /// Short recording URL for a peer-hosted recording of this flight, from in-memory presence only.
+    func peerCapturedVideoURL(
+        matching designators: [String],
+        trackStartedAt: Date,
+        trackEndedAt: Date
+    ) -> URL? {
+        for (deviceName, recordings) in peerManagedVideoRecordingsByDevice {
+            guard let match = ManagedVideoRecordingIdentity.recording(
+                matching: designators,
+                trackStartedAt: trackStartedAt,
+                trackEndedAt: trackEndedAt,
+                candidates: recordings.map {
+                    ManagedVideoRecordingIdentity.Candidate(
+                        sessionID: $0.sessionId,
+                        designator: $0.droneDesignator,
+                        startedAt: $0.startedAt,
+                        endedAt: $0.recordedAt
+                    )
+                }
+            ) else { continue }
+            if let url = TrackerTabletLink.recordingShortURL(
+                trackerURLPrefix: trackerURLPrefix,
+                tabletName: deviceName,
+                sessionID: match.sessionID
+            ) { return url }
+        }
+        return nil
     }
 
     private func publish(_ event: TrackerCoordinationEvent) {

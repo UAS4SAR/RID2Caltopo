@@ -370,9 +370,26 @@ public class WaypointTrack {
                 CaltopoClient.IsCurrentPeerDroneConfirmed(archivedRemoteId);
         archivedDistanceInFeet = droneSpec.getDistanceInFeet();
         archivedTrackerUploadAuthorized = !archivedLocalOnly &&
+                isLocalFlightOwnerForUpload(archivedRemoteId) &&
                 CaltopoClient.IsKnownTeamDroneForTrackerUpload(
                         archivedRemoteId, archivedOrg);
         archivePrepared = true;
+    }
+
+    /**
+     * Only the local flight owner uploads the archive to the tracker. A peer that currently
+     * holds the owner lease is a non-owner and must not upload. Where coordination has not
+     * assigned any owner (standalone / tracker coordination idle) this device is the sole
+     * recorder, so it is not treated as a non-owner.
+     */
+    private static boolean isLocalFlightOwnerForUpload(@NonNull String remoteId) {
+        if (remoteId.isEmpty()) return false;
+        try {
+            PeerCoordinator peers = R2cRuntimeRegistry.getDefaultRuntime().getPeerCoordinator();
+            return peers.isLocalOwner(remoteId) || !peers.hasActivePeerOwner(remoteId);
+        } catch (Exception error) {
+            return true;
+        }
     }
 
     @NonNull

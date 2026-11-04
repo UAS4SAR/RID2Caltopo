@@ -1,4 +1,6 @@
 Latest changes:
+- One CalTopo live track per flight across tablets, with the captured-video link kept on that archive.
+- Local clues stay visible on the map even when no incident map is selected.
 - Unconfirmed flights stay local until the Drone Confirmation Panel is Confirmed: no CalTopo LiveTrack/archive publish and no tracker live traffic or flight record without acknowledgement.
 - A drone seen again after the 30-second message gap starts a new flight that needs its own Confirm. Drones marked Don't Publish stay ignored for the rest of the session until you select them in Aircraft and Reception.
 - Don't Publish now only stops CalTopo and tracker publishing; the flight track, video and clues are still saved locally.

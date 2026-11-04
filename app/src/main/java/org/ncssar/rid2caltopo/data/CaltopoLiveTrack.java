@@ -412,6 +412,81 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
         }
     }
 
+    private static final long PEER_ARCHIVE_UPDATED_SLACK_MS = 15L * 60L * 1000L;
+
+    private static final class ArchivedShapeMatch {
+        @NonNull final JSONObject feature;
+        @NonNull final String mapId;
+        ArchivedShapeMatch(@NonNull JSONObject feature, @NonNull String mapId) {
+            this.feature = feature;
+            this.mapId = mapId;
+        }
+    }
+
+    /**
+     * Best-effort lookup of an already-archived Shape in the cached map artifacts (no network):
+     * title prefix matches a designator candidate and the Shape was last updated within the
+     * flight window (+ archive slack). Shape geometry carries no timestamps, so {@code updated}
+     * is the only time signal on the map.
+     */
+    @Nullable
+    private static ArchivedShapeMatch findArchivedShapeOnMap(
+            @NonNull String[] candidates, long trackStartedAtMs, long trackEndedAtMs) {
+        String mapId = CaltopoMap.GetMapId();
+        if (mapId == null || mapId.isEmpty() || trackStartedAtMs <= 0L) return null;
+        java.util.Set<String> wanted = new java.util.HashSet<>();
+        for (String candidate : candidates) {
+            if (candidate == null) continue;
+            String normalized = candidate.trim().toLowerCase(Locale.ROOT);
+            if (!normalized.isEmpty()) wanted.add(normalized);
+        }
+        if (wanted.isEmpty()) return null;
+        long earliest = trackStartedAtMs;
+        long latest = Math.max(trackEndedAtMs, trackStartedAtMs) + PEER_ARCHIVE_UPDATED_SLACK_MS;
+        JSONObject best = null;
+        long bestUpdated = -1L;
+        for (JSONObject feature : CaltopoMap.GetArtifactFeatureSnapshot()) {
+            JSONObject properties = feature.optJSONObject("properties");
+            if (properties == null || !"Shape".equals(properties.optString("class"))) continue;
+            if (feature.optString("id", "").isEmpty()) continue;
+            String prefix = properties.optString("title", "").split("_", 2)[0].trim()
+                    .toLowerCase(Locale.ROOT);
+            if (!wanted.contains(prefix)) continue;
+            long updated;
+            try {
+                updated = Long.parseLong(properties.optString("updated", "0"));
+            } catch (NumberFormatException ignored) {
+                continue;
+            }
+            if (updated < earliest || updated > latest) continue;
+            if (updated > bestUpdated) { bestUpdated = updated; best = feature; }
+        }
+        if (best == null) return null;
+        try {
+            return new ArchivedShapeMatch(new JSONObject(best.toString()), mapId);
+        } catch (JSONException error) {
+            return null;
+        }
+    }
+
+    private static boolean descriptionHasVideoLink(@Nullable JSONObject feature) {
+        if (feature == null) return false;
+        JSONObject properties = feature.optJSONObject("properties");
+        return properties != null && properties.optString("description", "").contains("/v/");
+    }
+
+    @Nullable
+    private static String peerRecordingShortUrl(
+            @NonNull String[] candidates, long trackStartedAtMs, long trackEndedAtMs) {
+        try {
+            return R2cRuntimeRegistry.getDefaultRuntime().getPeerCoordinator()
+                    .peerRecordingShortUrl(candidates, trackStartedAtMs, trackEndedAtMs);
+        } catch (Exception error) {
+            CTDebug(TAG, "peerRecordingShortUrl lookup failed (" + error.getClass().getSimpleName() + ")");
+            return null;
+        }
+    }
+
     private static void scheduleDeferredVideoDescriptionUpdate(
             @NonNull JSONObject archivedFeature,
             long trackStartedAtMs,
@@ -438,40 +513,74 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
         ));
     }
 
+    /**
+     * Recording peer (not the flight owner): the owner's archived Shape is not held here, so
+     * locate it on the map by designator + time and PATCH only its description. Never creates
+     * a new Shape.
+     */
+    private static void scheduleDeferredVideoLinkForPeerArchive(
+            long trackStartedAtMs, long trackEndedAtMs, @NonNull String[] candidates) {
+        RecordingLinkRetryWindow retryWindow = new RecordingLinkRetryWindow(
+                DEFERRED_VIDEO_LINK_WINDOW_MS, () -> TimeUnit.NANOSECONDS.toMillis(System.nanoTime()));
+        DeferredVideoLinkExecutor.execute(() -> attemptDeferredVideoDescriptionUpdate(
+                null, trackStartedAtMs, trackEndedAtMs, candidates, retryWindow, null));
+    }
+
     private static void attemptDeferredVideoDescriptionUpdate(
-            @NonNull JSONObject archivedFeature,
+            @Nullable JSONObject archivedFeature,
             long trackStartedAtMs,
             long trackEndedAtMs,
             @NonNull String[] candidates,
             @NonNull RecordingLinkRetryWindow retryWindow,
-            @NonNull java.util.function.BiFunction<JSONObject, java.util.function.Consumer<CaltopoOp>, CaltopoOp> updateArchivedTrack
+            @Nullable java.util.function.BiFunction<JSONObject, java.util.function.Consumer<CaltopoOp>, CaltopoOp> updateArchivedTrack
     ) {
         if (R2CApplication.getAppCtxt() == null) return;
+        // Never overwrite an existing recording link.
+        if (descriptionHasVideoLink(archivedFeature)) return;
         ManagedVideoSessionRecording recording = ManagedVideoSessionRecordingCatalog.findForTrack(
                 R2CApplication.getAppCtxt(),
                 trackStartedAtMs,
                 trackEndedAtMs,
                 candidates
         );
-        if (recording == null) {
+        String videoUrl = recording == null ? null : TrackerTabletLink.recordingShortUrl(
+                CaltopoClient.GetTrackerCoordinationUrlPfx(),
+                R2CActivity.MyDeviceName,
+                recording.getSessionId()
+        );
+        if (videoUrl == null || videoUrl.trim().isEmpty()) {
+            videoUrl = peerRecordingShortUrl(candidates, trackStartedAtMs, trackEndedAtMs);
+        }
+        if (videoUrl == null || videoUrl.trim().isEmpty()) {
             retryDeferredVideoDescriptionUpdate(
                     archivedFeature, trackStartedAtMs, trackEndedAtMs, candidates, retryWindow,
                     updateArchivedTrack);
             return;
         }
-        String videoUrl = TrackerTabletLink.recordingShortUrl(
-                CaltopoClient.GetTrackerCoordinationUrlPfx(),
-                R2CActivity.MyDeviceName,
-                recording.getSessionId()
-        );
-        if (videoUrl == null || videoUrl.trim().isEmpty()) return;
-        String trackId = archivedFeature.optString("id", "");
+        JSONObject feature = archivedFeature;
+        java.util.function.BiFunction<JSONObject, java.util.function.Consumer<CaltopoOp>, CaltopoOp> update =
+                updateArchivedTrack;
+        if (feature == null) {
+            // Held feature missing: find the owner's archived Shape on the map.
+            ArchivedShapeMatch match = findArchivedShapeOnMap(candidates, trackStartedAtMs, trackEndedAtMs);
+            if (match == null) {
+                retryDeferredVideoDescriptionUpdate(
+                        null, trackStartedAtMs, trackEndedAtMs, candidates, retryWindow, null);
+                return;
+            }
+            if (descriptionHasVideoLink(match.feature)) return;
+            feature = match.feature;
+            update = R2cRuntimeRegistry.getDefaultRuntime().getCalTopoSessionGateway()
+                    .prepareArchivedTrackUpdate(match.mapId, feature.optString("id", ""));
+        }
+        if (update == null) return;
+        String trackId = feature.optString("id", "");
         if (trackId.isEmpty()) return;
         try {
-            JSONObject properties = archivedFeature.optJSONObject("properties");
+            JSONObject properties = feature.optJSONObject("properties");
             if (properties == null) {
                 properties = new JSONObject();
-                archivedFeature.put("properties", properties);
+                feature.put("properties", properties);
             }
             properties.put("description", videoUrl.trim());
             properties.put("updated", String.valueOf(System.currentTimeMillis()));
@@ -480,8 +589,9 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
             CTError(TAG, "Unable to add deferred video link to archived feature." + " (" + error.getClass().getSimpleName() + ")");
             return;
         }
-        updateArchivedTrack.apply(
-                archivedFeature,
+        final JSONObject patchedFeature = feature;
+        update.apply(
+                patchedFeature,
                 operation -> {
                     if (operation.success()) {
                         CTDebug(TAG, "Added deferred recording link to archived track " + trackId);
@@ -496,12 +606,12 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
     }
 
     private static void retryDeferredVideoDescriptionUpdate(
-            @NonNull JSONObject archivedFeature,
+            @Nullable JSONObject archivedFeature,
             long trackStartedAtMs,
             long trackEndedAtMs,
             @NonNull String[] candidates,
             @NonNull RecordingLinkRetryWindow retryWindow,
-            @NonNull java.util.function.BiFunction<JSONObject, java.util.function.Consumer<CaltopoOp>, CaltopoOp> updateArchivedTrack
+            @Nullable java.util.function.BiFunction<JSONObject, java.util.function.Consumer<CaltopoOp>, CaltopoOp> updateArchivedTrack
     ) {
         if (!retryWindow.shouldRetry(RecordingFinalizationActivity.shared.isActive(candidates))) {
             CTWarn(TAG, "Recording did not become available before the deferred CalTopo link deadline.");
@@ -1412,6 +1522,13 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
         if (shuttingDown || !active) return false;
         if (mapStatus != CaltopoMap.MapStatusListener.mapStatus.up) return false;
         if (!ownsPublication()) return false;
+        // Peer owner lease still valid → shadow only; never mint a second LiveTrack.
+        if (runtime.getPeerCoordinator().hasActivePeerOwner(myRemoteId)) {
+            CTDebug(TAG, String.format(Locale.US,
+                    "ensureLiveTrackStarted(%s): peer owner lease active; shadowing",
+                    droneSpec.trackLabel()));
+            return false;
+        }
         if (liveTrackId != null || startInFlight) return false;
         if (!CaltopoNetworkReachability.hasValidatedInternet()) {
             CTDebug(TAG, String.format(Locale.US,
@@ -1429,6 +1546,25 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
         String currentMap = CaltopoMap.GetMapId();
         if (currentMap == null || currentMap.isEmpty() || !currentMap.equals(mapId)) return null;
         if (requestedLiveTrackId == null) {
+            CaltopoMap.AdoptableLiveTrack adoptable = CaltopoMap.takeAdoptableLiveTrack(
+                    effectiveFleetDeviceId());
+            if (adoptable != null && !adoptable.trackId.isEmpty()) {
+                // Ownership handoff: continue the peer's existing LiveTrack id/label.
+                requestedLiveTrackId = adoptable.trackId;
+                liveTrackId = adoptable.trackId;
+                if (!adoptable.title.isEmpty()) {
+                    segmentTrackLabel = adoptable.title;
+                    droneSpec.adoptSharedTrackLabel(adoptable.title);
+                }
+                publicationMapId = mapId;
+                startInFlight = false;
+                active = true;
+                CaltopoMap.AddLiveTrack(liveTrackId, this);
+                CTInfo(TAG, String.format(Locale.US,
+                        "claimLiveTrackStart(%s): adopted peer liveTrack id=%s label=%s",
+                        effectiveFleetDeviceId(), liveTrackId, segmentTrackLabel));
+                return null;
+            }
             requestedLiveTrackId = deferredId != null ? deferredId : java.util.UUID.randomUUID().toString();
             publicationMapId = mapId;
         }
@@ -1532,6 +1668,9 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
         final boolean wasActive;
         final String removeLiveTrackId;
         final ArchiveWork archiveWork;
+        // Non-owner (shadow) finish: a recording made here may still belong in the owner's archive.
+        final long[] shadowFlightWindow = new long[2];
+        final String[][] shadowCandidates = new String[1][];
         synchronized (this) {
             if (!active) {
                 // Map disconnect already persisted the interrupted journal and cleared
@@ -1544,6 +1683,16 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
                 notifyFinishedOnly = false;
                 wasActive = true;
                 CTDebug(TAG, String.format(Locale.US, "finishTrack(%s): %s", getTrackLabel(), reason));
+                if (!ownsPublication() && !droneSpec.isLocalArchiveOnly()
+                        && trackObservedStartedAtMs > 0L && trackObservedEndedAtMs >= trackObservedStartedAtMs) {
+                    shadowFlightWindow[0] = trackObservedStartedAtMs;
+                    shadowFlightWindow[1] = trackObservedEndedAtMs;
+                    shadowCandidates[0] = new String[] {
+                            droneSpec.getMappedId(),
+                            droneSpec.getRemoteId(),
+                            segmentTrackLabel.split("_", 2)[0]
+                    };
+                }
                 // Queued points from a flight that never received a LiveTrack id must still publish
                 // through the archive when the map is up, not only land in AwaitingMapFlights.
                 if (liveTrackId == null && requestedLiveTrackId == null && !linePoints.isEmpty()
@@ -1577,6 +1726,10 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
         if (!wasActive) return;
         if (removeLiveTrackId != null) {
             CaltopoMap.RemoveLiveTrack(removeLiveTrackId);
+        }
+        if (shadowCandidates[0] != null) {
+            scheduleDeferredVideoLinkForPeerArchive(
+                    shadowFlightWindow[0], shadowFlightWindow[1], shadowCandidates[0]);
         }
         if (archiveWork != null) {
             try {
@@ -1687,7 +1840,7 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
                     trackLabel, liveTrackId));
             if (!ownsPublication() || shuttingDown || !active) {
                 if (liveTrackId != null && !liveTrackId.isEmpty()) {
-                    CaltopoMap.AddLiveTrack(liveTrackId, this);
+                    CaltopoMap.AddLiveTrack(liveTrackId, this, true);
                 }
                 CTDebug(TAG, String.format(Locale.US,
                         "startLiveTrackComplete(%s): ownership no longer local; retaining liveTrackId for orphan cleanup and leaving queued points buffered.",
@@ -1695,7 +1848,7 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
                 startLiveTrackOp = null;
                 return;
             }
-            CaltopoMap.AddLiveTrack(liveTrackId, this);
+            CaltopoMap.AddLiveTrack(liveTrackId, this, true);
         } catch (Exception e) {
             CTError(TAG, "startLiveTrackComplete(): raised:" + " (" + e.getClass().getSimpleName() + ")");
         }

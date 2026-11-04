@@ -1213,6 +1213,10 @@ public class CaltopoSession {
 				prop.put("folderId", folderId);
 			}
 			prop.put("deviceId", liveTrackDeviceId(deviceId, CaltopoClient.GetConnectKey()));
+            String zoneId = R2cRuntimeRegistry.getDefaultRuntime().getPeerCoordinator().localZoneId();
+            if (zoneId != null && !zoneId.isEmpty()) {
+                prop.put("r2cZoneId", zoneId);
+            }
 
 			top.put("id", liveTrackId);
 			top.put("type", "Feature");

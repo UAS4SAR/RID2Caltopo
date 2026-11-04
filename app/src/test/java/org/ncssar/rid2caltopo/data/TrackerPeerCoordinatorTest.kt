@@ -732,11 +732,78 @@ class TrackerPeerCoordinatorTest {
 
         val drone = CaltopoClient.GetDroneSpec("DRONE9")!!
         assertTrue(CaltopoClient.IsCurrentPeerDroneConfirmed("DRONE9"))
+        assertFalse(CaltopoClient.IsCurrentLocallyConfirmedDrone("DRONE9"))
         assertEquals("MA12Autel", drone.mappedId)
         assertEquals("MA-SAR", drone.org)
         assertEquals("Autel Evo Max", drone.model)
         assertEquals("MA12", drone.owner)
         assertEquals(0, CaltopoClient.GetRidmapCount())
+    }
+
+    @Test
+    fun peerDroneConfirmedThenLiveTrack_doesNotStealOwnershipOrStartLocalTrack() {
+        coordinator.start("MAP1", "zone-alpha", "Alpha", null)
+        transport.receive(
+            JSONObject()
+                .put("type", "drone_confirmed")
+                .put("remoteId", "DRONEPEER1")
+                .put("confirmedByGuid", "zone-bravo")
+                .put("mappedId", "1sar7DjMtrc4td")
+                .put("trackLabel", "1sar7DjMtrc4td_170600Nov03")
+                .put("org", "NCSSAR")
+                .put("model", "Matrice 4TD")
+                .put("ownerName", "1SAR7")
+                .toString()
+        )
+        assertTrue(CaltopoClient.IsCurrentPeerDroneConfirmed("DRONEPEER1"))
+        assertFalse(CaltopoClient.IsCurrentLocallyConfirmedDrone("DRONEPEER1"))
+        assertTrue(coordinator.hasActivePeerOwner("DRONEPEER1"))
+        assertFalse(coordinator.isLocalOwner("DRONEPEER1"))
+
+        val track = FakeLiveTrack("DRONEPEER1")
+        val drone = CaltopoClient.GetDroneSpec("DRONEPEER1")!!
+        coordinator.onLiveTrackCreated(track, drone, 40.0, 1_706_000L)
+
+        assertFalse(track.localOwnerFlag)
+        assertTrue(coordinator.hasActivePeerOwner("DRONEPEER1"))
+        assertEquals("1sar7DjMtrc4td_170600Nov03", drone.trackLabel())
+        // Peer confirmation must never be replayed as a local Save.
+        val localClaims = transport.sentMessages.map { JSONObject(it) }.filter {
+            it.optString("type") == "drone_confirmed" &&
+                it.optString("remoteId") == "DRONEPEER1" &&
+                it.optString("guid") == "zone-alpha"
+        }
+        assertTrue(localClaims.isEmpty())
+    }
+
+    @Test
+    fun ownershipHandoffAdoptsSharedTrackLabelFromPeerConfirm() {
+        coordinator.start("MAP1", "zone-alpha", "Alpha", null)
+        transport.receive(
+            JSONObject()
+                .put("type", "drone_confirmed")
+                .put("remoteId", "DRONEADOPT1")
+                .put("confirmedByGuid", "zone-bravo")
+                .put("mappedId", "1sar7DjMtrc4td")
+                .put("trackLabel", "1sar7DjMtrc4td_170600Nov03")
+                .put("org", "NCSSAR")
+                .put("model", "Matrice 4TD")
+                .put("ownerName", "1SAR7")
+                .toString()
+        )
+        val drone = CaltopoClient.GetDroneSpec("DRONEADOPT1")!!
+        assertEquals("1sar7DjMtrc4td_170600Nov03", drone.trackLabel())
+        CaltopoMap.rememberAdoptableLiveTrack(
+            "peer-live-track-id",
+            "1sar7DjMtrc4td_170600Nov03",
+            CaltopoSession.liveTrackDeviceId("DRONEADOPT1", CaltopoClient.GetConnectKey()),
+            "zone-bravo"
+        )
+        val adopted = CaltopoMap.takeAdoptableLiveTrack(
+            CaltopoSession.liveTrackDeviceId("DRONEADOPT1", CaltopoClient.GetConnectKey())
+        )
+        assertEquals("peer-live-track-id", adopted?.trackId)
+        assertEquals("1sar7DjMtrc4td_170600Nov03", adopted?.title)
     }
 
     @Test

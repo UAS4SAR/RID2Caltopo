@@ -19,4 +19,9 @@ public enum CaltopoArchiveDescription {
         guard let capturedVideoURL else { return "" }
         return capturedVideoURL.absoluteString
     }
+
+    /// True when the description already carries a captured-video short link.
+    public static func alreadyContainsVideoLink(_ description: String?) -> Bool {
+        (description ?? "").contains("/v/")
+    }
 }

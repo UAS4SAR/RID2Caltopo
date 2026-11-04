@@ -80,6 +80,29 @@ public interface PeerCoordinator {
     default boolean isLocalAlertEligible(@NonNull String remoteId) {
         return true;
     }
+    /** True when a peer (not this device) currently holds the flight owner lease. */
+    default boolean hasActivePeerOwner(@NonNull String remoteId) {
+        return false;
+    }
+    /** Owner zone guid for {@code remoteId}, or empty when none. */
+    @NonNull
+    default String ownerGuidForRemoteId(@NonNull String remoteId) {
+        return "";
+    }
+    /** This device's coordination zone id, or empty when not started. */
+    @NonNull
+    default String localZoneId() {
+        return "";
+    }
+    /**
+     * Short {@code /v/} URL for a recording hosted by a peer tablet, from the in-memory peer
+     * presence last received. Never blocks or touches disk; null when nothing matches.
+     */
+    @Nullable
+    default String peerRecordingShortUrl(
+            @NonNull String[] candidates, long trackStartedAtMs, long trackEndedAtMs) {
+        return null;
+    }
     void updateCaltopoRtt(long rttMs);
     long getCaltopoRttMs();
     void updateMyPosition(double lat, double lon);

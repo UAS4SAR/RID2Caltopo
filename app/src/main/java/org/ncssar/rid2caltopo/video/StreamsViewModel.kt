@@ -2320,11 +2320,12 @@ class StreamsViewModel(
                 _mapName.value = null
                 CTDebug(tag, "Disconnected from ${oldName} map")
                 resetFolderVisibility()
-                localMapMarkers.clear()
-                clueSnapshotRefsByTitle.clear()
+                // Local clues are display data, independent of CalTopo: keep the snapshots on
+                // screen and rehydrate every local clue instead of clearing them.
                 _pendingClueUploads.value = emptyList()
                 activeLocalClueMapKey = null
                 clueReverifySessionKey = null
+                hydrateLocalClues(currentLocalClueMapKey())
             }
         }
     }
@@ -3027,7 +3028,9 @@ class StreamsViewModel(
             val loaded = clueStorage {
                 val workerContext = kotlinx.coroutines.currentCoroutineContext()
                 clueDiskMutex.withLock {
-                    localClueStore.recordsForMap(mapKey).map { record ->
+                    // Display every local clue regardless of the connected map (no CalTopo calls);
+                    // only the pending-upload list below stays scoped to mapKey.
+                    localClueStore.allRecords().sortedByDescending { it.createdAtMs }.map { record ->
                         workerContext.ensureActive()
                         record to ClueSnapshotRef(record.title, localClueStore.loadThumbnail(record), null,
                             localClueStore.imageFile(record).absolutePath)
@@ -3082,7 +3085,8 @@ class StreamsViewModel(
             _pendingClueUploads.value = filtered
                 .map { it.first }
                 .filter {
-                    it.publishToCaltopo &&
+                    it.mapKey == mapKey &&
+                        it.publishToCaltopo &&
                         !it.caltopoRemotelyDeleted &&
                         !it.uploadConfirmed() &&
                         (it.uploadState == "pending" || it.uploadState == "uploading" || it.uploadState == "failed")
@@ -3253,13 +3257,12 @@ class StreamsViewModel(
                         localClueStore.imageFile(record).absolutePath)
                 }
             }
-            if (record.mapKey == currentLocalClueMapKey()) {
-                ++clueHydrationGeneration
-                localClueRecordsById[record.id] = record
-                localClueSnapshotsById[record.id] = prepared
-                clueSnapshotRefsByTitle[record.title.trim()] = prepared
-                localMapMarkers.add(record.toLocalMapMarker())
-            }
+            // Always display a saved clue, whichever map key it was filed under.
+            ++clueHydrationGeneration
+            localClueRecordsById[record.id] = record
+            localClueSnapshotsById[record.id] = prepared
+            clueSnapshotRefsByTitle[record.title.trim()] = prepared
+            localMapMarkers.add(record.toLocalMapMarker())
             CTDebug(tag, "Clue saved id=${record.id} " +
                 (record.binding?.let { org.ncssar.rid2caltopo.data.ClueBindingText.formSummary(it) } ?: "no binding"))
             scheduleArchiveRewrite(record)
@@ -3488,7 +3491,7 @@ class StreamsViewModel(
                         clueDiskMutex.withLock {
                             Triple(
                                 localClueStore.pendingForMap(mapId, teamId),
-                                localClueStore.recordsForMap(mapKey).map { it.id }.toSet(),
+                                localClueStore.allRecords().map { it.id }.toSet(),
                                 localClueStore.pendingPublishSummary(),
                             )
                         }
@@ -6183,8 +6186,9 @@ class StreamsViewModel(
             restoreMapFolderVisibility(mapFolderVisibilityKey(
                 CaltopoClient.GetCaltopoDomainAndPort(), CaltopoMap.GetMapId()))
             _mapName.value = CaltopoMap.GetMapName()
-            hydrateLocalClues(currentLocalClueMapKey())
         }
+        // Local clues are shown even with no map connected.
+        hydrateLocalClues(currentLocalClueMapKey())
         CaltopoClient.AddDroneSpecsChangedListener(this)
         StreamRegistry.setAdmissionGuard(::admissionGuardDecision)
         startProcessLoadMonitor()

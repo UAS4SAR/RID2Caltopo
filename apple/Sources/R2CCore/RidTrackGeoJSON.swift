@@ -17,6 +17,10 @@ public struct RidTrackArchiveMetadata: Sendable, Equatable {
     public var flightID: String
     /// Local captured-video short URL (same matching as CalTopo); empty when none linked.
     public var capturedVideoDescription: String
+    /// True only when this tablet owned the flight and publication was allowed. Written as
+    /// `r2c_prop.tracker_upload_authorized`; `false` makes the archive permanently ineligible
+    /// for tracker upload (non-owners must not upload).
+    public var trackerUploadAuthorized: Bool
 
     public init(
         mappedID: String = "",
@@ -32,7 +36,8 @@ public struct RidTrackArchiveMetadata: Sendable, Equatable {
         localArchiveOnly: Bool = false,
         flightReadiness: FlightReadiness? = nil,
         flightID: String = "",
-        capturedVideoDescription: String = ""
+        capturedVideoDescription: String = "",
+        trackerUploadAuthorized: Bool = false
     ) {
         self.flightReadiness = flightReadiness
         self.mappedID = mappedID
@@ -48,6 +53,7 @@ public struct RidTrackArchiveMetadata: Sendable, Equatable {
         self.localArchiveOnly = localArchiveOnly
         self.flightID = flightID
         self.capturedVideoDescription = capturedVideoDescription
+        self.trackerUploadAuthorized = trackerUploadAuthorized
     }
 }
 
@@ -84,6 +90,7 @@ public enum RidTrackGeoJSON {
             "rid": track.aircraftID,
             "mid": mappedID,
             "local_archive_only": metadata.localArchiveOnly,
+            "tracker_upload_authorized": metadata.trackerUploadAuthorized,
             "incident": metadata.incident,
             "op_period": metadata.operationalPeriod,
             "map_id": metadata.mapID,

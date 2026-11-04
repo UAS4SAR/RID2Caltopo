@@ -43,16 +43,22 @@ public final class RecordingFinalizationActivity: @unchecked Sendable {
 }
 
 /// Monotonic idle grace period; queued/running finalization does not consume it.
+/// An absolute limit bounds total retry time regardless of finalization activity.
 public struct RecordingLinkRetryWindow: Sendable {
     private let grace: TimeInterval
+    private let absoluteLimit: TimeInterval
+    private let startedAt: TimeInterval
     private var deadline: TimeInterval
 
-    public init(now: TimeInterval, grace: TimeInterval = 30) {
+    public init(now: TimeInterval, grace: TimeInterval = 30, absoluteLimit: TimeInterval = 600) {
         self.grace = grace
+        self.absoluteLimit = absoluteLimit
+        self.startedAt = now
         deadline = now + grace
     }
 
     public mutating func shouldRetry(now: TimeInterval, finalizing: Bool) -> Bool {
+        if now - startedAt >= absoluteLimit { return false }
         if finalizing { deadline = now + grace }
         return now < deadline
     }

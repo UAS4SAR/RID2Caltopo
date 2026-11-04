@@ -261,6 +261,19 @@ class AndroidClueStoreTest {
         assertEquals("Found beside trail", loaded.publishedDescription)
     }
 
+    @Test
+    fun allRecords_includesCluesAcrossMapsForDisplayWithoutSelectedMap() {
+        val root = temporaryFolder.newFolder("all-records-display")
+        val store = AndroidClueStore.forDirectory(root)
+        store.saveEncoded(clueRecord("a", "map:alpha"), byteArrayOf(1), byteArrayOf(2))
+        store.saveEncoded(clueRecord("b", "unassigned"), byteArrayOf(1), byteArrayOf(2))
+        store.saveEncoded(clueRecord("c", "map:bravo"), byteArrayOf(1), byteArrayOf(2))
+        // Display path matches iPad: every local clue is visible with no incident map selected.
+        val all = store.allRecords().map { it.id }.toSet()
+        assertEquals(setOf("a", "b", "c"), all)
+        assertEquals(listOf("b"), store.recordsForMap("unassigned").map { it.id })
+    }
+
     private fun clueRecord(id: String, mapKey: String) = AndroidClueRecord(
         id = id,
         mapKey = mapKey,

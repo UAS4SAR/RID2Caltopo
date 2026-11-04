@@ -328,6 +328,33 @@ public final class DefaultPeerCoordinator implements PeerCoordinator {
     }
 
     @Override
+    @Nullable
+    public String peerRecordingShortUrl(
+            @NonNull String[] candidates, long trackStartedAtMs, long trackEndedAtMs) {
+        // Peer presence is only stored by the tracker transport, regardless of which
+        // coordinator is currently active.
+        return TrackerPeerCoordinator.getInstance()
+                .peerRecordingShortUrl(candidates, trackStartedAtMs, trackEndedAtMs);
+    }
+
+    @Override
+    public boolean hasActivePeerOwner(@NonNull String remoteId) {
+        return activeCoordinator.hasActivePeerOwner(remoteId);
+    }
+
+    @Override
+    @NonNull
+    public String ownerGuidForRemoteId(@NonNull String remoteId) {
+        return activeCoordinator.ownerGuidForRemoteId(remoteId);
+    }
+
+    @Override
+    @NonNull
+    public String localZoneId() {
+        return activeCoordinator.localZoneId();
+    }
+
+    @Override
     public boolean isLocalAlertEligible(@NonNull String remoteId) {
         if (!trackerSelected) return true;
         return activeCoordinator.isLocalAlertEligible(remoteId);
@@ -687,7 +714,8 @@ public final class DefaultPeerCoordinator implements PeerCoordinator {
 
     private void replayConfirmation(@NonNull ActiveTrackRegistration registration) {
         CtDroneSpec spec = registration.droneSpec;
-        if (!CaltopoClient.IsCurrentPeerDroneConfirmed(spec.getRemoteId())) return;
+        // Only local Saves claim ownership. Peer drone_confirmed must shadow.
+        if (!CaltopoClient.IsCurrentLocallyConfirmedDrone(spec.getRemoteId())) return;
         activeCoordinator.onDroneConfirmed(
                 spec.getRemoteId(),
                 spec.getOrg() == null ? "" : spec.getOrg(),

@@ -483,6 +483,8 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
     private static final Set<String> SessionUnknownDroneRemoteIds = new HashSet<>();
     private static final Set<String> SessionConfirmedDroneRemoteIds = new HashSet<>();
     private static final Set<String> CurrentPeerConfirmedDroneRemoteIds = new HashSet<>();
+    /** Operator Saves on this device only — never peer drone_confirmed. */
+    private static final Set<String> CurrentLocallyConfirmedDroneRemoteIds = new HashSet<>();
 
     @NonNull
     private static String CanonicalRemoteId(@NonNull String remoteId) {
@@ -2875,6 +2877,7 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
         SessionUnknownDroneRemoteIds.clear();
         SessionConfirmedDroneRemoteIds.clear();
         CurrentPeerConfirmedDroneRemoteIds.clear();
+        CurrentLocallyConfirmedDroneRemoteIds.clear();
         DebugLevel = DebugLevelDebug;
         ClearDebugTagFilter();
         ArchivePermissionMissingFlag = false;
@@ -2898,6 +2901,7 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
         if (RejectNonCanonicalRemoteId("SaveDroneSpecConfirmation()", remoteId)) return;
         SessionConfirmedDroneRemoteIds.add(remoteId);
         CurrentPeerConfirmedDroneRemoteIds.add(remoteId);
+        CurrentLocallyConfirmedDroneRemoteIds.add(remoteId);
         String trimmedOrg = org.trim();
         String trimmedModel = model.trim();
         String trimmedOwner = owner.trim();
@@ -2947,6 +2951,8 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
         if (RejectNonCanonicalRemoteId("ApplyPeerDroneSpecConfirmation()", remoteId)) return;
         SessionConfirmedDroneRemoteIds.add(remoteId);
         CurrentPeerConfirmedDroneRemoteIds.add(remoteId);
+        // Peer confirmation must not look like a local Save for ownership replay.
+        CurrentLocallyConfirmedDroneRemoteIds.remove(remoteId);
 
         String trimmedOrg = org.trim();
         String trimmedModel = model.trim();
@@ -2985,6 +2991,7 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
         }
         activeDs.setCurrentFlightConfirmed(false);
         CurrentPeerConfirmedDroneRemoteIds.remove(remoteId);
+        CurrentLocallyConfirmedDroneRemoteIds.remove(remoteId);
         activeDs.setLocalArchiveOnly(true);
         // Durable Don't Publish for the live flight id — recovery and tracker upload must
         // honour this even if the process dies before archive() runs.
@@ -3071,13 +3078,22 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
         return CurrentPeerConfirmedDroneRemoteIds.contains(remoteId);
     }
 
-    /** Confirmations saved before the tracker coordinator exists. The caller replays them. */
+    /** True only when this device's operator Saved the current flight. */
+    public static boolean IsCurrentLocallyConfirmedDrone(@NonNull String remoteId) {
+        if (RejectNonCanonicalRemoteId("IsCurrentLocallyConfirmedDrone()", remoteId)) return false;
+        return CurrentLocallyConfirmedDroneRemoteIds.contains(remoteId);
+    }
+
+    /**
+     * Local Saves that arrived before the tracker coordinator existed. Peer drone_confirmed
+     * must never appear here — replaying those as local Saves steals LiveTrack ownership.
+     */
     @NonNull
     public static java.util.List<CtDroneSpec> SnapshotCurrentPeerConfirmedDroneSpecs() {
-        String[] ids = CurrentPeerConfirmedDroneRemoteIds.toArray(new String[0]);
+        String[] ids = CurrentLocallyConfirmedDroneRemoteIds.toArray(new String[0]);
         java.util.ArrayList<CtDroneSpec> specs = new java.util.ArrayList<>(ids.length);
         for (String remoteId : ids) {
-            if (!IsCurrentPeerDroneConfirmed(remoteId)) continue;
+            if (!IsCurrentLocallyConfirmedDrone(remoteId)) continue;
             CtDroneSpec spec = GetDroneSpec(remoteId);
             if (spec != null && !spec.isLocalArchiveOnly()) specs.add(spec);
         }
@@ -3087,6 +3103,7 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
     public static void ClearCurrentPeerDroneConfirmation(@NonNull String remoteId) {
         if (RejectNonCanonicalRemoteId("ClearCurrentPeerDroneConfirmation()", remoteId)) return;
         CurrentPeerConfirmedDroneRemoteIds.remove(remoteId);
+        CurrentLocallyConfirmedDroneRemoteIds.remove(remoteId);
     }
 
     /**
@@ -3099,6 +3116,7 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
         if (RejectNonCanonicalRemoteId("ClearCurrentFlightConfirmation()", remoteId)) return;
         SessionConfirmedDroneRemoteIds.remove(remoteId);
         CurrentPeerConfirmedDroneRemoteIds.remove(remoteId);
+        CurrentLocallyConfirmedDroneRemoteIds.remove(remoteId);
         CtDroneSpec activeDs = GetState().droneSpecTable.get(remoteId);
         if (activeDs != null) {
             activeDs.setCurrentFlightConfirmed(false);
