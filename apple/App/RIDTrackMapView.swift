@@ -5545,6 +5545,7 @@ private struct OperationalMKMapView: UIViewRepresentable {
                        positionTimingByAircraftID[track.aircraftID] != receivedAt {
                         positionTimingByAircraftID[track.aircraftID] = receivedAt
                         let receivedMs = Int64(receivedAt.timeIntervalSince1970 * 1_000)
+                        ClueTerrainDiagnostics.noteMainWork("map.annot")
                         AppleLog.info("RIDTiming", "stage=annotation_update aircraft=\(track.aircraftID) inset=\(inset) receivedMs=\(receivedMs) receiveToAnnotationMs=\(Int(Date().timeIntervalSince(receivedAt) * 1_000))")
                     }
                     renderedAircraftIDs.insert(track.aircraftID)

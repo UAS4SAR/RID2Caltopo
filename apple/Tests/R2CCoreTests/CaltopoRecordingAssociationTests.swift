@@ -86,3 +86,17 @@ import Testing
     #expect(eligibility == .notUploadAuthorized)
     #expect(TrackerArchiveUploadContract.shouldMarkReported(statusCode: 409))
 }
+
+@Test func videoLinkTrueFalseWordingMatchesArchivePatchLogs() {
+    let withLink = "Added deferred recording link to archived track ABC videoLink=true"
+    let without = "Recording did not become linkable before the deferred CalTopo link deadline. videoLink=false"
+    #expect(withLink.contains("videoLink=true"))
+    #expect(without.contains("videoLink=false"))
+    #expect(CaltopoArchiveDescription.alreadyContainsVideoLink("https://example.invalid/v/abc"))
+}
+
+@Test func peerTrafficHeadingRoundsToOneDecimal() {
+    let heading = 123.456789
+    let text = String(format: "%.1f", heading)
+    #expect(text == "123.5")
+}

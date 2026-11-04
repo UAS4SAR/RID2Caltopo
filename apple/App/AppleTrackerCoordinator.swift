@@ -451,6 +451,11 @@ enum AppleManagedOrganizationConfig {
 
 }
 
+private struct SendableJSONObject: @unchecked Sendable {
+    let value: NSDictionary
+    init(_ value: NSDictionary) { self.value = value }
+}
+
 @MainActor
 final class AppleTrackerCoordinator: ObservableObject {
     static let reenrollmentRequiredStatusDetail =
@@ -617,6 +622,8 @@ final class AppleTrackerCoordinator: ObservableObject {
     /// Peer tablets' recording presence, keyed by deviceName. In-memory only; populated when a
     /// peer `video_stream_advertisement` is received. Small, bounded, never touches disk.
     private var peerManagedVideoRecordingsByDevice: [String: [ApplePeerVideoRecording]] = [:]
+    private var lastOwnershipLogKey = ""
+    private var lastManagedThumbnailLogAt = Date.distantPast
     private var managedVideoThumbnailTasks: [String: Task<Void, Never>] = [:]
     private var managedVideoThumbnailAttempts: [String: UUID] = [:]
     private var recordingThumbnailTaskIDs: Set<String> = []
@@ -2005,24 +2012,36 @@ final class AppleTrackerCoordinator: ObservableObject {
                       jpeg.count <= 256 * 1024
                 else { return }
                 guard !Task.isCancelled,
+                      self.managedVideoThumbnailAttempts[sessionID] == attemptID
+                else { return }
+                ClueTerrainDiagnostics.noteMainWork("thumb.await")
+                // Base64 + presence JSON packaging off MainActor (was hitching Main).
+                let packaged = await Task.detached(priority: .utility) {
+                    let revision = String(Int64(Date().timeIntervalSince1970 * 1_000))
+                    let base64 = jpeg.base64EncodedString()
+                    return (revision: revision, base64: base64)
+                }.value
+                guard !Task.isCancelled,
                       self.managedVideoThumbnailAttempts[sessionID] == attemptID,
                       let index = self.managedVideoStreams.firstIndex(where: {
                           $0.sessionId == sessionID
                       })
                 else { return }
-                // A capture timestamp guarantees a new CalTopo URL even when
-                // a stationary frame compresses to identical JPEG bytes.
-                let revision = String(Int64(Date().timeIntervalSince1970 * 1_000))
+                ClueTerrainDiagnostics.noteMainWork("thumb.apply", bytes: packaged.base64.utf8.count)
                 self.managedVideoStreams[index] = self.managedVideoStreams[index]
                     .withThumbnail(
-                        revision: revision,
-                        jpegBase64: jpeg.base64EncodedString()
+                        revision: packaged.revision,
+                        jpegBase64: packaged.base64
                     )
                 let droneDesignator = self.managedVideoStreams[index].droneDesignator
-                AppleLog.debug(
-                    "TrackerPeer",
-                    "Managed video thumbnail captured session=\(sessionID) drone=\(droneDesignator) revision=\(revision)"
-                )
+                let now = Date()
+                if now.timeIntervalSince(self.lastManagedThumbnailLogAt) >= 5 {
+                    self.lastManagedThumbnailLogAt = now
+                    AppleLog.debug(
+                        "TrackerPeer",
+                        "Managed video thumbnail captured session=\(sessionID) drone=\(droneDesignator) revision=\(packaged.revision)"
+                    )
+                }
                 self.sendManagedVideoPresence()
                 self.managedVideoThumbnailUpdatedHandler?(droneDesignator)
             }
@@ -3034,7 +3053,7 @@ final class AppleTrackerCoordinator: ObservableObject {
             return
         }
         lastTrafficSentLogAtByKey[key] = now
-        let headingText = sighting.headingDegrees.map { String($0) } ?? "null"
+        let headingText = sighting.headingDegrees.map { String(format: "%.1f", $0) } ?? "null"
         let speedText = sighting.groundSpeedKnots.map { String($0) } ?? "null"
         AppleLog.info(
             "TrackerPeer",
@@ -3078,43 +3097,55 @@ final class AppleTrackerCoordinator: ObservableObject {
         else {
             return
         }
+        let incidentName = managedVideoIncidentName
+        let remoteControlEnabled = remoteControlPreference.enabled
+        let deviceName = AppleDeviceIdentity.displayName
+        let timeZone = TimeZone.current.identifier
+        let streams = managedVideoStreams.map { stream -> [String: Any] in
+            let source = managedVideoSourcesBySessionID[stream.sessionId]
+            let width = source?.sourceWidth ?? stream.sourceWidth
+            let height = source?.sourceHeight ?? stream.sourceHeight
+            let frameRate = source?.sourceFrameRate ?? stream.sourceFps
+            var advertised: [String: Any] = [
+                "sessionId": stream.sessionId,
+                "droneDesignator": stream.droneDesignator,
+                "sourceWidth": width,
+                "sourceHeight": height,
+                "sourceFps": frameRate,
+                "sourceBitrateBps": stream.sourceBitrateBps,
+                "sourceSizeBytes": stream.sourceSizeBytes,
+                "sourceCodec": stream.mediaKind == "recording" ? stream.sourceCodec : (width > 0 ? "H264" : stream.sourceCodec),
+                "mediaKind": stream.mediaKind,
+                "durationMs": stream.durationMs,
+                "thumbnailRevision": stream.thumbnailRevision,
+            ]
+            if let recordedAt = stream.recordedAt {
+                advertised["recordedAt"] = recordedAt
+            }
+            if let thumbnailJpegBase64 = stream.thumbnailJpegBase64 {
+                advertised["thumbnailJpegBase64"] = thumbnailJpegBase64
+            }
+            return advertised
+        }
         let payload: [String: Any] = [
             "type": "video_stream_advertisement",
-            "remoteControlEnabled": remoteControlPreference.enabled,
-            "incidentName": managedVideoIncidentName,
-            "deviceName": AppleDeviceIdentity.displayName,
-            "timeZone": TimeZone.current.identifier,
-            "streams": managedVideoStreams.map {
-                let source = managedVideoSourcesBySessionID[$0.sessionId]
-                let width = source?.sourceWidth ?? $0.sourceWidth
-                let height = source?.sourceHeight ?? $0.sourceHeight
-                let frameRate = source?.sourceFrameRate ?? $0.sourceFps
-                var advertised = [
-                    "sessionId": $0.sessionId,
-                    "droneDesignator": $0.droneDesignator,
-                    "sourceWidth": width,
-                    "sourceHeight": height,
-                    "sourceFps": frameRate,
-                    "sourceBitrateBps": $0.sourceBitrateBps,
-                    "sourceSizeBytes": $0.sourceSizeBytes,
-                    "sourceCodec": $0.mediaKind == "recording" ? $0.sourceCodec : (width > 0 ? "H264" : $0.sourceCodec),
-                    "mediaKind": $0.mediaKind,
-                    "durationMs": $0.durationMs,
-                    "thumbnailRevision": $0.thumbnailRevision,
-                ] as [String: Any]
-                if let recordedAt = $0.recordedAt {
-                    advertised["recordedAt"] = recordedAt
-                }
-                if let thumbnailJpegBase64 = $0.thumbnailJpegBase64 {
-                    advertised["thumbnailJpegBase64"] = thumbnailJpegBase64
-                }
-                return advertised
-            },
+            "remoteControlEnabled": remoteControlEnabled,
+            "incidentName": incidentName,
+            "deviceName": deviceName,
+            "timeZone": timeZone,
+            "streams": streams,
         ]
-        guard let data = try? JSONSerialization.data(withJSONObject: payload) else {
-            return
+        // Copy into an unchecked-Sendable box so JSON encoding can leave MainActor.
+        let boxed = SendableJSONObject((payload as NSDictionary).copy() as! NSDictionary)
+        ClueTerrainDiagnostics.noteMainWork("presence.schedule")
+        Task { [weak self] in
+            let data = await Task.detached(priority: .utility) {
+                try? JSONSerialization.data(withJSONObject: boxed.value)
+            }.value
+            guard let self, let data else { return }
+            ClueTerrainDiagnostics.noteMainWork("presence.send", bytes: data.count)
+            self.send(data)
         }
-        send(data)
     }
 
     func caltopoCameraMetadata(droneDesignator: String) -> CaltopoCameraMetadata? {
@@ -3272,10 +3303,14 @@ final class AppleTrackerCoordinator: ObservableObject {
     private func publish(_ event: TrackerCoordinationEvent) {
         switch event {
         case let .ownershipChanged(remoteID, ownerZoneID, localOwner, alertEligible):
-            AppleLog.info(
-                "TrackerPeer",
-                "Ownership remoteId=\(remoteID) ownerZoneId=\(ownerZoneID) local=\(localOwner) alertEligible=\(alertEligible)"
-            )
+            let key = "\(remoteID)|\(ownerZoneID)|\(localOwner)|\(alertEligible)"
+            if key != lastOwnershipLogKey {
+                lastOwnershipLogKey = key
+                AppleLog.info(
+                    "TrackerPeer",
+                    "Ownership remoteId=\(remoteID) ownerZoneId=\(ownerZoneID) local=\(localOwner) alertEligible=\(alertEligible)"
+                )
+            }
         case let .ownerExpired(remoteID):
             AppleLog.info("TrackerPeer", "Owner expired remoteId=\(remoteID)")
         case let .peersUpdated(peers):
@@ -3301,7 +3336,7 @@ final class AppleTrackerCoordinator: ObservableObject {
             let incidentPadText = traffic.incidentPadFeet.map { String($0) } ?? "null"
             let nearestDistanceText = traffic.shadowNearestDistanceMeters.map { String($0) } ?? "null"
             let schedulingPadText = traffic.shadowSchedulingPadFeet.map { String($0) } ?? "null"
-            let headingText = traffic.headingDegrees.map { String($0) } ?? "null"
+            let headingText = traffic.headingDegrees.map { String(format: "%.1f", $0) } ?? "null"
             let speedText = traffic.groundSpeedKnots.map { String($0) } ?? "null"
             AppleLog.info(
                 "TrackerPeer",

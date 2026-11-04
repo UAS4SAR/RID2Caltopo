@@ -382,6 +382,27 @@ public class WaypointTrack {
      * assigned any owner (standalone / tracker coordination idle) this device is the sole
      * recorder, so it is not treated as a non-owner.
      */
+
+    @NonNull
+    private String publishDecisionLabel() {
+        if (!archivedFlightConfirmed) return "unconfirmed";
+        if (archivedLocalOnly) {
+            try {
+                PeerCoordinator peers = R2cRuntimeRegistry.getDefaultRuntime().getPeerCoordinator();
+                String remote = archivedRemoteId == null ? "" : archivedRemoteId;
+                if (!remote.isEmpty() && peers.hasActivePeerOwner(remote)) {
+                    String zone = peers.ownerGuidForRemoteId(remote);
+                    if (zone == null || zone.isEmpty()) zone = "unknown";
+                    return "non-published (peer owner " + zone + ")";
+                }
+            } catch (Exception ignored) { }
+            return "local_only";
+        }
+        if (!archivedOkToLog) return "declined";
+        if (!archivedTrackerUploadAuthorized) return "tracker_skip";
+        return "publish";
+    }
+
     private static boolean isLocalFlightOwnerForUpload(@NonNull String remoteId) {
         if (remoteId.isEmpty()) return false;
         try {
@@ -1178,6 +1199,8 @@ public class WaypointTrack {
             }
             dataFilepath = todaysArchiveDir.findFile(fileName);
             CTDebug(TAG, String.format(Locale.US, "archive(): wrote %d coordinates to %s", numCoords, fileName));
+            CTDebug(TAG, String.format(Locale.US, "archive(%s): publish decision=%s",
+                    fileName, publishDecisionLabel()));
             if (archivedOkToLog && !archivedLocalOnly && archivedFlightConfirmed) {
                 CTDebug(TAG, String.format(Locale.US,
                         "archive(%s): Publishing...", fileName));
@@ -1219,9 +1242,9 @@ public class WaypointTrack {
             JSONObject properties = feature == null ? null : feature.optJSONObject("properties");
             if (properties == null) return;
             properties.put("description", videoUrl.trim());
-            CTDebug(TAG, "archive(): linked local captured video sessionId=" + recording.getSessionId());
+            CTDebug(TAG, "archive(): linked local captured video sessionId=" + recording.getSessionId() + " videoLink=true");
         } catch (Exception error) {
-            CTWarn(TAG, "archive(): local video link skipped", error);
+            CTWarn(TAG, "archive(): local video link skipped videoLink=false", error);
         }
     }
 

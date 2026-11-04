@@ -32,6 +32,7 @@ public final class FakeCalTopoSessionGateway implements CalTopoSessionGateway {
     public int recoveryDeleteResponseCode = 200;
 
     public boolean markerDeleteSucceeds = true;
+    public int markerDeleteResponseCode = 200;
     public boolean holdMarkerDeletes;
     public final List<Consumer<CaltopoOp>> markerDeleteCallbacks = new ArrayList<>();
     public final List<String> markerCleanupMaps = new ArrayList<>();
@@ -40,6 +41,7 @@ public final class FakeCalTopoSessionGateway implements CalTopoSessionGateway {
         markerCleanupMaps.add(mapId);
         record("deleteMarker", id, null);
         CaltopoOp op = new CaltopoOp(null);
+        op.responseCode = markerDeleteResponseCode;
         op.setOperationIsDone(markerDeleteSucceeds);
         if (done != null) {
             if(holdMarkerDeletes)markerDeleteCallbacks.add(done);

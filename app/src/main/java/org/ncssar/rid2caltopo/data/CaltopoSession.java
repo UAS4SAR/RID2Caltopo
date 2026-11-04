@@ -1146,7 +1146,12 @@ public class CaltopoSession {
         if (beforeDelete <= 500L) throw new IllegalStateException("Clock unavailable; marker cleanup retained");
         CaltopoOp op=new CaltopoOp(deleted -> {
             if (!deleted.success()) { if (done != null) done.accept(deleted); return; }
-            // Require explicit absence evidence; an empty delta or accepted DELETE is inconclusive.
+            // 400/404 mean the feature is already gone; do not require a tombstone delta.
+            if (deleted.responseCode == 400 || deleted.responseCode == 404) {
+                if (done != null) done.accept(deleted);
+                return;
+            }
+            // Require explicit absence evidence after a successful DELETE; an empty delta is inconclusive.
             CaltopoOp verification = new CaltopoOp(snapshot -> {
                 boolean absent = snapshot.success() && CaltopoMarkerVerification.confirmsAbsent(snapshot.responseJson, id);
                 snapshot.goodResponse = absent;

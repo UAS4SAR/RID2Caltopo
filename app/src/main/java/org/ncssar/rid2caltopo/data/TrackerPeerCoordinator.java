@@ -98,7 +98,7 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
     }
 
     private static final long HEARTBEAT_INTERVAL_MS = 15_000L;
-    private static final long LOG_SUMMARY_INTERVAL_MS = 300_000L;
+    private static final long LOG_SUMMARY_INTERVAL_MS = 60_000L;
     private static final long HEARTBEAT_RTT_ANOMALY_MS = 3_000L;
     private static final long HELLO_ACK_TIMEOUT_MS = 10_000L;
     private static final long HEARTBEAT_ACK_TIMEOUT_MS = 10_000L;
@@ -669,7 +669,7 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
                         source,
                         sequence,
                         Math.max(0L, nowMs - timestampMsec),
-                        String.valueOf(headingDegrees),
+                        headingDegrees == null ? "null" : String.format(Locale.US, "%.1f", headingDegrees),
                         String.valueOf(groundSpeedKnots),
                         Math.max(0L, nowMs - altitudeTimestampMsec),
                         altitude.getState(),
@@ -2292,17 +2292,19 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
         long rttMs = nowMs - lastHeartbeatSentAtMs;
         boolean leaseChanged = ownerLeaseExpireTs > 0 && ownerLeaseExpireTs != previousLease;
         boolean anomaly = rttMs >= HEARTBEAT_RTT_ANOMALY_MS;
-        String ackMsg = String.format(Locale.US,
-                "heartbeat_ack received: rttMs=%d ownerLeaseExpireTs=%d",
-                rttMs, ownerLeaseExpireTs);
-        if (anomaly || leaseChanged) {
+        // Keep the throttle key stable: rttMs changes every ack and must not defeat onChangeOnly.
+        String ackState = String.format(Locale.US,
+                "heartbeat_ack received: ownerLeaseExpireTs=%d", ownerLeaseExpireTs);
+        if (anomaly) {
             CTDebug(TAG, String.format(Locale.US,
-                    "heartbeat_ack received: seq=%d rttMs=%d ownerLeaseExpireTs=%d anomaly=%s leaseChanged=%s",
-                    ackSeq, rttMs, ownerLeaseExpireTs, anomaly, leaseChanged));
+                    "heartbeat_ack received: seq=%d rttMs=%d ownerLeaseExpireTs=%d anomaly=true leaseChanged=%s",
+                    ackSeq, rttMs, ownerLeaseExpireTs, leaseChanged));
         } else {
-            String ackOut = LogThrottle.emit("tracker.heartbeat_ack", ackMsg,
+            String ackOut = LogThrottle.emit("tracker.heartbeat_ack", ackState,
                     LOG_SUMMARY_INTERVAL_MS, true);
-            if (ackOut != null) CTDebug(TAG, ackOut);
+            if (ackOut != null) {
+                CTDebug(TAG, ackOut + String.format(Locale.US, " rttMs=%d", rttMs));
+            }
         }
         flushPendingConfirmations();
     }

@@ -2306,13 +2306,19 @@ final class RIDTrackViewModel: ObservableObject {
         }
         AppleLog.warning(
             "CalTopo",
-            "Recording did not become linkable before the deferred CalTopo link deadline."
+            "Recording did not become linkable before the deferred CalTopo link deadline. videoLink=false"
         )
     }
 }
 
 /// Counts clue terrain races (including losers still winding down) and main-thread hitches.
 enum ClueTerrainDiagnostics {
+    private struct RecentWork {
+        let uptime: TimeInterval
+        let tag: String
+        let bytes: Int
+    }
+
     private final class State: @unchecked Sendable {
         let lock = NSLock()
         var activeClueTerrainTasks = 0
@@ -2322,6 +2328,10 @@ enum ClueTerrainDiagnostics {
         var lastMapOverlayPointCount: Int = 0
         var lastHitchSourceLogAt: TimeInterval = 0
         var monitorStarted = false
+        var recentMainWork: [RecentWork] = []
+        var thumbPresenceCount: UInt64 = 0
+        var peerRecvCount: UInt64 = 0
+        var mapAnnotCount: UInt64 = 0
     }
 
     private static let state = State()
@@ -2339,6 +2349,28 @@ enum ClueTerrainDiagnostics {
         state.lock.unlock()
     }
 
+    /// Tag recent MainActor work so hitch source logs can attribute stalls.
+    static func noteMainWork(_ tag: String, bytes: Int = 0) {
+        let now = ProcessInfo.processInfo.systemUptime
+        state.lock.lock()
+        state.recentMainWork.append(RecentWork(uptime: now, tag: tag, bytes: bytes))
+        if state.recentMainWork.count > 32 {
+            state.recentMainWork.removeFirst(state.recentMainWork.count - 32)
+        }
+        switch tag {
+        case let t where t.hasPrefix("thumb") || t.hasPrefix("presence"):
+            state.thumbPresenceCount &+= 1
+        case let t where t.hasPrefix("peer"):
+            state.peerRecvCount &+= 1
+        case let t where t.hasPrefix("map"):
+            state.mapAnnotCount &+= 1
+        default:
+            break
+        }
+        state.lock.unlock()
+        startMonitorIfNeeded()
+    }
+
     static func noteMainHitch() {
         state.lock.lock()
         state.mainHitchCount &+= 1
@@ -2347,17 +2379,28 @@ enum ClueTerrainDiagnostics {
         let mapRebuilds = state.mapOverlayRebuildCount
         let mapMs = state.lastMapOverlayRebuildMs
         let mapPoints = state.lastMapOverlayPointCount
+        let thumbs = state.thumbPresenceCount
+        let peers = state.peerRecvCount
+        let annots = state.mapAnnotCount
         let now = ProcessInfo.processInfo.systemUptime
+        let recent = state.recentMainWork.suffix(8).map { work in
+            let ageMs = Int((now - work.uptime) * 1_000)
+            if work.bytes > 0 {
+                return "\(work.tag)@\(ageMs)ms/\(work.bytes)B"
+            }
+            return "\(work.tag)@\(ageMs)ms"
+        }
         let shouldLogSources = now - state.lastHitchSourceLogAt >= 1.0
         if shouldLogSources { state.lastHitchSourceLogAt = now }
         state.lock.unlock()
         guard shouldLogSources else { return }
+        let recentText = recent.isEmpty ? "none" : recent.joined(separator: ",")
         AppleLog.info(
             "ClueTerrain",
             String(
-                format: "hitch sources mainHitchCount=%llu activeClueTerrainTasks=%d mapOverlayRebuilds=%llu lastMapOverlayMs=%.1f lastMapOverlayPoints=%d",
+                format: "hitch sources mainHitchCount=%llu activeClueTerrainTasks=%d mapOverlayRebuilds=%llu lastMapOverlayMs=%.1f lastMapOverlayPoints=%d thumbPresence=%llu peerRecv=%llu mapAnnot=%llu recent=%@",
                 locale: Locale(identifier: "en_US_POSIX"),
-                hitches, tasks, mapRebuilds, mapMs, mapPoints
+                hitches, tasks, mapRebuilds, mapMs, mapPoints, thumbs, peers, annots, recentText
             )
         )
     }
@@ -2368,6 +2411,7 @@ enum ClueTerrainDiagnostics {
         state.lastMapOverlayRebuildMs = elapsedMs
         state.lastMapOverlayPointCount = pointCount
         state.lock.unlock()
+        noteMainWork("map.overlay", bytes: pointCount)
     }
 
     private static func snapshot() -> (tasks: Int, hitches: UInt64, mapRebuilds: UInt64) {

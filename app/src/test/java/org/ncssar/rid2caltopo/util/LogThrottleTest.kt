@@ -64,4 +64,72 @@ class LogThrottleTest {
         nowMs.addAndGet(1L)
         assertTrue(LogThrottle.shouldLog("s", 1_000L))
     }
+
+    @Test
+    fun heartbeatStyleStableStateMessage_summarizesAtSixtySeconds() {
+        assertEquals(
+            "heartbeat_ack received: ownerLeaseExpireTs=0",
+            LogThrottle.emit(
+                "tracker.heartbeat_ack",
+                "heartbeat_ack received: ownerLeaseExpireTs=0",
+                minIntervalMs = 60_000L,
+                onChangeOnly = true,
+            ),
+        )
+        // Changing rtt must not be part of the throttle message.
+        assertNull(
+            LogThrottle.emit(
+                "tracker.heartbeat_ack",
+                "heartbeat_ack received: ownerLeaseExpireTs=0",
+                minIntervalMs = 60_000L,
+                onChangeOnly = true,
+            ),
+        )
+        nowMs.addAndGet(60_000L)
+        assertEquals(
+            "heartbeat_ack received: ownerLeaseExpireTs=0 (repeated 1×)",
+            LogThrottle.emit(
+                "tracker.heartbeat_ack",
+                "heartbeat_ack received: ownerLeaseExpireTs=0",
+                minIntervalMs = 60_000L,
+                onChangeOnly = true,
+            ),
+        )
+    }
+
+    @Test
+    fun bridgeSummary_emitsAtMostOncePerFiveSeconds() {
+        assertTrue(LogThrottle.shouldLog("dronescout.bridge.summary", 5_000L))
+        assertFalse(LogThrottle.shouldLog("dronescout.bridge.summary", 5_000L))
+        nowMs.addAndGet(5_000L)
+        assertTrue(LogThrottle.shouldLog("dronescout.bridge.summary", 5_000L))
+    }
+
+    @Test
+    fun mapSuppress_logsOncePerFlightKey() {
+        assertNotNull(
+            LogThrottle.emit(
+                "map.suppress.rid/flight1",
+                "newWaypoint(): non-published (peer owner zone-a)",
+                0L,
+                true,
+            ),
+        )
+        assertNull(
+            LogThrottle.emit(
+                "map.suppress.rid/flight1",
+                "newWaypoint(): non-published (peer owner zone-a)",
+                0L,
+                true,
+            ),
+        )
+        assertNotNull(
+            LogThrottle.emit(
+                "map.suppress.rid/flight2",
+                "newWaypoint(): non-published (peer owner zone-a)",
+                0L,
+                true,
+            ),
+        )
+    }
 }

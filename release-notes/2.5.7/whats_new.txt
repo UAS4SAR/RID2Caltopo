@@ -19,4 +19,5 @@ Latest changes:
 - Interrupted reconstructions are shown as interrupted and can resume; failed jobs no longer stay stuck as running.
 - Connect to Pilot stays available while a reconstruction is running.
 - Fewer redundant log messages, in a more compact format.
+- Device marker cleanup only removes markers this tablet published, and stops retrying once they are gone.
 - Clue photos now stay on their clue marker after terrain correction, and existing drifted photos are repaired.

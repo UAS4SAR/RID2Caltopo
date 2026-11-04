@@ -64,6 +64,7 @@ import org.ncssar.rid2caltopo.app.AppIdleAlarmReceiver;
 import org.ncssar.rid2caltopo.app.MediaMTXService;
 import org.ncssar.rid2caltopo.app.R2CActivity;
 import org.ncssar.rid2caltopo.app.R2CApplication;
+import org.ncssar.rid2caltopo.util.LogThrottle;
 import org.ncssar.rid2caltopo.app.ScanningService;
 import org.ncssar.rid2caltopo.notam.NotamCenter;
 import org.ncssar.rid2caltopo.airspace.AirspaceCenter;
@@ -3005,6 +3006,40 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
         UpdateDroneSpecs();
     }
 
+
+    /** Once per flight: peer-owned team drones log non-published; others keep a precise suppress reason. */
+    private static void logMapSuppressedOnce(@NonNull CtDroneSpec droneSpec) {
+        String remoteId = droneSpec.getRemoteId();
+        String mappedId = droneSpec.getMappedId();
+        String flightKey = remoteId + "/" + (droneSpec.trackLabel() == null ? mappedId : droneSpec.trackLabel());
+        boolean team = IsTrackerUploadIdentityForConfiguredOrg(remoteId, droneSpec.getOrg());
+        String message;
+        try {
+            PeerCoordinator peers = R2cRuntimeRegistry.getDefaultRuntime().getPeerCoordinator();
+            if (team && peers.hasActivePeerOwner(remoteId)) {
+                String zone = peers.ownerGuidForRemoteId(remoteId);
+                if (zone == null || zone.isEmpty()) zone = "unknown";
+                message = String.format(Locale.US,
+                        "newWaypoint(): non-published (peer owner %s) remoteId=%s mappedId=%s",
+                        zone, remoteId, mappedId);
+            } else if (team) {
+                message = String.format(Locale.US,
+                        "newWaypoint(): map-suppressed team drone remoteId=%s mappedId=%s",
+                        remoteId, mappedId);
+            } else {
+                message = String.format(Locale.US,
+                        "newWaypoint(): map-suppressed non-team drone remoteId=%s mappedId=%s",
+                        remoteId, mappedId);
+            }
+        } catch (Exception error) {
+            message = String.format(Locale.US,
+                    "newWaypoint(): map-suppressed remoteId=%s mappedId=%s",
+                    remoteId, mappedId);
+        }
+        String out = LogThrottle.emit("map.suppress." + flightKey, message, 0L, true);
+        if (out != null) CTDebug(TAG, out);
+    }
+
     private static boolean shouldSuppressMapTracking(@NonNull CtDroneSpec droneSpec) {
         String remoteId = droneSpec.getRemoteId().trim();
         String mappedId = droneSpec.getMappedId().trim();
@@ -4779,9 +4814,7 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
             logWaypointSideEffectIfSlow("proximity.updateDrones.suppressed", droneSpec,
                     System.currentTimeMillis() - proximityStartedAtMs);
             if (CTDebugEnabled(TAG)) {
-                CTDebug(TAG, String.format(Locale.US,
-                        "newWaypoint(): map-suppressed non-team drone remoteId=%s mappedId=%s",
-                        droneSpec.getRemoteId(), droneSpec.getMappedId()));
+                logMapSuppressedOnce(droneSpec);
             }
             logWaypointSideEffectIfSlow("total.suppressed", droneSpec,
                     System.currentTimeMillis() - totalStartedAtMs);

@@ -2797,6 +2797,10 @@ public class CaltopoMap {
     private static DeviceMarkerJournal markerJournal;
     private static final java.util.Set<String> activeMarkerKeys=java.util.concurrent.ConcurrentHashMap.newKeySet();
     private static final java.util.Set<String> deletingMarkerKeys=java.util.concurrent.ConcurrentHashMap.newKeySet();
+    /** Failed cleanup attempts per journal key; terminal after MAX_MARKER_CLEANUP_ATTEMPTS. */
+    private static final java.util.concurrent.ConcurrentHashMap<String, Integer> markerCleanupAttempts =
+            new java.util.concurrent.ConcurrentHashMap<>();
+    private static final int MAX_MARKER_CLEANUP_ATTEMPTS = 3;
     // Worker-owned, one latest publication per marker while an earlier DELETE is in flight.
     private static final java.util.Map<String,Runnable> deferredMarkerPublications=new java.util.HashMap<>();
     private static java.util.function.Supplier<DeviceMarkerJournal> markerJournalFactory = () ->
@@ -2910,8 +2914,28 @@ public class CaltopoMap {
         try {
             return cleanup.apply(entry.marker,op->CaltopoMarkerWork.execute(()->{
                 try {
-                    if(op!=null&&op.success())markerJournal().acknowledge(entry);
-                    CTDebug(TAG,"Marker cleanup map="+entry.map+" id="+entry.marker+" success="+(op!=null&&op.success()));
+                    boolean ok = op != null && op.success();
+                    int code = op != null ? op.responseCode : -1;
+                    // 401/403: cannot delete (gone-as-forbidden or not ours) — stop retrying.
+                    boolean terminalAuth = code == 401 || code == 403;
+                    boolean done = ok || terminalAuth;
+                    if (!done) {
+                        int attempts = markerCleanupAttempts.merge(entry.key(), 1, Integer::sum);
+                        if (attempts >= MAX_MARKER_CLEANUP_ATTEMPTS) {
+                            done = true;
+                            CTWarn(TAG, "Marker cleanup gave up after " + attempts
+                                    + " attempts map=" + entry.map + " id=" + entry.marker
+                                    + " responseCode=" + code);
+                        }
+                    }
+                    if (done) {
+                        markerJournal().acknowledge(entry);
+                        markerCleanupAttempts.remove(entry.key());
+                    }
+                    CTDebug(TAG, "Marker cleanup map=" + entry.map + " id=" + entry.marker
+                            + " success=" + ok + " responseCode=" + code
+                            + (terminalAuth ? " terminal=auth" : "")
+                            + (done && !ok ? " recorded=done" : ""));
                 }catch(Exception error){CTWarn(TAG,"Marker cleanup acknowledgement not persisted",error);}
                 finally{
                     deletingMarkerKeys.remove(entry.key());
@@ -3065,13 +3089,20 @@ public class CaltopoMap {
         long wait=shouldWaitForMarkerDeleteAck()?Math.min(maxWaitInMilliseconds,MARKER_DELETE_WAIT_MS):0;
         final String markerID = GetMyUUID();
         final String resolvedID = ResolvedMyDeviceMarkerId;
+        // Capture before ResetMapConnection clears DeviceMarkerAllowed on the caller thread.
+        final boolean publishedThisSession = DeviceMarkerAllowed;
         final var cleanup = getCurrentRuntime().getCalTopoSessionGateway().prepareMarkerCleanup(map);
         CaltopoMarkerWork.execute(() -> {
         try {
             if (!domain.equals(CaltopoClient.GetCaltopoDomainAndPort())) return;
-            // Also enroll legacy markers published before the durable journal existed.
-            markerJournal().arm(domain,map,markerID,markerID);
-            if(resolvedID!=null&&!resolvedID.isEmpty()&&!resolvedID.equals(markerID))markerJournal().arm(domain,map,resolvedID,markerID);
+            // Only enroll markers this session published. Never invent ownership from a
+            // downloaded map feature or from GetMyUUID alone when DeviceMarkerAllowed is false.
+            if (publishedThisSession && !markerID.isEmpty()) {
+                markerJournal().arm(domain, map, markerID, markerID);
+            }
+            if (resolvedID != null && !resolvedID.isEmpty() && !resolvedID.equals(markerID)) {
+                markerJournal().arm(domain, map, resolvedID, markerID);
+            }
             for(DeviceMarkerJournal.Entry entry:markerJournal().entries())if(entry.domain.equals(domain)&&entry.map.equals(map)) {
                 activeMarkerKeys.remove(entry.key());
                 CaltopoOp op=deleteJournalMarker(entry, cleanup);

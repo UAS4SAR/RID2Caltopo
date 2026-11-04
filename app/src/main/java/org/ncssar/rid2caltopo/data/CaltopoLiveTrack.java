@@ -407,7 +407,7 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
                     sessionId
             );
         } catch (Exception error) {
-            CTWarn(TAG, "capturedVideoUrl timed out or failed; deferring video link", error);
+            CTWarn(TAG, "capturedVideoUrl timed out or failed; deferring video link videoLink=false", error);
             return null;
         }
     }
@@ -594,7 +594,7 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
                 patchedFeature,
                 operation -> {
                     if (operation.success()) {
-                        CTDebug(TAG, "Added deferred recording link to archived track " + trackId);
+                        CTDebug(TAG, "Added deferred recording link to archived track " + trackId + " videoLink=true");
                         CaltopoMap.RequestMapRefreshNow();
                     } else {
                         retryDeferredVideoDescriptionUpdate(
@@ -614,7 +614,7 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
             @Nullable java.util.function.BiFunction<JSONObject, java.util.function.Consumer<CaltopoOp>, CaltopoOp> updateArchivedTrack
     ) {
         if (!retryWindow.shouldRetry(RecordingFinalizationActivity.shared.isActive(candidates))) {
-            CTWarn(TAG, "Recording did not become available before the deferred CalTopo link deadline.");
+            CTWarn(TAG, "Recording did not become available before the deferred CalTopo link deadline. videoLink=false");
             return;
         }
         DeferredVideoLinkExecutor.schedule(
@@ -923,8 +923,9 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
                     AwaitingMapFlights.confirmArchive(
                             archivedLiveTrackId, myRemoteId, work.durableJournalId, folderTitle);
                     CTInfo(TAG, String.format(Locale.US,
-                            "CalTopo track archived id=%s folder=%s",
-                            archivedLiveTrackId, folderTitle));
+                            "CalTopo track archived id=%s folder=%s videoLink=%s",
+                            archivedLiveTrackId, folderTitle,
+                            descriptionHasVideoLink(work.feature) ? "true" : "false"));
                     if (work.durableJournalId != null) {
                         WaypointTrackJournal.markFinishedAndRemove(work.durableJournalId);
                     }
@@ -1188,8 +1189,8 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
                 droneSpec.getRemoteId(),
                 segmentTrackLabel.split("_", 2)[0]
         };
-        CTDebug(TAG, String.format(Locale.US, "archiveTrackOnCaltopo(%s): Archiving track with %d points.",
-                trackLabel, size));
+        CTDebug(TAG, String.format(Locale.US, "archiveTrackOnCaltopo(%s): Archiving track with %d points. videoLink=%s",
+                trackLabel, size, descriptionHasVideoLink(feature) ? "true" : "false"));
         boolean resetPhysical = prepareResetPhysicalSegmentLocked();
         String physicalLabel = segmentTrackLabel;
         localOwner = false;
@@ -1301,8 +1302,9 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
                     AwaitingMapFlights.confirmArchive(
                             archivedLiveTrackId, myRemoteId, work.durableJournalId, folderTitle);
                     CTInfo(TAG, String.format(Locale.US,
-                            "CalTopo track archived id=%s folder=%s",
-                            archivedLiveTrackId, folderTitle));
+                            "CalTopo track archived id=%s folder=%s videoLink=%s",
+                            archivedLiveTrackId, folderTitle,
+                            descriptionHasVideoLink(feature) ? "true" : "false"));
                     if (work.durableJournalId != null) {
                         WaypointTrackJournal.markFinishedAndRemove(work.durableJournalId);
                     }

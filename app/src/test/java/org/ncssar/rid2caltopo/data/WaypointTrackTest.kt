@@ -559,6 +559,31 @@ class WaypointTrackTest {
         WaypointTrack.WaypointCount = 0
     }
 
+
+    @Test
+    fun publishDecisionLabel_reportsLocalOnlyWhenArchiveOnly() {
+        val drone = activeDrone("RIDLOCALONLY1", "1sar7DjMtrc4td").apply {
+            setLocalArchiveOnly(true)
+            setCurrentFlightConfirmed(true)
+        }
+        val track = WaypointTrack(drone.trackLabel(), drone)
+        track.prepareForArchive()
+        val method = WaypointTrack::class.java.getDeclaredMethod("publishDecisionLabel").apply { isAccessible = true }
+        assertEquals("local_only", method.invoke(track))
+    }
+
+    @Test
+    fun publishDecisionLabel_reportsUnconfirmedWhenFlightNotConfirmed() {
+        CaltopoClient.ClearCurrentPeerDroneConfirmation("RIDUNCONF2")
+        val drone = activeDrone("RIDUNCONF2", "1sar7DjMtrc4td").apply {
+            setCurrentFlightConfirmed(false)
+        }
+        val track = WaypointTrack(drone.trackLabel(), drone)
+        track.prepareForArchive()
+        val method = WaypointTrack::class.java.getDeclaredMethod("publishDecisionLabel").apply { isAccessible = true }
+        assertEquals("unconfirmed", method.invoke(track))
+    }
+
     private class BlockingArchiveTrack(trackLabel: String, droneSpec: CtDroneSpec) :
         WaypointTrack(trackLabel, droneSpec) {
         val archiveStarted = CountDownLatch(1)

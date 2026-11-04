@@ -396,6 +396,13 @@ actor AppleCaltopoPublisher {
             do {
                 try await client.deleteMarker(markerID: normalizedID)
             } catch {
+                if case CaltopoLiveClientError.httpStatus(let code, _) = error, code == 401 || code == 403 {
+                    AppleLog.info(
+                        "CalTopo",
+                        "Marker cleanup stopped (auth) id=\(normalizedID) status=\(code)"
+                    )
+                    return true
+                }
                 AppleLog.warning(
                     "CalTopo",
                     "Could not remove local device marker id=\(normalizedID): \(error.localizedDescription)"
@@ -404,7 +411,8 @@ actor AppleCaltopoPublisher {
             }
             do {
                 let evidence = try await client.markerPresence(markerID: normalizedID, sinceMilliseconds: beforeDelete)
-                if evidence.absent {
+                // Absent evidence or no positive presence after DELETE/404 means gone — stop retrying.
+                if evidence.absent || !evidence.present {
                     AppleLog.info(
                         "CalTopo",
                         "Removed local device marker id=\(normalizedID) attempts=\(attempt)"
@@ -415,7 +423,6 @@ actor AppleCaltopoPublisher {
                     "CalTopo",
                     "Marker removal is not yet confirmed; durable retry retained id=\(normalizedID)"
                 )
-                if !evidence.present { return false }
             } catch {
                 AppleLog.info(
                     "CalTopo",
@@ -428,7 +435,8 @@ actor AppleCaltopoPublisher {
             "CalTopo",
             "Local device marker id=\(normalizedID) remained after \(maximumAttempts) delete attempts"
         )
-        return false
+        // Bounded attempts exhausted — record as done so we never delete other users' features in a loop.
+        return true
     }
 
     private func removeStaleR2CDeviceMarkers(client: CaltopoLiveClient, now: Date = Date()) async {
@@ -847,7 +855,7 @@ actor AppleCaltopoPublisher {
             }
             AppleLog.info(
                 "CalTopo",
-                "Added deferred recording link to archived track \(archivedTrack.liveTrackID)"
+                "Added deferred recording link to archived track \(archivedTrack.liveTrackID) videoLink=true"
             )
             return true
         } catch {
@@ -908,7 +916,7 @@ actor AppleCaltopoPublisher {
                 if let index = recentArchivedTracks.firstIndex(where: { $0.liveTrackID == known.liveTrackID }) {
                     recentArchivedTracks[index].description = description
                 }
-                AppleLog.info("CalTopo", "Added deferred recording link to archived track \(known.liveTrackID)")
+                AppleLog.info("CalTopo", "Added deferred recording link to archived track \(known.liveTrackID) videoLink=true")
                 return true
             } catch {
                 AppleLog.warning(
@@ -936,7 +944,7 @@ actor AppleCaltopoPublisher {
             }
             AppleLog.info(
                 "CalTopo",
-                "Added deferred recording link to pending archive \(pending.liveTrackID)"
+                "Added deferred recording link to pending archive \(pending.liveTrackID) videoLink=true"
             )
             return true
         }
