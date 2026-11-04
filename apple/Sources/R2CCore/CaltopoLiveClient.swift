@@ -506,6 +506,8 @@ public actor CaltopoLiveClient {
     }
 
     /// Edit an already-published photo-clue marker position (same marker id; never duplicates).
+    /// Marker-only: used for lost-photo / folder move. Geometry edits that must keep the linked
+    /// MapMediaObject aligned use ``updatePhotoClueGeometry``.
     public func updatePhotoClueMarker(
         markerID: String,
         latitude: Double,
@@ -515,6 +517,152 @@ public actor CaltopoLiveClient {
         folderID: String?,
         createdMilliseconds: Int64,
         now: Date = Date()
+    ) async throws {
+        try await postPhotoClueMarker(
+            markerID: markerID,
+            latitude: latitude,
+            longitude: longitude,
+            title: title,
+            description: description,
+            folderID: folderID,
+            createdMilliseconds: createdMilliseconds,
+            now: now
+        )
+    }
+
+    /// Edit Marker and MapMediaObject to the same Point. Does not re-upload media bytes.
+    /// Fails when the media link is missing so deferred refine can retry after publish.
+    /// On Apple the MapMediaObject feature id is the media UUID (Android uses defaultStoredPhotoLinkId).
+    public func updatePhotoClueGeometry(
+        markerID: String,
+        mediaID: UUID,
+        latitude: Double,
+        longitude: Double,
+        title: String,
+        description: String,
+        folderID: String?,
+        createdMilliseconds: Int64,
+        now: Date = Date()
+    ) async throws {
+        try await postPhotoClueMarker(
+            markerID: markerID,
+            latitude: latitude,
+            longitude: longitude,
+            title: title,
+            description: description,
+            folderID: folderID,
+            createdMilliseconds: createdMilliseconds,
+            now: now
+        )
+        let linkID = mediaID.uuidString.lowercased()
+        let existingData: Data
+        do {
+            existingData = try await perform(
+                makeMapMediaObjectSnapshotRequest(mediaID: linkID, now: now),
+                lane: clueLane,
+                timeout: CluePhotoUploadPolicy.jsonTimeoutSeconds
+            )
+        } catch let CaltopoLiveClientError.httpStatus(code, _) where code == 400 || code == 404 {
+            throw CaltopoLiveClientError.httpStatus(404, "link-missing")
+        }
+        guard let envelope = try JSONSerialization.jsonObject(with: existingData) as? [String: Any],
+              envelope["status"] as? String == "ok", envelope["error"] == nil
+        else { throw CaltopoLiveClientError.httpStatus(502, "MapMediaObject snapshot was not acknowledged.") }
+        let result = envelope["result"] as? [String: Any]
+        var linkProperties = CluePhotoGeometrySync.copyProperties(from: result)
+        if linkProperties.isEmpty {
+            linkProperties = [
+                "class": "MapMediaObject",
+                "parentId": "Marker:\(markerID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())",
+                "backendMediaId": linkID,
+                "marker-symbol": "aperture",
+            ]
+        }
+        let linkPath = "/api/v1/map/\(configuration.mapID)/MapMediaObject/\(linkID)"
+        let linkPayload: [String: Any] = [
+            "id": linkID,
+            "type": "Feature",
+            "geometry": CluePhotoGeometrySync.pointGeometry(latitude: latitude, longitude: longitude),
+            "properties": linkProperties,
+        ]
+        let linkData = try await perform(
+            makeSignedPostRequest(path: linkPath, object: linkPayload, now: now),
+            lane: clueLane,
+            timeout: CluePhotoUploadPolicy.jsonTimeoutSeconds
+        )
+        guard let linkEnvelope = try JSONSerialization.jsonObject(with: linkData) as? [String: Any],
+              linkEnvelope["status"] as? String == "ok", linkEnvelope["error"] == nil
+        else { throw CaltopoLiveClientError.httpStatus(502, "MapMediaObject geometry edit was not acknowledged.") }
+    }
+
+    /// When Marker and MapMediaObject Points differ by more than ~1 m, POST the link with the
+    /// Marker's geometry (properties preserved). Never touches /media/data.
+    /// Returns `true` when a repair POST was sent.
+    @discardableResult
+    public func repairDriftedPhotoClueLink(
+        markerID: UUID,
+        mediaID: UUID,
+        now: Date = Date()
+    ) async throws -> Bool {
+        let featureID = markerID.uuidString.lowercased()
+        let linkID = mediaID.uuidString.lowercased()
+        let jsonTimeout = CluePhotoUploadPolicy.jsonTimeoutSeconds
+        let markerData = try await perform(
+            makeMarkerSnapshotRequest(markerID: featureID, now: now),
+            lane: clueLane,
+            timeout: jsonTimeout
+        )
+        let linkData = try await perform(
+            makeMapMediaObjectSnapshotRequest(mediaID: linkID, now: now),
+            lane: clueLane,
+            timeout: jsonTimeout
+        )
+        guard let markerEnvelope = try JSONSerialization.jsonObject(with: markerData) as? [String: Any],
+              markerEnvelope["status"] as? String == "ok",
+              let markerResult = markerEnvelope["result"] as? [String: Any],
+              let linkEnvelope = try JSONSerialization.jsonObject(with: linkData) as? [String: Any],
+              linkEnvelope["status"] as? String == "ok",
+              let linkResult = linkEnvelope["result"] as? [String: Any],
+              let markerLL = CluePhotoGeometrySync.pointLatLng(from: markerResult),
+              let linkLL = CluePhotoGeometrySync.pointLatLng(from: linkResult)
+        else { return false }
+        guard CluePhotoGeometrySync.needsRepair(
+            markerLatitude: markerLL.latitude,
+            markerLongitude: markerLL.longitude,
+            linkLatitude: linkLL.latitude,
+            linkLongitude: linkLL.longitude
+        ) else { return false }
+        let linkProperties = CluePhotoGeometrySync.copyProperties(from: linkResult)
+        let linkPath = "/api/v1/map/\(configuration.mapID)/MapMediaObject/\(linkID)"
+        let linkPayload: [String: Any] = [
+            "id": linkID,
+            "type": "Feature",
+            "geometry": CluePhotoGeometrySync.pointGeometry(
+                latitude: markerLL.latitude,
+                longitude: markerLL.longitude
+            ),
+            "properties": linkProperties,
+        ]
+        let repaired = try await perform(
+            makeSignedPostRequest(path: linkPath, object: linkPayload, now: now),
+            lane: clueLane,
+            timeout: jsonTimeout
+        )
+        guard let repairedEnvelope = try JSONSerialization.jsonObject(with: repaired) as? [String: Any],
+              repairedEnvelope["status"] as? String == "ok", repairedEnvelope["error"] == nil
+        else { throw CaltopoLiveClientError.httpStatus(502, "MapMediaObject geometry repair was not acknowledged.") }
+        return true
+    }
+
+    private func postPhotoClueMarker(
+        markerID: String,
+        latitude: Double,
+        longitude: Double,
+        title: String,
+        description: String,
+        folderID: String?,
+        createdMilliseconds: Int64,
+        now: Date
     ) async throws {
         let normalizedID = markerID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !normalizedID.isEmpty,
@@ -539,10 +687,7 @@ public actor CaltopoLiveClient {
         let markerPayload: [String: Any] = [
             "id": normalizedID,
             "type": "Feature",
-            "geometry": [
-                "type": "Point",
-                "coordinates": [longitude, latitude],
-            ],
+            "geometry": CluePhotoGeometrySync.pointGeometry(latitude: latitude, longitude: longitude),
             "properties": markerProperties,
         ]
         let data = try await perform(

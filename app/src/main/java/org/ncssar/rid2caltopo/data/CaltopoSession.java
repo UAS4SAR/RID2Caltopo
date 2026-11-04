@@ -1698,7 +1698,8 @@ public class CaltopoSession {
 
     /**
      * Edit an existing photo-clue Marker position (same id). Does not re-upload media.
-     * Used when DEM ray-march resolves after a flat-ground Submit.
+     * Used for marker-only repairs (lost photo / folder move). Geometry edits that must keep
+     * the linked MapMediaObject aligned use {@link #UpdateStoredPhotoGeometry}.
      */
     public static CaltopoOp UpdateStoredPhotoMarker(String mapId, String teamId, String markerId,
             double lat, double lng, String title, String description, String folderId,
@@ -1717,16 +1718,8 @@ public class CaltopoSession {
         final CaltopoPersonalSession.Authorization personal = CaltopoPersonalSession.capture("");
         SubmitPhotoRequest(outer, () -> {
             try {
-                JSONObject geometry = new JSONObject().put("type", "Point").put("coordinates", new JSONArray().put(lng).put(lat));
-                JSONObject props = new JSONObject().put("class", "Marker").put("title", title)
-                    .put("description", description).put("created", createdAt).put("updated", System.currentTimeMillis())
-                    .put("marker-symbol", "Drone").put("marker-color", "#FF0000")
-                    .put("marker-size", "1").put("marker-visibility", "visible");
-                if (folderId != null && !folderId.trim().isEmpty()) {
-                    props.put("folderId", folderId);
-                }
-                JSONObject marker = new JSONObject().put("id", markerId).put("type", "Feature").put("geometry", geometry).put("properties", props);
-                CaltopoOp result = PhotoOp(personal, teamId, CtsMethod_t.POST, CALTOPO_MAP_API_V1 + mapId + "/Marker/" + markerId, marker, false);
+                CaltopoOp result = postStoredPhotoMarker(personal, teamId, mapId, markerId, lat, lng,
+                        title, description, folderId, createdAt);
                 outer.responseCode = result.responseCode;
                 outer.response = result.response;
                 CTDebug(TAG, "UpdateStoredPhotoMarker() result markerId='" + markerId + "' success=" +
@@ -1741,6 +1734,170 @@ public class CaltopoSession {
             return outer;
         });
         return outer;
+    }
+
+    /**
+     * Edit Marker and MapMediaObject to the same Point. Does not re-upload media bytes.
+     * Fails when the media link is missing so deferred refine can retry after publish.
+     *
+     * @param linkIdOverride blank uses {@link #defaultStoredPhotoLinkId}
+     */
+    public static CaltopoOp UpdateStoredPhotoGeometry(String mapId, String teamId, String markerId,
+            @Nullable String linkIdOverride, double lat, double lng, String title, String description,
+            String folderId, long createdAt, Consumer<CaltopoOp> done) {
+        CTDebug(TAG, "UpdateStoredPhotoGeometry() start mapId='" + mapId + "' teamId='" + teamId +
+                "' markerId='" + markerId + "'");
+        CaltopoOp outer = new CaltopoOp(done);
+        StoredPhotoProbe probe = storedPhotoProbeForTesting;
+        if (probe != null) {
+            probe.onPublish(mapId, teamId, markerId);
+            outer.responseCode = 200;
+            outer.response = "test-probe-geometry";
+            outer.setOperationIsDone(true);
+            return outer;
+        }
+        final CaltopoPersonalSession.Authorization personal = CaltopoPersonalSession.capture("");
+        SubmitPhotoRequest(outer, () -> {
+            try {
+                String linkId = (linkIdOverride != null && !linkIdOverride.isEmpty())
+                        ? linkIdOverride : defaultStoredPhotoLinkId(markerId);
+                CaltopoOp marker = postStoredPhotoMarker(personal, teamId, mapId, markerId, lat, lng,
+                        title, description, folderId, createdAt);
+                if (!marker.success()) {
+                    outer.responseCode = marker.responseCode;
+                    outer.response = marker.response;
+                    outer.setOperationIsDone(false);
+                    return outer;
+                }
+                CaltopoOp existingLink = PhotoOp(personal, teamId, CtsMethod_t.GET,
+                        CALTOPO_MAP_API_V1 + mapId + "/MapMediaObject/" + linkId, null, false,
+                        new int[] {400, 404}, CluePhotoUploadPolicy.JSON_TIMEOUT_SECONDS, "link-get");
+                if (!existingLink.success()) {
+                    outer.responseCode = existingLink.responseCode == 0 ? 404 : existingLink.responseCode;
+                    outer.response = "link-missing";
+                    CTDebug(TAG, "UpdateStoredPhotoGeometry() link missing markerId='" + markerId + "'");
+                    outer.setOperationIsDone(false);
+                    return outer;
+                }
+                JSONObject linkProps = CluePhotoGeometrySync.copyProperties(existingLink.responseJson);
+                JSONObject geometry = CluePhotoGeometrySync.pointGeometry(lat, lng);
+                JSONObject linkFeature = new JSONObject()
+                        .put("id", linkId)
+                        .put("type", "Feature")
+                        .put("geometry", geometry)
+                        .put("properties", linkProps);
+                CaltopoOp link = PhotoOp(personal, teamId, CtsMethod_t.POST,
+                        CALTOPO_MAP_API_V1 + mapId + "/MapMediaObject/" + linkId, linkFeature, false,
+                        null, CluePhotoUploadPolicy.JSON_TIMEOUT_SECONDS, "link-geometry");
+                outer.responseCode = link.responseCode;
+                outer.response = link.response;
+                CTDebug(TAG, "UpdateStoredPhotoGeometry() result markerId='" + markerId +
+                        "' success=" + link.success() + " code=" + link.responseCode);
+                outer.setOperationIsDone(link.success());
+            } catch (Exception error) {
+                outer.response = error.getMessage();
+                CTDebug(TAG, "UpdateStoredPhotoGeometry() result markerId='" + markerId +
+                        "' success=false error=" + error.getMessage());
+                outer.setOperationIsDone(false);
+            }
+            return outer;
+        });
+        return outer;
+    }
+
+    /**
+     * When Marker and MapMediaObject Points differ by more than ~1 m, POST the link with the
+     * Marker's geometry (properties preserved). Never touches /media/data.
+     * Response "repaired" or "aligned"; success when no further action is needed or repair POSTed.
+     */
+    public static CaltopoOp RepairDriftedStoredPhotoLink(String mapId, String teamId, String markerId,
+            @Nullable String linkIdOverride, Consumer<CaltopoOp> done) {
+        CTDebug(TAG, "RepairDriftedStoredPhotoLink() start mapId='" + mapId + "' teamId='" + teamId +
+                "' markerId='" + markerId + "'");
+        CaltopoOp outer = new CaltopoOp(done);
+        StoredPhotoProbe probe = storedPhotoProbeForTesting;
+        if (probe != null) {
+            probe.onPublish(mapId, teamId, markerId);
+            outer.responseCode = 200;
+            outer.response = "aligned";
+            outer.setOperationIsDone(true);
+            return outer;
+        }
+        final CaltopoPersonalSession.Authorization personal = CaltopoPersonalSession.capture("");
+        SubmitPhotoRequest(outer, () -> {
+            try {
+                String linkId = (linkIdOverride != null && !linkIdOverride.isEmpty())
+                        ? linkIdOverride : defaultStoredPhotoLinkId(markerId);
+                CaltopoOp marker = PhotoOp(personal, teamId, CtsMethod_t.GET,
+                        CALTOPO_MAP_API_V1 + mapId + "/Marker/" + markerId, null, false,
+                        new int[] {400, 404}, CluePhotoUploadPolicy.JSON_TIMEOUT_SECONDS, "marker-get");
+                CaltopoOp link = PhotoOp(personal, teamId, CtsMethod_t.GET,
+                        CALTOPO_MAP_API_V1 + mapId + "/MapMediaObject/" + linkId, null, false,
+                        new int[] {400, 404}, CluePhotoUploadPolicy.JSON_TIMEOUT_SECONDS, "link-get");
+                if (!marker.success() || !link.success()) {
+                    outer.responseCode = 404;
+                    outer.response = "parts-missing";
+                    outer.setOperationIsDone(false);
+                    return outer;
+                }
+                double[] markerLL = CluePhotoGeometrySync.pointLatLng(marker.responseJson);
+                double[] linkLL = CluePhotoGeometrySync.pointLatLng(link.responseJson);
+                if (markerLL == null || linkLL == null) {
+                    outer.responseCode = 200;
+                    outer.response = "aligned";
+                    outer.setOperationIsDone(true);
+                    return outer;
+                }
+                if (!CluePhotoGeometrySync.needsRepair(markerLL[0], markerLL[1], linkLL[0], linkLL[1])) {
+                    outer.responseCode = 200;
+                    outer.response = "aligned";
+                    outer.setOperationIsDone(true);
+                    return outer;
+                }
+                JSONObject linkProps = CluePhotoGeometrySync.copyProperties(link.responseJson);
+                JSONObject geometry = CluePhotoGeometrySync.pointGeometry(markerLL[0], markerLL[1]);
+                JSONObject linkFeature = new JSONObject()
+                        .put("id", linkId)
+                        .put("type", "Feature")
+                        .put("geometry", geometry)
+                        .put("properties", linkProps);
+                CaltopoOp repaired = PhotoOp(personal, teamId, CtsMethod_t.POST,
+                        CALTOPO_MAP_API_V1 + mapId + "/MapMediaObject/" + linkId, linkFeature, false,
+                        null, CluePhotoUploadPolicy.JSON_TIMEOUT_SECONDS, "link-geometry");
+                outer.responseCode = repaired.responseCode;
+                if (repaired.success()) {
+                    outer.response = "repaired";
+                    CTInfo(TAG, "Clue photo geometry repaired id=" + markerId);
+                    outer.setOperationIsDone(true);
+                } else {
+                    outer.response = repaired.response;
+                    outer.setOperationIsDone(false);
+                }
+            } catch (Exception error) {
+                outer.response = error.getMessage();
+                outer.setOperationIsDone(false);
+            }
+            return outer;
+        });
+        return outer;
+    }
+
+    private static CaltopoOp postStoredPhotoMarker(
+            CaltopoPersonalSession.Authorization personal, String teamId, String mapId, String markerId,
+            double lat, double lng, String title, String description, String folderId, long createdAt)
+            throws Exception {
+        JSONObject geometry = CluePhotoGeometrySync.pointGeometry(lat, lng);
+        JSONObject props = new JSONObject().put("class", "Marker").put("title", title)
+            .put("description", description).put("created", createdAt).put("updated", System.currentTimeMillis())
+            .put("marker-symbol", "Drone").put("marker-color", "#FF0000")
+            .put("marker-size", "1").put("marker-visibility", "visible");
+        if (folderId != null && !folderId.trim().isEmpty()) {
+            props.put("folderId", folderId);
+        }
+        JSONObject marker = new JSONObject().put("id", markerId).put("type", "Feature")
+                .put("geometry", geometry).put("properties", props);
+        return PhotoOp(personal, teamId, CtsMethod_t.POST,
+                CALTOPO_MAP_API_V1 + mapId + "/Marker/" + markerId, marker, false);
     }
 
     /**

@@ -3502,6 +3502,8 @@ class StreamsViewModel(
                     }
                     if (visibleIds != localMapMarkers.map { it.id }.toSet()) hydrateLocalClues(mapKey)
                     if (pending.isEmpty()) {
+                        // Geometry edits deferred while upload was in flight, or failed edits.
+                        flushPendingPublishedClueTerrainEdits(mapKey)
                         if (clueUploadWakeRequested.get()) continue
                         clueUploadBackoff.clearAll()
                         val queryTeam = org.ncssar.rid2caltopo.data.CluePublicationIdentity.normalizeTeamId(teamId)
@@ -4039,6 +4041,8 @@ class StreamsViewModel(
                             localClueStore.recordUploadResult(record.id, true, "", terminal = false)
                         }
                     }
+                    // One-time repair: Marker was refined but MapMediaObject stayed behind.
+                    repairDriftedCluePhotoGeometry(record, mapId, teamId)
                 }
                 org.ncssar.rid2caltopo.data.ClueUploadConfirmation.ProbeDecision.MarkRemotelyDeleted -> {
                     clueStorage {
@@ -4120,6 +4124,7 @@ class StreamsViewModel(
                             localClueStore.recordUploadResult(working.id, true, "", terminal = false)
                         }
                     }.onSuccess { hydrateLocalClues(currentLocalClueMapKey()) }
+                    repairDriftedCluePhotoGeometry(working, mapId, teamId)
                     return true
                 }
                 org.ncssar.rid2caltopo.data.ClueUploadConfirmation.ProbeDecision.MarkRemotelyDeleted -> {
@@ -4161,6 +4166,7 @@ class StreamsViewModel(
                 tag,
                 "Clue upload reconciled id=${working.id} featureId=${working.id}",
             )
+            repairDriftedCluePhotoGeometry(working, mapId, teamId)
             return true
         }
         // 409 = partial presence: complete missing media/link (or marker) idempotently.
@@ -4236,6 +4242,7 @@ class StreamsViewModel(
             tag,
             "Clue upload reconciled id=${working.id} featureId=${working.id}",
         )
+        repairDriftedCluePhotoGeometry(working, mapId, teamId)
         return published.success() || verified.success()
     }
 
@@ -4940,7 +4947,19 @@ class StreamsViewModel(
                 localClueStore.recordsForMap(mapKey).firstOrNull { it.id == clueId }
             }
         }.getOrNull() ?: return
+        // Deferred refine must wait until publish created the MapMediaObject link.
+        if (!latest.uploadState.equals("published", ignoreCase = true)) {
+            pendingCaltopoTerrainEdits.add(clueId)
+            return
+        }
         editPublishedClueMarkerPosition(latest)
+    }
+
+    private suspend fun flushPendingPublishedClueTerrainEdits(mapKey: String) {
+        val pendingIds = pendingCaltopoTerrainEdits.toList()
+        for (clueId in pendingIds) {
+            flushPendingClueTerrainMarkerEdit(clueId, mapKey)
+        }
     }
 
     private suspend fun editPublishedClueMarkerPosition(record: AndroidClueRecord) {
@@ -4951,15 +4970,42 @@ class StreamsViewModel(
             org.ncssar.rid2caltopo.data.CaltopoMap.resolveTrackFolderIdForClue()
         } ?: return
         val outcome = kotlinx.coroutines.CompletableDeferred<org.ncssar.rid2caltopo.data.CaltopoOp>()
-        org.ncssar.rid2caltopo.data.CaltopoSession.UpdateStoredPhotoMarker(
-            mapId, teamId, record.id, record.lat, record.lng, record.title,
-            record.publishedDescription, folder, record.createdAtMs,
+        org.ncssar.rid2caltopo.data.CaltopoSession.UpdateStoredPhotoGeometry(
+            mapId,
+            teamId,
+            record.resolvedMarkerId(),
+            record.resolvedLinkId(),
+            record.lat,
+            record.lng,
+            record.title,
+            record.publishedDescription,
+            folder,
+            record.createdAtMs,
         ) { result -> outcome.complete(result) }
         val result = outcome.await()
         if (result.success()) {
-            android.util.Log.i(tag, "CalTopo marker position edited id=${record.id}")
+            android.util.Log.i(tag, "CalTopo clue geometry edited id=${record.id}")
         } else {
-            CTWarn(tag, "CalTopo marker position edit failed id=${record.id} code=${result.responseCode}")
+            // Retry via the pending-upload wake queue once the media link exists.
+            pendingCaltopoTerrainEdits.add(record.id)
+            CTWarn(
+                tag,
+                "CalTopo clue geometry edit failed id=${record.id} code=${result.responseCode}",
+            )
+        }
+    }
+
+    private suspend fun repairDriftedCluePhotoGeometry(record: AndroidClueRecord, mapId: String, teamId: String) {
+        val outcome = kotlinx.coroutines.CompletableDeferred<org.ncssar.rid2caltopo.data.CaltopoOp>()
+        org.ncssar.rid2caltopo.data.CaltopoSession.RepairDriftedStoredPhotoLink(
+            mapId,
+            teamId,
+            record.resolvedMarkerId(),
+            record.resolvedLinkId(),
+        ) { result -> outcome.complete(result) }
+        val result = outcome.await()
+        if (!result.success()) {
+            CTWarn(tag, "Clue photo geometry repair failed id=${record.id} code=${result.responseCode}")
         }
     }
 

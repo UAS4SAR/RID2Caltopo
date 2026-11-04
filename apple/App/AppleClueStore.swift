@@ -284,6 +284,9 @@ final class AppleClueStore: ObservableObject {
         // One-shot published-parts repair for this connect; skips already-reconciled rows.
         await reverifyRecentPublishedClues()
         guard generation == configurationGeneration else { return }
+        // Geometry edits deferred while upload was in flight, or failed edits.
+        await flushPendingPublishedClueTerrainEdits()
+        guard generation == configurationGeneration else { return }
         let decisions: [AwaitingMapFlight]
         do {
             decisions = try await disk.run {
@@ -454,16 +457,31 @@ final class AppleClueStore: ObservableObject {
             ClueUploadPosition.terrainRefineAppliedLogLine(id: id.uuidString, offsetMeters: offset)
         )
         guard moved else { return }
-        // Pending uploads re-read coords before POST. In-flight/published markers need an edit.
-        if record.uploadState == .published || record.caltopoMarkerID != nil {
+        // Pending uploads re-read coords before POST. Published clues need Marker+MapMediaObject edit.
+        // Deferred while upload is in flight so the media link exists before geometry sync.
+        if record.uploadState == .published {
             pendingCaltopoTerrainEdits.remove(id)
-            await updatePublishedMarkerPosition(record)
+            await updatePublishedClueGeometry(record)
         } else {
             pendingCaltopoTerrainEdits.insert(id)
         }
     }
 
-    private func updatePublishedMarkerPosition(_ record: OperationalClueRecord) async {
+    private func flushPendingPublishedClueTerrainEdits() async {
+        let pendingIDs = Array(pendingCaltopoTerrainEdits)
+        for id in pendingIDs {
+            guard let record = records.first(where: { $0.id == id }) else {
+                pendingCaltopoTerrainEdits.remove(id)
+                continue
+            }
+            // Deferred refine must wait until publish created the MapMediaObject link.
+            guard record.uploadState == .published else { continue }
+            pendingCaltopoTerrainEdits.remove(id)
+            await updatePublishedClueGeometry(record)
+        }
+    }
+
+    private func updatePublishedClueGeometry(_ record: OperationalClueRecord) async {
         guard let client,
               let markerID = record.caltopoMarkerID ?? Optional(record.id.uuidString.lowercased()),
               !markerID.isEmpty
@@ -472,8 +490,9 @@ final class AppleClueStore: ObservableObject {
         do {
             let folderID = try? await resolveTrackFolder(using: client)
             guard generation == configurationGeneration else { return }
-            try await client.updatePhotoClueMarker(
+            try await client.updatePhotoClueGeometry(
                 markerID: markerID,
+                mediaID: record.caltopoMediaID,
                 latitude: record.clueLatitude,
                 longitude: record.clueLongitude,
                 title: record.title,
@@ -483,12 +502,33 @@ final class AppleClueStore: ObservableObject {
             )
             AppleLog.info(
                 "Clue",
-                "CalTopo marker position edited id=\(record.id) marker=\(markerID)"
+                "CalTopo clue geometry edited id=\(record.id) marker=\(markerID)"
             )
+        } catch {
+            // Retry via the pending-upload wake queue once the media link exists.
+            pendingCaltopoTerrainEdits.insert(record.id)
+            AppleLog.warning(
+                "Clue",
+                "CalTopo clue geometry edit failed id=\(record.id) error=\(error.localizedDescription)"
+            )
+        }
+    }
+
+    private func repairDriftedCluePhotoGeometry(_ record: OperationalClueRecord) async {
+        guard let client else { return }
+        let markerID = Self.publishMarkerID(for: record)
+        do {
+            let repaired = try await client.repairDriftedPhotoClueLink(
+                markerID: markerID,
+                mediaID: record.caltopoMediaID
+            )
+            if repaired {
+                AppleLog.info("Clue", "Clue photo geometry repaired id=\(record.id)")
+            }
         } catch {
             AppleLog.warning(
                 "Clue",
-                "CalTopo marker position edit failed id=\(record.id) error=\(error.localizedDescription)"
+                "Clue photo geometry repair failed id=\(record.id) error=\(error.localizedDescription)"
             )
         }
     }
@@ -837,9 +877,10 @@ final class AppleClueStore: ObservableObject {
                     // Best-effort folder move when folders were created after a folder-less send.
                     await self.movePublishedClueToTrackFolderIfNeeded(id: id)
                     // Terrain may have refined local coords while the flat POST was in flight.
+                    // Link now exists; update Marker and MapMediaObject together.
                     if self.pendingCaltopoTerrainEdits.remove(id) != nil,
                        let published = self.records.first(where: { $0.id == id }) {
-                        await self.updatePublishedMarkerPosition(published)
+                        await self.updatePublishedClueGeometry(published)
                     }
                     terminalReason = "published"
                     break
@@ -980,6 +1021,9 @@ final class AppleClueStore: ObservableObject {
                     }
                     try? await persistIndex()
                     updateStatus()
+                    if let latest = records.first(where: { $0.id == id }) {
+                        await repairDriftedCluePhotoGeometry(latest)
+                    }
                     return true
                 case .markRemotelyDeleted:
                     mutate(id) { value in
@@ -1043,6 +1087,9 @@ final class AppleClueStore: ObservableObject {
                 "Clue",
                 "Clue upload reconciled id=\(id) featureId=\(result.featureID)"
             )
+            if let latest = records.first(where: { $0.id == id }) {
+                await repairDriftedCluePhotoGeometry(latest)
+            }
             await movePublishedClueToTrackFolderIfNeeded(id: id)
             return true
         } catch let CaltopoLiveClientError.httpStatus(code, message)
@@ -1269,6 +1316,8 @@ final class AppleClueStore: ObservableObject {
                         value.caltopoRemotelyDeleted = false
                     }
                     try? await persistIndex()
+                    // One-time repair: Marker was refined but MapMediaObject stayed behind.
+                    await repairDriftedCluePhotoGeometry(record)
                 case .markRemotelyDeleted:
                     mutate(record.id) { value in
                         value.caltopoRemotelyDeleted = true
