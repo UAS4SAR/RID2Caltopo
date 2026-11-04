@@ -400,6 +400,12 @@ internal object OperationalStorage {
             relocateMappingRepository(context, value, archiveRoot, generation)
         }.onFailure { error ->
             if (error is kotlinx.coroutines.CancellationException) throw error
+            MappingStorageMigrationLog.emitOnce(
+                MappingStorageMigrationLog.outcomeLine(
+                    AndroidMappingRepositoryMigration.Outcome.DEFERRED_UNSTABLE,
+                    failureReason = "failed (${error.javaClass.simpleName}); legacy retained",
+                ),
+            )
             CaltopoClient.CTWarn(
                 "OperationalStorage",
                 "Mapping repository relocation failed; legacy copies retained: ${error.javaClass.simpleName}",
@@ -494,7 +500,7 @@ internal object OperationalStorage {
      * Leftover filesDir/external local-mapping sources are moved by the normal area migrate,
      * which already targets the current layout. Own tree instance: no lock shared with
      * publication or bulk hydrate. Switches the live store to the new paths once committed.
-     * Always logs start / skip / result (never silent).
+     * Emits exactly one compact "Mapping storage: …" outcome line per process (CTDebug).
      */
     private fun relocateMappingRepository(
         context: Context,
@@ -506,19 +512,18 @@ internal object OperationalStorage {
         val tree = DocumentArchiveTree(context, archiveRoot)
         val usesCurrent = value.mappingCurrentLayout
         val needsWork = AndroidMappingRepositoryMigration.needsWork(tree)
+        val alreadyCommitted = tree.exists(MappingRepositoryLayout.MARKER)
         if (usesCurrent && !needsWork) {
-            CaltopoClient.CTInfo(
-                "OperationalStorage",
-                "Mapping repository relocate skip usesCurrentLayout=true needsWork=false",
+            MappingStorageMigrationLog.emitOnce(
+                MappingStorageMigrationLog.outcomeLine(
+                    AndroidMappingRepositoryMigration.Outcome.NOTHING_TO_DO,
+                    alreadyCommitted = alreadyCommitted || usesCurrent,
+                ),
             )
             return AndroidMappingRepositoryMigration.Result(
                 AndroidMappingRepositoryMigration.Outcome.NOTHING_TO_DO,
             )
         }
-        CaltopoClient.CTInfo(
-            "OperationalStorage",
-            "Mapping repository relocate start usesCurrentLayout=$usesCurrent needsWork=$needsWork",
-        )
         val localMissions = areas(context).first { it.id == "missions" }.sources.map { source ->
             // Aliases are symlinks into the disposable projection; the status files live there.
             runCatching { source.canonicalFile }.getOrDefault(source)
@@ -538,12 +543,17 @@ internal object OperationalStorage {
                         store = current.copy(areas = areas(context, true), mappingCurrentLayout = true)
                     }
                 }
+                org.ncssar.rid2caltopo.mapping.MappingStorageSummary.invalidate(context.filesDir)
             },
-            log = { CaltopoClient.CTInfo("OperationalStorage", it) },
+            log = { CaltopoClient.CTDebug("OperationalStorage", it) },
         )
-        CaltopoClient.CTInfo(
-            "OperationalStorage",
-            "Mapping repository relocate result outcome=${result.outcome} files=${result.files} removed=${result.removed} retained=${result.retained} committed=${result.committed}",
+        MappingStorageMigrationLog.emitOnce(
+            MappingStorageMigrationLog.outcomeLine(
+                result.outcome,
+                files = result.files,
+                bytes = result.bytes,
+                alreadyCommitted = alreadyCommitted && result.outcome == AndroidMappingRepositoryMigration.Outcome.NOTHING_TO_DO,
+            ),
         )
         return result
     }

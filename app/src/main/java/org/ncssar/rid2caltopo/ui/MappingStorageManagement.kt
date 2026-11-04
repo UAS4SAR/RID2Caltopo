@@ -30,82 +30,118 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import org.ncssar.rid2caltopo.mapping.MappingFlightsDialog
 import org.ncssar.rid2caltopo.mapping.MappingLayerInspector
-import org.ncssar.rid2caltopo.mapping.MappingLibraryEntry
-import org.ncssar.rid2caltopo.mapping.MappingLibraryIndex
-import org.ncssar.rid2caltopo.mapping.MappingMissionStorage
 import org.ncssar.rid2caltopo.mapping.MappingProcessingManager
+import org.ncssar.rid2caltopo.mapping.MappingStorageSummary
 import org.ncssar.rid2caltopo.mapping.MappingStorageUsage
 import org.ncssar.rid2caltopo.mapping.MappingWorkspaceState
 import org.ncssar.rid2caltopo.video.mapcache.MapCacheSettings
 
 /**
  * Manage Storage → Mapping repository: project list with storage breakdown.
- * Sizes are measured off the main thread via [MappingMissionStorage] (cached, refreshed when artifacts change).
- * Tapping a project opens the existing flight/layer inspector (inspect + delete).
+ * Cached sizes show immediately; a background rescan runs only when top-level mapping
+ * artifacts are newer than the cache, or after delete/move/migration invalidation.
+ * Totals include shared layers, stats, processing, and other so lines sum to the total.
  */
 @Composable
 internal fun MappingStorageManagementDialog(onDismiss: () -> Unit) {
     val context = LocalContext.current
-    var entries by remember { mutableStateOf<List<MappingLibraryEntry>>(emptyList()) }
-    var totalBytes by remember { mutableLongStateOf(0L) }
-    var complete by remember { mutableStateOf(true) }
-    var loading by remember { mutableStateOf(true) }
+    var report by remember { mutableStateOf(MappingStorageSummary.peekMemory()) }
+    var totalBytes by remember { mutableLongStateOf(report?.totalBytes ?: 0L) }
+    var complete by remember { mutableStateOf(report?.complete ?: true) }
+    var loading by remember { mutableStateOf(report == null) }
+    var refreshing by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf("") }
     var selectedFlight by remember { mutableStateOf<String?>(null) }
+    var pendingLayerId by remember { mutableStateOf<String?>(null) }
     var inspectingLayer by remember { mutableStateOf<org.ncssar.rid2caltopo.mapping.MappingLayer?>(null) }
+
+    LaunchedEffect(pendingLayerId) {
+        val id = pendingLayerId ?: return@LaunchedEffect
+        val layer = withContext(Dispatchers.IO) {
+            org.ncssar.rid2caltopo.mapping.MappingLayer.allLocal(context).firstOrNull { it.id == id }
+        }
+        pendingLayerId = null
+        if (layer != null) inspectingLayer = layer
+        else error = "That map layer is no longer available."
+    }
 
     selectedFlight?.let { flightId ->
         MappingFlightsDialog(
             mission = null,
-            onDismiss = { selectedFlight = null },
+            onDismiss = {
+                selectedFlight = null
+                // Delete/move from the inspector invalidates the summary; refresh after return.
+                refreshing = true
+            },
             onConnection = {},
             onViewLayer = {},
-            onLayersChanged = MappingWorkspaceState::layersChanged,
+            onLayersChanged = {
+                MappingWorkspaceState.layersChanged()
+                MappingStorageSummary.invalidate(context.filesDir)
+            },
             initialFlightId = flightId,
             detailOnly = true,
         )
         return
     }
     inspectingLayer?.let { layer ->
-        MappingLayerInspector(layer, MappingWorkspaceState::layersChanged, { inspectingLayer = null }, onView2D = {})
+        MappingLayerInspector(
+            layer,
+            {
+                MappingWorkspaceState.layersChanged()
+                MappingStorageSummary.invalidate(context.filesDir)
+            },
+            {
+                inspectingLayer = null
+                refreshing = true
+            },
+            onView2D = {},
+        )
         return
     }
 
-    LaunchedEffect(Unit) {
-        loading = true
+    LaunchedEffect(Unit, refreshing) {
         error = ""
         try {
-            val report = withContext(Dispatchers.IO) {
+            val filesDir = context.filesDir
+            // Instant: memory or cheap disk cache (off Main).
+            val cached = withContext(Dispatchers.IO) {
                 kotlinx.coroutines.currentCoroutineContext().ensureActive()
-                val live = MappingProcessingManager.state.value
-                val refreshed = MappingLibraryIndex.refresh(context, live)
-                val index = MappingMissionStorage.index(context.filesDir, live)
-                var allComplete = !refreshed.stale
-                var sum = 0L
-                val measured = refreshed.entries.map { entry ->
-                    kotlinx.coroutines.currentCoroutineContext().ensureActive()
-                    val usage = entry.flight?.let { index.mission(it.id) }
-                        ?: entry.layer?.let { MappingMissionStorage.layer(context.filesDir, it.id) }
-                    if (usage != null) {
-                        sum += usage.total
-                        if (!usage.complete) allComplete = false
-                        entry.copy(storage = usage)
-                    } else entry
-                }
-                MappingStorageReport(MappingLibraryEntry.sorted(measured, newestFirst = true), sum, allComplete)
+                MappingStorageSummary.loadCached(filesDir)
             }
-            entries = report.entries
-            totalBytes = report.totalBytes
-            complete = report.complete
+            if (cached != null) {
+                report = cached
+                totalBytes = cached.totalBytes
+                complete = cached.complete
+                loading = false
+            } else {
+                loading = true
+            }
+            // Background: rescan only when stamp is stale (or forced after inspector).
+            val live = MappingProcessingManager.state.value
+            val next = withContext(Dispatchers.IO) {
+                kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                MappingStorageSummary.cachedOrRefresh(
+                    filesDir,
+                    live = live,
+                    context = context,
+                    force = refreshing,
+                )
+            }
+            report = next
+            totalBytes = next.totalBytes
+            complete = next.complete
         } catch (cancelled: kotlinx.coroutines.CancellationException) {
             throw cancelled
         } catch (e: Exception) {
             error = e.message ?: "Mapping storage is unavailable."
         } finally {
             loading = false
+            refreshing = false
         }
     }
 
+    val current = report
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Mapping") },
@@ -128,6 +164,8 @@ internal fun MappingStorageManagementDialog(onDismiss: () -> Unit) {
                         CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
                         Text("Measuring mapping storage…")
                     }
+                } else if (refreshing) {
+                    Text("Updating sizes…", style = MaterialTheme.typography.bodySmall)
                 }
                 if (error.isNotEmpty()) Text(error, color = MaterialTheme.colorScheme.error)
                 HorizontalDivider()
@@ -135,14 +173,44 @@ internal fun MappingStorageManagementDialog(onDismiss: () -> Unit) {
                     Modifier.fillMaxWidth().weight(1f, fill = false).testTag("mapping-storage-list"),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    if (!loading && entries.isEmpty() && error.isEmpty()) {
-                        item { Text("No mapping projects yet.") }
-                    }
-                    items(entries, key = { it.id }) { entry ->
-                        MappingStorageProjectRow(entry) {
-                            if (entry.flight != null) selectedFlight = entry.flight.id
-                            else inspectingLayer = entry.layer
+                    if (!loading && current != null) {
+                        items(current.projects, key = { it.id }) { entry ->
+                            MappingStorageProjectRow(entry) {
+                                if (entry.flightId != null) selectedFlight = entry.flightId
+                                else if (entry.layerId != null) pendingLayerId = entry.layerId
+                            }
                         }
+                        if (current.sharedLayersBytes > 0) {
+                            item(key = "shared-layers") {
+                                MappingStorageCategoryRow("Shared layers", current.sharedLayersBytes)
+                            }
+                        }
+                        if (current.statsBytes > 0) {
+                            item(key = "stats") {
+                                MappingStorageCategoryRow("Stats", current.statsBytes)
+                            }
+                        }
+                        if (current.processingBytes > 0) {
+                            item(key = "processing") {
+                                MappingStorageCategoryRow("Processing", current.processingBytes)
+                            }
+                        }
+                        if (current.otherBytes > 0) {
+                            item(key = "other") {
+                                MappingStorageCategoryRow("Other", current.otherBytes)
+                            }
+                        }
+                        if (current.projects.isEmpty() &&
+                            current.sharedLayersBytes == 0L &&
+                            current.statsBytes == 0L &&
+                            current.processingBytes == 0L &&
+                            current.otherBytes == 0L &&
+                            error.isEmpty()
+                        ) {
+                            item { Text("No mapping projects yet.") }
+                        }
+                    } else if (!loading && error.isEmpty()) {
+                        item { Text("No mapping projects yet.") }
                     }
                 }
             }
@@ -152,7 +220,7 @@ internal fun MappingStorageManagementDialog(onDismiss: () -> Unit) {
 }
 
 @Composable
-private fun MappingStorageProjectRow(entry: MappingLibraryEntry, onOpen: () -> Unit) {
+private fun MappingStorageProjectRow(entry: MappingStorageSummary.ProjectLine, onOpen: () -> Unit) {
     Column(
         Modifier
             .fillMaxWidth()
@@ -162,23 +230,36 @@ private fun MappingStorageProjectRow(entry: MappingLibraryEntry, onOpen: () -> U
         verticalArrangement = Arrangement.spacedBy(2.dp),
     ) {
         Text(entry.name, style = MaterialTheme.typography.titleMedium)
-        Text(entry.timeLabel, style = MaterialTheme.typography.bodySmall)
-        Text("${entry.photoCount} originals", style = MaterialTheme.typography.bodySmall)
-        val size = entry.storage
-        if (size == null) {
-            Text("Storage: calculating…", style = MaterialTheme.typography.bodySmall)
-        } else {
-            Text(
-                "Size: ${size.totalLabel} · layers ${MappingStorageUsage.format(size.maps2D + size.models3D)} · checkpoints ${MappingStorageUsage.format(size.working)}",
-                style = MaterialTheme.typography.bodySmall,
-            )
+        if (entry.timeLabel.isNotEmpty()) {
+            Text(entry.timeLabel, style = MaterialTheme.typography.bodySmall)
         }
+        Text("${entry.photoCount} originals", style = MaterialTheme.typography.bodySmall)
+        Text(
+            "Size: ${if (entry.complete) "" else "At least "}${MappingStorageUsage.format(entry.bytes)}" +
+                " · layers ${MappingStorageUsage.format(entry.layersBytes)}" +
+                " · checkpoints ${MappingStorageUsage.format(entry.workingBytes)}",
+            style = MaterialTheme.typography.bodySmall,
+        )
         Text("Tap to inspect or delete", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
     }
 }
 
+@Composable
+private fun MappingStorageCategoryRow(label: String, bytes: Long) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp)
+            .testTag("mapping-storage-category-${label.lowercase().replace(' ', '-')}"),
+        verticalArrangement = Arrangement.spacedBy(2.dp),
+    ) {
+        Text(label, style = MaterialTheme.typography.titleMedium)
+        Text("Size: ${MappingStorageUsage.format(bytes)}", style = MaterialTheme.typography.bodySmall)
+    }
+}
+
 internal data class MappingStorageReport(
-    val entries: List<MappingLibraryEntry>,
+    val entries: List<org.ncssar.rid2caltopo.mapping.MappingLibraryEntry>,
     val totalBytes: Long,
     val complete: Boolean,
 )
@@ -186,10 +267,11 @@ internal data class MappingStorageReport(
 /** Off-main measurement of the Mapping repository total for the Manage Storage row. */
 internal fun measureMappingRepositoryBytes(context: android.content.Context): Pair<Long, Boolean> {
     check(android.os.Looper.myLooper() != android.os.Looper.getMainLooper())
-    val external = context.getExternalFilesDirs(null).filterNotNull().map { java.io.File(it, "local-mapping") }
-    val groups = listOf("mapping-missions", "mapping-layers", "mapping-processing").map { category ->
-        listOf(java.io.File(context.filesDir, category)) + external.map { java.io.File(it, category) }
-    }
-    val local = localMapStorage(groups)
-    return local.total to local.complete
+    val report = MappingStorageSummary.cachedOrRefresh(
+        context.filesDir,
+        live = MappingProcessingManager.state.value,
+        context = context,
+        force = false,
+    )
+    return report.totalBytes to report.complete
 }

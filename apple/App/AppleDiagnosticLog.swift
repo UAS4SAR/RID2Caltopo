@@ -1,5 +1,6 @@
 import Foundation
 import R2CCore
+import R2CMapping
 import UIKit
 
 struct AppleLogDay: Identifiable, Sendable, Equatable {
@@ -309,6 +310,12 @@ final class AppleDiagnosticsCenter: ObservableObject {
                 "Process launched pid=\(ProcessInfo.processInfo.processIdentifier) state=\(state) " +
                     "options=[\(launchOptionKeys.sorted().joined(separator: ","))] log=\(url.lastPathComponent)"
             )
+            // After the session log is open: exactly one Mapping storage outcome line.
+            await Task.detached(priority: .utility) {
+                let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+                let (_, line) = MappingStorageMigration.evaluate(supportRoot: support)
+                MappingStorageMigration.emitOnce(line) { AppleLog.info("MappingStorage", $0) }
+            }.value
         } catch {
             NSLog("RID2Caltopo: diagnostic log failed to open at launch: \(error)")
         }

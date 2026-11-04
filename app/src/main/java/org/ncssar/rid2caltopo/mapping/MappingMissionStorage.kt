@@ -107,6 +107,8 @@ object MappingMissionStorage {
         val marker=cacheFile(root,".generation")
         runCatching { marker.parentFile!!.mkdirs(); marker.writeText(UUID.randomUUID().toString()) }
         cacheFile(root).delete()
+        // Pane summary stamp watches stats/ + top-level mtimes; drop memory so next open refreshes.
+        MappingStorageSummary.invalidate(root.parentFile?.parentFile)
     }
     internal fun clearMemoryCache() { cache.clear() }
 

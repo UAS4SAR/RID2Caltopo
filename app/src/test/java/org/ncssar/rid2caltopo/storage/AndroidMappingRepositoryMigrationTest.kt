@@ -246,6 +246,42 @@ class AndroidMappingRepositoryMigrationTest {
         assertTrue(logs.any { it.contains("skip: nothing to do") || it.contains("no legacy data") })
     }
 
+    @Test fun compactOutcomeLineMatchesRequiredWording() {
+        assertEquals(
+            "Mapping storage: already migrated",
+            MappingStorageMigrationLog.outcomeLine(
+                AndroidMappingRepositoryMigration.Outcome.NOTHING_TO_DO,
+                alreadyCommitted = true,
+            ),
+        )
+        assertEquals(
+            "Mapping storage: nothing to migrate",
+            MappingStorageMigrationLog.outcomeLine(
+                AndroidMappingRepositoryMigration.Outcome.NOTHING_TO_DO,
+                alreadyCommitted = false,
+            ),
+        )
+        assertEquals(
+            "Mapping storage: migrated 3 items (2 MB)",
+            MappingStorageMigrationLog.outcomeLine(
+                AndroidMappingRepositoryMigration.Outcome.COMPLETED,
+                files = 3,
+                bytes = 2L * 1024 * 1024,
+            ),
+        )
+        assertEquals(
+            "Mapping storage: deferred (reconstruction active)",
+            MappingStorageMigrationLog.outcomeLine(AndroidMappingRepositoryMigration.Outcome.DEFERRED_ACTIVE),
+        )
+        assertEquals(
+            "Mapping storage: failed (IOException); legacy retained",
+            MappingStorageMigrationLog.outcomeLine(
+                AndroidMappingRepositoryMigration.Outcome.DEFERRED_UNSTABLE,
+                failureReason = "failed (IOException); legacy retained",
+            ),
+        )
+    }
+
     @Test fun relocateTiming_runsBeforeHeavyAndRetriesWhileDeferred() {
         assertEquals(
             listOf("relocate-start", "heavy-start"),

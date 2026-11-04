@@ -39,6 +39,30 @@ class MappingStorageManagementTest {
     }
 
     @Test
+    fun mappingSummaryLinesSumToTotalIncludingStats() {
+        val root = folder.root
+        File(root, "mapping-missions/2e30e0b4-0000-4000-8000-000000000001/originals/a.jpg").apply {
+            parentFile!!.mkdirs()
+            writeBytes(ByteArray(134))
+        }
+        File(root, "mapping-layers/aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee/map.tif").apply {
+            parentFile!!.mkdirs()
+            writeBytes(ByteArray(50))
+        }
+        File(root, "mapping-processing/aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee/work.bin").apply {
+            parentFile!!.mkdirs()
+            writeBytes(ByteArray(20))
+        }
+        File(root, "mapping-storage-stats/index.json").apply {
+            parentFile!!.mkdirs()
+            writeBytes(ByteArray(17))
+        }
+        val report = org.ncssar.rid2caltopo.mapping.MappingStorageSummary.measure(root)
+        assertEquals(134L + 50L + 20L + 17L, report.totalBytes)
+        assertEquals(report.totalBytes, report.lineSum())
+    }
+
+    @Test
     fun storageUsageLabelsMatchProjectInspectorBreakdown() {
         val usage = MappingStorageUsage(
             originals = 1_000,

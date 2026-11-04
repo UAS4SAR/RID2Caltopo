@@ -26,6 +26,7 @@ Latest changes:
 - Deleting old flight logs also deletes their clues, with a warning when any were never uploaded.
 - Marker cleanup success now matches verified removal, and never touches markers this tablet did not publish.
 - Mapping storage is its own managed repository (separate from map cache), with a project list and sizes in Manage Storage.
+- Manage Storage → Mapping opens instantly from a saved size cache, rescans only when mapping data changes, and totals include shared layers, stats, and processing.
 - Local Maps data moves into a dedicated Mapping archive folder, keeping originals safe during the move.
 - Confirming a team drone near flight end no longer creates a second CalTopo archive under the raw serial.
 - A tablet that does not own a flight no longer starts a CalTopo live track for it.

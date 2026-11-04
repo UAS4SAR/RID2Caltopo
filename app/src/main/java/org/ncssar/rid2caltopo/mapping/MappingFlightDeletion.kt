@@ -116,6 +116,7 @@ internal object MappingFlightDeletion {
             throw error
         } finally {
             deleting = false
+            MappingStorageSummary.invalidate(context.filesDir)
             MappingWorkspaceState.layersChanged()
         }
     }

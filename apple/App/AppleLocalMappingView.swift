@@ -154,6 +154,7 @@ import R2CMapping
                                 AppleMappingLayerStore.shared.deleteLocally(layer)
                                 UserDefaults.standard.removeObject(forKey: "mapping.result.\(layer.id)")
                             }
+                            MappingStorageSummary.invalidate()
                             self.finish()
                             self.invalidateLibrary()
                             self.refresh(incident: entry.incidentID, newest: true, force: true)
