@@ -243,7 +243,7 @@ class AndroidClueStoreTest {
     }
 
     @Test
-    fun bindingIsStoredOptionallyAndUploadsImmediately() {
+    fun bindingIsStoredAndUploadsImmediately() {
         val root = temporaryFolder.newFolder("bound")
         val store = AndroidClueStore.forDirectory(root)
         val point = org.ncssar.rid2caltopo.data.ClueBindingPoint(500L, 800L, 39.153, -121.132, 100.0, "rid", true)
@@ -256,16 +256,67 @@ class AndroidClueStoreTest {
         assertEquals(1_000L, reopened.record("bound")!!.ownershipTimeMs)
         assertEquals(listOf("bound"), reopened.pendingForMap("alpha", "team-a").map { it.id })
         assertTrue(record.publishedDescription.startsWith("Found beside trail\n\nWaypoint binding:\n  Offset: -0.500 s"))
-        val legacy = clueRecord("legacy", "map:alpha").copy(destinationTeamId = "team-a", uploadState = "pending")
-        val savedLegacy = store.saveEncoded(legacy, byteArrayOf(1), byteArrayOf(2))
-        val day = savedLegacy.imageFilename.substringBefore('/')
-        val index = File(File(root, day), "clues.json").readText()
-        val array = org.json.JSONArray(index)
-        val legacyJson = (0 until array.length()).map { array.getJSONObject(it) }.first { it.getString("id") == "legacy" }
-        assertFalse(legacyJson.has("binding"))
-        val loaded = AndroidClueStore.forDirectory(root).record("legacy")!!
-        assertEquals(null, loaded.binding)
-        assertEquals("Found beside trail", loaded.publishedDescription)
+        assertEquals("flight-1/bound.jpg", reopened.record("bound")!!.imageFilename)
+    }
+
+    @Test
+    fun newSavesRequireFlightAndLandInFlightFolder() {
+        val root = temporaryFolder.newFolder("per-flight")
+        val store = AndroidClueStore.forDirectory(root)
+        val noFlight = clueRecord("orphan", "map:alpha").copy(binding = null)
+        val refused = org.junit.Assert.assertThrows(IllegalArgumentException::class.java) {
+            store.saveEncoded(noFlight, byteArrayOf(1), byteArrayOf(2))
+        }
+        assertEquals(AndroidClueStore.NO_FLIGHT_MESSAGE, refused.message)
+        val blankFlight = clueRecord("blank", "map:alpha").copy(binding = testFlightBinding(1_000L, flightId = "  "))
+        org.junit.Assert.assertThrows(IllegalArgumentException::class.java) {
+            store.saveEncoded(blankFlight, byteArrayOf(1), byteArrayOf(2))
+        }
+        assertTrue(store.allRecords().isEmpty())
+        assertTrue(root.listFiles().orEmpty().none { it.isDirectory })
+
+        val a = store.saveEncoded(
+            clueRecord("a", "map:alpha").copy(binding = testFlightBinding(1_000L, "flight-a")),
+            byteArrayOf(1), byteArrayOf(2),
+        )
+        val b = store.saveEncoded(
+            clueRecord("b", "map:alpha").copy(binding = testFlightBinding(1_000L, "flight-b")),
+            byteArrayOf(3), byteArrayOf(4),
+        )
+        assertEquals("flight-a/a.jpg", a.imageFilename)
+        assertEquals("flight-a/a-thumb.jpg", a.thumbnailFilename)
+        assertEquals("flight-b/b.jpg", b.imageFilename)
+        assertTrue(File(root, "flight-a/clues.json").isFile)
+        assertTrue(File(root, "flight-b/clues.json").isFile)
+        assertFalse(File(root, "clues.json").exists())
+        assertEquals(setOf("a"), idsIn(File(root, "flight-a/clues.json")))
+        assertEquals(setOf("b"), idsIn(File(root, "flight-b/clues.json")))
+        assertEquals(setOf("a", "b"), AndroidClueStore.forDirectory(root).allRecords().map { it.id }.toSet())
+
+        // Deleting the only clue of a flight prunes its (now empty) folder; tombstones stay at root.
+        assertTrue(store.delete("a"))
+        assertFalse(File(root, "flight-a").exists())
+        assertTrue(File(root, AndroidClueStore.TOMBSTONE_FILENAME).isFile)
+    }
+
+    @Test
+    fun withFlightRelativePathsRekeysAnyPriorPrefixToTheFlight() {
+        val record = clueRecord("x", "map:alpha").copy(
+            imageFilename = "tracks-01Oct2026/x.jpg",
+            thumbnailFilename = "tracks-01Oct2026/x-thumb.jpg",
+            binding = testFlightBinding(1_000L, "flight-z"),
+        )
+        val keyed = AndroidClueStore.withFlightRelativePaths(record)
+        assertEquals("flight-z/x.jpg", keyed.imageFilename)
+        assertEquals("flight-z/x-thumb.jpg", keyed.thumbnailFilename)
+        org.junit.Assert.assertThrows(IllegalArgumentException::class.java) {
+            AndroidClueStore.withFlightRelativePaths(record.copy(binding = null))
+        }
+    }
+
+    private fun idsIn(index: File): Set<String> {
+        val array = org.json.JSONArray(index.readText())
+        return (0 until array.length()).map { array.getJSONObject(it).getString("id") }.toSet()
     }
 
     @Test
@@ -338,24 +389,21 @@ class AndroidClueStoreTest {
     }
 
     @Test
-    fun loadsLegacyFlatIndexAlongsideDayFolders() {
+    fun loadsLegacyFlatAndDayIndexesAlongsideFlightFolders() {
         val root = temporaryFolder.newFolder("legacy-flat")
-        val day = AndroidClueStore.dayDirectoryName(2_000L)
-        File(File(root, day), "clues.json").parentFile!!.mkdirs()
-        File(File(root, day), "clues.json").writeText(
-            """[{"id":"day","mapKey":"map:alpha","lat":39.0,"lng":-121.0,"title":"day",""" +
+        val day = "tracks-01Oct2026"
+        fun row(id: String, image: String) =
+            """[{"id":"$id","mapKey":"map:alpha","lat":39.0,"lng":-121.0,"title":"$id",""" +
                 """"description":"","createdAtMs":2000,"sourceDesignator":"1SAR7",""" +
-                """"imageFilename":"$day/day.jpg","thumbnailFilename":"$day/day-thumb.jpg",""" +
-                """"publishToCaltopo":true,"uploadState":"pending"}]""",
-        )
-        File(root, "clues.json").writeText(
-            """[{"id":"flat","mapKey":"map:alpha","lat":39.0,"lng":-121.0,"title":"flat",""" +
-                """"description":"","createdAtMs":1000,"sourceDesignator":"1SAR7",""" +
-                """"imageFilename":"flat.jpg","thumbnailFilename":"flat-thumb.jpg",""" +
-                """"publishToCaltopo":true,"uploadState":"pending"}]""",
-        )
+                """"imageFilename":"$image","thumbnailFilename":"${image.removeSuffix(".jpg")}-thumb.jpg",""" +
+                """"publishToCaltopo":true,"uploadState":"pending"}]"""
+        File(root, day).mkdirs()
+        File(File(root, day), "clues.json").writeText(row("day", "$day/day.jpg"))
+        File(root, "flight-f").mkdirs()
+        File(File(root, "flight-f"), "clues.json").writeText(row("flight", "flight-f/flight.jpg"))
+        File(root, "clues.json").writeText(row("flat", "flat.jpg"))
         val ids = AndroidClueStore.forDirectory(root).allRecords().map { it.id }.toSet()
-        assertEquals(setOf("day", "flat"), ids)
+        assertEquals(setOf("day", "flat", "flight"), ids)
     }
 
     private fun clueRecord(id: String, mapKey: String) = AndroidClueRecord(
@@ -371,5 +419,6 @@ class AndroidClueStoreTest {
         imageFilename = "$id.jpg",
         thumbnailFilename = "$id-thumb.jpg",
         publishToCaltopo = true,
+        binding = testFlightBinding(1_000L),
     )
 }

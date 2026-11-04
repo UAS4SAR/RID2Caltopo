@@ -175,4 +175,45 @@ struct FlightFolderProtectionTests {
         #expect(!FileManager.default.fileExists(atPath: folder.appendingPathComponent("clues.json").path))
         #expect(AppleFlightStorage.unuploadedClueCount(day, at: root) == 0)
     }
+
+    @Test func flightFolderCluesCountForProtectionAndDisappearWithTheirDay() throws {
+        typealias Support = ClueFlightFolderTestSupport
+        let root = Support.tempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let day = "2018-04-02"
+        let folder = root.appendingPathComponent(day)
+        let flightA = folder.appendingPathComponent("flight-a"), flightB = folder.appendingPathComponent("flight-b")
+        try Support.write([Support.record(image: "\(day)/flight-a/i.jpg", state: .pending, flightID: "flight-a")], to: flightA)
+        try Support.write([
+            Support.record(image: "\(day)/flight-b/j.jpg", state: .failed, flightID: "flight-b"),
+            Support.record(image: "\(day)/flight-b/k.jpg", state: .uploading, flightID: "flight-b"),
+            Support.record(image: "\(day)/flight-b/l.jpg", state: .published, flightID: "flight-b"),
+        ], to: flightB)
+        try Support.photo("i.jpg", in: flightA)
+        try FileManager.default.createDirectory(at: folder.appendingPathComponent("drone"), withIntermediateDirectories: true)
+
+        // pending + failed + uploading are unreported; an uploading clue blocks manual delete.
+        #expect(AppleFlightStorage.unuploadedClueCount(day, at: root) == 3)
+        #expect(AppleFlightStorage.protectionReason(day, at: root) == .clueUploading)
+        #expect(FlightFolderProtection.blocksAutomaticCleanup(clueStates: AppleClueFlightFolder.clueStates(inDay: folder)))
+
+        // Deleting the day removes its flight folders and their clues.
+        try FileManager.default.removeItem(at: folder)
+        #expect(!Support.exists(flightA.appendingPathComponent("clues.json")))
+        #expect(AppleFlightStorage.unuploadedClueCount(day, at: root) == 0)
+    }
+
+    @Test func automaticCleanupKeepsDaysWithPendingFlightFolderCluesAndDeletesFailedOnes() throws {
+        typealias Support = ClueFlightFolderTestSupport
+        let root = Support.tempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        for (day, state) in [("2019-06-01", OperationalClueUploadState.failed), ("2019-06-02", .pending)] {
+            let flight = root.appendingPathComponent(day).appendingPathComponent("flight-x")
+            try Support.write([Support.record(image: "\(day)/flight-x/i.jpg", state: state, flightID: "flight-x")], to: flight)
+            try Data(repeating: 1, count: 100).write(to: flight.appendingPathComponent("i.jpg"))
+        }
+        _ = AppleFlightStorage.maintain(at: root, maximum: 10_000, days: 30)
+        #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("2019-06-01").path))
+        #expect(FileManager.default.fileExists(atPath: root.appendingPathComponent("2019-06-02").path))
+    }
 }

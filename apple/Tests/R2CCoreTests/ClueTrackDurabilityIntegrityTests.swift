@@ -284,4 +284,27 @@ import Testing
         )
         #expect(journal.contains("OperationalSafeFileWriter.replace"))
     }
+
+    @Test func scanReindexesOrphansAndFlagsMissingInsideFlightFolders() throws {
+        typealias Support = ClueFlightFolderTestSupport
+        let root = Support.tempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let day = "2026-10-22"
+        let flight = root.appendingPathComponent(day).appendingPathComponent("flight-a")
+        let orphan = UUID(), missing = UUID()
+        try Support.photo("\(orphan.uuidString.lowercased()).jpg", in: flight)
+        try Support.write([Support.record(id: missing, image: "\(day)/flight-a/\(missing.uuidString.lowercased()).jpg",
+                                          flightID: "flight-a")], to: flight)
+        let loaded = try OperationalClueIndex.load(root: root)
+        let result = try ClueTrackDurabilityIntegrity.scan(root: root, records: loaded)
+        #expect(result.summary.orphanPhotosReindexed == 1)
+        #expect(result.summary.missingPhotoFlagged == 1)
+        let stub = try #require(result.records.first { $0.id == orphan })
+        #expect(stub.uploadState == .localOnly)
+        #expect(stub.imageFilename == "\(day)/flight-a/\(orphan.uuidString.lowercased()).jpg")
+        #expect(stub.binding?.flightID == "flight-a")
+        // A second scan over the re-indexed rows finds nothing new.
+        let again = try ClueTrackDurabilityIntegrity.scan(root: root, records: result.records)
+        #expect(again.summary.orphanPhotosReindexed == 0)
+    }
 }

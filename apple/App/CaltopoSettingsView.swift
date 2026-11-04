@@ -1202,6 +1202,8 @@ struct AppleStorageManagementView: View {
     @ObservedObject private var maps = AppleMapOfflineManager.shared
     @State private var free: Int64?
     @State private var used: Int64?
+    @State private var mappingBytes: Int64?
+    @State private var mappingComplete = true
     @State private var storageStatus = ""
     var body: some View {
         List {
@@ -1214,6 +1216,11 @@ struct AppleStorageManagementView: View {
                 AppleArchiveCleanupView(trackModel: trackModel)
             } label: {
                 Text("Flight Storage: \(used.map(gb) ?? "Scanning…"), Max Size: \(gb(AppleFlightStorage.maximumBytes)), Max Age: \(AppleFlightStorage.maximumDays) days")
+            }
+            NavigationLink {
+                AppleMappingStorageView()
+            } label: {
+                Text("Mapping\(mappingBytes.map { " — \(!mappingComplete ? "at least " : "")\(gb($0))" } ?? " — scanning…")")
             }
             NavigationLink("Storage Categories...") { AppleStorageCategoriesView(trackModel: trackModel) }
             NavigationLink("Manage Local Maps...") { AppleLocalMappingView(incidentID: "") }
@@ -1233,9 +1240,74 @@ struct AppleStorageManagementView: View {
             used = snapshot.used
             free = snapshot.available
             storageStatus = snapshot.blocked ? snapshot.message : "Cleanup runs at startup and on demand near 90% of the allowance. Today and active folders are protected."
+            if let mapping = try? await AppleMappingStorageReader.shared.read() {
+                mappingBytes = mapping.totalBytes
+                mappingComplete = mapping.complete
+            }
         }
     }
     private func gb(_ bytes: Int64) -> String { String(format: "%.2f GB", Double(bytes) / 1_000_000_000) }
+}
+
+/// Manage Storage → Mapping repository. Lists each project with sizes; opening one uses the existing inspector (inspect/delete).
+struct AppleMappingStorageView: View {
+    @ObservedObject private var model = AppleLocalMappingModel.shared
+    @State private var totalBytes: Int64 = 0
+    @State private var complete = true
+    @State private var error = ""
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 6) {
+                LabeledContent("Total", value: AppleMapOfflineManager.formatBytes(totalBytes))
+                    .accessibilityIdentifier("mapping-storage-total")
+                Text("Projects, originals, map layers and processing checkpoints. Not deleted by map cache cleanup.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                if !complete {
+                    Text("Some mapping storage is unavailable; these figures are incomplete.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                if !error.isEmpty { Text(error).foregroundStyle(.red).font(.footnote) }
+            }
+            .padding()
+            AppleLocalMappingView(incidentID: "")
+        }
+        .navigationTitle("Mapping")
+        .navigationBarTitleDisplayMode(.inline)
+        .task {
+            model.refresh(incident: "", newest: true, force: true)
+            do {
+                let report = try await AppleMappingStorageReader.shared.read()
+                totalBytes = report.totalBytes
+                complete = report.complete
+                error = ""
+            } catch is CancellationError {
+            } catch let readError {
+                error = readError.localizedDescription
+            }
+        }
+    }
+}
+
+private actor AppleMappingStorageReader {
+    static let shared = AppleMappingStorageReader()
+    struct Report: Sendable {
+        let totalBytes: Int64
+        let complete: Bool
+    }
+    func read() throws -> Report {
+        try Task.checkCancellation()
+        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        let local = try StorageCategoryReport.measure([
+            (.projects, support.appendingPathComponent("mapping-missions")),
+            (.layers, AppleMappingTileCache.root),
+            (.checkpoints, support.appendingPathComponent("mapping-processing")),
+            (.metadata, support.appendingPathComponent("mapping-storage-stats")),
+        ], cancelled: { Task.isCancelled })
+        let total = [.projects, .layers, .checkpoints, .metadata].reduce(Int64(0)) { $0 + local.bytes[$1, default: 0] }
+        return Report(totalBytes: total, complete: local.complete)
+    }
 }
 
 private actor AppleStorageCategoryReader {
@@ -1280,6 +1352,7 @@ private struct AppleStorageCategoriesView: View {
             Section("Manage") {
                 NavigationLink("Map Cache Management...") { AppleStorageCacheView(manager: .shared) }
                 NavigationLink("Flight Storage") { AppleArchiveCleanupView(trackModel: trackModel) }
+                NavigationLink("Mapping") { AppleMappingStorageView() }
                 NavigationLink("Manage Local Maps...") { AppleLocalMappingView(incidentID: "") }
                 NavigationLink("Other Storage...") { AppleOtherStorageView() }
                 Text("Temporary files include current working copies and exports. Settings and saved sign-in data remain persistent.").font(.footnote)

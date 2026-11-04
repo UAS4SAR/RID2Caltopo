@@ -31,6 +31,7 @@ class CluePhotoRecoveryTest {
         destinationTeamId = "team-a",
         uploadState = "pending",
         lastUploadError = error,
+        binding = org.ncssar.rid2caltopo.video.testFlightBinding(1_000L),
     )
 
     @Test

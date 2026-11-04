@@ -1124,6 +1124,14 @@ struct RIDTrackMapView: View {
                     gimbalAngleDegrees: -60
                 )
                 let identity = identityStore.identity(for: track.aircraftID)
+                // Every clue belongs to a flight: the demo clue binds to this aircraft's current flight.
+                let demoFlightStart = track.flightStartedAt
+                let demoMs = Int64((snapshot.capturedAt.timeIntervalSince1970 * 1_000).rounded())
+                let demoBinding = ClueBinder.bind(
+                    aircraftID: track.aircraftID,
+                    flightID: RidFlightID.make(aircraftID: track.aircraftID, startedAt: demoFlightStart),
+                    captureTimeMs: demoMs, captureTimeSource: "app-receive", captureReceivedAtMs: demoMs,
+                    points: [], framePosition: nil, originIsWaypoint: false)
                 _ = try? await clueStore.save(AppleClueDraft(
                     capturedAt: snapshot.capturedAt,
                     aircraftID: track.aircraftID,
@@ -1139,7 +1147,8 @@ struct RIDTrackMapView: View {
                     atoMeters: display?.atoFeet.map { $0 * 0.3048 },
                     gimbalAngleDegrees: -60,
                     title: "Simulator clue",
-                    description: "Deterministic local clue used for Apple MapPane qualification."
+                    description: "Deterministic local clue used for Apple MapPane qualification.",
+                    binding: demoBinding
                 ), jpegData: snapshot.jpegData, publishToCaltopo: false)
             }
         }

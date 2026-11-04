@@ -55,6 +55,7 @@ class PendingSignedPersonalClueUploadTest {
             publishToCaltopo = true,
             destinationTeamId = "personal:BCL66J",
             uploadState = "pending",
+            binding = testFlightBinding(1_000L),
         )
         store.saveEncoded(pending, byteArrayOf(1), byteArrayOf(2))
 

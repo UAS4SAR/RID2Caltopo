@@ -25,8 +25,9 @@ public struct OperationalClueRecord: Codable, Sendable, Equatable, Identifiable 
     public let gimbalAngleDegrees: Double
     public var title: String
     public var clueDescription: String
-    public let imageFilename: String
-    public let thumbnailFilename: String
+    /// Relative to FlightStorage: `<yyyy-MM-dd>/<flightId>/<id>.jpg` (legacy `<day>/<id>.jpg` until migrated).
+    public var imageFilename: String
+    public var thumbnailFilename: String
     public var uploadState: OperationalClueUploadState
     public var uploadAttempts: Int
     public var lastUploadError: String?

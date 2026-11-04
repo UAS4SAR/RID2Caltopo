@@ -7,6 +7,7 @@ import org.ncssar.rid2caltopo.app.isDatedArchiveDirectoryName
 import org.ncssar.rid2caltopo.data.CaltopoClient
 import org.ncssar.rid2caltopo.data.PlainFileSafeWriter
 import org.ncssar.rid2caltopo.data.WaypointTrackJournal
+import org.ncssar.rid2caltopo.video.AndroidClueFlightFolders
 import java.io.File
 import java.util.Locale
 
@@ -75,7 +76,7 @@ object ClueTrackDurabilityIntegrity {
 
     /**
      * Orphan photos → stub index rows; index without photo → keep and flag failed/orphan.
-     * Scans per-day folders plus a legacy flat root index.
+     * Scans per-flight folders (and any not-yet-migrated day folder) plus a legacy flat root index.
      */
     internal fun reconcileClueDirectory(root: File): Summary {
         if (!root.isDirectory && !root.mkdirs()) {
@@ -84,17 +85,16 @@ object ClueTrackDurabilityIntegrity {
         var orphansReindexed = 0
         var missingPhotos = 0
 
-        val dayDirs = root.listFiles()
-            ?.filter { it.isDirectory && isDatedArchiveDirectoryName(it.name) }
-            .orEmpty()
-        for (dayDir in dayDirs) {
+        for (folder in AndroidClueFlightFolders.indexedFolders(root)) {
             val daySummary = reconcileOneIndex(
                 root = root,
-                indexFile = File(dayDir, "clues.json"),
-                photoFiles = dayDir.listFiles()
+                indexFile = File(folder, "clues.json"),
+                photoFiles = folder.listFiles()
                     ?.filter { it.isFile && it.name.endsWith(".jpg") && !it.name.endsWith("-thumb.jpg") }
                     .orEmpty(),
-                relativePrefix = "${dayDir.name}/",
+                relativePrefix = "${folder.name}/",
+                // Orphan stubs in a flight folder keep their flight (legacy day folders have none).
+                flightId = folder.name.takeIf { !isDatedArchiveDirectoryName(it) },
             )
             orphansReindexed += daySummary.orphansReindexed
             missingPhotos += daySummary.missingPhotos
@@ -120,6 +120,7 @@ object ClueTrackDurabilityIntegrity {
         indexFile: File,
         photoFiles: List<File>,
         relativePrefix: String,
+        flightId: String? = null,
     ): Summary {
         val byId = linkedMapOf<String, JSONObject>()
         if (indexFile.isFile) {
@@ -166,6 +167,18 @@ object ClueTrackDurabilityIntegrity {
                 .put("destinationTeamId", "")
                 .put("uploadState", "pending")
                 .put("lastUploadError", "reindexed-orphan-photo")
+            if (flightId != null) {
+                val capturedAt = stub.optLong("createdAtMs")
+                stub.put(
+                    "binding",
+                    JSONObject()
+                        .put("aircraftID", "")
+                        .put("flightID", flightId)
+                        .put("captureTimeMs", capturedAt)
+                        .put("captureTimeSource", "app-receive")
+                        .put("captureReceivedAtMs", capturedAt),
+                )
+            }
             byId[id] = stub
             orphansReindexed++
         }

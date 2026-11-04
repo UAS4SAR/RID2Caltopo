@@ -26,6 +26,7 @@ class AndroidCluePartsReconciledTest {
         destinationTeamId = "team-a",
         uploadState = "published",
         caltopoPartsReconciled = reconciled,
+        binding = testFlightBinding(1_000L),
     )
 
     @Test

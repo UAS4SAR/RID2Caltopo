@@ -3342,6 +3342,15 @@ class StreamsViewModel(
             record
         } catch (error: kotlinx.coroutines.CancellationException) {
             throw error
+        } catch (error: IllegalArgumentException) {
+            if (error.message == AndroidClueStore.NO_FLIGHT_MESSAGE) {
+                CTWarn(tag, "Clue save refused: no flight binding")
+                CaltopoClient.ShowToast("Clue needs a flight; it was not saved or submitted.")
+            } else {
+                CTError(tag, "Unable to save local clue copy", error)
+                CaltopoClient.ShowToast("Clue could not be saved locally; it was not submitted.")
+            }
+            null
         } catch (error: Exception) {
             CTError(tag, "Unable to save local clue copy", error)
             CaltopoClient.ShowToast("Clue could not be saved locally; it was not submitted.")

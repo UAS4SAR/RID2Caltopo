@@ -76,7 +76,7 @@ object CluePhotoRecovery {
         return destination
     }
 
-    /** Allow `file.jpg` or `tracks-ddMMMyyyy/file.jpg`; reject traversal. */
+    /** Allow `file.jpg` or `<flightId>/file.jpg` (legacy `tracks-ddMMMyyyy/file.jpg`); reject traversal. */
     private fun sanitizeRelativeFilename(filename: String): String? {
         val name = filename.trim().replace('\\', '/')
         if (name.isEmpty() || name.startsWith("/") || name.contains("..")) return null

@@ -177,12 +177,14 @@ class AwaitingMapFlightReviewTest {
 
             // Clue photos: two belong to the target, one to another drone, one is from earlier.
             val store = AndroidClueStore.forDirectory(File(root, "clues"))
-            fun save(id: String, designator: String, at: Long) = AndroidClueRecord(id, "unassigned", 39.0, -121.0, 0.0, "Clue", "",
-                at, designator, "$id.jpg", "$id-thumb.jpg", false).also { store.saveEncoded(it, byteArrayOf(1), byteArrayOf(2)) }
-            save("a", "1SAR7Db150Brdg", start + 10_000)
-            save("b", "1SAR7Db150Brdg", start + 754_000 + 25_000)
-            save("c", "1sar7DjMn4Pr", start + 10_000)
-            save("d", "1SAR7Db150Brdg", start - 60_000)
+            fun save(id: String, designator: String, at: Long, flight: String) = AndroidClueRecord(id, "unassigned", 39.0, -121.0, 0.0, "Clue", "",
+                at, designator, "$id.jpg", "$id-thumb.jpg", false,
+                binding = org.ncssar.rid2caltopo.video.testFlightBinding(at, flight, designator))
+                .also { store.saveEncoded(it, byteArrayOf(1), byteArrayOf(2)) }
+            save("a", "1SAR7Db150Brdg", start + 10_000, "target")
+            save("b", "1SAR7Db150Brdg", start + 754_000 + 25_000, "target")
+            save("c", "1sar7DjMn4Pr", start + 10_000, "other")
+            save("d", "1SAR7Db150Brdg", start - 60_000, "earlier-flight")
             val owned = store.awaitingFlightClues(target, AwaitingMapFlights.allEntries()).map { it.id }.sorted()
             assertEquals(listOf("a", "b"), owned)
 

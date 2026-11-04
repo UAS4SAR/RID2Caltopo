@@ -268,10 +268,9 @@ public final class AppleFlightStorage: @unchecked Sendable {
         FlightFolderProtection.unuploadedClueCount(clueStates((customRoot ?? root).appendingPathComponent(name)))
     }
 
+    /// Clue states in this day: per-flight indexes `<day>/<flightId>/clues.json` plus any legacy `<day>/clues.json`.
     private static func clueStates(_ folder: URL) -> [OperationalClueUploadState] {
-        guard let data = try? Data(contentsOf: folder.appendingPathComponent("clues.json")),
-              let clues = try? JSONDecoder().decode([OperationalClueRecord].self, from: data) else { return [] }
-        return clues.map(\.uploadState)
+        AppleClueFlightFolder.clueStates(inDay: folder)
     }
 
     private static func hasIncompleteRecording(_ folder: URL, now: Date) -> Bool {

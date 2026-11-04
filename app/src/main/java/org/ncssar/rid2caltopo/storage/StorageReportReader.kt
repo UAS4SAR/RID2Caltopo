@@ -47,6 +47,10 @@ internal fun readStorageCategoryReport(context: Context, privateDataIsTemporary:
         }
         try { walk("") } catch (error: kotlinx.coroutines.CancellationException) { throw error } catch (_: Exception) { complete = false }
     }
+    // Archive-side mapping (`mapping/{missions,layers,processing,stats}`, plus the pre-relocation
+    // `cache/local-maps/mapping-*`) is categorized by storageCategory() above as projects/layers/
+    // checkpoints/metadata. These private aliases/projections use the same categories and are
+    // de-duplicated by file identity; mapping is never counted as Cache imagery.
     val mapping = mapOf("mapping-missions" to StorageCategory.PROJECTS, "mapping-layers" to StorageCategory.LAYERS,
         "mapping-processing" to StorageCategory.CHECKPOINTS, "mapping-storage-stats" to StorageCategory.METADATA,
         "clues" to StorageCategory.CLUES, "managed-video-session-recordings" to StorageCategory.RECORDINGS,

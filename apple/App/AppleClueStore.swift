@@ -11,6 +11,18 @@ private struct ClueUploadAttemptTimeout: Error {
     }
 }
 
+/// Save refusals that must reach the operator in plain words.
+enum AppleClueSaveError: LocalizedError {
+    /// Every clue belongs to a flight; there is no day-only save path.
+    case flightRequired
+
+    var errorDescription: String? {
+        switch self {
+        case .flightRequired: "Clue needs a flight; it was not saved."
+        }
+    }
+}
+
 struct PendingClueUploadRow: Identifiable, Equatable, Sendable {
     let id: UUID
     let title: String
@@ -101,15 +113,27 @@ final class AppleClueStore: ObservableObject {
         let root = self.root, disk = self.disk
         initialLoad = Task { [weak self] in
             do {
-                let loaded = try await disk.run { () -> (records: [OperationalClueRecord], deleted: Set<UUID>) in
+                let loaded = try await disk.run { () -> (records: [OperationalClueRecord], deleted: Set<UUID>, migration: String?) in
+                    // Day-level → per-flight folders (idempotent, worker only). A failed pass keeps
+                    // the originals; the index loader reads both layouts, so loading still proceeds.
+                    var migration: String?
+                    do {
+                        let result = try AppleClueFlightFolderMigration.migrateIfNeeded(root: root)
+                        if result.records > 0 {
+                            migration = "Migrated clues into flight folders count=\(result.records) flights=\(result.flights) recovered=\(result.recoveredFlightIDs)"
+                        }
+                    } catch {
+                        migration = "Flight-folder migration deferred; originals retained: \(error.localizedDescription)"
+                    }
                     let deleted = OperationalClueDeletionTombstone.load(root: root)
                     let records = OperationalClueDeletionTombstone.excludingDeleted(
                         try OperationalClueIndex.load(root: root),
                         deleted: deleted
                     )
-                    return (records, deleted)
+                    return (records, deleted, migration)
                 }
                 guard let self else { return }
+                if let message = loaded.migration { AppleLog.info("Clue", message) }
                 self.deletedIds = loaded.deleted
                 self.records = loaded.records
                 self.updateStatus()
@@ -367,6 +391,12 @@ final class AppleClueStore: ObservableObject {
     func save(_ draft: AppleClueDraft, jpegData: Data, publishToCaltopo: Bool) async throws -> OperationalClueRecord {
         let saveStarted = Date()
         guard !jpegData.isEmpty else { throw CocoaError(.fileWriteUnknown) }
+        // Every clue belongs to a flight; refuse before any file is written.
+        guard let flightID = draft.binding?.flightID?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !flightID.isEmpty, AppleClueFlightFolder.folderName(flightID: flightID) != nil else {
+            AppleLog.warning("Clue", "Clue save refused: no flight binding")
+            throw AppleClueSaveError.flightRequired
+        }
         // Index load only — never wait on the durability integrity scan.
         if let initialLoad {
             let loadFinished = await withTaskGroup(of: Bool.self) { group in
@@ -386,9 +416,14 @@ final class AppleClueStore: ObservableObject {
         guard !indexLoadFailed else { throw CocoaError(.fileReadUnknown) }
         AppleLog.info("Clue", "Clue save stage=bound elapsedMs=\(Int(Date().timeIntervalSince(saveStarted) * 1_000)) publishWithoutTerrainWait=true")
         let id = UUID()
-        let day = AppleFlightStorage.dayName(Date())
-        let imageFilename = "\(day)/\(id.uuidString.lowercased()).jpg"
-        let thumbnailFilename = "\(day)/\(id.uuidString.lowercased())-thumb.jpg"
+        // Nest under the day that holds this flight's logs: `<day>/<flightId>/<id>.jpg`.
+        let day = AppleClueFlightFolder.resolveDay(flightID: flightID, existing: records, now: Date())
+        guard let imageFilename = AppleClueFlightFolder.relativePath(
+                day: day, flightID: flightID, filename: "\(id.uuidString.lowercased()).jpg"),
+              let thumbnailFilename = AppleClueFlightFolder.relativePath(
+                day: day, flightID: flightID, filename: "\(id.uuidString.lowercased())-thumb.jpg")
+        else { throw AppleClueSaveError.flightRequired }
+        let flightDirectory = AppleClueFlightFolder.directory(ofRelativePath: imageFilename)
         let root = self.root
         // Prefer connected-map destination without disk journal when possible.
         let flightDestination: (map: String?, team: String?)
@@ -406,7 +441,7 @@ final class AppleClueStore: ObservableObject {
         AppleLog.info("Clue", "Clue save stage=image-prepared elapsedMs=\(Int(Date().timeIntervalSince(saveStarted) * 1_000)) bytes=\(jpegData.count)")
         // Durable image first. Thumbnail is filled after Local clue saved / upload enqueue.
         try await disk.run {
-            try FileManager.default.createDirectory(at: root.appendingPathComponent(day), withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: root.appendingPathComponent(flightDirectory, isDirectory: true), withIntermediateDirectories: true)
             // Never wait on Flight Storage directory walks / purge (Android prepareAppPrivateWrite).
             AppleFlightStorage.prepareAppPrivateWrite(Int64(jpegData.count))
             try jpegData.write(to: root.appendingPathComponent(imageFilename), options: .atomic)
@@ -1552,13 +1587,24 @@ final class AppleClueStore: ObservableObject {
         let snapshot = records, root = self.root
         indexRevision += 1
         try await disk.run {
-            let grouped = Dictionary(grouping: snapshot) { $0.imageFilename.components(separatedBy: "/")[0] }
-            let directories = try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
-            for directory in directories where AppleFlightStorage.date(directory.lastPathComponent) != nil {
-                let index = directory.appendingPathComponent("clues.json")
-                let dayRecords = grouped[directory.lastPathComponent] ?? []
-                guard !dayRecords.isEmpty || FileManager.default.fileExists(atPath: index.path) else { continue }
-                do { try JSONEncoder().encode(dayRecords).write(to: index, options: .atomic) }
+            // One `clues.json` per directory holding clues: `<day>/<flightId>/` (and any legacy
+            // `<day>/` not yet migrated). Existing indexes with no clues left are rewritten empty.
+            let grouped = Dictionary(grouping: snapshot) { AppleClueFlightFolder.directory(ofRelativePath: $0.imageFilename) }
+            var written = Set<String>()
+            for (relativeDirectory, records) in grouped where !relativeDirectory.isEmpty {
+                let directory = root.appendingPathComponent(relativeDirectory, isDirectory: true)
+                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                try JSONEncoder().encode(records).write(
+                    to: directory.appendingPathComponent(AppleClueFlightFolder.indexFilename), options: .atomic)
+                written.insert(relativeDirectory)
+            }
+            for directory in try AppleClueFlightFolder.indexDirectories(root: root) {
+                let index = directory.appendingPathComponent(AppleClueFlightFolder.indexFilename)
+                let relative = AppleFlightStorage.date(directory.lastPathComponent) != nil
+                    ? directory.lastPathComponent
+                    : "\(directory.deletingLastPathComponent().lastPathComponent)/\(directory.lastPathComponent)"
+                guard !written.contains(relative), FileManager.default.fileExists(atPath: index.path) else { continue }
+                do { try JSONEncoder().encode([OperationalClueRecord]()).write(to: index, options: .atomic) }
                 catch { if FileManager.default.fileExists(atPath: directory.path) { throw error } }
             }
         }

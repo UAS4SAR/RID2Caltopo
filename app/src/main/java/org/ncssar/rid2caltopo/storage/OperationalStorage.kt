@@ -66,7 +66,7 @@ internal object OperationalStorage {
     private val selectionGeneration = java.util.concurrent.atomic.AtomicLong()
     private val startup = java.util.concurrent.Executors.newSingleThreadExecutor { r -> Thread(r, "archive-storage-setup").apply { isDaemon = true } }
     private data class Area(val id: String, val retained: String, val alias: File, val sources: List<File>)
-    private data class Store(val uri: String, val work: File, val tree: ArchiveTree, val writer: VerifiedArchiveTree, val areas: List<Area>, val migrated: MutableMap<String, String> = mutableMapOf(), val growingOffsets: MutableMap<String, Long> = mutableMapOf())
+    private data class Store(val uri: String, val work: File, val tree: ArchiveTree, val writer: VerifiedArchiveTree, val areas: List<Area>, val migrated: MutableMap<String, String> = mutableMapOf(), val growingOffsets: MutableMap<String, Long> = mutableMapOf(), val mappingCurrentLayout: Boolean = true)
     /**
      * Optional test seam: when set, invoked from [worker] even if Looper is absent
      * (plain JVM). Robolectric supplies a real main Looper so the default check fires.
@@ -210,14 +210,20 @@ internal object OperationalStorage {
         }
     }
 
-    private fun areas(context: Context): List<Area> {
+    /**
+     * @param mappingCurrentLayout false only for a session that started before the Archive Dir
+     * mapping relocation committed; retained mapping then stays at the legacy `cache/local-maps`
+     * paths until [AndroidMappingRepositoryMigration] switches the live store.
+     */
+    private fun areas(context: Context, mappingCurrentLayout: Boolean = true): List<Area> {
         val external = context.getExternalFilesDirs(null).filterNotNull().map { File(it, "local-mapping") }
         fun area(id: String, target: String, alias: File, extra: List<File> = emptyList()) = Area(id, target, alias, listOf(alias) + extra)
+        fun mappingTarget(id: String): String = requireNotNull(MappingRepositoryLayout.move(id)).let { if (mappingCurrentLayout) it.current else it.legacy }
         return listOf(
-            area("missions", "cache/local-maps/mapping-missions", File(context.filesDir, "mapping-missions"), external.map { File(it, "mapping-missions") }),
-            area("layers", "cache/local-maps/mapping-layers", File(context.filesDir, "mapping-layers"), external.map { File(it, "mapping-layers") }),
-            area("processing", "cache/local-maps/mapping-processing", File(context.filesDir, "mapping-processing"), external.map { File(it, "mapping-processing") }),
-            area("map-statistics", "cache/local-maps/mapping-storage-stats", File(context.filesDir, "mapping-storage-stats")),
+            area("missions", mappingTarget("missions"), File(context.filesDir, "mapping-missions"), external.map { File(it, "mapping-missions") }),
+            area("layers", mappingTarget("layers"), File(context.filesDir, "mapping-layers"), external.map { File(it, "mapping-layers") }),
+            area("processing", mappingTarget("processing"), File(context.filesDir, "mapping-processing"), external.map { File(it, "mapping-processing") }),
+            area("map-statistics", mappingTarget("map-statistics"), File(context.filesDir, "mapping-storage-stats")),
             area("decoded-terrain", "cache/decoded-terrain", File(context.noBackupFilesDir, "dem_blocks_v2")),
             area("legacy-cache", "cache/local-databases", File(context.noBackupFilesDir, "map_cache")),
             area("legacy-fallback", "cache/imported-fallback", File(context.cacheDir, "map_cache_fallback")),
@@ -280,11 +286,12 @@ internal object OperationalStorage {
                 check(root.isDirectory && root.canRead() && root.canWrite()) { "Archive Dir is not readable and writable." }
                 val tree = DocumentArchiveTree(context, root)
                 val writer = VerifiedArchiveTree(tree)
-                val selected = areas(context)
+                val mappingCurrent = AndroidMappingRepositoryMigration.usesCurrentLayout(tree)
+                val selected = areas(context, mappingCurrent)
                 // Stable within a selected archive, but disposable between invocations.
                 val name = VerifiedArchiveTree.digest(uri.byteInputStream()).take(16)
                 val work = File(TemporaryStorage.workspaceRoot(context, root.uri), "operational-work/$name")
-                val value = Store(uri, work, tree, writer, selected)
+                val value = Store(uri, work, tree, writer, selected, mappingCurrentLayout = mappingCurrent)
                 val hydrationScratch = TemporaryStorage.directory(context, "archive-hydration", root.uri)
                 recoverArchive(value)
                 prepareQueue(context, root, uri)
@@ -342,7 +349,7 @@ internal object OperationalStorage {
                 if (heavy.isNotEmpty()) {
                     startup.execute {
                         runCatching {
-                            prepareHeavyAreas(context, value, heavy, hydrationScratch, generation)
+                            prepareHeavyAreas(context, value, heavy, hydrationScratch, generation, root)
                         }.onFailure { error ->
                             CaltopoClient.CTWarn(
                                 "OperationalStorage",
@@ -366,6 +373,7 @@ internal object OperationalStorage {
         heavy: List<Area>,
         hydrationScratch: File,
         generation: Long,
+        archiveRoot: DocumentFile,
     ) {
         worker()
         fun checkSelection() = check(selectionGeneration.get() == generation) {
@@ -398,10 +406,52 @@ internal object OperationalStorage {
             state.value = Status(ready = true, message = "Retained operational data is in Archive Dir.")
         }
         CaltopoClient.CTDebug("OperationalStorage", "Deferred heavy areas ready count=${heavy.size}")
+        // After mission/layer hydrate so nothing hydrates from a half-moved tree. Never fatal.
+        runCatching { relocateMappingRepository(context, value, archiveRoot, generation) }.onFailure { error ->
+            if (error is kotlinx.coroutines.CancellationException) throw error
+            CaltopoClient.CTWarn("OperationalStorage", "Mapping repository relocation deferred; legacy copies retained: ${error.javaClass.simpleName}")
+        }
+    }
+
+    /**
+     * Archive Dir legacy `cache/local-maps/mapping-...` to `mapping/{missions,layers,processing,stats}` (see [AndroidMappingRepositoryMigration]).
+     * Leftover filesDir/external local-mapping sources are moved by the normal area migrate,
+     * which already targets the current layout. Own tree instance: no lock shared with
+     * publication or bulk hydrate. Switches the live store to the new paths once committed.
+     */
+    private fun relocateMappingRepository(context: Context, value: Store, archiveRoot: DocumentFile, generation: Long) {
+        worker()
+        val tree = DocumentArchiveTree(context, archiveRoot)
+        if (value.mappingCurrentLayout && !AndroidMappingRepositoryMigration.needsWork(tree)) return
+        val localMissions = areas(context).first { it.id == "missions" }.sources.map { source ->
+            // Aliases are symlinks into the disposable projection; the status files live there.
+            runCatching { source.canonicalFile }.getOrDefault(source)
+        }.distinct()
+        val result = AndroidMappingRepositoryMigration.migrate(
+            tree,
+            localMissionRoots = localMissions,
+            processingActive = {
+                runCatching { org.ncssar.rid2caltopo.mapping.MappingProcessingManager.state.value?.active == true }.getOrDefault(false) ||
+                    runCatching { org.ncssar.rid2caltopo.mapping.DjiCloudManager.session.value?.active == true }.getOrDefault(false)
+            },
+            cancelled = { check(selectionGeneration.get() == generation) { "Archive Dir changed during mapping relocation." } },
+            onCommitted = {
+                synchronized(gate) {
+                    val current = store
+                    if (current != null && current.uri == value.uri && !current.mappingCurrentLayout) {
+                        store = current.copy(areas = areas(context, true), mappingCurrentLayout = true)
+                    }
+                }
+            },
+            log = { CaltopoClient.CTInfo("OperationalStorage", it) },
+        )
+        if (!result.committed) {
+            CaltopoClient.CTDebug("OperationalStorage", "Mapping repository relocation outcome=${result.outcome}")
+        }
     }
     private fun recoverArchive(value: Store) = synchronized(recoveryGate) {
         recoveredUri?.let { check(it == value.uri) { "Restart the app after changing Archive Dir." }; return@synchronized }
-        for (folder in listOf("cache", "application-logs")) {
+        for (folder in listOf("cache", "application-logs", MappingRepositoryLayout.ROOT)) {
             value.tree.mkdirs(folder)
             if (!value.tree.exists("$folder/.nomedia")) value.tree.write("$folder/.nomedia", byteArrayOf().inputStream())
         }
@@ -922,16 +972,24 @@ internal object OperationalStorage {
                 removeTree(local)
                 purged++
             }
-            val archived = "cache/local-maps/mapping-missions/$id"
-            if (value.tree.exists(archived)) {
+            // Current layout plus any not-yet-removed legacy copy so neither can resurrect it.
+            val archivedPaths = archivedMappingPaths(value, "missions", id)
+            if (archivedPaths.isNotEmpty()) {
                 // Skip archive purge when originals remain somewhere under the working alias.
                 val working = File(context.filesDir, "mapping-missions/$id")
                 if (org.ncssar.rid2caltopo.mapping.MissionProjectionGuard.hasOriginals(working)) continue
-                runCatching { value.tree.delete(archived) }
+                for (archived in archivedPaths) runCatching { value.tree.delete(archived) }
                 purged++
             }
         }
         if (purged > 0) CaltopoClient.CTDebug("OperationalStorage", "Purged tombstoned missions count=$purged")
+    }
+
+    /** Existing Archive Dir paths for [id] under the store's retained root and the legacy root. */
+    private fun archivedMappingPaths(value: Store, areaId: String, id: String): List<String> {
+        val move = requireNotNull(MappingRepositoryLayout.move(areaId))
+        val retained = value.areas.firstOrNull { it.id == areaId }?.retained ?: move.current
+        return listOf(retained, move.current, move.legacy).distinct().map { "$it/$id" }.filter { value.tree.exists(it) }
     }
 
     /** Drop empty layer UUID dirs previously removed so Archive Dir hydrate cannot resurrect them. Never missions; never dirs with originals. */
@@ -953,9 +1011,9 @@ internal object OperationalStorage {
                 removeTree(local)
                 purged++
             }
-            val archived = "cache/local-maps/mapping-layers/$id"
-            if (value.tree.exists(archived)) {
-                runCatching { value.tree.delete(archived) }
+            val archivedPaths = archivedMappingPaths(value, "layers", id)
+            if (archivedPaths.isNotEmpty()) {
+                for (archived in archivedPaths) runCatching { value.tree.delete(archived) }
                 purged++
             }
         }
@@ -1993,11 +2051,13 @@ internal object OperationalStorage {
             }
             markCluesPrepared(generation)
             CaltopoClient.CTDebug("OperationalStorage", "Clue storage ready independently of bulk storage")
-            // Flat → per-day clue folders (off Main; already on the storage worker).
+            // Flat / day-folder (incl. hydrated Archive Dir leftovers) → per-flight clue folders
+            // (off Main; already on the storage worker). Managed: also clears Archive Dir copies.
             runCatching {
                 org.ncssar.rid2caltopo.video.AndroidClueFlightFolderMigration.migrateIfNeeded(
                     context,
                     File(context.filesDir, "clues"),
+                    managed = true,
                 )
             }.onFailure {
                 CaltopoClient.CTWarn("OperationalStorage", "Clue flight-folder migration deferred", it as? Exception)

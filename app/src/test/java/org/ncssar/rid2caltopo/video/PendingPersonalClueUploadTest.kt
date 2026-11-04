@@ -69,5 +69,6 @@ class PendingPersonalClueUploadTest {
         imageFilename = "$id.jpg",
         thumbnailFilename = "$id-thumb.jpg",
         publishToCaltopo = true,
+        binding = testFlightBinding(1_000L),
     )
 }

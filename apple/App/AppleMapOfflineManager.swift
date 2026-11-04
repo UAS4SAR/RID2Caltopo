@@ -2782,14 +2782,6 @@ struct AppleStorageCacheView: View {
                     LabeledContent("Total cache used", value: gb(snapshot.cacheBytes))
                     LabeledContent("Downloads reserved", value: gb(snapshot.reserved))
                 }
-                Section("Local Maps") {
-                    LabeledContent("Projects, originals and project work", value: gb(snapshot.local[0]))
-                    LabeledContent("Map layers and models", value: gb(snapshot.local[1]))
-                    LabeledContent("Processing work", value: gb(snapshot.local[2]))
-                    LabeledContent("Total local maps", value: gb(snapshot.localBytes))
-                    if !snapshot.complete { Text("Some storage is unavailable; these figures are incomplete.") }
-                    LabeledContent("Total map storage", value: gb(snapshot.cacheBytes + snapshot.localBytes))
-                }
                 Section("Storage") {
                     LabeledContent("Internal storage free", value: snapshot.free.map(gb) ?? "Unavailable")
                     LabeledContent("Cache location", value: "Internal storage")
@@ -2805,7 +2797,7 @@ struct AppleStorageCacheView: View {
             Section("Limits") {
                 TextField("Max Cache Size (GB)", text: $size).keyboardType(.decimalPad).accessibilityLabel("Max Cache Size (GB)")
                 TextField("Max Age (days)", text: $days).keyboardType(.numberPad).accessibilityLabel("Max Age (days)")
-                Text("Size applies to the combined caches. Age applies to downloaded map tiles. AOL and active terrain stay protected. Local Maps are shown separately and are not deleted by cache cleanup.")
+                Text("Size applies to the combined caches. Age applies to downloaded map tiles. AOL and active terrain stay protected. Mapping projects are managed under Mapping in Manage Storage and are not deleted by cache cleanup.")
                     .font(.footnote).foregroundStyle(.secondary)
                 if let error { Text(error).foregroundStyle(.red) }
             }

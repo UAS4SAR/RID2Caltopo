@@ -5,15 +5,12 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import org.json.JSONArray
 import org.json.JSONObject
-import org.ncssar.rid2caltopo.app.isDatedArchiveDirectoryName
-import org.ncssar.rid2caltopo.app.todayArchiveDirectoryName
 import org.ncssar.rid2caltopo.data.AwaitingMapClueMatch
 import org.ncssar.rid2caltopo.data.ClueBinding
 import org.ncssar.rid2caltopo.data.ClueBindingText
 import org.ncssar.rid2caltopo.data.PlainFileSafeWriter
 import java.io.ByteArrayOutputStream
 import java.io.File
-import java.util.Date
 import java.util.UUID
 import kotlin.math.roundToInt
 
@@ -120,11 +117,12 @@ class AndroidClueStore private constructor(
         destinationMapTitle: String = "",
         binding: ClueBinding? = null,
     ): AndroidClueRecord {
+        // Every clue belongs to a flight; there is no day-only / no-flight save path.
+        val folder = flightFolderFor(binding)
         // JPEG encode must not hold the store monitor — upload flush shares that lock.
         val id = UUID.randomUUID().toString().lowercase()
-        val day = dayDirectoryName(binding?.captureTimeMs ?: createdAtMs)
-        val imageFilename = "$day/$id.jpg"
-        val thumbnailFilename = "$day/$id-thumb.jpg"
+        val imageFilename = "$folder/$id.jpg"
+        val thumbnailFilename = "$folder/$id-thumb.jpg"
         val record = AndroidClueRecord(
             id = id,
             mapKey = mapKey,
@@ -161,7 +159,7 @@ class AndroidClueStore private constructor(
         require(imageBytes.isNotEmpty()) { "Clue image is empty" }
         require(thumbnailBytes.isNotEmpty()) { "Clue thumbnail is empty" }
         ensureLoaded()
-        val stored = withDayRelativePaths(record)
+        val stored = withFlightRelativePaths(record)
         synchronized(this) {
             if (deletedIds.contains(stored.id)) {
                 throw IllegalStateException("Refusing write to user-deleted clue id=${stored.id}")
@@ -198,8 +196,8 @@ class AndroidClueStore private constructor(
             }
             persistIndexSnapshot(indexSnapshot, indexRoot)
             // Archive Dir retain must not wait on the save path; cache wipe must not be the only copy.
-            val dayIndex = File(File(indexRoot, stored.imageFilename.substringBefore('/')), "clues.json")
-            retainClueArtifacts(imageFile, thumbnailFile, dayIndex)
+            val flightIndex = File(File(indexRoot, stored.imageFilename.substringBefore('/')), "clues.json")
+            retainClueArtifacts(imageFile, thumbnailFile, flightIndex)
             if (context != null) org.ncssar.rid2caltopo.data.CaltopoClient.CTDebug("ClueStore",
                 "Save id=${stored.id} storageCheckMs=${(preparedAt - started) / 1_000_000} " +
                     "imageMs=${(imageAt - preparedAt) / 1_000_000} thumbnailMs=${(thumbnailAt - imageAt) / 1_000_000} " +
@@ -248,6 +246,8 @@ class AndroidClueStore private constructor(
                 imageFile(removed).delete()
                 thumbnailFile(removed).delete()
             }
+            // Prune the flight folder once its last clue is gone (delete fails harmlessly if non-empty).
+            imageFile(removed).parentFile?.takeIf { it != indexRoot }?.delete()
             true
         } catch (error: Exception) {
             val restoreSnapshot: List<AndroidClueRecord>
@@ -681,7 +681,7 @@ class AndroidClueStore private constructor(
                 directory = root
             }
             org.ncssar.rid2caltopo.storage.OperationalStorage.requireFor(directory)
-            // One-time flat → day-folder migration (off Main only).
+            // Day-folder / flat → per-flight folder migration (off Main only; idempotent).
             val app = context
             if (app != null && android.os.Looper.myLooper() != android.os.Looper.getMainLooper()) {
                 AndroidClueFlightFolderMigration.migrateIfNeeded(app, directory)
@@ -712,7 +712,7 @@ class AndroidClueStore private constructor(
                         record.copy(uploadState = "pending")
                     } else record
                     // Missing media can be temporary. Never discard its retained metadata.
-                    // Newest createdAtMs wins when the same id appears in day + legacy indexes.
+                    // Newest createdAtMs wins when the same id appears in flight + legacy indexes.
                     val prior = prepared[record.id]
                     if (prior == null || normalized.createdAtMs >= prior.createdAtMs) {
                         prepared[record.id] = normalized
@@ -720,10 +720,10 @@ class AndroidClueStore private constructor(
                 }
             }
             try {
-                // Per-day indexes (iOS OperationalClueIndex layout).
-                directory.listFiles()
-                    ?.filter { it.isDirectory && isDatedArchiveDirectoryName(it.name) }
-                    ?.forEach { dayDir -> ingestIndex(File(dayDir, "clues.json")) }
+                // Per-flight indexes `<flightId>/clues.json` (plus any not-yet-migrated day folder).
+                AndroidClueFlightFolders.indexedFolders(directory)
+                    .sortedBy { it.name }
+                    .forEach { folder -> ingestIndex(File(folder, "clues.json")) }
                 // Legacy flat root index, if still present pre-migration / mid-handoff.
                 ingestIndex(File(directory, "clues.json"))
             } catch (error: Exception) {
@@ -768,32 +768,31 @@ class AndroidClueStore private constructor(
     }
 
     /**
-     * Atomic per-day index write (Apple persistIndex pattern). Must not run while holding
+     * Atomic per-flight index write (`<flightId>/clues.json`). Must not run while holding
      * the store monitor — fsync can block for seconds and stall clue upload / connectivity
-     * flush on the same lock. Does not keep writing a single root clues.json after day layout.
+     * flush on the same lock. Does not keep writing a single root clues.json after the
+     * per-flight layout.
      */
     private fun persistIndexSnapshot(snapshot: List<AndroidClueRecord>, directory: File) {
         directory.mkdirs()
-        val dayPrefixed = snapshot.filter { it.imageFilename.contains('/') }
+        val folderPrefixed = snapshot.filter { it.imageFilename.contains('/') }
         val flat = snapshot.filter { !it.imageFilename.contains('/') }
-        val byDay = dayPrefixed.groupBy { it.imageFilename.substringBefore('/') }
-        val existingDays = directory.listFiles()
-            ?.filter { it.isDirectory && isDatedArchiveDirectoryName(it.name) }
-            ?.map { it.name }
-            .orEmpty()
-        val days = (byDay.keys.filter { isDatedArchiveDirectoryName(it) } + existingDays).toSet()
-        for (day in days) {
-            val dayRecords = byDay[day].orEmpty()
-            val dayDir = File(directory, day)
-            val indexFile = File(dayDir, "clues.json")
-            if (dayRecords.isEmpty()) {
+        val byFolder = folderPrefixed.groupBy { it.imageFilename.substringBefore('/') }
+        val existingFolders = AndroidClueFlightFolders.indexedFolders(directory).map { it.name }
+        val folders = (byFolder.keys + existingFolders).toSet()
+        for (folder in folders) {
+            val folderRecords = byFolder[folder].orEmpty()
+            val folderDir = File(directory, folder)
+            val indexFile = File(folderDir, "clues.json")
+            if (folderRecords.isEmpty()) {
                 if (indexFile.isFile) indexFile.delete()
-                // Leave photos/other files; empty indexes are cleared.
+                // Leave photos/other files; an emptied folder is pruned only when truly empty.
+                folderDir.delete()
                 continue
             }
-            dayDir.mkdirs()
+            folderDir.mkdirs()
             val array = JSONArray()
-            dayRecords.forEach { array.put(it.toJson()) }
+            folderRecords.forEach { array.put(it.toJson()) }
             replaceFileAtomically(
                 indexFile,
                 array.toString(2).toByteArray(Charsets.UTF_8),
@@ -867,22 +866,26 @@ class AndroidClueStore private constructor(
 
         internal fun forDirectory(root: File): AndroidClueStore = AndroidClueStore(root)
 
-        /** Flight-day folder name matching [todayArchiveDirectoryName] / FlightStorage archives. */
-        internal fun dayDirectoryName(timeMs: Long): String =
-            todayArchiveDirectoryName(Date(timeMs))
+        const val NO_FLIGHT_MESSAGE = "Clue needs a flight; it was not saved."
+
+        /** Folder for a new clue: the binding's flight; a clue without a flight is refused. */
+        internal fun flightFolderFor(binding: ClueBinding?): String {
+            val flightId = binding?.flightId?.trim().orEmpty()
+            require(flightId.isNotEmpty()) { NO_FLIGHT_MESSAGE }
+            return AndroidClueFlightFolders.folderNameFor(flightId)
+        }
 
         /**
-         * Ensure image/thumbnail paths are `tracks-ddMMMyyyy/<file>` relative to the clues root.
-         * Already day-prefixed paths are left unchanged.
+         * Ensure image/thumbnail paths are `<flightId>/<file>` relative to the clues root, keyed by
+         * the record's binding flight. Refuses a record without a flight.
          */
-        internal fun withDayRelativePaths(record: AndroidClueRecord): AndroidClueRecord {
-            if (record.imageFilename.contains('/')) return record
-            val day = dayDirectoryName(record.ownershipTimeMs)
-            val imageBase = record.imageFilename.substringAfterLast('\\')
+        internal fun withFlightRelativePaths(record: AndroidClueRecord): AndroidClueRecord {
+            val folder = flightFolderFor(record.binding)
+            val imageBase = record.imageFilename.substringAfterLast('/').substringAfterLast('\\')
             val thumbBase = record.thumbnailFilename.substringAfterLast('/').substringAfterLast('\\')
             return record.copy(
-                imageFilename = "$day/$imageBase",
-                thumbnailFilename = "$day/$thumbBase",
+                imageFilename = "$folder/$imageBase",
+                thumbnailFilename = "$folder/$thumbBase",
             )
         }
 
@@ -910,7 +913,7 @@ class AndroidClueStore private constructor(
     }
 }
 
-private fun AndroidClueRecord.toJson(): JSONObject = JSONObject()
+internal fun AndroidClueRecord.toJson(): JSONObject = JSONObject()
     .put("id", id)
     .put("mapKey", mapKey)
     .put("lat", lat)
@@ -935,7 +938,7 @@ private fun AndroidClueRecord.toJson(): JSONObject = JSONObject()
     .put("caltopoRemotelyDeleted", caltopoRemotelyDeleted)
     .also { json -> binding?.let { json.put("binding", it.toJson()) } }
 
-private fun JSONObject.toAndroidClueRecord(): AndroidClueRecord? {
+internal fun JSONObject.toAndroidClueRecord(): AndroidClueRecord? {
     val id = optString("id").takeIf { it.isNotBlank() } ?: return null
     val imageFilename = optString("imageFilename").takeIf { it.isNotBlank() } ?: return null
     val thumbnailFilename = optString("thumbnailFilename").takeIf { it.isNotBlank() } ?: return null

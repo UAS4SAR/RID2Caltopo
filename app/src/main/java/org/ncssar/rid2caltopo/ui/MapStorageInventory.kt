@@ -59,6 +59,8 @@ private val mapInventoryGate = Mutex()
 internal suspend fun readMapStorage(context: Context): MapStorageSnapshot = mapInventoryGate.withLock {
     val current = coroutineContext
     current.ensureActive()
+    // Cache usage never includes mapping: UnifiedMapCache ignores `mapping/` and legacy
+    // `cache/local-maps/` paths. Mapping is reported only as `local` (projects/layers/processing).
     val cache = UnifiedMapCache.usage(context)
     val selected = MapCacheRootResolver.resolveRoot(context)
     val location = when (selected) {

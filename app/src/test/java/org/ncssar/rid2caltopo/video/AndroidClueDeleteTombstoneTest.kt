@@ -31,6 +31,7 @@ class AndroidClueDeleteTombstoneTest {
         destinationTeamId = "team-a",
         uploadState = state,
         caltopoPartsReconciled = state == "published",
+        binding = testFlightBinding(1_000L),
     )
 
     @Test

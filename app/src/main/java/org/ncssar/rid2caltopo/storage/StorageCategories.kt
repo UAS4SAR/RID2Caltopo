@@ -14,10 +14,13 @@ internal fun storageCategory(path: String): StorageCategory {
     val name = lower.substringAfterLast('/')
     return when {
         lower.contains("storage-recovery/") || lower.contains("storage-deletions/") || name.contains(".r2c-stage-") || name.contains(".r2c-previous-") || name.contains(".r2c-interrupted-") -> StorageCategory.RECOVERY
-        name.endsWith(".r2c-info") || name == ".r2c-current" || lower.contains("mapping-storage-stats/") || lower.contains("queue-state/") -> StorageCategory.METADATA
-        lower.contains("mapping-missions/") -> StorageCategory.PROJECTS
-        lower.contains("mapping-layers/") -> StorageCategory.LAYERS
-        lower.contains("mapping-processing/") -> StorageCategory.CHECKPOINTS
+        name.endsWith(".r2c-info") || name == ".r2c-current" || lower.contains("mapping-storage-stats/") || lower.startsWith("mapping/stats/") || lower.contains("queue-state/") -> StorageCategory.METADATA
+        // Top-level `mapping/` is the current Archive Dir layout; `mapping-*` (cache/local-maps) is
+        // the pre-relocation layout. Both are mapping/projects data, never "Cache" imagery.
+        lower.startsWith("mapping/missions/") || lower.contains("mapping-missions/") -> StorageCategory.PROJECTS
+        lower.startsWith("mapping/layers/") || lower.contains("mapping-layers/") -> StorageCategory.LAYERS
+        lower.startsWith("mapping/processing/") || lower.contains("mapping-processing/") -> StorageCategory.CHECKPOINTS
+        lower.startsWith("mapping/") -> StorageCategory.METADATA
         lower.contains("unfinished-recordings/") || lower.contains("recording-recovery/") || lower.contains("recording-originals/") -> StorageCategory.RECORDINGS
         lower.startsWith("cache/surface_v1/") -> StorageCategory.AOL
         lower.startsWith("cache/decoded-terrain/") -> StorageCategory.DECODED

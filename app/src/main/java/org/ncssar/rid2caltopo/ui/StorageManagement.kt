@@ -43,12 +43,17 @@ internal fun StorageManagementDialog(
     var cacheError by remember { mutableStateOf("") }
     var flightError by remember { mutableStateOf("") }
     var categories by remember { mutableStateOf(false) }
+    var mapping by remember { mutableStateOf(false) }
     var localMaps by remember { mutableStateOf(false) }
     var other by remember { mutableStateOf(false) }
     var browseOther by remember { mutableStateOf(false) }
+    var mappingBytes by remember { mutableStateOf<Long?>(null) }
+    var mappingComplete by remember { mutableStateOf(true) }
+    var mappingError by remember { mutableStateOf("") }
     val storageState by org.ncssar.rid2caltopo.storage.OperationalStorage.status.collectAsState()
     if (browseOther) { OtherArchiveFilesDialog { browseOther = false }; return }
     if (other) { OtherStorageDialog({ browseOther = true }, { other = false }); return }
+    if (mapping) { MappingStorageManagementDialog { mapping = false }; return }
     if (localMaps) {
         org.ncssar.rid2caltopo.mapping.MappingLocalLayerDialog(onView = { layer ->
             scope.launch {
@@ -68,7 +73,7 @@ internal fun StorageManagementDialog(
     }
     if (categories) {
         StorageCategoriesDialog(onCache = { categories = false; loadingCache = true }, onFlight = onFlight,
-            onMaps = { categories = false; localMaps = true }, onAdditional = { categories = false; other = true },
+            onMaps = { categories = false; mapping = true }, onAdditional = { categories = false; other = true },
             onDismiss = { categories = false })
         return
     }
@@ -110,6 +115,14 @@ internal fun StorageManagementDialog(
         } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
         catch (error: Exception) { cacheError = error.message ?: "Map storage is unavailable. Reconnect Archive Dir and retry." }
     }
+    LaunchedEffect(storageState.ready) {
+        mappingError = ""
+        try {
+            val (bytes, ok) = withContext(Dispatchers.IO) { measureMappingRepositoryBytes(context) }
+            mappingBytes = bytes; mappingComplete = ok
+        } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+        catch (error: Exception) { mappingError = error.message ?: "Mapping storage is unavailable." }
+    }
     AlertDialog(onDismissRequest = onDismiss, title = { Text("Manage Storage") }, text = {
         Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             if (storageState.busy) { CircularProgressIndicator(Modifier.size(20.dp)); Text(storageState.message) }
@@ -123,6 +136,14 @@ internal fun StorageManagementDialog(
             if (cacheError.isNotEmpty()) Text(cacheError, color = MaterialTheme.colorScheme.error)
             StorageActionButton(onClick = onFlight) { Text("Flight Storage${flight?.let { " — ${if (it.preparingWorkingCopies) "measured so far" else "used"} ${MapCacheSettings.formatDecimalGb(it.used)} / maximum ${MapCacheSettings.formatDecimalGb(flightMaximum ?: 0)}" } ?: if (flightError.isNotEmpty()) " — unavailable" else " — scanning…"}") }
             if (flightError.isNotEmpty()) Text(flightError, color = MaterialTheme.colorScheme.error)
+            StorageActionButton(onClick = { mapping = true }) {
+                Text(
+                    "Mapping${mappingBytes?.let {
+                        " — ${if (!mappingComplete) "at least " else ""}${MapCacheSettings.formatDecimalGb(it)}"
+                    } ?: if (mappingError.isNotEmpty()) " — unavailable" else " — scanning…"}",
+                )
+            }
+            if (mappingError.isNotEmpty()) Text(mappingError, color = MaterialTheme.colorScheme.error)
             StorageActionButton(onClick = onArchive) { Text("Archive Storage...") }
             StorageActionButton(onClick = { categories = true }) { Text("Storage Categories...") }
             StorageActionButton(onClick = { localMaps = true }) { Text("Manage Local Maps...") }
@@ -186,14 +207,6 @@ internal fun MapCacheManagementDialog(snapshot: MapStorageSnapshot, onDismiss: (
                 Text("Total cache used: ${gb(value.cache.total)}")
                 Text("Downloads reserved: ${gb(value.cache.reserved)}")
                 HorizontalDivider()
-                Text("Local Maps", style = MaterialTheme.typography.titleSmall)
-                Text("Projects, originals and project work: ${gb(value.local.projects)}")
-                Text("Map layers and models: ${gb(value.local.layers)}")
-                Text("Processing work: ${gb(value.local.processing)}")
-                Text("Total local maps: ${gb(value.local.total)}")
-                if (!value.local.complete) Text("Some local-map storage is unavailable; these figures are incomplete.")
-                Text("Total map storage: ${gb(value.cache.total + value.local.total)}")
-                HorizontalDivider()
                 Text("Cache location: ${value.cacheLocation}")
                 Text("Cache storage free: ${value.cacheFree?.let(::gb) ?: "Unavailable"}")
                 Text("Currently configured: ${gb(value.maximumBytes)}, ${value.maximumDays} days")
@@ -202,10 +215,11 @@ internal fun MapCacheManagementDialog(snapshot: MapStorageSnapshot, onDismiss: (
                     Text("Largest recommended maximum now: ${gb(recommended)}")
                     StorageActionButton(enabled = !saving, onClick = { size = String.format(java.util.Locale.US, "%.2f", kotlin.math.floor(recommended / 10_000_000.0) / 100.0) }) { Text("Allow up to 80% of free space") }
                 }
+                Text("Mapping projects, originals and layers are managed under Mapping in Manage Storage and are not deleted by cache cleanup.", style = MaterialTheme.typography.bodySmall)
             }
             OutlinedTextField(size, { size = it; message = "" }, enabled = !saving, label = { Text("Max Cache Size (GB)") }, singleLine = true)
             OutlinedTextField(days, { days = it; message = "" }, enabled = !saving, label = { Text("Max Age (days)") }, singleLine = true)
-            Text("Size applies to the combined caches. Age applies to downloaded map tiles (minimum 7 days for OSM caching). AOL and active terrain stay protected. Local Maps are shown separately and are not deleted by cache cleanup.", style = MaterialTheme.typography.bodySmall)
+            Text("Size applies to the combined caches. Age applies to downloaded map tiles (minimum 7 days for OSM caching). AOL and active terrain stay protected.", style = MaterialTheme.typography.bodySmall)
             StorageActionButton(enabled = !saving, onClick = { message = ""; clearing = false }) { Text("Clear Unused Map Caches") }
             StorageActionButton(enabled = !saving, onClick = { message = ""; clearing = true }) { Text("Delete Prepared AOL Data") }
             if (message.isNotEmpty()) Text(message, color = MaterialTheme.colorScheme.error)

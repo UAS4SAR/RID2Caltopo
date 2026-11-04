@@ -25,6 +25,7 @@ class ClueUploadDurabilityTest {
         publishToCaltopo = true,
         destinationTeamId = "team-a",
         uploadState = "pending",
+        binding = testFlightBinding(1_000L),
     )
 
     @Test

@@ -172,12 +172,16 @@ internal object UnifiedMapCache {
     }
 
     fun remember(file: File) = synchronized(lock) {
+        if (org.ncssar.rid2caltopo.storage.MappingRepositoryLayout.isMappingPath(file.absolutePath)) return@synchronized
         files[file.absolutePath] = Entry(file.length(), false, file.name, file.lastModified(), { org.ncssar.rid2caltopo.storage.OperationalStorage.removeIfManaged(file) })
     }
     fun remember(file: DocumentFile) = synchronized(lock) {
+        // Mapping projects/layers/checkpoints are retained data: never cache-evictable or counted.
+        if (org.ncssar.rid2caltopo.storage.MappingRepositoryLayout.isMappingPath(file.uri.toString())) return@synchronized
         files[file.uri.toString()] = Entry(file.length(), true, file.name.orEmpty(), file.lastModified(), { !file.exists() || file.delete() })
     }
     fun rememberSurface(file: DocumentFile) = synchronized(lock) {
+        if (org.ncssar.rid2caltopo.storage.MappingRepositoryLayout.isMappingPath(file.uri.toString())) return@synchronized
         files[file.uri.toString()] = Entry(file.length(), false, "surface_v1/" + file.name.orEmpty(), file.lastModified(), { !file.exists() || file.delete() })
     }
     fun forget(file: DocumentFile) = synchronized(lock) { files.remove(file.uri.toString()); Unit }

@@ -33,6 +33,7 @@ class ClueDeleteBeforeArchiveHydrationTest {
             publishToCaltopo = true,
             destinationTeamId = "personal:BCL66J",
             uploadState = "pending",
+            binding = testFlightBinding(1_000L),
         )
         val saved = store.saveEncoded(record, byteArrayOf(1, 2, 3), byteArrayOf(4, 5))
         assertTrue(store.imageFile(saved).isFile)

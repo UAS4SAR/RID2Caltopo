@@ -135,43 +135,36 @@ public enum ClueTrackDurabilityIntegrity {
         let flagged = flagMissingPhotos(in: next, missingIDs: missingIDs)
         next = flagged.records
 
+        // Day folders: legacy day-level photos plus each flight folder `<day>/<flightId>/`.
         for directory in directories where AppleFlightStorage.date(directory.lastPathComponent) != nil {
             let day = directory.lastPathComponent
-            let files = (try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? []
-            for fileURL in files where fileURL.pathExtension.lowercased() == "jpg"
-                && !fileURL.lastPathComponent.hasSuffix("-thumb.jpg")
-            {
-                let relative = "\(day)/\(fileURL.lastPathComponent)"
-                guard !indexedFilenames.contains(relative) else { continue }
-                let stem = fileURL.deletingPathExtension().lastPathComponent
-                guard let id = UUID(uuidString: stem) else { continue }
-                let thumbName = "\(day)/\(id.uuidString.lowercased())-thumb.jpg"
-                let recovered = OperationalClueRecord(
-                    id: id,
-                    capturedAt: (try? fileURL.resourceValues(forKeys: [.contentModificationDateKey])
-                        .contentModificationDate) ?? Date(),
-                    aircraftID: "unknown",
-                    designator: "Recovered",
-                    droneLatitude: 0,
-                    droneLongitude: 0,
-                    droneAltitudeMeters: nil,
-                    clueLatitude: 0,
-                    clueLongitude: 0,
-                    clueAltitudeMeters: nil,
-                    headingDegrees: nil,
-                    aglMeters: nil,
-                    atoMeters: nil,
-                    gimbalAngleDegrees: 0,
-                    title: "Recovered photo",
-                    clueDescription: "Re-indexed orphan photo at startup",
-                    imageFilename: relative,
-                    thumbnailFilename: thumbName,
-                    uploadState: .localOnly,
-                    lastUploadError: "Orphan photo re-indexed"
-                )
-                next.insert(recovered, at: 0)
-                indexedFilenames.insert(relative)
-                orphanPhotosReindexed += 1
+            var scanned: [(url: URL, prefix: String, flightFolder: String?)] = [(directory, day, nil)]
+            let children = (try? FileManager.default.contentsOfDirectory(
+                at: directory, includingPropertiesForKeys: [.isDirectoryKey])) ?? []
+            for child in children.sorted(by: { $0.lastPathComponent < $1.lastPathComponent })
+            where !child.lastPathComponent.hasPrefix(".") && AppleClueFlightFolder.isDirectory(child) {
+                scanned.append((child, "\(day)/\(child.lastPathComponent)", child.lastPathComponent))
+            }
+            for (folder, prefix, flightFolder) in scanned {
+                let files = (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)) ?? []
+                for fileURL in files.sorted(by: { $0.lastPathComponent < $1.lastPathComponent })
+                where fileURL.pathExtension.lowercased() == "jpg" && !fileURL.lastPathComponent.hasSuffix("-thumb.jpg") {
+                    let relative = "\(prefix)/\(fileURL.lastPathComponent)"
+                    guard !indexedFilenames.contains(relative) else { continue }
+                    let stem = fileURL.deletingPathExtension().lastPathComponent
+                    guard let id = UUID(uuidString: stem) else { continue }
+                    let capturedAt = (try? fileURL.resourceValues(forKeys: [.contentModificationDateKey])
+                        .contentModificationDate) ?? Date()
+                    next.insert(
+                        recoveredOrphanRecord(
+                            id: id, capturedAt: capturedAt, prefix: prefix, flightID: flightFolder,
+                            lastUploadError: "Orphan photo re-indexed"
+                        ),
+                        at: 0
+                    )
+                    indexedFilenames.insert(relative)
+                    orphanPhotosReindexed += 1
+                }
             }
         }
 
@@ -182,5 +175,50 @@ public enum ClueTrackDurabilityIntegrity {
             pendingOrFailedUploads: pendingUploadCount(in: next)
         )
         return (next, summary)
+    }
+
+    /// Index row for a JPEG that has no row. Never dropped; local-only so it is not auto-published.
+    /// `prefix` is the relative directory (`<day>` or `<day>/<flightId>`); a flight folder name also
+    /// becomes the row's binding flight so the clue stays tied to its flight.
+    public static func recoveredOrphanRecord(
+        id: UUID,
+        capturedAt: Date,
+        prefix: String,
+        flightID: String?,
+        lastUploadError: String
+    ) -> OperationalClueRecord {
+        let name = id.uuidString.lowercased()
+        let milliseconds = Int64((capturedAt.timeIntervalSince1970 * 1_000).rounded())
+        let binding = flightID.map {
+            ClueBinding(
+                aircraftID: "unknown", flightID: $0, flightStartMs: nil, captureTimeMs: milliseconds,
+                captureTimeSource: "app-receive", captureReceivedAtMs: milliseconds, waypoint: nil,
+                offsetMs: nil, nearestOffsetMs: nil, quality: .unbound, hovering: false,
+                originIsWaypoint: false, framePosition: nil
+            )
+        }
+        return OperationalClueRecord(
+            id: id,
+            capturedAt: capturedAt,
+            aircraftID: "unknown",
+            designator: "Recovered",
+            droneLatitude: 0,
+            droneLongitude: 0,
+            droneAltitudeMeters: nil,
+            clueLatitude: 0,
+            clueLongitude: 0,
+            clueAltitudeMeters: nil,
+            headingDegrees: nil,
+            aglMeters: nil,
+            atoMeters: nil,
+            gimbalAngleDegrees: 0,
+            title: "Recovered photo",
+            clueDescription: "Re-indexed orphan photo at startup",
+            imageFilename: "\(prefix)/\(name).jpg",
+            thumbnailFilename: "\(prefix)/\(name)-thumb.jpg",
+            uploadState: .localOnly,
+            lastUploadError: lastUploadError,
+            binding: binding
+        )
     }
 }

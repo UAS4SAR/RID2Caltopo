@@ -50,7 +50,7 @@ class OperationalStorageTest {
         write(context.filesDir, "clues/picture.jpg", "clue bytes")
         write(context.filesDir, "datastore/access.preferences_pb", "private credentials")
         OperationalStorage.prepare(context, DocumentFile.fromFile(archive))
-        assertEquals("original bytes", File(archive, "cache/local-maps/mapping-missions/mission/originals/photo.jpg").readText())
+        assertEquals("original bytes", File(archive, "mapping/missions/mission/originals/photo.jpg").readText())
         assertEquals("original bytes", mission.readText())
         assertEquals(1_750_000_000_000, mission.lastModified())
         assertTrue(java.nio.file.Files.isSymbolicLink(File(context.filesDir, "mapping-missions").toPath()))
@@ -97,7 +97,7 @@ class OperationalStorageTest {
         try {
             val source = write(context.filesDir, "mapping-missions/one/originals/photo.jpg", "original photo with location metadata")
             val tree = DocumentArchiveTree(context, archive)
-            val target = "cache/local-maps/mapping-missions/one/originals/photo.jpg"
+            val target = "mapping/missions/one/originals/photo.jpg"
             source.inputStream().use { tree.write(target, it) }
             // Establish the behavior missing from the old provider fixture.
             assertEquals("transformed media bytes", context.contentResolver.openInputStream(tree.uri(target))!!.reader().use { it.readText() })
@@ -181,7 +181,7 @@ class OperationalStorageTest {
         android.system.Os.symlink(originals.path, File(mission, "originals").path)
         OperationalStorage.prepare(context, DocumentFile.fromFile(archive))
         assertEquals("saved SD original", File(mission, "originals/photo.jpg").readText())
-        assertEquals("saved SD original", File(archive, "cache/local-maps/mapping-missions/one/originals/photo.jpg").readText())
+        assertEquals("saved SD original", File(archive, "mapping/missions/one/originals/photo.jpg").readText())
         assertFalse(originals.exists())
         val bytes = byteArrayOf(0xff.toByte(), 0xd8.toByte(), 1, 2, 3, 4)
         val hash = VerifiedArchiveTree.digest(bytes.inputStream())
