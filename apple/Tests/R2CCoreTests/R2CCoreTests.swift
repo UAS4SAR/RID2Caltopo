@@ -7185,6 +7185,36 @@ private func tag10FieldOfView(_ hex: String) -> (horizontal: Double, vertical: D
     }
 }
 
+/// Wall-clock expiry is detectable after a simulated suspend without waiting for Task.sleep.
+@Test func applicationIdleTimeoutExpiryDetectedWithoutSleepCompleting() {
+    let startedAt = Date(timeIntervalSince1970: 1_000)
+    let deadline = ApplicationIdleTimeoutPolicy.deadline(
+        appStartedAt: startedAt,
+        lastRIDMessageAt: nil,
+        maximumIdleMinutes: 2
+    )
+    #expect(deadline == Date(timeIntervalSince1970: 1_120))
+    // "Suspended" across the deadline: remaining was 60s at t=1060, but wake at t=1120 is expired.
+    #expect(ApplicationIdleTimeoutPolicy.remainingDelay(
+        appStartedAt: startedAt,
+        lastRIDMessageAt: nil,
+        maximumIdleMinutes: 2,
+        now: Date(timeIntervalSince1970: 1_060)
+    ) == 60)
+    #expect(ApplicationIdleTimeoutPolicy.isExpired(
+        appStartedAt: startedAt,
+        lastRIDMessageAt: nil,
+        maximumIdleMinutes: 2,
+        now: Date(timeIntervalSince1970: 1_120)
+    ))
+    #expect(ApplicationIdleTimeoutPolicy.remainingDelay(
+        appStartedAt: startedAt,
+        lastRIDMessageAt: nil,
+        maximumIdleMinutes: 2,
+        now: Date(timeIntervalSince1970: 1_120)
+    ) == 0)
+}
+
 @Test func offlineMapIndependentLayerCountsAllowTerrainOnly() {
     for baseLayers in 0...2 {
         for contours in [false, true] {

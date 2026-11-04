@@ -1010,10 +1010,16 @@ public actor CaltopoLiveClient {
     }
 
     public func deleteMarker(markerID: String, now: Date = Date()) async throws {
-        _ = try await perform(
+        _ = try await deleteMarkerReturningStatus(markerID: markerID, now: now)
+    }
+
+    /// DELETE status for compact cleanup logs. 2xx and accepted absences (400/404) return normally.
+    @discardableResult
+    public func deleteMarkerReturningStatus(markerID: String, now: Date = Date()) async throws -> Int {
+        try await performReturningStatus(
             makeDeleteMarkerRequest(markerID: markerID, now: now),
             acceptedStatusCodes: [400, 404]
-        )
+        ).status
     }
 
     func makeDeviceMarkerRequest(
@@ -1504,6 +1510,20 @@ public actor CaltopoLiveClient {
         lane: CaltopoNetworkLane? = nil,
         timeout: TimeInterval = requestTimeoutSeconds
     ) async throws -> Data {
+        try await performReturningStatus(
+            request,
+            acceptedStatusCodes: acceptedStatusCodes,
+            lane: lane,
+            timeout: timeout
+        ).data
+    }
+
+    private func performReturningStatus(
+        _ request: URLRequest,
+        acceptedStatusCodes: Set<Int> = [],
+        lane: CaltopoNetworkLane? = nil,
+        timeout: TimeInterval = requestTimeoutSeconds
+    ) async throws -> (data: Data, status: Int) {
         var request = request
         request.timeoutInterval = timeout
         var personalCookieURL: URL?
@@ -1578,7 +1598,7 @@ public actor CaltopoLiveClient {
             )
             throw CaltopoLiveClientError.httpStatus(httpResponse.statusCode, detail)
         }
-        return data
+        return (data, httpResponse.statusCode)
     }
 
     /// Truncated, secret-scrubbed body for 4xx/5xx diagnosis. Never logs activation codes or signing keys.

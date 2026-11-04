@@ -349,10 +349,15 @@ class CaltopoMapTest {
     @Test fun publicationWaitsForInflightCleanupAndCoalescesToLatestLocation() {
         val journal=CaltopoMap::class.java.getDeclaredField("markerJournal").apply{isAccessible=true}.get(null) as DeviceMarkerJournal
         journal.arm(CaltopoClient.GetCaltopoDomainAndPort(),CaltopoMap.GetMapId(),"marker-guid-test")
+        // Stale cleanup runs while not publishing; once publishing, the same-map journal row is reused.
+        CaltopoMap::class.java.getDeclaredField("DeviceMarkerAllowed").apply { isAccessible = true }
+            .setBoolean(null, false)
         fixture.calTopoSessionGateway.holdMarkerDeletes=true
         CaltopoMap::class.java.getDeclaredMethod("retryMarkerCleanup").apply{isAccessible=true}.invoke(null)
         drainMarkers()
         assertEquals(1,fixture.calTopoSessionGateway.markerDeleteCallbacks.size)
+        CaltopoMap::class.java.getDeclaredField("DeviceMarkerAllowed").apply { isAccessible = true }
+            .setBoolean(null, true)
         CaltopoMap.MyLocation=Location("test")
         mapStatusField.set(null,CaltopoMap.MapStatusListener.mapStatus.up)
         repeat(3){invokeMarkerPublish(Location("test"))}
@@ -929,6 +934,33 @@ class CaltopoMapTest {
         drainMarkers()
         assertEquals(1, fixture.calTopoSessionGateway.countOperations("deleteMarker"))
         assertTrue(journal.entries().isEmpty())
+    }
+
+    @Test
+    fun mapIdPrefixTruncatesToEightCharacters() {
+        val method = CaltopoMap::class.java.getDeclaredMethod("mapIdPrefix", String::class.java).apply { isAccessible = true }
+        assertEquals("4J0LF02X", method.invoke(null, "4J0LF02XYZ"))
+        assertEquals("SHORT", method.invoke(null, "SHORT"))
+    }
+
+    @Test
+    fun retryWhilePublishingReusesJournalMarkerForCurrentMap() {
+        val domain = CaltopoClient.GetCaltopoDomainAndPort()
+        val journal = CaltopoMap::class.java.getDeclaredField("markerJournal").apply { isAccessible = true }
+            .get(null) as DeviceMarkerJournal
+        journal.arm(domain, mapNodeField.get(null).let { (it as CaltopoNode.MapNode).id }, "reused-marker-id", "marker-guid-test")
+        CaltopoMap::class.java.getDeclaredField("DeviceMarkerAllowed").apply { isAccessible = true }
+            .setBoolean(null, true)
+        CaltopoMap::class.java.getDeclaredField("ResolvedMyDeviceMarkerId").apply { isAccessible = true }
+            .set(null, null)
+        CaltopoMap::class.java.getDeclaredMethod("retryMarkerCleanup").apply { isAccessible = true }.invoke(null)
+        drainMarkers()
+        assertEquals(0, fixture.calTopoSessionGateway.countOperations("deleteMarker"))
+        assertEquals(
+            "reused-marker-id",
+            CaltopoMap::class.java.getDeclaredField("ResolvedMyDeviceMarkerId").apply { isAccessible = true }.get(null)
+        )
+        assertEquals(1, journal.entries().size)
     }
 
     @Test

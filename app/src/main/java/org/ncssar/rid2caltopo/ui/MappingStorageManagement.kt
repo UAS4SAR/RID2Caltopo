@@ -39,17 +39,20 @@ import org.ncssar.rid2caltopo.video.mapcache.MapCacheSettings
 /**
  * Manage Storage → Mapping repository: project list with storage breakdown.
  * Cached sizes show immediately; a background rescan runs only when top-level mapping
- * artifacts are newer than the cache, or after delete/move/migration invalidation.
- * Totals include shared layers, stats, processing, and other so lines sum to the total.
+ * artifacts are newer than the cache, or after delete/move invalidation.
+ * Archive totals use on-card allocated bytes; the operational-work projection is a
+ * separate Working copy line.
  */
 @Composable
 internal fun MappingStorageManagementDialog(onDismiss: () -> Unit) {
     val context = LocalContext.current
     var report by remember { mutableStateOf(MappingStorageSummary.peekMemory()) }
     var totalBytes by remember { mutableLongStateOf(report?.totalBytes ?: 0L) }
+    var workingCopyBytes by remember { mutableLongStateOf(report?.workingCopyBytes ?: 0L) }
     var complete by remember { mutableStateOf(report?.complete ?: true) }
     var loading by remember { mutableStateOf(report == null) }
     var refreshing by remember { mutableStateOf(false) }
+    var needsRescan by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf("") }
     var selectedFlight by remember { mutableStateOf<String?>(null) }
     var pendingLayerId by remember { mutableStateOf<String?>(null) }
@@ -70,14 +73,14 @@ internal fun MappingStorageManagementDialog(onDismiss: () -> Unit) {
             mission = null,
             onDismiss = {
                 selectedFlight = null
-                // Delete/move from the inspector invalidates the summary; refresh after return.
-                refreshing = true
+                if (needsRescan) refreshing = true
             },
             onConnection = {},
             onViewLayer = {},
             onLayersChanged = {
                 MappingWorkspaceState.layersChanged()
                 MappingStorageSummary.invalidate(context.filesDir)
+                needsRescan = true
             },
             initialFlightId = flightId,
             detailOnly = true,
@@ -90,10 +93,11 @@ internal fun MappingStorageManagementDialog(onDismiss: () -> Unit) {
             {
                 MappingWorkspaceState.layersChanged()
                 MappingStorageSummary.invalidate(context.filesDir)
+                needsRescan = true
             },
             {
                 inspectingLayer = null
-                refreshing = true
+                if (needsRescan) refreshing = true
             },
             onView2D = {},
         )
@@ -104,7 +108,6 @@ internal fun MappingStorageManagementDialog(onDismiss: () -> Unit) {
         error = ""
         try {
             val filesDir = context.filesDir
-            // Instant: memory or cheap disk cache (off Main).
             val cached = withContext(Dispatchers.IO) {
                 kotlinx.coroutines.currentCoroutineContext().ensureActive()
                 MappingStorageSummary.loadCached(filesDir)
@@ -112,25 +115,38 @@ internal fun MappingStorageManagementDialog(onDismiss: () -> Unit) {
             if (cached != null) {
                 report = cached
                 totalBytes = cached.totalBytes
+                workingCopyBytes = cached.workingCopyBytes
                 complete = cached.complete
                 loading = false
             } else {
-                loading = true
+                // First open: show project rows immediately with calculating… sizes.
+                val placeholders = withContext(Dispatchers.IO) {
+                    kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                    MappingStorageSummary.projectPlaceholders(filesDir, context)
+                }
+                report = placeholders
+                totalBytes = 0L
+                workingCopyBytes = 0L
+                complete = false
+                loading = false
             }
-            // Background: rescan only when stamp is stale (or forced after inspector).
             val live = MappingProcessingManager.state.value
+            // Force only after delete/move; otherwise stamp decides incremental vs cache.
+            val force = needsRescan
             val next = withContext(Dispatchers.IO) {
                 kotlinx.coroutines.currentCoroutineContext().ensureActive()
                 MappingStorageSummary.cachedOrRefresh(
                     filesDir,
                     live = live,
                     context = context,
-                    force = refreshing,
+                    force = force,
                 )
             }
             report = next
             totalBytes = next.totalBytes
+            workingCopyBytes = next.workingCopyBytes
             complete = next.complete
+            needsRescan = false
         } catch (cancelled: kotlinx.coroutines.CancellationException) {
             throw cancelled
         } catch (e: Exception) {
@@ -151,20 +167,30 @@ internal fun MappingStorageManagementDialog(onDismiss: () -> Unit) {
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 Text(
-                    "Total: ${if (!complete && totalBytes > 0) "at least " else ""}${MapCacheSettings.formatDecimalGb(totalBytes)}",
+                    "Total: ${if (!complete && totalBytes > 0) "at least " else ""}${MapCacheSettings.formatDecimalGb(totalBytes)}" +
+                        if (current?.logicalBytes != null && current.logicalBytes > 0 && current.logicalBytes != totalBytes) {
+                            " (logical ${MapCacheSettings.formatDecimalGb(current.logicalBytes)})"
+                        } else "",
                     style = MaterialTheme.typography.titleSmall,
                     modifier = Modifier.testTag("mapping-storage-total"),
                 )
                 Text(
-                    "Projects, originals, map layers and processing checkpoints. Not deleted by map cache cleanup.",
+                    "Archive on-card size. Projects, originals, map layers and processing checkpoints. Not deleted by map cache cleanup.",
                     style = MaterialTheme.typography.bodySmall,
                 )
+                if (workingCopyBytes > 0L) {
+                    Text(
+                        "Working copy: ${MapCacheSettings.formatDecimalGb(workingCopyBytes)} (local projection; not part of archive total)",
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.testTag("mapping-storage-working-copy"),
+                    )
+                }
                 if (loading) {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
                         Text("Measuring mapping storage…")
                     }
-                } else if (refreshing) {
+                } else if (refreshing || current?.projects?.any { !it.sized } == true) {
                     Text("Updating sizes…", style = MaterialTheme.typography.bodySmall)
                 }
                 if (error.isNotEmpty()) Text(error, color = MaterialTheme.colorScheme.error)
@@ -173,7 +199,7 @@ internal fun MappingStorageManagementDialog(onDismiss: () -> Unit) {
                     Modifier.fillMaxWidth().weight(1f, fill = false).testTag("mapping-storage-list"),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    if (!loading && current != null) {
+                    if (current != null) {
                         items(current.projects, key = { it.id }) { entry ->
                             MappingStorageProjectRow(entry) {
                                 if (entry.flightId != null) selectedFlight = entry.flightId
@@ -205,7 +231,8 @@ internal fun MappingStorageManagementDialog(onDismiss: () -> Unit) {
                             current.statsBytes == 0L &&
                             current.processingBytes == 0L &&
                             current.otherBytes == 0L &&
-                            error.isEmpty()
+                            error.isEmpty() &&
+                            current.projects.all { it.sized }
                         ) {
                             item { Text("No mapping projects yet.") }
                         }
@@ -235,9 +262,13 @@ private fun MappingStorageProjectRow(entry: MappingStorageSummary.ProjectLine, o
         }
         Text("${entry.photoCount} originals", style = MaterialTheme.typography.bodySmall)
         Text(
-            "Size: ${if (entry.complete) "" else "At least "}${MappingStorageUsage.format(entry.bytes)}" +
-                " · layers ${MappingStorageUsage.format(entry.layersBytes)}" +
-                " · checkpoints ${MappingStorageUsage.format(entry.workingBytes)}",
+            if (!entry.sized) {
+                "Size: calculating…"
+            } else {
+                "Size: ${if (entry.complete) "" else "At least "}${MappingStorageUsage.format(entry.bytes)}" +
+                    " · layers ${MappingStorageUsage.format(entry.layersBytes)}" +
+                    " · checkpoints ${MappingStorageUsage.format(entry.workingBytes)}"
+            },
             style = MaterialTheme.typography.bodySmall,
         )
         Text("Tap to inspect or delete", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)

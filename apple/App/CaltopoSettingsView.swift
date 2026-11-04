@@ -1255,18 +1255,32 @@ struct AppleMappingStorageView: View {
     @ObservedObject private var model = AppleLocalMappingModel.shared
     @State private var summary: MappingStorageSummary.Report?
     @State private var totalBytes: Int64 = 0
+    @State private var workingCopyBytes: Int64 = 0
     @State private var complete = true
     @State private var error = ""
     @State private var refreshing = false
+    /// Set when delete/move invalidated the cache; busy→idle alone does not force a rescan.
+    @State private var needsRescan = false
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 6) {
-                LabeledContent("Total", value: AppleMapOfflineManager.formatBytes(totalBytes))
+                LabeledContent("Total", value: totalLabel)
                     .accessibilityIdentifier("mapping-storage-total")
-                Text("Projects, originals, map layers and processing checkpoints. Not deleted by map cache cleanup.")
+                Text("Archive on-card size. Projects, originals, map layers and processing checkpoints. Not deleted by map cache cleanup.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+                if workingCopyBytes > 0 {
+                    LabeledContent(
+                        "Working copy",
+                        value: "\(AppleMapOfflineManager.formatBytes(workingCopyBytes)) (local projection; not part of archive total)"
+                    )
+                    .accessibilityIdentifier("mapping-storage-working-copy")
+                }
                 if let summary {
+                    ForEach(summary.projects) { project in
+                        LabeledContent(project.name, value: projectSizeLabel(project))
+                            .accessibilityIdentifier("mapping-storage-entry-\(project.id)")
+                    }
                     if summary.sharedLayersBytes > 0 {
                         LabeledContent("Shared layers", value: AppleMapOfflineManager.formatBytes(summary.sharedLayersBytes))
                             .accessibilityIdentifier("mapping-storage-category-shared-layers")
@@ -1284,7 +1298,7 @@ struct AppleMappingStorageView: View {
                             .accessibilityIdentifier("mapping-storage-category-other")
                     }
                 }
-                if refreshing {
+                if refreshing || summary?.projects.contains(where: { !$0.sized }) == true {
                     Text("Updating sizes…").font(.footnote).foregroundStyle(.secondary)
                 }
                 if !complete {
@@ -1303,17 +1317,29 @@ struct AppleMappingStorageView: View {
             if let cached = MappingStorageSummary.peekMemory() {
                 summary = cached
                 totalBytes = cached.totalBytes
+                workingCopyBytes = cached.workingCopyBytes
                 complete = cached.complete
+            } else {
+                // First open: show project rows immediately with calculating… sizes.
+                if let placeholders = try? await AppleMappingStorageReader.shared.placeholders() {
+                    summary = placeholders
+                    totalBytes = 0
+                    workingCopyBytes = 0
+                    complete = false
+                }
+                refreshing = true
             }
             // Cheap stamp check; full rescan only when artifacts changed (not force every open).
             model.refresh(incident: "", newest: true, force: false)
             do {
-                refreshing = summary != nil
+                if summary?.projects.contains(where: \.sized) == true { refreshing = true }
                 let report = try await AppleMappingStorageReader.shared.read(force: false)
                 summary = report
                 totalBytes = report.totalBytes
+                workingCopyBytes = report.workingCopyBytes
                 complete = report.complete
                 error = ""
+                needsRescan = false
             } catch is CancellationError {
             } catch let readError {
                 error = readError.localizedDescription
@@ -1322,16 +1348,36 @@ struct AppleMappingStorageView: View {
         }
         .onChange(of: model.busy) { _, busy in
             if !busy {
-                MappingStorageSummary.invalidate()
+                // Delete path clears memory via MappingStorageSummary.invalidate().
+                if MappingStorageSummary.peekMemory() == nil { needsRescan = true }
+                guard needsRescan else { return }
+                needsRescan = false
                 Task {
+                    refreshing = true
                     if let report = try? await AppleMappingStorageReader.shared.read(force: true) {
                         summary = report
                         totalBytes = report.totalBytes
+                        workingCopyBytes = report.workingCopyBytes
                         complete = report.complete
                     }
+                    refreshing = false
                 }
             }
         }
+    }
+
+    private var totalLabel: String {
+        var label = "\(!complete && totalBytes > 0 ? "at least " : "")\(AppleMapOfflineManager.formatBytes(totalBytes))"
+        if let summary, summary.logicalBytes > 0, summary.logicalBytes != totalBytes {
+            label += " (logical \(AppleMapOfflineManager.formatBytes(summary.logicalBytes)))"
+        }
+        return label
+    }
+
+    private func projectSizeLabel(_ project: MappingStorageSummary.ProjectLine) -> String {
+        if !project.sized { return "calculating…" }
+        let prefix = project.complete ? "" : "At least "
+        return "\(prefix)\(AppleMapOfflineManager.formatBytes(project.bytes))"
     }
 }
 
@@ -1348,14 +1394,8 @@ private actor AppleMappingStorageReader {
         )
     }
 
-    func read(force: Bool = false) async throws -> MappingStorageSummary.Report {
-        try Task.checkCancellation()
-        let roots = roots()
-        if !force, let cached = MappingStorageSummary.loadCached(roots: roots),
-           MappingStorageSummary.isFresh(cached, current: roots.stamp()) {
-            return cached
-        }
-        let projects = await MainActor.run { () -> [MappingStorageSummary.ProjectLine] in
+    private func projectLines() async -> [MappingStorageSummary.ProjectLine] {
+        await MainActor.run {
             AppleLocalMappingModel.shared.entries.map { entry in
                 MappingStorageSummary.ProjectLine(
                     id: "flight:\(entry.id)",
@@ -1365,11 +1405,35 @@ private actor AppleMappingStorageReader {
                     bytes: 0,
                     layersBytes: entry.tileBytes + entry.modelBytes,
                     workingBytes: entry.workBytes,
-                    complete: true
+                    complete: true,
+                    sized: false,
+                    flightId: entry.id
                 )
             }
         }
-        return try MappingStorageSummary.cachedOrRefresh(roots: roots, projects: projects, force: force)
+    }
+
+    func placeholders() async throws -> MappingStorageSummary.Report {
+        try Task.checkCancellation()
+        let roots = roots()
+        let projects = await projectLines()
+        return MappingStorageSummary.projectPlaceholders(roots: roots, projects: projects)
+    }
+
+    func read(force: Bool = false) async throws -> MappingStorageSummary.Report {
+        try Task.checkCancellation()
+        let roots = roots()
+        if !force, let cached = MappingStorageSummary.loadCached(roots: roots),
+           MappingStorageSummary.isFresh(cached, current: roots.stamp()) {
+            return cached
+        }
+        let projects = await projectLines()
+        return try MappingStorageSummary.cachedOrRefresh(
+            roots: roots,
+            projects: projects,
+            force: force,
+            log: { AppleLog.debug("MappingStorage", $0) }
+        )
     }
 }
 

@@ -306,11 +306,18 @@ actor AppleCaltopoPublisher {
             publishedMarkerOwnership = ownership
             try await client.publishDeviceMarker(marker, folderID: trackFolderID, now: now)
             guard consent.allows(consentGeneration), generation == deviceMarkerGeneration, !deviceMarkerPublishingSuspended else {
-                if await deleteAllDeviceMarkerOccurrences(client: client, markerID: marker.id) { try markerJournal.acknowledge(ownership) }
+                if await deleteAllDeviceMarkerOccurrences(
+                    client: client,
+                    markerID: marker.id,
+                    mapID: markerConfiguration.mapID,
+                    logStaleCleanup: true
+                ) { try markerJournal.acknowledge(ownership) }
                 return
             }
+            // Successful publish leaves the journal entry armed until confirmed delete.
             lastDeviceMarkerPublishedAt = now
             publishedDeviceMarkerID = marker.id
+            publishedMarkerOwnership = ownership
             AppleLog.info(
                 "CalTopo",
                 "Published local device marker id=\(marker.id) folder='\(trackFolderName)'"
@@ -344,14 +351,24 @@ actor AppleCaltopoPublisher {
 
     private func removePublishedDeviceMarker() async {
         if let client, let ownership = publishedMarkerOwnership {
-            if await deleteAllDeviceMarkerOccurrences(client: client, markerID: ownership.marker) {
+            if await deleteAllDeviceMarkerOccurrences(
+                client: client,
+                markerID: ownership.marker,
+                mapID: ownership.map,
+                logStaleCleanup: true
+            ) {
                 do { try markerJournal.acknowledge(ownership) }
                 catch { AppleLog.warning("CalTopo", "Marker cleanup acknowledgement could not be saved") }
             }
         } else if let client, let markerID = publishedDeviceMarkerID, let config = configuredConfiguration?.liveConfiguration {
             do {
                 let ownership = try markerJournal.arm(domain: config.domainAndPort, map: config.mapID, marker: markerID)
-                if await deleteAllDeviceMarkerOccurrences(client: client, markerID: markerID) { try markerJournal.acknowledge(ownership) }
+                if await deleteAllDeviceMarkerOccurrences(
+                    client: client,
+                    markerID: markerID,
+                    mapID: config.mapID,
+                    logStaleCleanup: true
+                ) { try markerJournal.acknowledge(ownership) }
             } catch { AppleLog.warning("CalTopo", "Marker cleanup retained for retry: \(error.localizedDescription)") }
         }
         publishedMarkerOwnership = nil
@@ -359,19 +376,82 @@ actor AppleCaltopoPublisher {
         lastDeviceMarkerPublishedAt = nil
     }
 
+    /// Launch / foreground: delete journaled markers for maps we are not publishing to;
+    /// reuse the saved marker id when actively publishing to that map.
+    func reconcileDeviceMarkerJournalOnForeground(
+        using configuration: AppleCaltopoConfiguration? = nil,
+        deviceMarkerID: String = ""
+    ) async {
+        let normalizedOwner = deviceMarkerID.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !normalizedOwner.isEmpty { ownedDeviceMarkerID = normalizedOwner }
+        let credentials = configuredConfiguration?.liveConfiguration
+            ?? configuration.flatMap { Self.markerCleanupCredentialTemplate(from: $0) }
+        guard let credentials else { return }
+        await retryMarkerCleanup(credentials: credentials)
+    }
+
+    private static func markerCleanupCredentialTemplate(
+        from configuration: AppleCaltopoConfiguration
+    ) -> CaltopoLiveConfiguration? {
+        guard !configuration.domainAndPort.isEmpty,
+              configuration.personalSessionID != nil
+                || configuration.usesSignedPersonalAccount
+                || (!configuration.credentialID.isEmpty && !configuration.credentialSecret.isEmpty)
+        else { return nil }
+        let mapID = configuration.mapID.isEmpty ? "PENDING" : configuration.mapID
+        let fallback = CaltopoLiveConfiguration(
+            domainAndPort: configuration.domainAndPort,
+            mapID: mapID,
+            credentialID: configuration.credentialID,
+            credentialSecretBase64: configuration.credentialSecret,
+            connectKey: configuration.connectKey,
+            personalSessionID: configuration.personalSessionID,
+            personalAccountID: configuration.personalAccountID,
+            personalMediaOwnerID: configuration.personalMediaOwnerID
+        )
+        return CaltopoPersonalAccountConnection.shared.resolveLiveConfiguration(
+            lookup: CaltopoPersonalAccountConnection.shared.cachedLookup(
+                host: "caltopo.com",
+                accountID: configuration.personalAccountID
+            ),
+            mapID: mapID,
+            connectKey: configuration.connectKey,
+            personalSessionID: configuration.personalSessionID,
+            personalAccountID: configuration.personalAccountID,
+            personalMediaOwnerID: configuration.personalMediaOwnerID,
+            useSignedPersonalAccount: configuration.usesSignedPersonalAccount,
+            fallback: fallback
+        )
+    }
+
     private func retryMarkerCleanup() async {
-        guard !markerCleanupInFlight, let config = configuredConfiguration?.liveConfiguration else { return }
+        guard let config = configuredConfiguration?.liveConfiguration else { return }
+        await retryMarkerCleanup(credentials: config)
+    }
+
+    private func retryMarkerCleanup(credentials config: CaltopoLiveConfiguration) async {
+        guard !markerCleanupInFlight else { return }
         markerCleanupInFlight = true
         defer { markerCleanupInFlight = false }
+        let currentMap = configuredConfiguration?.mapID ?? config.mapID
+        let publishingCurrentMap = deviceMarkerAllowed
+            && !currentMap.isEmpty
+            && currentMap != "PENDING"
         do {
             for entry in try markerJournal.entries() where entry.domain == config.domainAndPort {
                 if entry == publishedMarkerOwnership { continue }
                 let owned = ownedDeviceMarkerID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-                if owned.isEmpty || entry.marker.lowercased() != owned {
-                    if !owned.isEmpty {
-                        try? markerJournal.acknowledge(entry)
-                        AppleLog.info("CalTopo", "Marker cleanup left an unproven marker id=\(entry.marker)")
-                    }
+                // Journal rows are ownership for this installation. Drop only when a known
+                // device id proves the row is not ours.
+                if !owned.isEmpty && entry.marker.lowercased() != owned {
+                    try? markerJournal.acknowledge(entry)
+                    AppleLog.info("CalTopo", "Marker cleanup left an unproven marker id=\(entry.marker)")
+                    continue
+                }
+                // Actively publishing to this map: reuse the journaled marker id (do not invent a second feature).
+                if publishingCurrentMap && entry.map == currentMap {
+                    publishedMarkerOwnership = entry
+                    publishedDeviceMarkerID = entry.marker
                     continue
                 }
                 let target = CaltopoLiveConfiguration(domainAndPort: config.domainAndPort, mapID: entry.map,
@@ -380,21 +460,32 @@ actor AppleCaltopoPublisher {
                     personalAccountID: config.personalAccountID, personalMediaOwnerID: config.personalMediaOwnerID,
                     personalSignedAccount: config.personalSignedAccount)
                 let cleanupClient = try CaltopoLiveClient(configuration: target)
-                if await deleteAllDeviceMarkerOccurrences(client: cleanupClient, markerID: entry.marker) {
+                if await deleteAllDeviceMarkerOccurrences(
+                    client: cleanupClient,
+                    markerID: entry.marker,
+                    mapID: entry.map,
+                    logStaleCleanup: true
+                ) {
                     try markerJournal.acknowledge(entry)
                 }
             }
         } catch { AppleLog.warning("CalTopo", "Marker cleanup journal retained for retry: \(error.localizedDescription)") }
     }
 
-    private func deleteAllDeviceMarkerOccurrences(client: CaltopoLiveClient, markerID: String) async -> Bool {
+    private func deleteAllDeviceMarkerOccurrences(
+        client: CaltopoLiveClient,
+        markerID: String,
+        mapID: String,
+        logStaleCleanup: Bool = false
+    ) async -> Bool {
         let normalizedID = markerID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !normalizedID.isEmpty else { return false }
         let maximumAttempts = 8
         for attempt in 1...maximumAttempts {
             let beforeDelete = Int64(Date().timeIntervalSince1970 * 1_000)
+            let deleteStatus: Int
             do {
-                try await client.deleteMarker(markerID: normalizedID)
+                deleteStatus = try await client.deleteMarkerReturningStatus(markerID: normalizedID)
             } catch {
                 if case CaltopoLiveClientError.httpStatus(let code, _) = error, code == 401 || code == 403 {
                     AppleLog.info(
@@ -409,14 +500,36 @@ actor AppleCaltopoPublisher {
                 )
                 return false
             }
-            do {
-                let evidence = try await client.markerPresence(markerID: normalizedID, sinceMilliseconds: beforeDelete)
-                // Absent evidence or no positive presence after DELETE/404 means gone — stop retrying.
-                if evidence.absent || !evidence.present {
+            // 404 (and CalTopo 400-as-absent) means already gone — confirmed without presence probe.
+            if deleteStatus == 404 || deleteStatus == 400 {
+                if logStaleCleanup {
+                    AppleLog.info(
+                        "CalTopo",
+                        DeviceMarkerJournal.staleCleanupLogMessage(mapId: mapID, httpStatus: 404)
+                    )
+                } else {
                     AppleLog.info(
                         "CalTopo",
                         "Removed local device marker id=\(normalizedID) attempts=\(attempt)"
                     )
+                }
+                return true
+            }
+            do {
+                let evidence = try await client.markerPresence(markerID: normalizedID, sinceMilliseconds: beforeDelete)
+                // Absent evidence or no positive presence after DELETE means gone — stop retrying.
+                if evidence.absent || !evidence.present {
+                    if logStaleCleanup {
+                        AppleLog.info(
+                            "CalTopo",
+                            DeviceMarkerJournal.staleCleanupLogMessage(mapId: mapID, httpStatus: deleteStatus)
+                        )
+                    } else {
+                        AppleLog.info(
+                            "CalTopo",
+                            "Removed local device marker id=\(normalizedID) attempts=\(attempt)"
+                        )
+                    }
                     return true
                 }
                 AppleLog.warning(

@@ -1415,6 +1415,9 @@ final class RID2CaltopoAppDelegate: NSObject, UIApplicationDelegate {
             name: UIScene.didDisconnectNotification,
             object: nil
         )
+        Task { @MainActor in
+            AppleApplicationCleanupCenter.shared.checkIdleDeadlineNow()
+        }
         return true
     }
 
@@ -1431,15 +1434,21 @@ final class RID2CaltopoAppDelegate: NSObject, UIApplicationDelegate {
 
     func applicationDidEnterBackground(_ application: UIApplication) {
         Task { @MainActor in
-            AppleApplicationCleanupCenter.shared.removeMarkerForBackgrounding()
+            // Default mayBeSuspended=true when ContentView has not registered location state.
+            AppleApplicationCleanupCenter.shared.applicationDidEnterBackground()
         }
     }
 
     func applicationWillTerminate(_ application: UIApplication) {
         Task { @MainActor in
-            AppleApplicationCleanupCenter.shared.closePrimaryWindow(
-                reason: "application terminating"
-            )
+            AppleApplicationCleanupCenter.shared.applicationWillTerminateBestEffort()
+        }
+    }
+
+    func applicationDidBecomeActive(_ application: UIApplication) {
+        Task { @MainActor in
+            AppleApplicationCleanupCenter.shared.checkIdleDeadlineNow()
+            AppleApplicationCleanupCenter.shared.applicationWillEnterForeground()
         }
     }
 

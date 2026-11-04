@@ -107,8 +107,9 @@ object MappingMissionStorage {
         val marker=cacheFile(root,".generation")
         runCatching { marker.parentFile!!.mkdirs(); marker.writeText(UUID.randomUUID().toString()) }
         cacheFile(root).delete()
-        // Pane summary stamp watches stats/ + top-level mtimes; drop memory so next open refreshes.
-        MappingStorageSummary.invalidate(root.parentFile?.parentFile)
+        // Do not invalidate MappingStorageSummary here: per-mission stats live under
+        // mapping-storage-stats/ and must not stale the pane stamp. Real artifact changes
+        // update per-project DirStamps; delete/move paths call MappingStorageSummary.invalidate.
     }
     internal fun clearMemoryCache() { cache.clear() }
 

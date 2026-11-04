@@ -1437,6 +1437,16 @@ final class RIDTrackViewModel: ObservableObject {
         }
     }
 
+    /// Launch / foreground journal reconcile even when not yet publishing to a map.
+    func reconcileDeviceMarkerJournalOnForeground(using configuration: AppleCaltopoConfiguration) {
+        Task { [caltopoPublisher] in
+            await caltopoPublisher.reconcileDeviceMarkerJournalOnForeground(
+                using: configuration,
+                deviceMarkerID: peerCoordinator?.localZoneID ?? ""
+            )
+        }
+    }
+
     func configureTrackArchive(
         trackerURLPrefix: String,
         trackerAPIKey: String,

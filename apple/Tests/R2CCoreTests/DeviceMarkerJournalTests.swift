@@ -24,4 +24,21 @@ final class DeviceMarkerJournalTests: XCTestCase {
         XCTAssertThrowsError(try DeviceMarkerJournal(file:url).arm(domain:"host",map:"MAP",marker:"id"))
         XCTAssertEqual(try String(contentsOf:url,encoding:.utf8),"broken")
     }
+
+    func testMapIdPrefixAndStaleCleanupLogAreCompact() {
+        XCTAssertEqual(DeviceMarkerJournal.mapIdPrefix("4J0LF02XYZ"), "4J0LF02X")
+        XCTAssertEqual(DeviceMarkerJournal.mapIdPrefix("SHORT"), "SHORT")
+        XCTAssertEqual(
+            DeviceMarkerJournal.staleCleanupLogMessage(mapId: "4J0LF02XYZ", httpStatus: 200),
+            "Marker cleanup: stale marker deleted map=4J0LF02X http=200"
+        )
+        XCTAssertEqual(
+            DeviceMarkerJournal.staleCleanupLogMessage(mapId: "4J0LF02", httpStatus: 404),
+            "Marker cleanup: stale marker deleted map=4J0LF02 http=404"
+        )
+        let message = DeviceMarkerJournal.staleCleanupLogMessage(mapId: "4J0LF02", httpStatus: 200)
+        XCTAssertFalse(message.contains("lat"))
+        XCTAssertFalse(message.contains("lon"))
+        XCTAssertFalse(message.contains("secret"))
+    }
 }

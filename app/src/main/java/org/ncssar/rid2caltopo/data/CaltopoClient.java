@@ -4454,6 +4454,8 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
                 activityRecreated,
                 nowMsec);
         RemoveExpiredCaltopoProfiles(nowMsec, true);
+        // Launch / foreground: delete journaled markers when not publishing to that map.
+        CaltopoMap.RetryMarkerCleanupOnForeground();
     }
 
     public static boolean IsExitRequested() {

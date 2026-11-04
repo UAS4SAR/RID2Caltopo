@@ -40,6 +40,21 @@ final class MappingStorageSummaryTests: XCTestCase {
         )
     }
 
+    private func emptyReport(stamp: MappingStorageSummary.Stamp) -> MappingStorageSummary.Report {
+        MappingStorageSummary.Report(
+            projects: [],
+            sharedLayersBytes: 0,
+            statsBytes: 0,
+            processingBytes: 0,
+            otherBytes: 0,
+            totalBytes: 0,
+            logicalBytes: 0,
+            workingCopyBytes: 0,
+            complete: true,
+            stamp: stamp
+        )
+    }
+
     private func write(_ relative: String, bytes: Int) throws {
         let url = root.appendingPathComponent(relative)
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -59,11 +74,36 @@ final class MappingStorageSummaryTests: XCTestCase {
             try Data("{}".utf8).write(to: mission.appendingPathComponent("mission.json"))
             Thread.sleep(forTimeInterval: 0.02)
             let after = r.stamp()
-            let cached = MappingStorageSummary.Report(
-                version: 1, projects: [], sharedLayersBytes: 0, statsBytes: 0,
-                processingBytes: 0, otherBytes: 0, totalBytes: 0, complete: true, stamp: before
+            XCTAssertFalse(MappingStorageSummary.isFresh(self.emptyReport(stamp: before), current: after))
+        }
+    }
+
+    func testStampIgnoresStatsAndPaneSummaryWrites() throws {
+        try onIO {
+            let missionId = "2e30e0b4-0000-4000-8000-000000000001"
+            let r = self.roots()
+            try FileManager.default.createDirectory(
+                at: r.missions.appendingPathComponent(missionId, isDirectory: true),
+                withIntermediateDirectories: true
             )
-            XCTAssertFalse(MappingStorageSummary.isFresh(cached, current: after))
+            try FileManager.default.createDirectory(at: r.layers, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: r.processing, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: r.stats, withIntermediateDirectories: true)
+            let before = r.stamp()
+            try Data("{}".utf8).write(to: r.stats.appendingPathComponent("pane-summary.json"))
+            try Data(repeating: 1, count: 40).write(to: r.stats.appendingPathComponent("library-index.json"))
+            try Data(repeating: 1, count: 12).write(
+                to: r.stats.appendingPathComponent(String(repeating: "a", count: 64) + ".json")
+            )
+            try Data("{}".utf8).write(to: r.stats.appendingPathComponent("phase-costs.json"))
+            Thread.sleep(forTimeInterval: 0.02)
+            try FileManager.default.setAttributes(
+                [.modificationDate: Date()],
+                ofItemAtPath: r.stats.path
+            )
+            let after = r.stamp()
+            XCTAssertTrue(MappingStorageSummary.isFresh(self.emptyReport(stamp: before), current: after))
+            XCTAssertEqual(before, after)
         }
     }
 
@@ -75,7 +115,8 @@ final class MappingStorageSummaryTests: XCTestCase {
             try self.write("mapping-processing/\(UUID().uuidString)/work.bin", bytes: 40)
             try self.write("mapping-storage-stats/library-index.json", bytes: 20)
             try self.write("mapping-missions/loose.txt", bytes: 7)
-            let report = try MappingStorageSummary.measure(roots: self.roots())
+            // blockSize=1 → allocated equals logical for structure assertions
+            let report = try MappingStorageSummary.measure(roots: self.roots(), blockSize: 1)
             XCTAssertEqual(report.projects.count, 1)
             XCTAssertEqual(report.projects[0].bytes, 1_000)
             XCTAssertEqual(report.sharedLayersBytes, 500)
@@ -84,6 +125,132 @@ final class MappingStorageSummaryTests: XCTestCase {
             XCTAssertEqual(report.otherBytes, 7)
             XCTAssertEqual(report.totalBytes, 1_000 + 500 + 40 + 20 + 7)
             XCTAssertEqual(report.lineSum(), report.totalBytes)
+            XCTAssertEqual(report.workingCopyBytes, 0)
+            XCTAssertTrue(report.projects[0].sized)
+            XCTAssertTrue(report.complete)
+        }
+    }
+
+    func testBlockRoundingUsesFilesystemBlockSize() throws {
+        XCTAssertEqual(MappingStorageSummary.allocatedBytes(logical: 1, blockSize: 4096), 4096)
+        XCTAssertEqual(MappingStorageSummary.allocatedBytes(logical: 4096, blockSize: 4096), 4096)
+        XCTAssertEqual(MappingStorageSummary.allocatedBytes(logical: 4097, blockSize: 4096), 8192)
+        XCTAssertEqual(MappingStorageSummary.allocatedBytes(logical: 1, blockSize: 512 * 1024), 512 * 1024)
+
+        try onIO {
+            try self.write("mapping-missions/m1/a.bin", bytes: 1)
+            try FileManager.default.createDirectory(at: self.roots().layers, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: self.roots().processing, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: self.roots().stats, withIntermediateDirectories: true)
+            let report = try MappingStorageSummary.measure(roots: self.roots(), blockSize: 4096)
+            XCTAssertEqual(report.projects.single.bytes, 4096)
+            XCTAssertEqual(report.totalBytes, 4096)
+            XCTAssertEqual(report.logicalBytes, 1)
+        }
+    }
+
+    func testArchiveAndWorkingCopyDifferAndWorkingExcludedFromTotal() throws {
+        try onIO {
+            let files = self.root.appendingPathComponent("files", isDirectory: true)
+            let archive = self.root.appendingPathComponent("archive", isDirectory: true)
+            let working = self.root.appendingPathComponent("operational-work", isDirectory: true)
+            let missionId = "2e30e0b4-0000-4000-8000-000000000001"
+
+            let localRoots = MappingStorageSummary.Roots(
+                missions: files.appendingPathComponent("mapping-missions", isDirectory: true),
+                layers: files.appendingPathComponent("mapping-layers", isDirectory: true),
+                processing: files.appendingPathComponent("mapping-processing", isDirectory: true),
+                stats: files.appendingPathComponent("mapping-storage-stats", isDirectory: true)
+            )
+            try FileManager.default.createDirectory(
+                at: localRoots.missions.appendingPathComponent(missionId, isDirectory: true),
+                withIntermediateDirectories: true
+            )
+            try FileManager.default.createDirectory(at: localRoots.layers, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: localRoots.processing, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: localRoots.stats, withIntermediateDirectories: true)
+
+            let archiveMission = archive.appendingPathComponent(
+                "mapping/missions/\(missionId)/originals/a.jpg"
+            )
+            try FileManager.default.createDirectory(
+                at: archiveMission.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try Data(repeating: 1, count: 1_000).write(to: archiveMission)
+            try FileManager.default.createDirectory(
+                at: archive.appendingPathComponent("mapping/layers", isDirectory: true),
+                withIntermediateDirectories: true
+            )
+            try FileManager.default.createDirectory(
+                at: archive.appendingPathComponent("mapping/processing", isDirectory: true),
+                withIntermediateDirectories: true
+            )
+            try FileManager.default.createDirectory(
+                at: archive.appendingPathComponent("mapping/stats", isDirectory: true),
+                withIntermediateDirectories: true
+            )
+
+            let workingFile = working.appendingPathComponent(
+                "missions/\(missionId)/originals/a.jpg"
+            )
+            try FileManager.default.createDirectory(
+                at: workingFile.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try Data(repeating: 1, count: 2_000).write(to: workingFile)
+
+            let archiveRoots = MappingStorageSummary.fileArchiveRoots(archiveRoot: archive)!
+            let report = try MappingStorageSummary.measure(
+                roots: localRoots,
+                blockSize: 1,
+                archiveRoots: archiveRoots,
+                workingCopyRoot: working,
+                reason: "full"
+            )
+            XCTAssertEqual(report.totalBytes, 1_000)
+            XCTAssertEqual(report.workingCopyBytes, 2_000)
+            XCTAssertEqual(report.lineSum(), report.totalBytes)
+            XCTAssertNotEqual(report.workingCopyBytes, report.totalBytes)
+            XCTAssertNotEqual(report.lineSum(), report.totalBytes + report.workingCopyBytes)
+        }
+    }
+
+    func testIncrementalRescanOnlyChangedProject() throws {
+        try onIO {
+            let a = "aaaaaaaa-0000-4000-8000-000000000001"
+            let b = "bbbbbbbb-0000-4000-8000-000000000002"
+            try self.write("mapping-missions/\(a)/originals/a.jpg", bytes: 100)
+            try self.write("mapping-missions/\(b)/originals/b.jpg", bytes: 200)
+            try FileManager.default.createDirectory(at: self.roots().layers, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: self.roots().processing, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: self.roots().stats, withIntermediateDirectories: true)
+
+            let first = try MappingStorageSummary.measure(roots: self.roots(), blockSize: 1, reason: "cold")
+            XCTAssertEqual(first.projects.count, 2)
+            XCTAssertEqual(first.rescannedProjects, 2)
+
+            Thread.sleep(forTimeInterval: 0.02)
+            try Data(repeating: 1, count: 250).write(
+                to: self.root.appendingPathComponent("mapping-missions/\(b)/originals/b.jpg")
+            )
+            // DirStamp watches mission children (e.g. originals/), not the mission dir itself.
+            try FileManager.default.setAttributes(
+                [.modificationDate: Date()],
+                ofItemAtPath: self.roots().missions.appendingPathComponent(b)
+                    .appendingPathComponent("originals").path
+            )
+
+            let second = try MappingStorageSummary.measure(
+                roots: self.roots(),
+                previous: first,
+                blockSize: 1,
+                reason: "stale"
+            )
+            XCTAssertEqual(second.rescannedProjects, 1)
+            XCTAssertEqual(second.projects.first { $0.flightId == a }?.bytes, 100)
+            XCTAssertEqual(second.projects.first { $0.flightId == b }?.bytes, 250)
+            XCTAssertEqual(second.totalBytes, 350)
         }
     }
 
@@ -93,7 +260,8 @@ final class MappingStorageSummaryTests: XCTestCase {
             let r = self.roots()
             try FileManager.default.createDirectory(at: r.missions, withIntermediateDirectories: true)
             try FileManager.default.createDirectory(at: r.processing, withIntermediateDirectories: true)
-            let first = try MappingStorageSummary.cachedOrRefresh(roots: r)
+            try FileManager.default.createDirectory(at: r.stats, withIntermediateDirectories: true)
+            let first = try MappingStorageSummary.cachedOrRefresh(roots: r, blockSize: 1)
             XCTAssertEqual(first.sharedLayersBytes, 64)
             MappingStorageSummary.invalidate()
             let second = MappingStorageSummary.loadCached(roots: r)
@@ -106,9 +274,37 @@ final class MappingStorageSummaryTests: XCTestCase {
             )
             Thread.sleep(forTimeInterval: 0.02)
             XCTAssertFalse(MappingStorageSummary.isFresh(second!, current: r.stamp()))
-            let third = try MappingStorageSummary.cachedOrRefresh(roots: r)
+            let third = try MappingStorageSummary.cachedOrRefresh(roots: r, blockSize: 1)
             XCTAssertEqual(third.sharedLayersBytes, 74)
         }
+    }
+
+    func testScanLogLineIsCompact() {
+        let stamp = MappingStorageSummary.Stamp(
+            projects: [:],
+            processing: MappingStorageSummary.DirStamp(modified: 0, count: 0, signature: "")
+        )
+        let report = MappingStorageSummary.Report(
+            projects: [],
+            sharedLayersBytes: 0,
+            statsBytes: 0,
+            processingBytes: 0,
+            otherBytes: 0,
+            totalBytes: 2_600_000_000,
+            logicalBytes: 1_780_000_000,
+            workingCopyBytes: 2_200_000_000,
+            complete: true,
+            stamp: stamp,
+            scanReason: "stale",
+            scanElapsedMs: 1400,
+            rescannedProjects: 1
+        )
+        let line = MappingStorageSummary.scanLogLine(report)
+        XCTAssertTrue(line.hasPrefix("Mapping storage scan:"))
+        XCTAssertTrue(line.contains("total=2.6GB"))
+        XCTAssertTrue(line.contains("working=2.2GB"))
+        XCTAssertTrue(line.contains("reason=stale"))
+        XCTAssertFalse(line.contains("lat="))
     }
 
     func testMigrationOutcomeWording() {
@@ -145,5 +341,12 @@ final class MappingStorageSummaryTests: XCTestCase {
             MappingStorageMigration.emitOnce(second.1) { lines.append($0) }
             XCTAssertEqual(lines, [first.1])
         }
+    }
+}
+
+private extension Array {
+    var single: Element {
+        precondition(count == 1)
+        return self[0]
     }
 }

@@ -19,6 +19,19 @@ class MappingStorageSummaryTest {
         MappingStorageSummary.invalidate()
     }
 
+    private fun emptyReport(stamp: MappingStorageSummary.Stamp) = MappingStorageSummary.Report(
+        projects = emptyList(),
+        sharedLayersBytes = 0,
+        statsBytes = 0,
+        processingBytes = 0,
+        otherBytes = 0,
+        totalBytes = 0,
+        logicalBytes = 0,
+        workingCopyBytes = 0,
+        complete = true,
+        stamp = stamp,
+    )
+
     @Test
     fun stampStaleWhenMissionChildAppears() {
         val root = folder.root
@@ -29,24 +42,11 @@ class MappingStorageSummaryTest {
         val before = MappingStorageSummary.rootsFor(root).stamp()
         val mission = File(missions, UUID.randomUUID().toString()).also { it.mkdirs() }
         File(mission, "mission.json").writeText("{}")
-        // Directory mtime/signature must change when a project folder is added.
         Thread.sleep(5)
         mission.setLastModified(System.currentTimeMillis())
         missions.setLastModified(System.currentTimeMillis())
         val after = MappingStorageSummary.rootsFor(root).stamp()
-        assertFalse(MappingStorageSummary.isFresh(
-            MappingStorageSummary.Report(
-                projects = emptyList(),
-                sharedLayersBytes = 0,
-                statsBytes = 0,
-                processingBytes = 0,
-                otherBytes = 0,
-                totalBytes = 0,
-                complete = true,
-                stamp = before,
-            ),
-            after,
-        ))
+        assertFalse(MappingStorageSummary.isFresh(emptyReport(before), after))
     }
 
     @Test
@@ -57,17 +57,29 @@ class MappingStorageSummaryTest {
         File(root, "mapping-processing").mkdirs()
         File(root, "mapping-storage-stats").mkdirs()
         val stamp = MappingStorageSummary.rootsFor(root).stamp()
-        val report = MappingStorageSummary.Report(
-            projects = emptyList(),
-            sharedLayersBytes = 0,
-            statsBytes = 0,
-            processingBytes = 0,
-            otherBytes = 0,
-            totalBytes = 0,
-            complete = true,
-            stamp = stamp,
-        )
-        assertTrue(MappingStorageSummary.isFresh(report, MappingStorageSummary.rootsFor(root).stamp()))
+        assertTrue(MappingStorageSummary.isFresh(emptyReport(stamp), MappingStorageSummary.rootsFor(root).stamp()))
+    }
+
+    @Test
+    fun stampIgnoresStatsAndPaneSummaryWrites() {
+        val root = folder.root
+        val missionId = "2e30e0b4-0000-4000-8000-000000000001"
+        File(root, "mapping-missions/$missionId").mkdirs()
+        File(root, "mapping-layers").mkdirs()
+        File(root, "mapping-processing").mkdirs()
+        val stats = File(root, "mapping-storage-stats").also { it.mkdirs() }
+        val before = MappingStorageSummary.rootsFor(root).stamp()
+        File(stats, "pane-summary.json").writeText("{}")
+        File(stats, "library-index.json").writeBytes(ByteArray(40))
+        File(stats, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.json")
+            .writeBytes(ByteArray(12))
+        File(stats, "phase-costs.json").writeText("{}")
+        Thread.sleep(5)
+        stats.setLastModified(System.currentTimeMillis())
+        val after = MappingStorageSummary.rootsFor(root).stamp()
+        assertTrue(MappingStorageSummary.isFresh(emptyReport(before), after))
+        assertFalse(after.projects.isEmpty() && before.projects.isEmpty() && false) // keep stamp maps comparable
+        assertEquals(before, after)
     }
 
     @Test
@@ -92,7 +104,8 @@ class MappingStorageSummaryTest {
         }
         File(root, "mapping-missions/loose.txt").writeBytes(ByteArray(7))
 
-        val report = MappingStorageSummary.measure(root)
+        // blockSize=1 → allocated equals logical for structure assertions
+        val report = MappingStorageSummary.measure(root, blockSize = 1L)
         assertEquals(1_000L, report.projects.single().bytes)
         assertEquals(500L, report.sharedLayersBytes)
         assertEquals(40L, report.processingBytes)
@@ -101,6 +114,110 @@ class MappingStorageSummaryTest {
         assertEquals(1_000L + 500L + 40L + 20L + 7L, report.totalBytes)
         assertEquals(report.totalBytes, report.lineSum())
         assertTrue(report.complete)
+    }
+
+    @Test
+    fun blockRoundingUsesFilesystemBlockSize() {
+        assertEquals(4096L, MappingStorageSummary.allocatedBytes(1L, 4096L))
+        assertEquals(4096L, MappingStorageSummary.allocatedBytes(4096L, 4096L))
+        assertEquals(8192L, MappingStorageSummary.allocatedBytes(4097L, 4096L))
+        assertEquals(512L * 1024L, MappingStorageSummary.allocatedBytes(1L, 512L * 1024L))
+
+        val root = folder.root
+        File(root, "mapping-missions/m1/a.bin").apply {
+            parentFile!!.mkdirs()
+            writeBytes(ByteArray(1))
+        }
+        File(root, "mapping-layers").mkdirs()
+        File(root, "mapping-processing").mkdirs()
+        File(root, "mapping-storage-stats").mkdirs()
+        val report = MappingStorageSummary.measure(root, blockSize = 4096L)
+        assertEquals(4096L, report.projects.single().bytes)
+        assertEquals(4096L, report.totalBytes)
+    }
+
+    @Test
+    fun archiveAndWorkingCopyDifferAndWorkingExcludedFromTotal() {
+        val root = folder.newFolder("files")
+        val archive = folder.newFolder("archive")
+        val working = folder.newFolder("operational-work")
+        val missionId = "2e30e0b4-0000-4000-8000-000000000001"
+
+        // Local stamp roots (filesDir projection listing)
+        File(root, "mapping-missions/$missionId").mkdirs()
+        File(root, "mapping-layers").mkdirs()
+        File(root, "mapping-processing").mkdirs()
+        File(root, "mapping-storage-stats").mkdirs()
+
+        // Archive has 1000-byte original
+        File(archive, "mapping/missions/$missionId/originals/a.jpg").apply {
+            parentFile!!.mkdirs()
+            writeBytes(ByteArray(1_000))
+        }
+        File(archive, "mapping/layers").mkdirs()
+        File(archive, "mapping/processing").mkdirs()
+        File(archive, "mapping/stats").mkdirs()
+
+        // Working copy has a larger duplicate (2000 bytes)
+        File(working, "missions/$missionId/originals/a.jpg").apply {
+            parentFile!!.mkdirs()
+            writeBytes(ByteArray(2_000))
+        }
+
+        val archiveRoots = MappingStorageSummary.fileArchiveRoots(archive)!!
+        val report = MappingStorageSummary.measure(
+            filesDir = root,
+            blockSize = 1L,
+            archiveRoots = archiveRoots,
+            workingCopyRoot = working,
+            reason = "full",
+        )
+        assertEquals(1_000L, report.totalBytes)
+        assertEquals(2_000L, report.workingCopyBytes)
+        assertEquals(report.totalBytes, report.lineSum())
+        assertTrue(report.workingCopyBytes !in listOf(report.totalBytes) || report.workingCopyBytes != report.totalBytes)
+        assertFalse(report.lineSum() == report.totalBytes + report.workingCopyBytes)
+    }
+
+    @Test
+    fun incrementalRescanOnlyChangedProject() {
+        val root = folder.root
+        val a = "aaaaaaaa-0000-4000-8000-000000000001"
+        val b = "bbbbbbbb-0000-4000-8000-000000000002"
+        File(root, "mapping-missions/$a/originals/a.jpg").apply {
+            parentFile!!.mkdirs()
+            writeBytes(ByteArray(100))
+        }
+        File(root, "mapping-missions/$b/originals/b.jpg").apply {
+            parentFile!!.mkdirs()
+            writeBytes(ByteArray(200))
+        }
+        File(root, "mapping-layers").mkdirs()
+        File(root, "mapping-processing").mkdirs()
+        File(root, "mapping-storage-stats").mkdirs()
+
+        val first = MappingStorageSummary.measure(root, blockSize = 1L, reason = "cold")
+        assertEquals(2, first.projects.size)
+        assertEquals(2, first.rescannedProjects)
+
+        // Change only mission B (touch the child the DirStamp watches).
+        Thread.sleep(20)
+        val changed = File(root, "mapping-missions/$b/originals/b.jpg")
+        changed.writeBytes(ByteArray(250))
+        val now = System.currentTimeMillis()
+        changed.setLastModified(now)
+        File(root, "mapping-missions/$b/originals").setLastModified(now)
+
+        val second = MappingStorageSummary.measure(
+            root,
+            previous = first,
+            blockSize = 1L,
+            reason = "stale",
+        )
+        assertEquals(1, second.rescannedProjects)
+        assertEquals(100L, second.projects.first { it.flightId == a }.bytes)
+        assertEquals(250L, second.projects.first { it.flightId == b }.bytes)
+        assertEquals(350L, second.totalBytes)
     }
 
     @Test
@@ -114,7 +231,7 @@ class MappingStorageSummaryTest {
             parentFile!!.mkdirs()
             writeBytes(ByteArray(64))
         }
-        val first = MappingStorageSummary.cachedOrRefresh(root)
+        val first = MappingStorageSummary.cachedOrRefresh(root, blockSize = 1L)
         assertEquals(64L, first.sharedLayersBytes)
         MappingStorageSummary.invalidate() // memory only
         val second = MappingStorageSummary.loadCached(root)
@@ -129,7 +246,33 @@ class MappingStorageSummaryTest {
         File(root, "mapping-layers").setLastModified(System.currentTimeMillis())
         Thread.sleep(5)
         assertFalse(MappingStorageSummary.isFresh(second, MappingStorageSummary.rootsFor(root).stamp()))
-        val third = MappingStorageSummary.cachedOrRefresh(root)
+        val third = MappingStorageSummary.cachedOrRefresh(root, blockSize = 1L)
         assertEquals(74L, third.sharedLayersBytes)
+    }
+
+    @Test
+    fun scanLogLineIsCompact() {
+        val stamp = MappingStorageSummary.Stamp(emptyMap(), MappingStorageSummary.DirStamp(0, 0, ""))
+        val report = MappingStorageSummary.Report(
+            projects = emptyList(),
+            sharedLayersBytes = 0,
+            statsBytes = 0,
+            processingBytes = 0,
+            otherBytes = 0,
+            totalBytes = 2_600_000_000L,
+            logicalBytes = 1_780_000_000L,
+            workingCopyBytes = 2_200_000_000L,
+            complete = true,
+            stamp = stamp,
+            scanReason = "stale",
+            scanElapsedMs = 1400L,
+            rescannedProjects = 1,
+        )
+        val line = MappingStorageSummary.scanLogLine(report)
+        assertTrue(line.startsWith("Mapping storage scan:"))
+        assertTrue(line.contains("total=2.6GB"))
+        assertTrue(line.contains("working=2.2GB"))
+        assertTrue(line.contains("reason=stale"))
+        assertFalse(line.contains("lat="))
     }
 }

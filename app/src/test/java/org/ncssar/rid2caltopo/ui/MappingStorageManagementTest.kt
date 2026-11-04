@@ -57,7 +57,7 @@ class MappingStorageManagementTest {
             parentFile!!.mkdirs()
             writeBytes(ByteArray(17))
         }
-        val report = org.ncssar.rid2caltopo.mapping.MappingStorageSummary.measure(root)
+        val report = org.ncssar.rid2caltopo.mapping.MappingStorageSummary.measure(root, blockSize = 1L)
         assertEquals(134L + 50L + 20L + 17L, report.totalBytes)
         assertEquals(report.totalBytes, report.lineSum())
     }

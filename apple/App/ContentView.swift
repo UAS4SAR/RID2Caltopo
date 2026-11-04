@@ -1410,6 +1410,11 @@ struct ContentView: View {
                 switch phase {
                 case .active:
                     handleIncidentMapBecameActive()
+                    AppleApplicationCleanupCenter.shared.setMayBeSuspendedBeforeTimeout(
+                        !locationProvider.backgroundOperationAvailable
+                    )
+                    AppleApplicationCleanupCenter.shared.setKnownPublishingMapID(caltopoSettings.mapID)
+                    AppleApplicationCleanupCenter.shared.applicationWillEnterForeground()
                     if organizationAccessGranted || !organizationAuthenticationRequired {
                         reconcileTrackerDevice()
                         resumeTrackerAfterBrowserReturnIfNeeded(
@@ -1425,10 +1430,13 @@ struct ContentView: View {
                 case .background:
                     // Android keeps the device marker while the display is off. Keep
                     // it too when background location will keep this session running;
-                    // otherwise iOS may suspend the app, so remove it as before.
-                    if !locationProvider.backgroundOperationAvailable {
-                        removeLocalDeviceMarkerInBackground()
-                    }
+                    // otherwise suspension risk forces immediate marker+map cleanup.
+                    let maySuspend = !locationProvider.backgroundOperationAvailable
+                    AppleApplicationCleanupCenter.shared.setMayBeSuspendedBeforeTimeout(maySuspend)
+                    AppleApplicationCleanupCenter.shared.setKnownPublishingMapID(caltopoSettings.mapID)
+                    AppleApplicationCleanupCenter.shared.applicationDidEnterBackground(
+                        mayBeSuspendedBeforeTimeout: maySuspend
+                    )
                     scheduleIncidentMapBackgroundDisconnect()
                 case .inactive:
                     break
@@ -1443,6 +1451,10 @@ struct ContentView: View {
                 .frame(width: 0, height: 0)
             }
             .onAppear {
+                AppleApplicationCleanupCenter.shared.setMayBeSuspendedBeforeTimeout(
+                    !locationProvider.backgroundOperationAvailable
+                )
+                AppleApplicationCleanupCenter.shared.setKnownPublishingMapID(caltopoSettings.mapID)
                 AppleApplicationCleanupCenter.shared.register(
                     markerCleanup: {
                         await ridTracks.setLocalDeviceMarkerPublishingEnabled(false)
@@ -1467,8 +1479,18 @@ struct ContentView: View {
                         await ridTracks.shutdown()
                         await peerCoordinator.shutdown()
                         await mediaMTX.shutdown()
+                    },
+                    incidentMapDisconnect: {
+                        _ = disconnectInactiveIncidentMap(reason: "suspension risk")
+                    },
+                    markerJournalReconcile: {
+                        ridTracks.reconcileDeviceMarkerJournalOnForeground(
+                            using: caltopoSettings.configuration
+                        )
                     }
                 )
+                AppleApplicationCleanupCenter.shared.checkIdleDeadlineNow()
+                ridTracks.reconcileDeviceMarkerJournalOnForeground(using: caltopoSettings.configuration)
                 reconcileOrganizationAuthentication()
                 organizationAccessEvaluated = true
             }
@@ -2988,10 +3010,6 @@ struct ContentView: View {
             ),
             force: force
         )
-    }
-
-    private func removeLocalDeviceMarkerInBackground() {
-        AppleApplicationCleanupCenter.shared.removeMarkerForBackgrounding()
     }
 
     private func configureTrackArchive() {

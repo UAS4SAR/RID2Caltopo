@@ -12,8 +12,11 @@ final class AppleApplicationCleanupCenter {
 
     private var markerCleanup: Cleanup?
     private var fullCleanup: Cleanup?
+    private var incidentMapDisconnect: Cleanup?
+    private var markerJournalReconcile: Cleanup?
     private var markerCleanupTask: Task<Void, Never>?
     private var fullCleanupTask: Task<Void, Never>?
+    private var suspensionCleanupTask: Task<Void, Never>?
     private var shutdownState = ApplicationShutdownState()
     private weak var primaryWindowScene: UIWindowScene?
     private var sceneDestructionVerificationTask: Task<Void, Never>?
@@ -24,10 +27,20 @@ final class AppleApplicationCleanupCenter {
     private var idleLastProtectedActivityAt: Date?
     private var idleProtectedActivityActive = false
     private var maximumIdleMinutes = 0
+    /// When true (or unknown), background may suspend before the idle deadline fires.
+    private var mayBeSuspendedBeforeTimeout = true
+    private var knownPublishingMapPrefix = ""
 
-    func register(markerCleanup: @escaping Cleanup, fullCleanup: @escaping Cleanup) {
+    func register(
+        markerCleanup: @escaping Cleanup,
+        fullCleanup: @escaping Cleanup,
+        incidentMapDisconnect: Cleanup? = nil,
+        markerJournalReconcile: Cleanup? = nil
+    ) {
         self.markerCleanup = markerCleanup
         self.fullCleanup = fullCleanup
+        self.incidentMapDisconnect = incidentMapDisconnect
+        self.markerJournalReconcile = markerJournalReconcile
         shutdownState.reset()
         sceneDestructionVerificationTask?.cancel()
         sceneDestructionVerificationTask = nil
@@ -40,6 +53,14 @@ final class AppleApplicationCleanupCenter {
     func registerPrimaryWindowScene(_ scene: UIWindowScene?) {
         guard let scene, scene.session.role == .windowApplication else { return }
         primaryWindowScene = scene
+    }
+
+    func setMayBeSuspendedBeforeTimeout(_ value: Bool) {
+        mayBeSuspendedBeforeTimeout = value
+    }
+
+    func setKnownPublishingMapID(_ mapID: String) {
+        knownPublishingMapPrefix = DeviceMarkerJournal.mapIdPrefix(mapID)
     }
 
     func configureIdleTimeout(
@@ -77,6 +98,49 @@ final class AppleApplicationCleanupCenter {
             await markerCleanup()
             self.markerCleanupTask = nil
         }
+    }
+
+    /// Background entry: if the process may be suspended before the idle deadline, remove the
+    /// device marker and disconnect the incident map immediately inside a background task.
+    func applicationDidEnterBackground(mayBeSuspendedBeforeTimeout: Bool? = nil) {
+        let maySuspend = mayBeSuspendedBeforeTimeout ?? self.mayBeSuspendedBeforeTimeout
+        self.mayBeSuspendedBeforeTimeout = maySuspend
+        guard maySuspend else { return }
+        guard suspensionCleanupTask == nil else { return }
+        suspensionCleanupTask = runWithBackgroundTime(name: "Suspend-risk marker and map cleanup") {
+            if let markerCleanup = self.markerCleanup {
+                await markerCleanup()
+            }
+            if let incidentMapDisconnect = self.incidentMapDisconnect {
+                await incidentMapDisconnect()
+            }
+            self.suspensionCleanupTask = nil
+        }
+    }
+
+    func applicationWillEnterForeground() {
+        checkIdleDeadlineNow()
+        if let markerJournalReconcile {
+            Task { @MainActor in await markerJournalReconcile() }
+        }
+    }
+
+    func applicationWillTerminateBestEffort() {
+        let mapSuffix = knownPublishingMapPrefix.isEmpty
+            ? ""
+            : " map=\(knownPublishingMapPrefix)"
+        AppleLog.info("CalTopo", "Marker cleanup: terminate best-effort\(mapSuffix)")
+        _ = runWithBackgroundTime(name: "Terminate marker cleanup") {
+            if let markerCleanup = self.markerCleanup {
+                await markerCleanup()
+            }
+            // Journal remains if DELETE did not finish before process death.
+        }
+    }
+
+    /// Wall-clock catch-up after launch, foreground, or wake from suspension.
+    func checkIdleDeadlineNow() {
+        checkIdleTimeout()
     }
 
     func closePrimaryWindow(reason: String) {
@@ -126,22 +190,28 @@ final class AppleApplicationCleanupCenter {
     private func scheduleIdleTimeoutCheck() {
         idleTimeoutTask?.cancel()
         idleTimeoutTask = nil
+        let now = Date()
         guard let remaining = ApplicationIdleTimeoutPolicy.remainingDelay(
             appStartedAt: idleAppStartedAt,
             lastRIDMessageAt: idleLastRIDMessageAt,
             maximumIdleMinutes: maximumIdleMinutes,
-            now: Date(),
+            now: now,
             lastProtectedActivityAt: idleLastProtectedActivityAt,
             protectedActivityActive: idleProtectedActivityActive,
             lastUserInteractionAt: idleLastUserInteractionAt
         ) else { return }
 
+        // Wall-clock deadline is authoritative; Task.sleep only covers remaining delay while awake.
+        if remaining == 0 {
+            checkIdleTimeout()
+            return
+        }
+
         idleTimeoutTask = Task { @MainActor in
-            if remaining > 0 {
-                try? await Task.sleep(for: .seconds(remaining))
-            }
+            try? await Task.sleep(for: .seconds(remaining))
             guard !Task.isCancelled else { return }
             self.idleTimeoutTask = nil
+            // Re-validate against wall clock after wake; sleep alone freezes under suspension.
             self.checkIdleTimeout()
         }
     }

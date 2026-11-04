@@ -9,6 +9,17 @@ public final class DeviceMarkerJournal: @unchecked Sendable {
         public let revision: String
         public var key: String { "\(domain)/\(map)/\(marker)" }
     }
+
+    /// First 8 characters of a map id for compact logs (never coordinates/secrets).
+    public static func mapIdPrefix(_ mapId: String) -> String {
+        String(mapId.prefix(8))
+    }
+
+    /// Compact confirmed-stale cleanup line: `Marker cleanup: stale marker deleted map=<prefix> http=<code>`
+    public static func staleCleanupLogMessage(mapId: String, httpStatus: Int) -> String {
+        "Marker cleanup: stale marker deleted map=\(mapIdPrefix(mapId)) http=\(httpStatus)"
+    }
+
     private let file: URL
     /// Serializes arm/acknowledge only. Reads never wait on a writer mid-fsync.
     private let writeGate = NSLock()

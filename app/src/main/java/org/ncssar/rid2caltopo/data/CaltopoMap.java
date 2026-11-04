@@ -2815,11 +2815,35 @@ public class CaltopoMap {
     private static void retryMarkerCleanup() {
         CaltopoMarkerWork.execute(CaltopoMap::retryMarkerCleanupOnWorker);
     }
+
+    /** Launch / foreground: retry journal cleanup when credentials exist even if the map is not up yet. */
+    public static void RetryMarkerCleanupOnForeground() {
+        if (!CaltopoCredentials.sniffTest(CaltopoClient.GetCaltopoCredentials())) return;
+        retryMarkerCleanup();
+    }
+
+    /** First 8 characters of a map id for compact cleanup logs. */
+    static String mapIdPrefix(@NonNull String mapId) {
+        return mapId.length() <= 8 ? mapId : mapId.substring(0, 8);
+    }
+
     private static void retryMarkerCleanupOnWorker() {
         try {
             String domain=CaltopoClient.GetCaltopoDomainAndPort();
-            for(DeviceMarkerJournal.Entry entry:markerJournal().entries())
-                if(entry.domain.equals(domain)&&!activeMarkerKeys.contains(entry.key()))deleteJournalMarker(entry);
+            String currentMap=GetMapId();
+            boolean publishingCurrentMap=DeviceMarkerAllowed&&currentMap!=null&&!currentMap.isEmpty();
+            String mine=GetMyUUID();
+            for(DeviceMarkerJournal.Entry entry:markerJournal().entries()) {
+                if(!entry.domain.equals(domain))continue;
+                // Actively publishing to this map: reuse the journaled marker id (do not invent a second feature).
+                if(publishingCurrentMap&&entry.map.equals(currentMap)&&provenOwnDeviceMarker(entry,mine)) {
+                    activeMarkerKeys.add(entry.key());
+                    if(ResolvedMyDeviceMarkerId==null||ResolvedMyDeviceMarkerId.isEmpty())
+                        ResolvedMyDeviceMarkerId=entry.marker;
+                    continue;
+                }
+                if(!activeMarkerKeys.contains(entry.key()))deleteJournalMarker(entry);
+            }
         }catch(Exception error){CTWarn(TAG,"Marker cleanup journal unavailable; retry retained",error);}
     }
     /** A write response may name a different feature. Only an id this device published is safe to remove. */
@@ -2967,6 +2991,13 @@ public class CaltopoMap {
                     if (done) {
                         markerJournal().acknowledge(entry);
                         markerCleanupAttempts.remove(entry.key());
+                        // Compact success line for confirmed stale cleanup (2xx verified absent or 404).
+                        if (ok || deleteCode == 404) {
+                            int http = deleteCode == 404 ? 404 : deleteCode;
+                            if (http < 200 || http >= 300) http = 404;
+                            CTInfo(TAG, "Marker cleanup: stale marker deleted map="
+                                    + mapIdPrefix(entry.map) + " http=" + http);
+                        }
                     }
                     CTDebug(TAG, "Marker cleanup map=" + entry.map + " id=" + entry.marker
                             + " success=" + ok + " deleteCode=" + deleteCode
