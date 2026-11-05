@@ -11,6 +11,9 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.documentfile.provider.DocumentFile
 import kotlinx.coroutines.launch
@@ -44,7 +47,6 @@ internal fun StorageManagementDialog(
     var flightError by remember { mutableStateOf("") }
     var categories by remember { mutableStateOf(false) }
     var mapping by remember { mutableStateOf(false) }
-    var localMaps by remember { mutableStateOf(false) }
     var other by remember { mutableStateOf(false) }
     var browseOther by remember { mutableStateOf(false) }
     var mappingBytes by remember { mutableStateOf<Long?>(null) }
@@ -53,9 +55,8 @@ internal fun StorageManagementDialog(
     val storageState by org.ncssar.rid2caltopo.storage.OperationalStorage.status.collectAsState()
     if (browseOther) { OtherArchiveFilesDialog { browseOther = false }; return }
     if (other) { OtherStorageDialog({ browseOther = true }, { other = false }); return }
-    if (mapping) { MappingStorageManagementDialog { mapping = false }; return }
-    if (localMaps) {
-        org.ncssar.rid2caltopo.mapping.MappingLocalLayerDialog(onView = { layer ->
+    if (mapping) {
+        MappingStorageManagementDialog(onDismiss = { mapping = false }, onView = { layer ->
             scope.launch {
                 val ok = if (layer == null) {
                     withContext(Dispatchers.IO) { org.ncssar.rid2caltopo.mapping.MappingLayer.selectLocal(context, null) }
@@ -66,9 +67,10 @@ internal fun StorageManagementDialog(
                     return@launch
                 }
                 org.ncssar.rid2caltopo.mapping.MappingWorkspaceState.layersChanged()
-                localMaps = false; onDismiss()
+                mapping = false
+                onDismiss()
             }
-        }, onDismiss = { localMaps = false })
+        })
         return
     }
     if (categories) {
@@ -121,7 +123,7 @@ internal fun StorageManagementDialog(
             val (bytes, ok) = withContext(Dispatchers.IO) { measureMappingRepositoryBytes(context) }
             mappingBytes = bytes; mappingComplete = ok
         } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
-        catch (error: Exception) { mappingError = error.message ?: "Mapping storage is unavailable." }
+        catch (error: Exception) { mappingError = error.message ?: "Local Maps storage is unavailable." }
     }
     AlertDialog(onDismissRequest = onDismiss, title = { Text("Manage Storage") }, text = {
         Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -137,16 +139,17 @@ internal fun StorageManagementDialog(
             StorageActionButton(onClick = onFlight) { Text("Flight Storage${flight?.let { " — ${if (it.preparingWorkingCopies) "measured so far" else "used"} ${MapCacheSettings.formatDecimalGb(it.used)} / maximum ${MapCacheSettings.formatDecimalGb(flightMaximum ?: 0)}" } ?: if (flightError.isNotEmpty()) " — unavailable" else " — scanning…"}") }
             if (flightError.isNotEmpty()) Text(flightError, color = MaterialTheme.colorScheme.error)
             StorageActionButton(onClick = { mapping = true }) {
+                val localMapsLabel = "Local Maps${mappingBytes?.let {
+                    " — ${if (!mappingComplete) "at least " else ""}${MapCacheSettings.formatDecimalGb(it)}"
+                } ?: if (mappingError.isNotEmpty()) " — unavailable" else " — scanning…"}"
                 Text(
-                    "Mapping${mappingBytes?.let {
-                        " — ${if (!mappingComplete) "at least " else ""}${MapCacheSettings.formatDecimalGb(it)}"
-                    } ?: if (mappingError.isNotEmpty()) " — unavailable" else " — scanning…"}",
+                    localMapsLabel,
+                    modifier = Modifier.testTag("manage-storage-local-maps").semantics { contentDescription = localMapsLabel },
                 )
             }
             if (mappingError.isNotEmpty()) Text(mappingError, color = MaterialTheme.colorScheme.error)
             StorageActionButton(onClick = onArchive) { Text("Archive Storage...") }
             StorageActionButton(onClick = { categories = true }) { Text("Storage Categories...") }
-            StorageActionButton(onClick = { localMaps = true }) { Text("Manage Local Maps...") }
             StorageActionButton(onClick = { other = true }) { Text("Other Storage...") }
             flight?.let {
                 if (it.preparingWorkingCopies) Text("Flight files sized. Working copies are still being prepared; usage will refresh when preparation finishes.", style = MaterialTheme.typography.bodySmall)
@@ -215,7 +218,7 @@ internal fun MapCacheManagementDialog(snapshot: MapStorageSnapshot, onDismiss: (
                     Text("Largest recommended maximum now: ${gb(recommended)}")
                     StorageActionButton(enabled = !saving, onClick = { size = String.format(java.util.Locale.US, "%.2f", kotlin.math.floor(recommended / 10_000_000.0) / 100.0) }) { Text("Allow up to 80% of free space") }
                 }
-                Text("Mapping projects, originals and layers are managed under Mapping in Manage Storage and are not deleted by cache cleanup.", style = MaterialTheme.typography.bodySmall)
+                Text("Mapping projects, originals and layers are managed under Local Maps in Manage Storage and are not deleted by cache cleanup.", style = MaterialTheme.typography.bodySmall)
             }
             OutlinedTextField(size, { size = it; message = "" }, enabled = !saving, label = { Text("Max Cache Size (GB)") }, singleLine = true)
             OutlinedTextField(days, { days = it; message = "" }, enabled = !saving, label = { Text("Max Age (days)") }, singleLine = true)

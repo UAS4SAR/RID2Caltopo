@@ -2797,7 +2797,7 @@ struct AppleStorageCacheView: View {
             Section("Limits") {
                 TextField("Max Cache Size (GB)", text: $size).keyboardType(.decimalPad).accessibilityLabel("Max Cache Size (GB)")
                 TextField("Max Age (days)", text: $days).keyboardType(.numberPad).accessibilityLabel("Max Age (days)")
-                Text("Size applies to the combined caches. Age applies to downloaded map tiles. AOL and active terrain stay protected. Mapping projects are managed under Mapping in Manage Storage and are not deleted by cache cleanup.")
+                Text("Size applies to the combined caches. Age applies to downloaded map tiles. AOL and active terrain stay protected. Mapping projects are managed under Local Maps in Manage Storage and are not deleted by cache cleanup.")
                     .font(.footnote).foregroundStyle(.secondary)
                 if let error { Text(error).foregroundStyle(.red) }
             }

@@ -26,7 +26,8 @@ Latest changes:
 - Deleting old flight logs also deletes their clues, with a warning when any were never uploaded.
 - Marker cleanup success now matches verified removal, and never touches markers this tablet did not publish.
 - Mapping storage is its own managed repository (separate from map cache), with a project list and sizes in Manage Storage.
-- Manage Storage → Mapping opens from a saved size cache when mapping data has not changed, runs one scan at a time, and totals include shared layers, stats, and processing.
+- Manage Storage → Local Maps opens from a saved size cache when mapping data has not changed, runs one scan at a time, and totals include shared layers, stats, and processing.
+- Manage Storage uses one Local Maps entry. Sort, distance, new flight, view map, Pilot 2 connection, hide preview, and delete stay on that panel.
 - Mapping storage sizes use the card’s allocated space, list a separate Working copy line counted once, and avoid rescanning just because size-cache files were rewritten.
 - Clue capture stays responsive while the photo, thumbnail, and marker are saved.
 - Device markers left on a CalTopo map after the app is killed or suspended are removed on the next launch or return to the foreground.

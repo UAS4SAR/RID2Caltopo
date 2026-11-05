@@ -1221,10 +1221,10 @@ struct AppleStorageManagementView: View {
             NavigationLink {
                 AppleMappingStorageView()
             } label: {
-                Text("Mapping\(mappingBytes.map { " — \(!mappingComplete ? "at least " : "")\(gb($0))" } ?? " — scanning…")")
+                Text(localMapsLabel).accessibilityLabel(localMapsLabel)
             }
+            .accessibilityIdentifier("manage-storage-local-maps")
             NavigationLink("Storage Categories...") { AppleStorageCategoriesView(trackModel: trackModel) }
-            NavigationLink("Manage Local Maps...") { AppleLocalMappingView(incidentID: "") }
             NavigationLink("Other Storage...") { AppleOtherStorageView() }
             if let free {
                 Text("Storage free now: \(gb(free))")
@@ -1247,10 +1247,13 @@ struct AppleStorageManagementView: View {
             }
         }
     }
+    private var localMapsLabel: String {
+        "Local Maps\(mappingBytes.map { " — \(!mappingComplete ? "at least " : "")\(gb($0))" } ?? " — scanning…")"
+    }
     private func gb(_ bytes: Int64) -> String { String(format: "%.2f GB", Double(bytes) / 1_000_000_000) }
 }
 
-/// Manage Storage → Mapping repository. Lists each project with sizes; opening one uses the existing inspector (inspect/delete).
+/// Manage Storage → Local Maps. Project sizes stay above the mission list (sort, distance, new flight, view, connect, delete).
 struct AppleMappingStorageView: View {
     @ObservedObject private var model = AppleLocalMappingModel.shared
     @State private var summary: MappingStorageSummary.Report?
@@ -1302,16 +1305,17 @@ struct AppleMappingStorageView: View {
                     Text("Updating sizes…").font(.footnote).foregroundStyle(.secondary)
                 }
                 if !complete {
-                    Text("Some mapping storage is unavailable; these figures are incomplete.")
+                    Text("Some Local Maps storage is unavailable; these figures are incomplete.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
                 if !error.isEmpty { Text(error).foregroundStyle(.red).font(.footnote) }
             }
             .padding()
-            AppleLocalMappingView(incidentID: "")
+            AppleLocalMappingView(incidentID: "", title: "Local Maps")
         }
-        .navigationTitle("Mapping")
+        .navigationTitle("Local Maps")
+        .accessibilityIdentifier("local-maps-panel")
         .navigationBarTitleDisplayMode(.inline)
         .task {
             if let cached = MappingStorageSummary.peekMemory() {
@@ -1483,8 +1487,9 @@ private struct AppleStorageCategoriesView: View {
             Section("Manage") {
                 NavigationLink("Map Cache Management...") { AppleStorageCacheView(manager: .shared) }
                 NavigationLink("Flight Storage") { AppleArchiveCleanupView(trackModel: trackModel) }
-                NavigationLink("Mapping") { AppleMappingStorageView() }
-                NavigationLink("Manage Local Maps...") { AppleLocalMappingView(incidentID: "") }
+                NavigationLink("Local Maps") { AppleMappingStorageView() }
+                    .accessibilityIdentifier("storage-categories-local-maps")
+                    .accessibilityLabel("Local Maps")
                 NavigationLink("Other Storage...") { AppleOtherStorageView() }
                 Text("Temporary files include current working copies and exports. Settings and saved sign-in data remain persistent.").font(.footnote)
             }
@@ -1551,7 +1556,7 @@ private struct AppleOtherStorageView: View {
                 }
             }.disabled(busy)
             NavigationLink("Browse Other Archive Files") { AppleOtherArchiveFilesView(directory: AppleOtherStorageWorker.documents) }
-            Text("Use Manage Local Maps for saved projects and results, and Flight Storage for recordings, clue pictures and logs.").font(.footnote)
+            Text("Use Local Maps for saved projects and results, and Flight Storage for recordings, clue pictures and logs.").font(.footnote)
             if busy { ProgressView() }
             if !message.isEmpty { Text(message) }
         }.navigationTitle("Other Storage")

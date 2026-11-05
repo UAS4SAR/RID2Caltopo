@@ -25,7 +25,7 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 
 /**
- * Persisted Manage Storage → Mapping pane sizes. Survives restarts.
+ * Persisted Manage Storage → Local Maps pane sizes. Survives restarts.
  *
  * Change detection stamps real artifacts only (per-mission / per-layer child
  * mtime+count, plus processing). Stats/cache writes under mapping-storage-stats/

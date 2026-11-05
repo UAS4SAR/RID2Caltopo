@@ -7,6 +7,9 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -37,7 +40,9 @@ internal fun StorageCategoriesDialog(onCache: () -> Unit, onFlight: () -> Unit, 
                 Text("Temporary files are separate from retained data and its allowances.", style = MaterialTheme.typography.bodySmall)
                 StorageActionButton(onClick = onCache) { Text("Manage Map Cache") }
                 StorageActionButton(onClick = onFlight) { Text("Manage Flight Storage") }
-                StorageActionButton(onClick = onMaps) { Text("Manage Local Maps") }
+                StorageActionButton(onClick = onMaps) {
+                    Text("Local Maps", modifier = Modifier.testTag("storage-categories-local-maps").semantics { contentDescription = "Local Maps" })
+                }
                 StorageActionButton(onClick = onAdditional) { Text("Manage Other Storage") }
             }
             if (message.isNotEmpty()) Text(message)

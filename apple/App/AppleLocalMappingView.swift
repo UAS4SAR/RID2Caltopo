@@ -216,6 +216,7 @@ struct AppleLocalMappingView:View {
     var location:CLLocation? = nil
     var assignments:[MappingMission] = []
     var mapName:String = "Connected incident map"
+    var title:String = "Local maps"
     @ObservedObject private var model=AppleLocalMappingModel.shared
     @ObservedObject private var layers=AppleMappingLayerStore.shared
     @Environment(\.dismiss) private var dismiss
@@ -247,7 +248,7 @@ struct AppleLocalMappingView:View {
             } else if let selected {
                 AppleMappingMissionDetail(entry:model.entries.first{$0.id==selected.id} ?? selected,onBack:{self.selected=nil},onView:show,onInspect:{inspecting=$0},onConnectionPresentationChanged:{connectionPresented=$0})
             } else {
-                AppleMappingDialog(title:"Local maps") {
+                AppleMappingDialog(title:title) {
                     Text("Create a flight, collect photos, reconstruct, and view or share your maps here.")
                     Button("New flight"){choosing=true}.accessibilityIdentifier("mapping-new-flight")
                     Text("Mapping missions").font(.headline)

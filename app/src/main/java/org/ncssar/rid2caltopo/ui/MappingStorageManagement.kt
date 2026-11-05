@@ -5,10 +5,8 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
@@ -17,6 +15,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -28,8 +27,7 @@ import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
-import org.ncssar.rid2caltopo.mapping.MappingFlightsDialog
-import org.ncssar.rid2caltopo.mapping.MappingLayerInspector
+import org.ncssar.rid2caltopo.mapping.MappingLocalLayerDialog
 import org.ncssar.rid2caltopo.mapping.MappingProcessingManager
 import org.ncssar.rid2caltopo.mapping.MappingStorageSummary
 import org.ncssar.rid2caltopo.mapping.MappingStorageUsage
@@ -37,14 +35,16 @@ import org.ncssar.rid2caltopo.mapping.MappingWorkspaceState
 import org.ncssar.rid2caltopo.video.mapcache.MapCacheSettings
 
 /**
- * Manage Storage → Mapping repository: project list with storage breakdown.
+ * Manage Storage → Local Maps. Archive totals and project sizes stay at the top.
+ * The mission list below is the former Manage Local Maps library: sort, distance,
+ * new flight, view map, Pilot 2 connection, hide preview, and delete.
  * Cached sizes show immediately; a background rescan runs only when top-level mapping
- * artifacts are newer than the cache, or after delete/move invalidation.
+ * artifacts are newer than the cache, or after delete invalidation.
  * Archive totals use on-card allocated bytes; the operational-work projection is a
  * separate Working copy line.
  */
 @Composable
-internal fun MappingStorageManagementDialog(onDismiss: () -> Unit) {
+internal fun MappingStorageManagementDialog(onDismiss: () -> Unit, onView: (org.ncssar.rid2caltopo.mapping.MappingLayer?) -> Unit) {
     val context = LocalContext.current
     var report by remember { mutableStateOf(MappingStorageSummary.peekMemory()) }
     var totalBytes by remember { mutableLongStateOf(report?.totalBytes ?: 0L) }
@@ -53,8 +53,9 @@ internal fun MappingStorageManagementDialog(onDismiss: () -> Unit) {
     var loading by remember { mutableStateOf(report == null) }
     var refreshing by remember { mutableStateOf(false) }
     var needsRescan by remember { mutableStateOf(false) }
+    var scanNonce by remember { mutableIntStateOf(0) }
     var error by remember { mutableStateOf("") }
-    var selectedFlight by remember { mutableStateOf<String?>(null) }
+    var flightRequest by remember { mutableStateOf<String?>(null) }
     var pendingLayerId by remember { mutableStateOf<String?>(null) }
     var inspectingLayer by remember { mutableStateOf<org.ncssar.rid2caltopo.mapping.MappingLayer?>(null) }
 
@@ -68,44 +69,9 @@ internal fun MappingStorageManagementDialog(onDismiss: () -> Unit) {
         else error = "That map layer is no longer available."
     }
 
-    selectedFlight?.let { flightId ->
-        MappingFlightsDialog(
-            mission = null,
-            onDismiss = {
-                selectedFlight = null
-                if (needsRescan) refreshing = true
-            },
-            onConnection = {},
-            onViewLayer = {},
-            onLayersChanged = {
-                MappingWorkspaceState.layersChanged()
-                MappingStorageSummary.invalidate(context.filesDir)
-                needsRescan = true
-            },
-            initialFlightId = flightId,
-            detailOnly = true,
-        )
-        return
-    }
-    inspectingLayer?.let { layer ->
-        MappingLayerInspector(
-            layer,
-            {
-                MappingWorkspaceState.layersChanged()
-                MappingStorageSummary.invalidate(context.filesDir)
-                needsRescan = true
-            },
-            {
-                inspectingLayer = null
-                if (needsRescan) refreshing = true
-            },
-            onView2D = {},
-        )
-        return
-    }
-
-    LaunchedEffect(Unit, refreshing) {
+    LaunchedEffect(scanNonce) {
         error = ""
+        if (scanNonce > 0) refreshing = true
         try {
             val filesDir = context.filesDir
             val cached = withContext(Dispatchers.IO) {
@@ -150,7 +116,7 @@ internal fun MappingStorageManagementDialog(onDismiss: () -> Unit) {
         } catch (cancelled: kotlinx.coroutines.CancellationException) {
             throw cancelled
         } catch (e: Exception) {
-            error = e.message ?: "Mapping storage is unavailable."
+            error = e.message ?: "Local Maps storage is unavailable."
         } finally {
             loading = false
             refreshing = false
@@ -158,91 +124,90 @@ internal fun MappingStorageManagementDialog(onDismiss: () -> Unit) {
     }
 
     val current = report
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Mapping") },
-        text = {
-            Column(
-                Modifier.fillMaxWidth().heightIn(max = 560.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                Text(
-                    "Total: ${if (!complete && totalBytes > 0) "at least " else ""}${MapCacheSettings.formatDecimalGb(totalBytes)}" +
-                        if (current?.logicalBytes != null && current.logicalBytes > 0 && current.logicalBytes != totalBytes) {
-                            " (logical ${MapCacheSettings.formatDecimalGb(current.logicalBytes)})"
-                        } else "",
-                    style = MaterialTheme.typography.titleSmall,
-                    modifier = Modifier.testTag("mapping-storage-total"),
-                )
-                Text(
-                    "Archive on-card size. Projects, originals, map layers and processing checkpoints. Not deleted by map cache cleanup.",
-                    style = MaterialTheme.typography.bodySmall,
-                )
-                if (workingCopyBytes > 0L) {
+    MappingLocalLayerDialog(
+        onView = onView,
+        onDismiss = onDismiss,
+        title = "Local Maps",
+        confirmLabel = "Close",
+        listMaxHeight = 560.dp,
+        requestedFlightId = flightRequest,
+        onRequestedFlightHandled = { flightRequest = null },
+        requestedLayer = inspectingLayer,
+        onRequestedLayerHandled = { inspectingLayer = null },
+        onLayersChanged = {
+            MappingWorkspaceState.layersChanged()
+            MappingStorageSummary.invalidate(context.filesDir)
+            needsRescan = true
+            scanNonce++
+        },
+        onMissionClosed = { if (needsRescan) scanNonce++ },
+        leading = {
+            item(key = "storage-summary") {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
-                        "Working copy: ${MapCacheSettings.formatDecimalGb(workingCopyBytes)} (local projection; not part of archive total)",
-                        style = MaterialTheme.typography.bodySmall,
-                        modifier = Modifier.testTag("mapping-storage-working-copy"),
+                        "Total: ${if (!complete && totalBytes > 0) "at least " else ""}${MapCacheSettings.formatDecimalGb(totalBytes)}" +
+                            if (current?.logicalBytes != null && current.logicalBytes > 0 && current.logicalBytes != totalBytes) {
+                                " (logical ${MapCacheSettings.formatDecimalGb(current.logicalBytes)})"
+                            } else "",
+                        style = MaterialTheme.typography.titleSmall,
+                        modifier = Modifier.testTag("mapping-storage-total"),
                     )
-                }
-                if (loading) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
-                        Text("Measuring mapping storage…")
+                    Text(
+                        "Archive on-card size. Projects, originals, map layers and processing checkpoints. Not deleted by map cache cleanup.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    if (workingCopyBytes > 0L) {
+                        Text(
+                            "Working copy: ${MapCacheSettings.formatDecimalGb(workingCopyBytes)} (local projection; not part of archive total)",
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.testTag("mapping-storage-working-copy"),
+                        )
                     }
-                } else if (refreshing || current?.projects?.any { !it.sized } == true) {
-                    Text("Updating sizes…", style = MaterialTheme.typography.bodySmall)
-                }
-                if (error.isNotEmpty()) Text(error, color = MaterialTheme.colorScheme.error)
-                HorizontalDivider()
-                LazyColumn(
-                    Modifier.fillMaxWidth().weight(1f, fill = false).testTag("mapping-storage-list"),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    if (current != null) {
-                        items(current.projects, key = { it.id }) { entry ->
-                            MappingStorageProjectRow(entry) {
-                                if (entry.flightId != null) selectedFlight = entry.flightId
-                                else if (entry.layerId != null) pendingLayerId = entry.layerId
-                            }
+                    if (loading) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                            Text("Measuring Local Maps storage…")
                         }
-                        if (current.sharedLayersBytes > 0) {
-                            item(key = "shared-layers") {
-                                MappingStorageCategoryRow("Shared layers", current.sharedLayersBytes)
-                            }
-                        }
-                        if (current.statsBytes > 0) {
-                            item(key = "stats") {
-                                MappingStorageCategoryRow("Stats", current.statsBytes)
-                            }
-                        }
-                        if (current.processingBytes > 0) {
-                            item(key = "processing") {
-                                MappingStorageCategoryRow("Processing", current.processingBytes)
-                            }
-                        }
-                        if (current.otherBytes > 0) {
-                            item(key = "other") {
-                                MappingStorageCategoryRow("Other", current.otherBytes)
-                            }
-                        }
-                        if (current.projects.isEmpty() &&
-                            current.sharedLayersBytes == 0L &&
-                            current.statsBytes == 0L &&
-                            current.processingBytes == 0L &&
-                            current.otherBytes == 0L &&
-                            error.isEmpty() &&
-                            current.projects.all { it.sized }
-                        ) {
-                            item { Text("No mapping projects yet.") }
-                        }
-                    } else if (!loading && error.isEmpty()) {
-                        item { Text("No mapping projects yet.") }
+                    } else if (refreshing || current?.projects?.any { !it.sized } == true) {
+                        Text("Updating sizes…", style = MaterialTheme.typography.bodySmall)
                     }
+                    if (error.isNotEmpty()) Text(error, color = MaterialTheme.colorScheme.error)
                 }
             }
+            item(key = "storage-summary-divider") { HorizontalDivider() }
+            if (current != null) {
+                items(current.projects, key = { "summary-${it.id}" }) { entry ->
+                    MappingStorageProjectRow(entry) {
+                        if (entry.flightId != null) flightRequest = entry.flightId
+                        else if (entry.layerId != null) pendingLayerId = entry.layerId
+                    }
+                }
+                if (current.sharedLayersBytes > 0) {
+                    item(key = "shared-layers") { MappingStorageCategoryRow("Shared layers", current.sharedLayersBytes) }
+                }
+                if (current.statsBytes > 0) {
+                    item(key = "stats") { MappingStorageCategoryRow("Stats", current.statsBytes) }
+                }
+                if (current.processingBytes > 0) {
+                    item(key = "processing") { MappingStorageCategoryRow("Processing", current.processingBytes) }
+                }
+                if (current.otherBytes > 0) {
+                    item(key = "other") { MappingStorageCategoryRow("Other", current.otherBytes) }
+                }
+                if (current.projects.isEmpty() &&
+                    current.sharedLayersBytes == 0L &&
+                    current.statsBytes == 0L &&
+                    current.processingBytes == 0L &&
+                    current.otherBytes == 0L &&
+                    error.isEmpty() &&
+                    current.projects.all { it.sized }
+                ) {
+                    item(key = "storage-empty") { Text("No mapping projects yet.") }
+                }
+            } else if (!loading && error.isEmpty()) {
+                item(key = "storage-empty") { Text("No mapping projects yet.") }
+            }
         },
-        confirmButton = { StorageActionButton(onClick = onDismiss) { Text("Close") } },
     )
 }
 
@@ -295,7 +260,7 @@ internal data class MappingStorageReport(
     val complete: Boolean,
 )
 
-/** Off-main measurement of the Mapping repository total for the Manage Storage row. */
+/** Off-main measurement of the Local Maps repository total for the Manage Storage row. */
 internal fun measureMappingRepositoryBytes(context: android.content.Context): Pair<Long, Boolean> {
     check(android.os.Looper.myLooper() != android.os.Looper.getMainLooper())
     val report = MappingStorageSummary.cachedOrRefresh(

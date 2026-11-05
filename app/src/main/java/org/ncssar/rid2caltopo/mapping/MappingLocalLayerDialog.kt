@@ -2,6 +2,7 @@ package org.ncssar.rid2caltopo.mapping
 
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.*
@@ -12,11 +13,29 @@ import kotlinx.coroutines.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import org.ncssar.rid2caltopo.ui.AlertDialog
 
 @OptIn(ExperimentalLayoutApi::class)
-@Composable fun MappingLocalLayerDialog(onView:(MappingLayer?)->Unit,onDismiss:()->Unit, assignments:List<MappingMission> = emptyList(),onCreate:(MappingMission)->Unit = {}){
+@Composable fun MappingLocalLayerDialog(
+    onView:(MappingLayer?)->Unit,
+    onDismiss:()->Unit,
+    assignments:List<MappingMission> = emptyList(),
+    onCreate:(MappingMission)->Unit = {},
+    title: String = "Local maps",
+    confirmLabel: String = "Done",
+    listMaxHeight: Dp = 480.dp,
+    requestedFlightId: String? = null,
+    onRequestedFlightHandled: () -> Unit = {},
+    requestedLayer: MappingLayer? = null,
+    onRequestedLayerHandled: () -> Unit = {},
+    onLayersChanged: () -> Unit = MappingWorkspaceState::layersChanged,
+    onMissionClosed: () -> Unit = {},
+    leading: LazyListScope.() -> Unit = {},
+){
     val context=LocalContext.current
     var inspecting by remember{mutableStateOf<MappingLayer?>(null)}
     val changes by MappingWorkspaceState.layerChanges.collectAsState()
@@ -113,8 +132,19 @@ import org.ncssar.rid2caltopo.ui.AlertDialog
     var showConnection by rememberSaveable{mutableStateOf(false)}
     val session by DjiCloudManager.session.collectAsState()
     val flightStates=rememberSaveableStateHolder()
+    LaunchedEffect(requestedFlightId) {
+        val id = requestedFlightId ?: return@LaunchedEffect
+        selectedFlight = id
+        showFlights = true
+        onRequestedFlightHandled()
+    }
+    LaunchedEffect(requestedLayer?.id) {
+        val layer = requestedLayer ?: return@LaunchedEffect
+        inspecting = layer
+        onRequestedLayerHandled()
+    }
     if(showConnection && session!=null){DjiCloudConnectionDialog(session!!){showConnection=false};return}
-    if(showFlights && selectedFlight!=null){flightStates.SaveableStateProvider(selectedFlight ?: "flights"){MappingFlightsDialog(null,{showFlights=false;selectedFlight=null},{showConnection=true},{onView(it);onDismiss()},MappingWorkspaceState::layersChanged,initialFlightId=selectedFlight,detailOnly=true)};return}
+    if(showFlights && selectedFlight!=null){flightStates.SaveableStateProvider(selectedFlight ?: "flights"){MappingFlightsDialog(null,{showFlights=false;selectedFlight=null;onMissionClosed()},{showConnection=true},{onView(it);onDismiss()},onLayersChanged,initialFlightId=selectedFlight,detailOnly=true)};return}
     if(choosingAssignment){
         AlertDialog(onDismissRequest={choosingAssignment=false},title={Text("New local map · choose assignment")},text={
             LazyColumn(Modifier.fillMaxWidth().heightIn(max=480.dp).testTag("mapping-assignment-list")) {
@@ -125,12 +155,12 @@ import org.ncssar.rid2caltopo.ui.AlertDialog
     }
     if(inspecting!=null){
         val layer=inspecting!!
-        MappingLayerInspector(layer,MappingWorkspaceState::layersChanged,{inspecting=null},
+        MappingLayerInspector(layer,onLayersChanged,{inspecting=null;onMissionClosed()},
             onView2D={onView(it);inspecting=null;onDismiss()})
         return
     }
     AlertDialog(onDismissRequest=onDismiss,title={Column(verticalArrangement=Arrangement.spacedBy(8.dp)) {
-        Text("Local maps")
+        Text(title, modifier = Modifier.testTag("mapping-panel-title").semantics { contentDescription = title })
         if(!loaded || measuring || refreshing || staleBanner) {
             LinearProgressIndicator(Modifier.fillMaxWidth().testTag("mapping-library-progress"))
             Text(when {
@@ -141,8 +171,9 @@ import org.ncssar.rid2caltopo.ui.AlertDialog
             },style=MaterialTheme.typography.bodySmall)
         }
     }},text={LazyColumn(
-        Modifier.fillMaxWidth().heightIn(max=480.dp).testTag("mapping-local-layer-list"),state=scroll,
+        Modifier.fillMaxWidth().heightIn(max=listMaxHeight).testTag("mapping-local-layer-list"),state=scroll,
         verticalArrangement=Arrangement.spacedBy(10.dp)){
+        leading()
         item(key="intro"){
             Column {
                 Text("Create a flight, collect photos, reconstruct, and view or share your maps here.")
@@ -174,7 +205,7 @@ import org.ncssar.rid2caltopo.ui.AlertDialog
                 else inspecting=entry.layer
             }
         }
-    }},confirmButton={TextButton(onClick=onDismiss){Text("Done")}},dismissButton={TextButton(onClick={onView(null);onDismiss()}){Text("Hide local preview")}})
+    }},confirmButton={TextButton(onClick=onDismiss){Text(confirmLabel)}},dismissButton={TextButton(onClick={onView(null);onDismiss()}){Text("Hide local preview")}})
 }
 
 @Composable internal fun MappingLibraryCard(entry:MappingLibraryEntry,location:Pair<Double,Double>?,locationNote:String="",onOpen:()->Unit) {
