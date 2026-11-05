@@ -1619,7 +1619,7 @@ final class AppleVideoFrameSource: ObservableObject {
             }
         }
         let diagnosticNow = CACurrentMediaTime()
-        if diagnosticNow - lastRenderDiagnosticAt >= 2 {
+        if diagnosticNow - lastRenderDiagnosticAt >= 60 {
             lastRenderDiagnosticAt = diagnosticNow
             var renderDetail = [CChar](repeating: 0, count: 512)
             if R2CFFmpegSessionCopyRenderDiagnostics(ffmpegSession, &renderDetail, Int32(renderDetail.count)) {

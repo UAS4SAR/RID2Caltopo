@@ -185,7 +185,7 @@ final class AppleLocationProvider: NSObject, ObservableObject, @preconcurrency C
         errorMessage = nil
         AppleLog.info(
             "Location",
-            "Developer override enabled latitude=\(String(format: "%.6f", latitude)) longitude=\(String(format: "%.6f", longitude))"
+            "Developer override enabled"
         )
     }
 
@@ -334,8 +334,7 @@ final class AppleLocationProvider: NSObject, ObservableObject, @preconcurrency C
         let age = max(0, -location.timestamp.timeIntervalSinceNow)
         AppleLog.info(
             "Location",
-            "Published \(source) latitude=\(String(format: "%.6f", location.coordinate.latitude)) " +
-                "longitude=\(String(format: "%.6f", location.coordinate.longitude)) " +
+            "Published \(source) " +
                 "accuracyMeters=\(Int(location.horizontalAccuracy.rounded())) " +
                 "ageSeconds=\(Int(age.rounded())) provisional=\(provisional)"
         )

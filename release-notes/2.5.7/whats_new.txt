@@ -18,16 +18,17 @@ Latest changes:
 - Reconstruction progress and time remaining follow measured stage timings, including slower late tiles.
 - Interrupted reconstructions are shown as interrupted and can resume; failed jobs no longer stay stuck as running.
 - Connect to Pilot stays available while a reconstruction is running.
-- Fewer redundant log messages, in a more compact format.
-- Device marker cleanup only removes markers this tablet published, and stops retrying once they are gone.
+- Fewer redundant log messages, in a more compact format, and diagnostic logs omit precise coordinates.
+- Device marker cleanup only removes markers this tablet published. A delete CalTopo rejects stays queued and retries later; the record is cleared only after the marker is confirmed gone.
 - Clue photos now stay on their clue marker after terrain correction, and existing drifted photos are repaired.
 - Clues live in each flight’s log folder; every flight KMZ keeps its clues with a local-only flag when not published.
 - Pending clues list every map’s unfinished uploads, including photo-missing, with Retry, Upload as new marker, and Discard.
 - Deleting old flight logs also deletes their clues, with a warning when any were never uploaded.
 - Marker cleanup success now matches verified removal, and never touches markers this tablet did not publish.
 - Mapping storage is its own managed repository (separate from map cache), with a project list and sizes in Manage Storage.
-- Manage Storage → Mapping opens instantly from a saved size cache, rescans only when mapping data changes, and totals include shared layers, stats, and processing.
-- Mapping storage sizes use on-card allocated space (not just file lengths), list a separate Working copy line when present, and avoid rescanning just because size-cache files were rewritten.
+- Manage Storage → Mapping opens from a saved size cache when mapping data has not changed, runs one scan at a time, and totals include shared layers, stats, and processing.
+- Mapping storage sizes use the card’s allocated space, list a separate Working copy line counted once, and avoid rescanning just because size-cache files were rewritten.
+- Clue capture stays responsive while the photo, thumbnail, and marker are saved.
 - Device markers left on a CalTopo map after the app is killed or suspended are removed on the next launch or return to the foreground.
 - Idle timeout and background cleanup use wall-clock time so a suspended app still disconnects and removes its device marker.
 - Local Maps data moves into a dedicated Mapping archive folder, keeping originals safe during the move.

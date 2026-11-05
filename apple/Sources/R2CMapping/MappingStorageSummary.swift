@@ -10,6 +10,8 @@ import Foundation
 /// part of the archive total. Worker-only — never call from Main.
 public enum MappingStorageSummary {
     public static let fileName = "pane-summary.json"
+    /// Test hook. Runs on the leader of a cold or stale scan, before the walk.
+    nonisolated(unsafe) public static var beforeScan: (() -> Void)?
     public static let defaultBlockSize: Int64 = 4096
     private static let version = 2
     private static let lock = NSLock()
@@ -397,25 +399,30 @@ public enum MappingStorageSummary {
             return sized.allocated
         }
 
+        func isSymlink(_ url: URL) -> Bool {
+            (try? url.resourceValues(forKeys: [.isSymbolicLinkKey]))?.isSymbolicLink == true
+        }
+
         func walkFileTree(_ root: URL, skipNames: Set<String> = []) -> WalkTotals {
             let fm = FileManager.default
+            let start = isSymlink(root) ? root.resolvingSymlinksInPath() : root
             var isDir: ObjCBool = false
-            guard fm.fileExists(atPath: root.path, isDirectory: &isDir) else {
+            guard fm.fileExists(atPath: start.path, isDirectory: &isDir) else {
                 return WalkTotals(allocated: 0, logical: 0, complete: true)
             }
             if !isDir.boolValue {
-                let sized = sizeOfFile(root)
+                let sized = sizeOfFile(start)
                 logicalAcc += sized.logical
                 return WalkTotals(allocated: sized.allocated, logical: sized.logical, complete: true)
             }
             var allocated: Int64 = 0
             var logical: Int64 = 0
             var ok = true
-            var stack = [root]
+            var stack = [start]
             while let next = stack.popLast() {
                 guard let children = try? fm.contentsOfDirectory(
                     at: next,
-                    includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey, .isDirectoryKey, .totalFileAllocatedSizeKey],
+                    includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey, .isDirectoryKey, .isSymbolicLinkKey, .totalFileAllocatedSizeKey],
                     options: []
                 ) else {
                     ok = false
@@ -423,6 +430,7 @@ public enum MappingStorageSummary {
                 }
                 for child in children {
                     if skipNames.contains(child.lastPathComponent) { continue }
+                    if isSymlink(child) { continue }
                     var childDir: ObjCBool = false
                     if fm.fileExists(atPath: child.path, isDirectory: &childDir), childDir.boolValue {
                         stack.append(child)
@@ -610,24 +618,31 @@ public enum MappingStorageSummary {
         let current = roots.stamp()
         let cached = loadCached(roots: roots)
         if !force, let cached, isFresh(cached, current: current) {
-            return cached
+            var hit = cached
+            hit.scanReason = "cache"
+            hit.scanElapsedMs = 0
+            log(scanLogLine(hit))
+            return hit
         }
-        let reason: String
-        if force { reason = "forced" }
-        else if cached == nil { reason = "cold" }
-        else { reason = "stale" }
-        let report = try measure(
-            roots: roots,
-            projects: projects,
-            previous: previous ?? cached.flatMap { force ? nil : $0 },
-            blockSize: blockSize,
-            archiveRoots: archiveRoots,
-            workingCopyRoot: workingCopyRoot,
-            reason: reason,
-            log: log
-        )
-        try save(roots: roots, report: report)
-        return report
+        return try MappingStorageScanFlight.shared.join(key: roots.missions.path) {
+            beforeScan?()
+            let reason: String
+            if force { reason = "forced" }
+            else if cached == nil { reason = "cold" }
+            else { reason = "stale" }
+            let report = try measure(
+                roots: roots,
+                projects: projects,
+                previous: previous ?? cached.flatMap { force ? nil : $0 },
+                blockSize: blockSize,
+                archiveRoots: archiveRoots,
+                workingCopyRoot: workingCopyRoot,
+                reason: reason,
+                log: log
+            )
+            try save(roots: roots, report: report)
+            return report
+        }
     }
 
     private static func formatGb(_ bytes: Int64) -> String {
@@ -682,4 +697,52 @@ public enum MappingStorageSummary {
 
 private extension Locale {
     static let enUSPOSIX = Locale(identifier: "en_US_POSIX")
+}
+
+/// Coalesces concurrent mapping storage scans for one missions directory.
+private final class MappingStorageScanFlight: @unchecked Sendable {
+    static let shared = MappingStorageScanFlight()
+    private let lock = NSLock()
+    private var flights: [String: Box] = [:]
+
+    private final class Box {
+        let group = DispatchGroup()
+        var report: MappingStorageSummary.Report?
+        var error: Error?
+        init() { group.enter() }
+    }
+
+    func join(key: String, _ body: () throws -> MappingStorageSummary.Report) throws -> MappingStorageSummary.Report {
+        lock.lock()
+        if let existing = flights[key] {
+            lock.unlock()
+            existing.group.wait()
+            if let error = existing.error { throw error }
+            if let report = existing.report { return report }
+            throw MappingStorageScanFlightError.missing
+        }
+        let box = Box()
+        flights[key] = box
+        lock.unlock()
+        do {
+            let report = try body()
+            box.report = report
+            box.group.leave()
+            lock.lock()
+            if flights[key] === box { flights[key] = nil }
+            lock.unlock()
+            return report
+        } catch {
+            box.error = error
+            box.group.leave()
+            lock.lock()
+            if flights[key] === box { flights[key] = nil }
+            lock.unlock()
+            throw error
+        }
+    }
+}
+
+private enum MappingStorageScanFlightError: Error {
+    case missing
 }

@@ -2859,21 +2859,17 @@ class StreamsViewModel(
         logSnapshotIfSlow("projection", System.currentTimeMillis() - projectionStartedAtMs)
         CTDebug(tag, String.format(
             Locale.US,
-            "onSnapshotCaptured(%s): projection inputs source=%s droneLat=%.6f droneLng=%.6f droneAlt=%.1f bearingDeg=%s aglM=%s gimbalDeg=%s projectedLat=%.6f projectedLng=%.6f projectedAlt=%.1f",
+            "onSnapshotCaptured(%s): projection inputs source=%s droneAlt=%.1f bearingDeg=%s aglM=%s gimbalDeg=%s projectedAlt=%.1f",
             designator,
             when {
                 freshDjiCamera?.latitudeDeg != null -> "dji-sei-position"
                 nonDjiTelemetry?.latitude != null -> "stream"
                 else -> "rid"
             },
-            clueLat,
-            clueLng,
             clueAlt,
             clueBearing?.let { String.format(Locale.US, "%.1f", it) } ?: "null",
             clueAglMeters?.let { String.format(Locale.US, "%.1f", it) } ?: "null",
             String.format(Locale.US, "%.1f", clueGimbalAngle),
-            projectedLocation.lat,
-            projectedLocation.lng,
             projectedLocation.alt,
         ))
         val summaryStartedAtMs = System.currentTimeMillis()
@@ -3387,13 +3383,11 @@ class StreamsViewModel(
             )
             CTDebug(tag, String.format(
                 Locale.US,
-                "updateClueGimbalAngle(): designator=%s bearingDeg=%s aglM=%s gimbalDeg=%.1f projectedLat=%.6f projectedLng=%.6f projectedAlt=%.1f knownDemGround=%s",
+                "updateClueGimbalAngle(): designator=%s bearingDeg=%s aglM=%s gimbalDeg=%.1f projectedAlt=%.1f knownDemGround=%s",
                 clue.designator,
                 clue.headingDeg?.let { String.format(Locale.US, "%.1f", it) } ?: "null",
                 clue.projectionHeightMeters?.let { String.format(Locale.US, "%.1f", it) } ?: "null",
                 clamped,
-                projection.lat,
-                projection.lng,
                 projection.alt,
                 knownGround?.let { String.format(Locale.US, "%.1f", it) } ?: "null",
             ))
@@ -4408,14 +4402,10 @@ class StreamsViewModel(
         }
         CTDebug(tag, String.format(
             Locale.US,
-            "submitting clue: '%s' for '%s' clueLat=%.6f clueLng=%.6f clueAlt=%.1f droneLat=%.6f droneLng=%.6f droneAlt=%.1f headingDeg=%s aglM=%s atoM=%s gimbalDeg=%.1f",
+            "submitting clue: '%s' for '%s' clueAlt=%.1f droneAlt=%.1f headingDeg=%s aglM=%s atoM=%s gimbalDeg=%.1f",
             clue.title,
             clue.droneSpec.trackLabel(),
-            clue.lat,
-            clue.lng,
             clue.alt,
-            clue.droneLat,
-            clue.droneLng,
             clue.droneAlt,
             clue.headingDeg?.let { String.format(Locale.US, "%.1f", it) } ?: "null",
             clue.aglMeters?.let { String.format(Locale.US, "%.1f", it) } ?: "null",
@@ -4900,10 +4890,8 @@ class StreamsViewModel(
             )
             CTDebug(tag, String.format(
                 Locale.US,
-                "requestDemClueProjectionRefresh(%s): refined projectedLat=%.6f projectedLng=%.6f projectedAlt=%.1f headingDeg=%s aglM=%s gimbalDeg=%.1f terrainApplied=%s demSource=%s demResolutionM=%s stage=%s",
+                "requestDemClueProjectionRefresh(%s): refined projectedAlt=%.1f headingDeg=%s aglM=%s gimbalDeg=%.1f terrainApplied=%s demSource=%s demResolutionM=%s stage=%s",
                 designator,
-                refined.lat,
-                refined.lng,
                 refined.alt,
                 refined.headingDeg?.let { String.format(Locale.US, "%.1f", it) } ?: "null",
                 refined.aglMeters?.let { String.format(Locale.US, "%.1f", it) } ?: "null",

@@ -15,6 +15,7 @@ public enum LogThrottle {
     // Protected by `lock`; brief critical sections only.
     nonisolated(unsafe) private static var entries: [String: Entry] = [:]
     nonisolated(unsafe) private static var rateLimitAtMs: [String: Int64] = [:]
+    nonisolated(unsafe) private static var summaryCounts: [String: Int64] = [:]
 
     /// Injectable clock for unit tests (milliseconds since epoch).
     nonisolated(unsafe) public static var clockMs: () -> Int64 = {
@@ -83,6 +84,20 @@ public enum LogThrottle {
         return message
     }
 
+    /// Counts an event and returns the count when a summary line is due.
+    /// Changing message text cannot defeat the interval.
+    public static func summarize(key: String, intervalMs: Int64) -> Int64? {
+        lock.lock()
+        summaryCounts[key, default: 0] += 1
+        lock.unlock()
+        guard shouldLog(key: key + ".summary", intervalMs: intervalMs) else { return nil }
+        lock.lock()
+        let emitted = summaryCounts[key] ?? 1
+        summaryCounts[key] = 0
+        lock.unlock()
+        return emitted > 0 ? emitted : 1
+    }
+
     /// Simple interval gate: true at most once per `intervalMs` for `key`.
     public static func shouldLog(key: String, intervalMs: Int64) -> Bool {
         if intervalMs <= 0 { return true }
@@ -100,6 +115,7 @@ public enum LogThrottle {
         lock.lock()
         entries.removeAll(keepingCapacity: false)
         rateLimitAtMs.removeAll(keepingCapacity: false)
+        summaryCounts.removeAll(keepingCapacity: false)
         lock.unlock()
         clockMs = { Int64(Date().timeIntervalSince1970 * 1000.0) }
     }

@@ -1,8 +1,12 @@
 package org.ncssar.rid2caltopo.mapping
 
 import android.content.Context
+import android.os.Build
+import android.os.Environment
 import android.os.Looper
 import android.os.StatFs
+import android.os.storage.StorageManager
+import android.provider.DocumentsContract
 import android.system.Os
 import org.json.JSONArray
 import org.json.JSONObject
@@ -10,8 +14,14 @@ import org.ncssar.rid2caltopo.storage.ArchiveTree
 import org.ncssar.rid2caltopo.storage.DocumentArchiveTree
 import org.ncssar.rid2caltopo.storage.TemporaryStorage
 import java.io.File
+import java.nio.file.Files
+import java.nio.file.LinkOption
 import java.util.Locale
 import java.util.UUID
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 
 /**
@@ -28,6 +38,15 @@ internal object MappingStorageSummary {
     private const val FILE_NAME = "pane-summary.json"
     const val DEFAULT_BLOCK_SIZE = 4096L
     private val memory = AtomicReference<Report?>(null)
+    private val flights = ConcurrentHashMap<String, CompletableFuture<Report>>()
+
+    /** Test hook. Production logs through CTDebug. */
+    @Volatile
+    var scanLogSink: ((String) -> Unit)? = null
+
+    /** Test hook. Runs on the leader of a cold/stale scan, before the walk. */
+    @Volatile
+    var beforeScan: (() -> Unit)? = null
 
     data class DirStamp(val modified: Long, val count: Int, val signature: String) {
         fun json() = JSONObject().put("m", modified).put("n", count).put("s", signature)
@@ -333,42 +352,19 @@ internal object MappingStorageSummary {
         var rescanned = 0
         var complete = true
         var logicalAcc = 0L
+        val tally = Any()
 
         fun fileAlloc(file: File): Long {
+            if (isSymlink(file)) return 0L
             val logical = file.length()
-            logicalAcc += logical
-            runCatching {
-                val stat = Os.lstat(file.absolutePath)
-                if (stat.st_blocks > 0L) return stat.st_blocks * 512L
-            }
+            synchronized(tally) { logicalAcc += logical }
             return allocatedBytes(logical, blockSize)
         }
 
         fun walkFileTree(root: File): WalkTotals {
-            if (!root.exists()) return WalkTotals(0L, 0L, true)
-            var allocated = 0L
-            var logical = 0L
-            var ok = true
-            val stack = ArrayDeque<File>()
-            stack.add(root)
-            while (stack.isNotEmpty()) {
-                val next = stack.removeFirst()
-                if (next.isFile) {
-                    if (!next.canRead()) ok = false
-                    val len = next.length()
-                    logical += len
-                    logicalAcc += len
-                    allocated += runCatching {
-                        val stat = Os.lstat(next.absolutePath)
-                        if (stat.st_blocks > 0L) stat.st_blocks * 512L else allocatedBytes(len, blockSize)
-                    }.getOrDefault(allocatedBytes(len, blockSize))
-                } else {
-                    val children = next.listFiles()
-                    if (children == null) ok = false
-                    else children.forEach { stack.add(it) }
-                }
-            }
-            return WalkTotals(allocated, logical, ok)
+            val walked = walkAllocated(root, blockSize)
+            synchronized(tally) { logicalAcc += walked.logical }
+            return walked
         }
 
         fun measureDir(dir: File, stampKey: String, lineId: String?): Long {
@@ -378,19 +374,36 @@ internal object MappingStorageSummary {
             if (current != null && priorStamp == current && cached != null && cached.sized) {
                 return cached.bytes
             }
-            rescanned++
+            synchronized(tally) { rescanned++ }
             val walked = walkFileTree(dir)
-            if (!walked.complete) complete = false
+            if (!walked.complete) synchronized(tally) { complete = false }
             return walked.allocated
         }
 
-        val library = if (context != null) {
-            runCatching { MappingLibraryIndex.refresh(context, live) }.getOrNull()
-        } else null
+        val library = libraryForScan(filesDir, context, live)
 
         val missionBytes = linkedMapOf<String, Long>()
-        for (dir in measureRoots.missions.listFiles().orEmpty().filter { it.isDirectory }.sortedBy { it.name }) {
-            missionBytes[dir.name] = measureDir(dir, "mission:${dir.name}", "flight:${dir.name}")
+        val missionDirs = measureRoots.missions.listFiles().orEmpty().filter { it.isDirectory && !isSymlink(it) }
+            .sortedBy { it.name }
+        if (missionDirs.size <= 1) {
+            for (dir in missionDirs) {
+                missionBytes[dir.name] = measureDir(dir, "mission:${dir.name}", "flight:${dir.name}")
+            }
+        } else {
+            val pool = Executors.newFixedThreadPool(minOf(4, missionDirs.size))
+            try {
+                val futures = missionDirs.map { dir ->
+                    pool.submit<Pair<String, Long>> {
+                        dir.name to measureDir(dir, "mission:${dir.name}", "flight:${dir.name}")
+                    }
+                }
+                for (future in futures) {
+                    val (name, bytes) = future.get()
+                    missionBytes[name] = bytes
+                }
+            } finally {
+                pool.shutdown()
+            }
         }
         val looseMission = measureRoots.missions.listFiles().orEmpty().filter { it.isFile }.sumOf { fileAlloc(it) }
 
@@ -483,12 +496,7 @@ internal object MappingStorageSummary {
         // When archiveRoots was not supplied and local roots are the working projection, the
         // totals above already describe the working copy. Still report workingCopyBytes from the
         // operational-work root when distinct; never mutate that tree.
-        val workingCopyBytes = when {
-            workingRoot == null -> 0L
-            archiveRoots != null -> walkFileTree(workingRoot).allocated
-            filesDirIsWorkingProjection(filesDir, workingRoot) -> walkFileTree(workingRoot).allocated
-            else -> walkFileTree(workingRoot).allocated
-        }
+        val workingCopyBytes = workingRoot?.let { walkAllocated(it, blockSize).allocated } ?: 0L
 
         val logicalBytes = if (logicalAcc > 0L) logicalAcc else totalBytes
         val elapsed = ((System.nanoTime() - startedNs) / 1_000_000L).coerceAtLeast(0L)
@@ -523,15 +531,47 @@ internal object MappingStorageSummary {
         offMain()
         val current = rootsFor(filesDir).stamp()
         val cached = loadCached(filesDir)
-        if (!force && cached != null && isFresh(cached, current)) return cached
+        if (!force && cached != null && isFresh(cached, current)) {
+            logScan(cached.copy(scanReason = "cache", scanElapsedMs = 0L))
+            return cached
+        }
+        val flightKey = filesDir.absolutePath
+        val created = CompletableFuture<Report>()
+        val existing = flights.putIfAbsent(flightKey, created)
+        if (existing != null) return existing.get(15, TimeUnit.MINUTES)
+        try {
+            val report = refreshUnlocked(
+                filesDir, live, context, force, blockSize, archiveRoots, workingCopyRoot, cached,
+            )
+            created.complete(report)
+            return report
+        } catch (error: Throwable) {
+            created.completeExceptionally(error)
+            throw error
+        } finally {
+            flights.remove(flightKey, created)
+        }
+    }
+
+    private fun refreshUnlocked(
+        filesDir: File,
+        live: MappingProcessingState?,
+        context: Context?,
+        force: Boolean,
+        blockSize: Long?,
+        archiveRoots: Roots?,
+        workingCopyRoot: File?,
+        cached: Report?,
+    ): Report {
         val reason = when {
             force -> "forced"
             cached == null -> "cold"
             else -> "stale"
         }
-        val resolvedBlock = blockSize ?: blockSizeFor(filesDir)
+        val resolvedBlock = blockSize ?: blockSizeFor(archiveVolumeFile(context) ?: filesDir)
         val resolvedArchive = archiveRoots ?: resolveArchiveRoots(context, resolvedBlock)
         val resolvedWorking = workingCopyRoot ?: resolveWorkingCopy(filesDir, context)
+        beforeScan?.invoke()
         val report = if (resolvedArchive is SafArchiveRoots) {
             measureFromSaf(
                 filesDir = filesDir,
@@ -568,8 +608,10 @@ internal object MappingStorageSummary {
     }
 
     private fun logScan(report: Report) {
+        val line = scanLogLine(report)
+        scanLogSink?.invoke(line)
         runCatching {
-            org.ncssar.rid2caltopo.data.CaltopoClient.CTDebug("MappingStorage", scanLogLine(report))
+            org.ncssar.rid2caltopo.data.CaltopoClient.CTDebug("MappingStorage", line)
         }
     }
 
@@ -644,11 +686,7 @@ internal object MappingStorageSummary {
             val sessions = File(cacheRoot, "operational-work").listFiles()?.filter {
                 it.isDirectory && it.name.matches(Regex("[a-f0-9]{16}"))
             }.orEmpty()
-            val best = sessions.maxByOrNull { session ->
-                listOf("missions", "layers", "processing", "map-statistics").sumOf { name ->
-                    File(session, name).walkTopDown().filter { it.isFile }.sumOf { it.length() }
-                }
-            }
+            val best = sessions.maxByOrNull { it.lastModified() }
             if (best != null) return best
         }
         return null
@@ -736,9 +774,7 @@ internal object MappingStorageSummary {
             }
         }
 
-        val library = if (context != null) {
-            runCatching { MappingLibraryIndex.refresh(context, live) }.getOrNull()
-        } else null
+        val library = libraryForScan(filesDir, context, live)
         val projects = mutableListOf<ProjectLine>()
         if (library != null) {
             for (entry in MappingLibraryEntry.sorted(library.entries, newestFirst = true)) {
@@ -816,22 +852,7 @@ internal object MappingStorageSummary {
         val projectSum = projects.sumOf { it.bytes }
         val totalBytes = projectSum + sharedLayersBytes + processingWalk.allocated + statsWalk.allocated + otherBytes
 
-        val workingCopyBytes = workingCopyRoot?.let { root ->
-            var allocated = 0L
-            val stack = ArrayDeque<File>()
-            stack.add(root)
-            while (stack.isNotEmpty()) {
-                val next = stack.removeFirst()
-                if (next.isFile) {
-                    allocated += runCatching {
-                        val stat = Os.lstat(next.absolutePath)
-                        if (stat.st_blocks > 0L) stat.st_blocks * 512L
-                        else allocatedBytes(next.length(), blockSize)
-                    }.getOrDefault(allocatedBytes(next.length(), blockSize))
-                } else next.listFiles()?.forEach { stack.add(it) }
-            }
-            allocated
-        } ?: 0L
+        val workingCopyBytes = workingCopyRoot?.let { walkAllocated(it, blockSize).allocated } ?: 0L
 
         val elapsed = ((System.nanoTime() - startedNs) / 1_000_000L).coerceAtLeast(0L)
         val report = Report(
@@ -851,5 +872,87 @@ internal object MappingStorageSummary {
         )
         logScan(report)
         return report
+    }
+
+    private data class LibraryView(val entries: List<MappingLibraryEntry>, val stale: Boolean)
+
+    /** Loaded index when one exists. A full library refresh walks every mission and is the slow path. */
+    private fun libraryForScan(
+        filesDir: File,
+        context: Context?,
+        live: MappingProcessingState?,
+    ): LibraryView? {
+        context ?: return null
+        val loaded = runCatching { MappingLibraryIndex.load(filesDir) }.getOrNull()
+        if (loaded != null) {
+            val entries = runCatching { MappingLibraryIndex.entries(loaded, context, live) }.getOrNull()
+                ?: return null
+            return LibraryView(entries, false)
+        }
+        val refreshed = runCatching { MappingLibraryIndex.refresh(context, live) }.getOrNull() ?: return null
+        return LibraryView(refreshed.entries, refreshed.stale)
+    }
+
+    private fun isSymlink(file: File): Boolean =
+        runCatching { Files.isSymbolicLink(file.toPath()) }.getOrDefault(false)
+
+    /**
+     * Allocated size using the filesystem cluster size. Does not follow symlinks and does not
+     * trust FUSE `st_blocks` (that reports logical 512-byte units on exFAT).
+     */
+    private fun walkAllocated(root: File, blockSize: Long): WalkTotals {
+        if (!root.exists()) return WalkTotals(0L, 0L, true)
+        // A root symlink is the directory we were asked to measure (filesDir projection).
+        // Nested symlinks are not followed, so a working copy cannot be counted twice.
+        val start = if (isSymlink(root)) runCatching { root.canonicalFile }.getOrDefault(root) else root
+        if (!start.exists()) return WalkTotals(0L, 0L, true)
+        var allocated = 0L
+        var logical = 0L
+        var ok = true
+        val stack = ArrayDeque<File>()
+        stack.add(start)
+        while (stack.isNotEmpty()) {
+            val next = stack.removeFirst()
+            if (isSymlink(next)) continue
+            val attrs = runCatching {
+                Files.readAttributes(next.toPath(), java.nio.file.attribute.BasicFileAttributes::class.java, LinkOption.NOFOLLOW_LINKS)
+            }.getOrNull()
+            if (attrs == null) {
+                ok = false
+                continue
+            }
+            if (attrs.isDirectory) {
+                val children = next.listFiles()
+                if (children == null) ok = false else children.forEach { stack.add(it) }
+            } else {
+                val len = attrs.size()
+                logical += len
+                allocated += allocatedBytes(len, blockSize)
+            }
+        }
+        return WalkTotals(allocated, logical, ok)
+    }
+
+    /** StatFs path for the archive volume (SD card), not the internal filesDir. */
+    private fun archiveVolumeFile(context: Context?): File? {
+        context ?: return null
+        val uri = runCatching { org.ncssar.rid2caltopo.data.CaltopoClient.GetArchiveDir()?.uri }.getOrNull()
+            ?: return null
+        if (uri.scheme.equals("file", ignoreCase = true)) return uri.path?.let { File(it) }
+        if (uri.authority != "com.android.externalstorage.documents") return null
+        val documentId = runCatching { DocumentsContract.getTreeDocumentId(uri) }.getOrNull() ?: return null
+        val volumeId = documentId.substringBefore(':')
+        val storageManager = context.getSystemService(StorageManager::class.java)
+        val volumeDirectory = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            storageManager?.storageVolumes?.firstOrNull { volume ->
+                if (volumeId.equals("primary", ignoreCase = true)) volume.isPrimary
+                else volume.uuid.equals(volumeId, ignoreCase = true)
+            }?.directory
+        } else null
+        return volumeDirectory ?: when {
+            volumeId.equals("primary", ignoreCase = true) -> Environment.getExternalStorageDirectory()
+            volumeId.isNotBlank() -> File("/storage/$volumeId")
+            else -> null
+        }
     }
 }

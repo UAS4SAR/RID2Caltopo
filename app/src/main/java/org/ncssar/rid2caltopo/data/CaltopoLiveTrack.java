@@ -1965,8 +1965,8 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
     private void onPeerWaypointOnWorker(String sourceZoneId, double lat, double lng, double altitudeMeters,
                                        long timestampMsec, @Nullable CtDroneSpec.PositionTelemetry telemetry) {
         CTDebug(TAG, String.format(Locale.US,
-                "onPeerWaypoint(%s <- %s): %.6f,%.6f alt=%.1f ts=%d",
-                droneSpec.trackLabel(), sourceZoneId, lat, lng, altitudeMeters, timestampMsec));
+                "onPeerWaypoint(%s <- %s): alt=%.1f ts=%d",
+                droneSpec.trackLabel(), sourceZoneId, altitudeMeters, timestampMsec));
         droneSpec.notePeerTelemetryReceived(System.currentTimeMillis());
         queueWaypoint(lat, lng, altitudeMeters, timestampMsec, telemetry, false);
     }
@@ -2001,8 +2001,8 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
             if (isDuplicateOfPreviousPoint(previousPoint, effectiveLat, effectiveLng,
                     effectiveAltitudeMeters, timestampMsec)) {
                 CTDebug(TAG, String.format(Locale.US,
-                        "queueWaypoint(%s): dropping duplicate point %.6f,%.6f alt=%.1f ts=%d",
-                        droneSpec.trackLabel(), lat, lng, altitudeMeters, timestampMsec));
+                        "queueWaypoint(%s): dropping duplicate point alt=%.1f ts=%d",
+                        droneSpec.trackLabel(), altitudeMeters, timestampMsec));
                 return;
             }
             linePoints.add(new QueuedPoint(effectiveLat, effectiveLng, effectiveAltitudeMeters, timestampMsec,

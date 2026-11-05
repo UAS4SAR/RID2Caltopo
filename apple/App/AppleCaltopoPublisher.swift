@@ -310,6 +310,7 @@ actor AppleCaltopoPublisher {
                     client: client,
                     markerID: marker.id,
                     mapID: markerConfiguration.mapID,
+                    journalKey: ownership.key,
                     logStaleCleanup: true
                 ) { try markerJournal.acknowledge(ownership) }
                 return
@@ -355,6 +356,7 @@ actor AppleCaltopoPublisher {
                 client: client,
                 markerID: ownership.marker,
                 mapID: ownership.map,
+                journalKey: ownership.key,
                 logStaleCleanup: true
             ) {
                 do { try markerJournal.acknowledge(ownership) }
@@ -367,6 +369,7 @@ actor AppleCaltopoPublisher {
                     client: client,
                     markerID: markerID,
                     mapID: config.mapID,
+                    journalKey: ownership.key,
                     logStaleCleanup: true
                 ) { try markerJournal.acknowledge(ownership) }
             } catch { AppleLog.warning("CalTopo", "Marker cleanup retained for retry: \(error.localizedDescription)") }
@@ -445,9 +448,10 @@ actor AppleCaltopoPublisher {
                 // device id proves the row is not ours.
                 if !owned.isEmpty && entry.marker.lowercased() != owned {
                     try? markerJournal.acknowledge(entry)
-                    AppleLog.info("CalTopo", "Marker cleanup left an unproven marker id=\(entry.marker)")
+                    AppleLog.info("CalTopo", "Marker cleanup left an unproven marker id=\(DeviceMarkerJournal.mapIdPrefix(entry.marker))")
                     continue
                 }
+                if !markerJournal.due(entry.key) { continue }
                 // Actively publishing to this map: reuse the journaled marker id (do not invent a second feature).
                 if publishingCurrentMap && entry.map == currentMap {
                     publishedMarkerOwnership = entry
@@ -464,6 +468,7 @@ actor AppleCaltopoPublisher {
                     client: cleanupClient,
                     markerID: entry.marker,
                     mapID: entry.map,
+                    journalKey: entry.key,
                     logStaleCleanup: true
                 ) {
                     try markerJournal.acknowledge(entry)
@@ -476,80 +481,89 @@ actor AppleCaltopoPublisher {
         client: CaltopoLiveClient,
         markerID: String,
         mapID: String,
+        journalKey: String,
         logStaleCleanup: Bool = false
     ) async -> Bool {
-        let normalizedID = markerID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let normalizedID = markerID.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !normalizedID.isEmpty else { return false }
-        let maximumAttempts = 8
-        for attempt in 1...maximumAttempts {
-            let beforeDelete = Int64(Date().timeIntervalSince1970 * 1_000)
-            let deleteStatus: Int
-            do {
-                deleteStatus = try await client.deleteMarkerReturningStatus(markerID: normalizedID)
-            } catch {
-                if case CaltopoLiveClientError.httpStatus(let code, _) = error, code == 401 || code == 403 {
-                    AppleLog.info(
-                        "CalTopo",
-                        "Marker cleanup stopped (auth) id=\(normalizedID) status=\(code)"
-                    )
-                    return true
-                }
-                AppleLog.warning(
-                    "CalTopo",
-                    "Could not remove local device marker id=\(normalizedID): \(error.localizedDescription)"
-                )
-                return false
-            }
-            // 404 (and CalTopo 400-as-absent) means already gone — confirmed without presence probe.
-            if deleteStatus == 404 || deleteStatus == 400 {
-                if logStaleCleanup {
-                    AppleLog.info(
-                        "CalTopo",
-                        DeviceMarkerJournal.staleCleanupLogMessage(mapId: mapID, httpStatus: 404)
-                    )
-                } else {
-                    AppleLog.info(
-                        "CalTopo",
-                        "Removed local device marker id=\(normalizedID) attempts=\(attempt)"
-                    )
-                }
-                return true
-            }
-            do {
-                let evidence = try await client.markerPresence(markerID: normalizedID, sinceMilliseconds: beforeDelete)
-                // Absent evidence or no positive presence after DELETE means gone — stop retrying.
-                if evidence.absent || !evidence.present {
-                    if logStaleCleanup {
-                        AppleLog.info(
-                            "CalTopo",
-                            DeviceMarkerJournal.staleCleanupLogMessage(mapId: mapID, httpStatus: deleteStatus)
-                        )
-                    } else {
-                        AppleLog.info(
-                            "CalTopo",
-                            "Removed local device marker id=\(normalizedID) attempts=\(attempt)"
-                        )
-                    }
-                    return true
-                }
-                AppleLog.warning(
-                    "CalTopo",
-                    "Marker removal is not yet confirmed; durable retry retained id=\(normalizedID)"
-                )
-            } catch {
-                AppleLog.info(
-                    "CalTopo",
-                    "Marker removal unverified; retaining retry id=\(normalizedID): \(error.localizedDescription)"
-                )
-                return false
+        let idPrefix = MarkerCleanupRetry.idPrefix(normalizedID)
+        var target = DeviceMarkerDeletePlan.Target(featureClass: "Marker", id: normalizedID)
+        var status = await deleteDeviceFeature(client: client, target: target, mapID: mapID, idPrefix: idPrefix, logStaleCleanup: logStaleCleanup)
+        if status == 400 {
+            let resolved = await resolvedDeviceMarkerTarget(client: client, markerID: normalizedID)
+            if resolved.id != target.id || resolved.featureClass != target.featureClass {
+                target = resolved
+                status = await deleteDeviceFeature(client: client, target: target, mapID: mapID, idPrefix: idPrefix, logStaleCleanup: logStaleCleanup)
             }
         }
-        AppleLog.warning(
-            "CalTopo",
-            "Local device marker id=\(normalizedID) remained after \(maximumAttempts) delete attempts"
-        )
-        // Bounded attempts exhausted — record as done so we never delete other users' features in a loop.
-        return true
+        if status == 204 || status == 200 || status == 201 || status == 202 || status == 404 {
+            return true
+        }
+        let attempts = (try? markerJournal.noteFailure(journalKey)) ?? 0
+        AppleLog.warning("CalTopo", "Marker cleanup retained id=\(idPrefix) http=\(status) attempts=\(attempts)")
+        return false
+    }
+
+    /// 404 and verified 2xx return that status. Anything else, including 400, returns the HTTP status (or -1).
+    private func deleteDeviceFeature(
+        client: CaltopoLiveClient,
+        target: DeviceMarkerDeletePlan.Target,
+        mapID: String,
+        idPrefix: String,
+        logStaleCleanup: Bool
+    ) async -> Int {
+        let beforeDelete = Int64(Date().timeIntervalSince1970 * 1_000)
+        let deleteStatus: Int
+        do {
+            deleteStatus = try await client.deleteFeatureReturningStatus(
+                featureClass: target.featureClass,
+                featureID: target.id
+            )
+        } catch {
+            if case CaltopoLiveClientError.httpStatus(let code, _) = error {
+                AppleLog.warning("CalTopo", "Marker cleanup retained id=\(idPrefix) http=\(code)")
+                return code
+            }
+            AppleLog.warning("CalTopo", "Could not remove local device marker id=\(idPrefix): \(error.localizedDescription)")
+            return -1
+        }
+        if deleteStatus == 404 {
+            logMarkerDeleted(mapID: mapID, http: 404, idPrefix: idPrefix, logStaleCleanup: logStaleCleanup)
+            return 404
+        }
+        if (200..<300).contains(deleteStatus) {
+            do {
+                let evidence = try await client.markerPresence(markerID: target.id, sinceMilliseconds: beforeDelete)
+                if evidence.absent || !evidence.present {
+                    logMarkerDeleted(mapID: mapID, http: deleteStatus, idPrefix: idPrefix, logStaleCleanup: logStaleCleanup)
+                    return deleteStatus
+                }
+            } catch {
+                AppleLog.info("CalTopo", "Marker removal unverified; retaining retry id=\(idPrefix) http=\(deleteStatus)")
+                return -1
+            }
+            return -1
+        }
+        return deleteStatus
+    }
+
+    private func logMarkerDeleted(mapID: String, http: Int, idPrefix: String, logStaleCleanup: Bool) {
+        if logStaleCleanup {
+            AppleLog.info("CalTopo", DeviceMarkerJournal.staleCleanupLogMessage(mapId: mapID, httpStatus: http) + " id=\(idPrefix)")
+        } else {
+            AppleLog.info("CalTopo", "Removed local device marker id=\(idPrefix) http=\(http)")
+        }
+    }
+
+    /// Server id and class when the journal still holds the client UUID.
+    private func resolvedDeviceMarkerTarget(client: CaltopoLiveClient, markerID: String) async -> DeviceMarkerDeletePlan.Target {
+        guard let snapshot = try? await client.fetchMapArtifacts() else {
+            return DeviceMarkerDeletePlan.Target(featureClass: "Marker", id: markerID)
+        }
+        let features = snapshot.items.map {
+            DeviceMarkerDeletePlan.Feature(id: $0.id, className: $0.className, guid: $0.r2cGUID ?? "")
+        }
+        return DeviceMarkerDeletePlan.resolve(markerID: markerID, deviceGUID: markerID, features: features)
     }
 
     private func removeStaleR2CDeviceMarkers(client: CaltopoLiveClient, now: Date = Date()) async {

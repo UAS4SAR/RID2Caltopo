@@ -1414,8 +1414,8 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
             jo.put("trackerFunctionalityRelease", BuildConfig.TRACKER_FUNCTIONALITY_RELEASE);
             jo.put("caltopoRttMs", myCaltopoRttMs);
             CTDebug(TAG, String.format(Locale.US,
-                    "sendHello(): mapId=%s zoneId=%s lat=%.6f lng=%.6f rttMs=%d",
-                    mapId, myGuid, myLat, myLon, myCaltopoRttMs));
+                    "sendHello(): mapId=%s zoneId=%s rttMs=%d",
+                    mapId, myGuid, myCaltopoRttMs));
             sendJson(jo);
         } catch (Exception e) {
             CTError(TAG, "sendHello() raised", e);
@@ -1801,8 +1801,11 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
                             managedVideoThumbnailPreviewUntilMs,
                             nowMs() + previewTtlSeconds * 1_000L
                     );
-                    CTDebug(TAG, "Managed video thumbnail preview lease renewed ttlSec="
-                            + previewTtlSeconds);
+                    Long thumbCount = LogThrottle.summarize("tracker.video.thumbnail", 60_000L);
+                    if (thumbCount != null) {
+                        CTDebug(TAG, "Managed video thumbnail preview lease renewed count="
+                                + thumbCount + " ttlSec=" + previewTtlSeconds);
+                    }
                     break;
                 case "video_preflight_offer":
                     onVideoPreflightOffer(jo);
@@ -1819,11 +1822,11 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
                 case "video_stream_advertisement_ack":
                     if (jo.optBoolean("accepted", false)) {
                         JSONArray sessionIds = jo.optJSONArray("sessionIds");
-                        String presenceMsg = "Managed video presence accepted sessions="
-                                + (sessionIds == null ? 0 : sessionIds.length());
-                        String presenceOut = LogThrottle.emit(
-                                "tracker.video.presence", presenceMsg, 0L, true);
-                        if (presenceOut != null) CTDebug(TAG, presenceOut);
+                        Long presenceCount = LogThrottle.summarize("tracker.video.presence", 60_000L);
+                        if (presenceCount != null) {
+                            CTDebug(TAG, "Managed video presence accepted count=" + presenceCount
+                                    + " sessions=" + (sessionIds == null ? 0 : sessionIds.length()));
+                        }
                     } else {
                         CTWarn(TAG, "Managed video presence rejected: "
                                 + jo.optString("error", "Tracker rejected presence"));

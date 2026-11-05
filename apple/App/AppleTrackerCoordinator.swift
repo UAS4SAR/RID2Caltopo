@@ -2060,7 +2060,7 @@ final class AppleTrackerCoordinator: ObservableObject {
                     )
                 let droneDesignator = self.managedVideoStreams[index].droneDesignator
                 let now = Date()
-                if now.timeIntervalSince(self.lastManagedThumbnailLogAt) >= 5 {
+                if now.timeIntervalSince(self.lastManagedThumbnailLogAt) >= 60 {
                     self.lastManagedThumbnailLogAt = now
                     AppleLog.debug(
                         "TrackerPeer",
@@ -2277,10 +2277,12 @@ final class AppleTrackerCoordinator: ObservableObject {
             let accepted = object["accepted"] as? Bool ?? false
             let sessionIDs = object["sessionIds"] as? [String] ?? []
             if accepted {
-                AppleLog.debug(
-                    "TrackerPeer",
-                    "Managed video presence accepted sessions=\(sessionIDs.count)"
-                )
+                if let count = LogThrottle.summarize(key: "tracker.video.presence", intervalMs: 60_000) {
+                    AppleLog.debug(
+                        "TrackerPeer",
+                        "Managed video presence accepted count=\(count) sessions=\(sessionIDs.count)"
+                    )
+                }
             } else {
                 let error = object["error"] as? String ?? "Tracker rejected presence"
                 AppleLog.warning("TrackerPeer", "Managed video presence rejected: \(error)")

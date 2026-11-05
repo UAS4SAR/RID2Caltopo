@@ -773,8 +773,8 @@ public class CtDroneSpec implements Comparable<CtDroneSpec>, Serializable {
             diagnosticInvalidPositions++;
             if (false && CaltopoClient.CTDebugEnabled(ICON_LATENCY_TAG)) {            // We see a lot of these.
                 CaltopoClient.CTDebug(ICON_LATENCY_TAG, String.format(Locale.US,
-                        "rid_drop remoteId=%s reason=invalid wall=%d droneTs=%d lat=%.6f lng=%.6f transport=%s",
-                        mappedId, nowWallMsec, timestampInMilliseconds, lat, lng, transportType));
+                        "rid_drop remoteId=%s reason=invalid wall=%d droneTs=%d transport=%s",
+                        mappedId, nowWallMsec, timestampInMilliseconds, transportType));
             }
             nonCount++;
             return false;
@@ -866,12 +866,13 @@ public class CtDroneSpec implements Comparable<CtDroneSpec>, Serializable {
         proximityPosition = new ProximityPosition(lat, lng, nowWallMsec, proximityTelemetry);
         if (CaltopoClient.CTDebugEnabled(ICON_LATENCY_TAG)) {
             // No precise coordinates — aggregate / change-gated.
-            String ridMsg = String.format(Locale.US,
-                    "rid_rx remoteId=%s waypoint=%d transport=%s rssi=%d airborne=%s distanceFt=%.1f totalDistanceFt=%.1f duration=%s",
-                    mappedId, goodCount, transportType, getLastRssi(transportType), airborne,
-                    lDistanceInFeet, distanceInFeet, getDurationInSecAsString());
-            String ridOut = LogThrottle.emit("rid.rx." + mappedId, ridMsg, 30_000L, true);
-            if (ridOut != null) CaltopoClient.CTDebug(ICON_LATENCY_TAG, ridOut);
+            Long ridCount = LogThrottle.summarize("rid.rx", 60_000L);
+            if (ridCount != null) {
+                CaltopoClient.CTDebug(ICON_LATENCY_TAG, String.format(Locale.US,
+                        "rid_rx count=%d remoteId=%s waypoint=%d transport=%s rssi=%d airborne=%s distanceFt=%.1f",
+                        ridCount, mappedId, goodCount, transportType, getLastRssi(transportType), airborne,
+                        lDistanceInFeet));
+            }
         }
 
         return true;

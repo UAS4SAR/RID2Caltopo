@@ -342,6 +342,94 @@ final class MappingStorageSummaryTests: XCTestCase {
             XCTAssertEqual(lines, [first.1])
         }
     }
+
+    func testCacheHitLogsReasonCache() throws {
+        try onIO {
+            let r = self.roots()
+            try FileManager.default.createDirectory(at: r.missions, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: r.layers, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: r.processing, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: r.stats, withIntermediateDirectories: true)
+            var lines: [String] = []
+            _ = try MappingStorageSummary.cachedOrRefresh(roots: r, blockSize: 1, log: { lines.append($0) })
+            MappingStorageSummary.invalidate()
+            _ = try MappingStorageSummary.cachedOrRefresh(roots: r, blockSize: 1, log: { lines.append($0) })
+            XCTAssertTrue(lines.contains { $0.contains("reason=cache") })
+        }
+    }
+
+    func testWalkDoesNotFollowNestedSymlinks() throws {
+        try onIO {
+            let r = self.roots()
+            try FileManager.default.createDirectory(at: r.missions, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: r.layers, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: r.processing, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: r.stats, withIntermediateDirectories: true)
+            let mission = r.missions.appendingPathComponent("m1", isDirectory: true)
+            try FileManager.default.createDirectory(at: mission, withIntermediateDirectories: true)
+            try Data(repeating: 1, count: 100).write(to: mission.appendingPathComponent("a.bin"))
+            let outside = self.root.appendingPathComponent("outside", isDirectory: true)
+            try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+            try Data(repeating: 2, count: 8_000).write(to: outside.appendingPathComponent("big.bin"))
+            try FileManager.default.createSymbolicLink(
+                at: mission.appendingPathComponent("linked"),
+                withDestinationURL: outside
+            )
+            let report = try MappingStorageSummary.measure(roots: r, blockSize: 1)
+            XCTAssertEqual(report.totalBytes, 100)
+        }
+    }
+
+    func testConcurrentScansShareOneFlight() throws {
+        let r = roots()
+        try FileManager.default.createDirectory(at: r.missions, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: r.layers, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: r.processing, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: r.stats, withIntermediateDirectories: true)
+        let entered = DispatchSemaphore(value: 0)
+        let release = DispatchSemaphore(value: 0)
+        let runs = LockedInt()
+        MappingStorageSummary.beforeScan = {
+            runs.increment()
+            entered.signal()
+            release.wait()
+        }
+        defer {
+            MappingStorageSummary.beforeScan = nil
+            release.signal()
+        }
+        let box = LockedReports()
+        let done = DispatchGroup()
+        for _ in 0..<2 {
+            done.enter()
+            DispatchQueue.global().async {
+                defer { done.leave() }
+                if let report = try? MappingStorageSummary.cachedOrRefresh(roots: r, blockSize: 1) {
+                    box.add(report)
+                }
+            }
+        }
+        XCTAssertEqual(entered.wait(timeout: .now() + 10), .success)
+        Thread.sleep(forTimeInterval: 0.05)
+        XCTAssertEqual(runs.value, 1)
+        release.signal()
+        XCTAssertEqual(done.wait(timeout: .now() + 10), .success)
+        XCTAssertEqual(box.count, 2)
+    }
+}
+
+private final class LockedInt: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored = 0
+    var value: Int { lock.lock(); defer { lock.unlock() }; return stored }
+    func increment() { lock.lock(); stored += 1; lock.unlock() }
+}
+
+private final class LockedReports: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: [MappingStorageSummary.Report] = []
+    var count: Int { lock.lock(); defer { lock.unlock() }; return stored.count }
+    func add(_ report: MappingStorageSummary.Report) { lock.lock(); stored.append(report); lock.unlock() }
 }
 
 private extension Array {

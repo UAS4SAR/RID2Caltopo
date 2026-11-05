@@ -98,7 +98,8 @@ class ClueTerrainPreparationTest {
         assertTrue(ray.contains("tile=hit"))
         assertTrue(ray.contains("gimbalPitch=-26.2"))
         assertTrue(ray.contains("gimbalYaw=90.0"))
-        assertTrue(ray.contains("deltaLat=0.001000"))
+        assertFalse(ray.contains("deltaLat"))
+        assertFalse(ray.contains("lat="))
         val flat = clueProjectionMethodLogLine(
             clueLat = 39.001, clueLng = -121.0, droneLat = 39.001, droneLng = -121.0,
             gimbalPitchDeg = -26.2, gimbalYawDeg = null,

@@ -577,9 +577,9 @@ final class RIDTrackViewModel: ObservableObject {
         defer {
             // Coordinates are deliberately excluded so durable privacy filtering preserves the
             // receive/apply timing evidence needed to distinguish radio gaps from UI backlog.
-            let receivedMs = Int64(observation.receivedAt.timeIntervalSince1970 * 1_000)
-            let droneMs = observation.droneTimestamp.map { Int64($0.timeIntervalSince1970 * 1_000) } ?? -1
-            AppleLog.info("RIDTiming", "stage=track_ingest aircraft=\(observation.aircraftId) transport=\(observation.source.rawValue) receivedMs=\(receivedMs) droneMs=\(droneMs) receiveToStartMs=\(Int(ingestStartedAt.timeIntervalSince(observation.receivedAt) * 1_000)) processingMs=\(Int(Date().timeIntervalSince(ingestStartedAt) * 1_000))")
+            if let count = LogThrottle.summarize(key: "rid.track_ingest", intervalMs: 60_000) {
+                AppleLog.info("RIDTiming", "stage=track_ingest count=\(count) aircraft=\(observation.aircraftId) transport=\(observation.source.rawValue) processingMs=\(Int(Date().timeIntervalSince(ingestStartedAt) * 1_000))")
+            }
         }
         if observation.source != .djiVideo,
            let accepted = lastAcceptedStreamAt[observation.aircraftId],
@@ -1004,11 +1004,9 @@ final class RIDTrackViewModel: ObservableObject {
                 AppleLog.info(
                     "Clue",
                     String(
-                        format: "Clue DEM miss reason=%@ lat=%.6f lon=%.6f demSource=%@ stage=post-save id=%@",
+                        format: "Clue DEM miss reason=%@ demSource=%@ stage=post-save id=%@",
                         locale: Locale(identifier: "en_US_POSIX"),
                         reason,
-                        draft.droneLatitude,
-                        draft.droneLongitude,
                         projection.demSource ?? "none",
                         recordID.uuidString
                     )
@@ -1201,7 +1199,7 @@ final class RIDTrackViewModel: ObservableObject {
         if track.lastObservation.source == .djiVideo,
            coordinator.aolTakeoffCoordinate != previousAOLReference,
            let reference = coordinator.aolTakeoffCoordinate {
-            AppleLog.info("AOL", "Initialized from DJI altitude reference aircraft=\(track.aircraftID) latitude=\(reference.latitude) longitude=\(reference.longitude)")
+            AppleLog.info("AOL", "Initialized from DJI altitude reference aircraft=\(track.aircraftID)")
         }
         if let requestKey = terrainRequestKey(for: coordinator),
            terrainResolvedKeyByAircraftID[track.aircraftID] != requestKey {
@@ -1300,15 +1298,15 @@ final class RIDTrackViewModel: ObservableObject {
         let receivedMilliseconds = Int64((observation.receivedAt.timeIntervalSince1970 * 1_000).rounded())
         let altitude = observation.altitudeMeters.map { String(format: "%.1f", $0) } ?? "unknown"
         let rssi = observation.signalStrengthDbm.map(String.init) ?? "unknown"
+        guard let ridCount = LogThrottle.summarize(key: "rid.rx", intervalMs: 60_000) else { return }
         AppleLog.info(
             "RemoteID",
             String(
-                format: "rid_rx remoteId=%@ waypoint=%d wall=%lld lat=%.6f lng=%.6f altM=%@ transport=%@ rssi=%@ distanceFt=%.1f totalDistanceFt=%.1f",
+                format: "rid_rx count=%lld remoteId=%@ waypoint=%d wall=%lld altM=%@ transport=%@ rssi=%@ distanceFt=%.1f totalDistanceFt=%.1f",
+                ridCount,
                 track.aircraftID,
                 track.points.count,
                 receivedMilliseconds,
-                observation.latitude,
-                observation.longitude,
                 altitude,
                 observation.source.rawValue,
                 rssi,

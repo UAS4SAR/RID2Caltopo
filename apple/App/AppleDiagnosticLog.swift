@@ -243,13 +243,14 @@ enum AppleLog {
     }
 
     private static func write(level: String, category: String, message: String) {
+        let safe = CoordinateLogSanitizer.redact(message)
         let processAndThread = currentProcessAndThread()
         Task {
             await AppleDiagnosticLogStore.shared.write(
                 level: level,
                 processAndThread: processAndThread,
                 category: category,
-                message: message
+                message: safe
             )
         }
     }

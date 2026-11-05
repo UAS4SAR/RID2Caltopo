@@ -11,8 +11,6 @@ public enum OperationalBridgePacketLog {
     /// When false (default), per-packet detail is suppressed — same as Android below Ludicrous.
     nonisolated(unsafe) public static var ludicrousEnabled: Bool = false
 
-    private static let summaryKey = "dronescout.bridge.summary"
-    private static let summaryIntervalMs: Int64 = 5_000
     private static let lock = NSLock()
     // Protected by `lock`; brief critical sections only.
     nonisolated(unsafe) private static var eventCount: UInt64 = 0
@@ -35,14 +33,6 @@ public enum OperationalBridgePacketLog {
             "aircraft=\(aircraftID) bridgeRssiDbm=\(bridgeRssiDbm)"
         if ludicrousEnabled {
             write?("LUDICROUS", "DroneScoutBridge", detail)
-        }
-        // Count changes every packet; gate by interval, not by message identity.
-        if LogThrottle.shouldLog(key: summaryKey, intervalMs: summaryIntervalMs) {
-            write?(
-                "DEBUG",
-                "DroneScoutBridge",
-                "Bridge event=\(count) classification=\(classification) (summary)"
-            )
         }
     }
 

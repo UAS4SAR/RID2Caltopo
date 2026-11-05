@@ -180,7 +180,7 @@ actor AppleTerrainElevationService {
             let nearest = localDEM.nearestTileBoundsSummary(latitude: latitude, longitude: longitude)
             AppleLog.info(
                 "Terrain",
-                "DEM sampleLocal miss lat=\(latitude) lon=\(longitude) catalogReady=\(localDEM.isCatalogReady) " +
+                "DEM sampleLocal miss catalogReady=\(localDEM.isCatalogReady) " +
                     "tiles=\(localDEM.catalogTileCount) nearest=\(nearest) " +
                     "tried=\(tried.isEmpty ? "none" : tried.joined(separator: "|"))"
             )

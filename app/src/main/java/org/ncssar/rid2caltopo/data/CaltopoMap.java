@@ -2090,10 +2090,8 @@ public class CaltopoMap {
         LastStandaloneCoordinationScopeId = scopeId;
         StandaloneCoordinationStarted = true;
         CTInfo(TAG, String.format(Locale.US,
-                "startTrackerCoordinationWithoutActiveMapIfNeeded(): scopeId='%s' lat=%.6f lng=%.6f %s",
+                "startTrackerCoordinationWithoutActiveMapIfNeeded(): scopeId='%s' %s",
                 scopeId,
-                location.getLatitude(),
-                location.getLongitude(),
                 CaltopoClient.DescribeTrackerCredentialSelection("coordination")));
         getCurrentRuntime().getPeerCoordinator()
                 .setStandaloneStandbyEligible(true);
@@ -2797,10 +2795,6 @@ public class CaltopoMap {
     private static DeviceMarkerJournal markerJournal;
     private static final java.util.Set<String> activeMarkerKeys=java.util.concurrent.ConcurrentHashMap.newKeySet();
     private static final java.util.Set<String> deletingMarkerKeys=java.util.concurrent.ConcurrentHashMap.newKeySet();
-    /** Failed cleanup attempts per journal key; terminal after MAX_MARKER_CLEANUP_ATTEMPTS. */
-    private static final java.util.concurrent.ConcurrentHashMap<String, Integer> markerCleanupAttempts =
-            new java.util.concurrent.ConcurrentHashMap<>();
-    private static final int MAX_MARKER_CLEANUP_ATTEMPTS = 3;
     // Worker-owned, one latest publication per marker while an earlier DELETE is in flight.
     private static final java.util.Map<String,Runnable> deferredMarkerPublications=new java.util.HashMap<>();
     private static java.util.function.Supplier<DeviceMarkerJournal> markerJournalFactory = () ->
@@ -2842,20 +2836,14 @@ public class CaltopoMap {
                         ResolvedMyDeviceMarkerId=entry.marker;
                     continue;
                 }
+                if(!markerJournal().due(entry.key(), MarkerCleanupRetry.now()))continue;
                 if(!activeMarkerKeys.contains(entry.key()))deleteJournalMarker(entry);
             }
         }catch(Exception error){CTWarn(TAG,"Marker cleanup journal unavailable; retry retained",error);}
     }
     /** A write response may name a different feature. Only an id this device published is safe to remove. */
     static String ownedDeviceMarkerId(@Nullable JSONObject result, @NonNull String deviceId) {
-        if (result == null || deviceId.isEmpty()) return "";
-        String returned = result.optString("id", "");
-        JSONObject properties = result.optJSONObject("properties");
-        String guid = properties == null ? "" : properties.optString(LOCAL_DEVICE_MARKER_GUID_PROP, "");
-        if (!guid.isEmpty() && !deviceId.equals(guid)) return "";
-        if (deviceId.equals(returned)) return returned;
-        if (deviceId.equals(guid) && !returned.isEmpty() && returned.matches("[A-Za-z0-9_-]+")) return returned;
-        return "";
+        return DeviceMarkerDeletePlan.ownedId(result, deviceId);
     }
     /** Clue photos use the store id. Their media and link ids are name-based UUIDs of that store id. */
     static boolean clueDerivedMarkerId(@NonNull String markerId, @NonNull String clueId) {
@@ -2967,43 +2955,38 @@ public class CaltopoMap {
         }
         if(!entry.domain.equals(CaltopoClient.GetCaltopoDomainAndPort())||!deletingMarkerKeys.add(entry.key()))return null;
         try {
-            return cleanup.apply(entry.marker,op->CaltopoMarkerWork.execute(()->{
+            // Prefer the server id and class (Marker vs Shape). A client UUID DELETE is a 400
+            // when CalTopo stored the feature under a different id.
+            String spec = DeviceMarkerDeletePlan.resolve(
+                    entry.marker, entry.deviceGuid, GetArtifactFeatureSnapshot()).wire();
+            return cleanup.apply(spec,op->CaltopoMarkerWork.execute(()->{
                 try {
-                    // success means verified absent (or terminal auth). deleteCode is the DELETE
-                    // status; responseCode may be the since-GET verify status after a 200/400 DELETE.
+                    // success means verified absent. deleteCode is the DELETE status;
+                    // responseCode may be the since-GET verify status after a 200/400 DELETE.
                     boolean ok = op != null && op.success();
                     int verifyCode = op != null ? op.responseCode : -1;
                     int deleteCode = op != null && op.markerCleanupDeleteCode > 0
                             ? op.markerCleanupDeleteCode : verifyCode;
-                    // 401/403: cannot delete (gone-as-forbidden or not ours) — stop retrying.
-                    boolean terminalAuth = deleteCode == 401 || deleteCode == 403
-                            || verifyCode == 401 || verifyCode == 403;
-                    boolean done = ok || terminalAuth;
-                    if (!done) {
-                        int attempts = markerCleanupAttempts.merge(entry.key(), 1, Integer::sum);
-                        if (attempts >= MAX_MARKER_CLEANUP_ATTEMPTS) {
-                            done = true;
-                            CTWarn(TAG, "Marker cleanup gave up after " + attempts
-                                    + " attempts map=" + entry.map + " id=" + entry.marker
-                                    + " deleteCode=" + deleteCode + " responseCode=" + verifyCode);
-                        }
-                    }
-                    if (done) {
+                    boolean clear = MarkerCleanupRetry.clearJournal(deleteCode, ok);
+                    String idPrefix = MarkerCleanupRetry.idPrefix(entry.marker);
+                    if (clear) {
                         markerJournal().acknowledge(entry);
-                        markerCleanupAttempts.remove(entry.key());
-                        // Compact success line for confirmed stale cleanup (2xx verified absent or 404).
                         if (ok || deleteCode == 404) {
                             int http = deleteCode == 404 ? 404 : deleteCode;
-                            if (http < 200 || http >= 300) http = 404;
+                            if (http < 200 || http >= 300) http = 200;
                             CTInfo(TAG, "Marker cleanup: stale marker deleted map="
-                                    + mapIdPrefix(entry.map) + " http=" + http);
+                                    + mapIdPrefix(entry.map) + " id=" + idPrefix + " http=" + http);
                         }
+                    } else {
+                        int attempts = markerJournal().noteFailure(entry.key(), MarkerCleanupRetry.now());
+                        CTWarn(TAG, "Marker cleanup retained map=" + mapIdPrefix(entry.map)
+                                + " id=" + idPrefix + " http=" + deleteCode
+                                + " attempts=" + attempts);
                     }
-                    CTDebug(TAG, "Marker cleanup map=" + entry.map + " id=" + entry.marker
+                    CTDebug(TAG, "Marker cleanup map=" + mapIdPrefix(entry.map) + " id=" + idPrefix
                             + " success=" + ok + " deleteCode=" + deleteCode
                             + " responseCode=" + verifyCode
-                            + (terminalAuth ? " terminal=auth" : "")
-                            + (done && !ok ? " recorded=done" : ""));
+                            + (clear ? "" : " retained=true"));
                 }catch(Exception error){CTWarn(TAG,"Marker cleanup acknowledgement not persisted",error);}
                 finally{
                     deletingMarkerKeys.remove(entry.key());

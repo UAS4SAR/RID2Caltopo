@@ -1141,7 +1141,11 @@ public class CaltopoSession {
 
     private static CaltopoOp DeleteMarkerOnMap(String mapId, String id, Consumer<CaltopoOp> done,
             String domain, CaltopoCredentials credentials, CaltopoPersonalSession.Authorization personal) {
-        if(!mapId.matches("[A-Za-z0-9_-]+") || !id.matches("[A-Za-z0-9_-]+"))throw new IllegalArgumentException("Invalid marker cleanup target");
+        DeviceMarkerDeletePlan.Target target = DeviceMarkerDeletePlan.parseWire(id);
+        String featureClass = target.getFeatureClass();
+        String featureId = target.getId();
+        if(!mapId.matches("[A-Za-z0-9_-]+") || !featureId.matches("[A-Za-z0-9_-]+"))throw new IllegalArgumentException("Invalid marker cleanup target");
+        if(!"Marker".equals(featureClass) && !"Shape".equals(featureClass)) featureClass = "Marker";
         final long beforeDelete = System.currentTimeMillis();
         if (beforeDelete <= 500L) throw new IllegalStateException("Clock unavailable; marker cleanup retained");
         CaltopoOp op=new CaltopoOp(deleted -> {
@@ -1159,9 +1163,10 @@ public class CaltopoSession {
                 return;
             }
             // Require explicit absence evidence after DELETE 200 or inconclusive 400.
+            final String absentId = featureId;
             CaltopoOp verification = new CaltopoOp(snapshot -> {
                 boolean absent = snapshot.success()
-                        && CaltopoMarkerVerification.confirmsAbsent(snapshot.responseJson, id);
+                        && CaltopoMarkerVerification.confirmsAbsent(snapshot.responseJson, absentId);
                 snapshot.markerCleanupDeleteCode = deleteCode;
                 snapshot.goodResponse = CaltopoMarkerCleanupPolicy.afterVerify(absent);
                 if (done != null) done.accept(snapshot);
@@ -1171,7 +1176,7 @@ public class CaltopoSession {
         // 400 stays accepted so the HTTP layer does not fire CaltopoOpFailed; success still
         // requires absence verification above. 404 is treated as already-absent.
         op.acceptedErrorCodes=new int[]{400,404};
-        SendCleanupRequest(op,CtsMethod_t.DELETE,CALTOPO_MAP_API_V1+mapId+"/Marker/"+id,domain,credentials,personal);
+        SendCleanupRequest(op,CtsMethod_t.DELETE,CALTOPO_MAP_API_V1+mapId+"/"+featureClass+"/"+featureId,domain,credentials,personal);
         return op;
     }
 

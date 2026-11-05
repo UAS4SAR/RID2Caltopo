@@ -2216,7 +2216,7 @@ struct RIDTrackMapView: View {
                     streamHeadingDegrees: nil,
                     ridHeadingDegrees: captureObservation.headingDegrees,
                     derivedHeadingDegrees: OperationalMapGeometry.travelBearingDegrees(
-                        points: captureTrack.points
+                        points: captureTrackPoints
                     )
                 )
                 var reportTelemetry = OperationalClueReportTelemetry(
@@ -2225,7 +2225,7 @@ struct RIDTrackMapView: View {
                     atoMeters: captureAltitudeDisplay?.atoFeet.map { $0 * 0.3048 }
                 )
                 reportTelemetry.headingDegrees = ridCaptureObservation.headingDegrees
-                    ?? OperationalMapGeometry.travelBearingDegrees(points: captureTrack.points)
+                    ?? OperationalMapGeometry.travelBearingDegrees(points: captureTrackPoints)
                 if let frameTelemetry {
                     reportTelemetry.rawTiltDegrees = frameTelemetry.rawTiltDegrees
                     reportTelemetry.calibratedTiltDegrees = frameTelemetry.tiltDegrees
@@ -3518,11 +3518,9 @@ private struct ClueSubmissionView: View {
                     AppleLog.info(
                         "Clue",
                         String(
-                            format: "Clue DEM miss reason=%@ lat=%.6f lon=%.6f demSource=%@",
+                            format: "Clue DEM miss reason=%@ demSource=%@",
                             locale: Locale(identifier: "en_US_POSIX"),
                             reason,
-                            originObservation.latitude,
-                            originObservation.longitude,
                             refined.demSource ?? "none"
                         )
                     )
@@ -3540,10 +3538,8 @@ private struct ClueSubmissionView: View {
                 AppleLog.info(
                     "Clue",
                     String(
-                        format: "DEM projection aircraft=%@ lat=%.6f lng=%.6f heading=%@ aglM=%@ gimbal=%.1f terrainApplied=%@ demSource=%@ demResolutionM=%@",
+                        format: "DEM projection aircraft=%@ heading=%@ aglM=%@ gimbal=%.1f terrainApplied=%@ demSource=%@ demResolutionM=%@",
                         aircraftID,
-                        refined.latitude,
-                        refined.longitude,
                         input.headingDegrees.map { String(format: "%.1f", $0) } ?? "nil",
                         heightMeters.map { String(format: "%.1f", $0) } ?? "nil",
                         input.gimbalAngleDegrees,
@@ -4447,7 +4443,6 @@ private func aircraftTravelBearingDegrees(points: [AircraftMapPoint]) -> Double?
 }
 
 private struct StaticMapRenderState: Equatable {
-    let clues: [OperationalClueRecord]
     let artifacts: CaltopoArtifactSnapshot
     let airspaceRecords: [OperationalFacilityMapRecord]
     let notamsEnabled: Bool
@@ -4949,6 +4944,7 @@ private struct OperationalMKMapView: UIViewRepresentable {
         private var aircraftActivePolylinesByID: [String: StyledPolyline] = [:]
         private var aircraftBearingPolylinesByID: [String: StyledPolyline] = [:]
         private var aircraftAnnotationsByRemoteID: [String: AircraftAnnotation] = [:]
+        private var clueAnnotationsByID: [UUID: ClueAnnotation] = [:]
         private var positionTimingByAircraftID: [String: Date] = [:]
         private var operatorCoordinate: CLLocationCoordinate2D?
         private var operatorCircle: MKCircle?
@@ -5243,8 +5239,7 @@ private struct OperationalMKMapView: UIViewRepresentable {
                 viewportMemory.hasOperationalViewport = true
                 AppleLog.info(
                     "MapViewport",
-                    "Initial center set from operator location latitude=\(String(format: "%.6f", operatorCoordinate.latitude)) " +
-                        "longitude=\(String(format: "%.6f", operatorCoordinate.longitude))"
+                    "Initial center set from operator location"
                 )
                 return
             }
@@ -5310,7 +5305,6 @@ private struct OperationalMKMapView: UIViewRepresentable {
             currentFocusedAircraftID = focusedAircraftID
             defer { updating = false }
             let nextStaticState = StaticMapRenderState(
-                clues: clues,
                 artifacts: artifacts,
                 airspaceRecords: airspaceState.records,
                 notamsEnabled: notamState.enabled,
@@ -5330,7 +5324,8 @@ private struct OperationalMKMapView: UIViewRepresentable {
                         || (overlay as? StyledPolygon)?.layer == .staticMap
                 })
                 map.removeAnnotations(map.annotations.filter { annotation in
-                    (annotation as? MapLayerAnnotation)?.mapLayer == .staticMap
+                    annotation is ClueAnnotation ? false :
+                        (annotation as? MapLayerAnnotation)?.mapLayer == .staticMap
                 })
             }
 
@@ -5598,7 +5593,7 @@ private struct OperationalMKMapView: UIViewRepresentable {
                         positionTimingByAircraftID[track.aircraftID] = receivedAt
                         if !visuallyUnchanged {
                             ClueTerrainDiagnostics.noteMainWork("map.annot")
-                            if LogThrottle.shouldLog(key: "rid.annotation_update", intervalMs: 5_000) {
+                            if LogThrottle.shouldLog(key: "rid.annotation_update", intervalMs: 60_000) {
                                 let receivedMs = Int64(receivedAt.timeIntervalSince1970 * 1_000)
                                 AppleLog.debug(
                                     "RIDTiming",
@@ -5695,9 +5690,31 @@ private struct OperationalMKMapView: UIViewRepresentable {
                     addLandRestriction(area, to: map)
                 }
             }
-            for clue in clues {
-                map.addAnnotation(ClueAnnotation(clue: clue))
             }
+            syncClueAnnotations(on: map, clues: clues)
+        }
+
+        private func syncClueAnnotations(on map: MKMapView, clues: [OperationalClueRecord]) {
+            var seen = Set<UUID>()
+            for clue in clues {
+                seen.insert(clue.id)
+                let next = ClueAnnotation(clue: clue)
+                if let existing = clueAnnotationsByID[clue.id] {
+                    let moved = abs(existing.coordinate.latitude - next.coordinate.latitude) > 1e-7
+                        || abs(existing.coordinate.longitude - next.coordinate.longitude) > 1e-7
+                    if moved || existing.published != next.published || existing.title != next.title {
+                        map.removeAnnotation(existing)
+                        clueAnnotationsByID[clue.id] = next
+                        map.addAnnotation(next)
+                    }
+                } else {
+                    clueAnnotationsByID[clue.id] = next
+                    map.addAnnotation(next)
+                }
+            }
+            for (id, annotation) in clueAnnotationsByID where !seen.contains(id) {
+                map.removeAnnotation(annotation)
+                clueAnnotationsByID[id] = nil
             }
         }
 

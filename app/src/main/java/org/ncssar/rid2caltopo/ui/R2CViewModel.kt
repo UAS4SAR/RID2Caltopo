@@ -1001,11 +1001,12 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
         val droneListSnapshot = normalizedDroneSpecUiSnapshot(droneSpecs, tag)
         if (lastDroneListSignature != droneListSnapshot.signature) {
             lastDroneListSignature = droneListSnapshot.signature
-            CTDebug(
-                tag,
-                "DroneItem list update: count=${droneListSnapshot.drones.size} ids=" +
-                    droneListSnapshot.drones.joinToString { "${it.remoteId}:${it.mappedId}" }
-            )
+            LogThrottle.summarize("droneitem.list", 60_000L)?.let { count ->
+                CTDebug(
+                    tag,
+                    "DroneItem list update: batches=$count count=${droneListSnapshot.drones.size}",
+                )
+            }
             _drones.value = DroneSpecUiList(droneListSnapshot.drones)
         }
         housekeeping()

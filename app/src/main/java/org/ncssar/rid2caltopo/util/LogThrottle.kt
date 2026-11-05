@@ -19,6 +19,7 @@ object LogThrottle {
 
     private val entries = ConcurrentHashMap<String, Entry>()
     private val rateLimitAtMs = ConcurrentHashMap<String, AtomicLong>()
+    private val summaryCounts = ConcurrentHashMap<String, AtomicLong>()
 
     /** Injectable clock for unit tests. */
     @JvmField
@@ -104,6 +105,19 @@ object LogThrottle {
         return outcome
     }
 
+    /**
+     * Counts an event and returns the count when a summary line is due, otherwise null.
+     * The message identity does not matter — changing details cannot defeat the interval.
+     */
+    @JvmStatic
+    fun summarize(key: String, intervalMs: Long): Long? {
+        val counter = summaryCounts.computeIfAbsent(key) { AtomicLong() }
+        counter.incrementAndGet()
+        if (!shouldLog("$key.summary", intervalMs)) return null
+        val emitted = counter.getAndSet(0L)
+        return if (emitted > 0L) emitted else 1L
+    }
+
     /** Simple interval gate: true at most once per [intervalMs] for [key]. */
     @JvmStatic
     fun shouldLog(key: String, intervalMs: Long): Boolean {
@@ -126,6 +140,7 @@ object LogThrottle {
     fun resetForTest() {
         entries.clear()
         rateLimitAtMs.clear()
+        summaryCounts.clear()
         clockMs = LongSupplier { System.currentTimeMillis() }
     }
 }

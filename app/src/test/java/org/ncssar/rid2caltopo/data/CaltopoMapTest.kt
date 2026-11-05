@@ -810,9 +810,7 @@ class CaltopoMapTest {
         archiveFolderIdField.set(null, "archive-folder-test")
         CaltopoMap::class.java.getDeclaredField("DeviceMarkerAllowed").apply { isAccessible = true }
             .setBoolean(null, true)
-        @Suppress("UNCHECKED_CAST")
-        (CaltopoMap::class.java.getDeclaredField("markerCleanupAttempts").apply { isAccessible = true }
-            .get(null) as java.util.concurrent.ConcurrentHashMap<String, Int>).clear()
+        MarkerCleanupRetry.resetClockForTest()
         myUuidField.set(null, "marker-guid-test")
         resolvedMarkerIdField.set(null, "marker-guid-test")
         shutdownInProgressField.setBoolean(null, false)
@@ -994,6 +992,7 @@ class CaltopoMapTest {
         drainMarkers()
         assertEquals(1, journal.entries().size)
         fixture.calTopoSessionGateway.markerDeleteSucceeds = true
+        MarkerCleanupRetry.clockMs = MarkerCleanupRetry.now() + 60_000L
         retry.invoke(null)
         drainMarkers()
         assertTrue(journal.entries().isEmpty())
@@ -1027,25 +1026,33 @@ class CaltopoMapTest {
         val retry = CaltopoMap::class.java.getDeclaredMethod("retryMarkerCleanup").apply { isAccessible = true }
         retry.invoke(null)
         drainMarkers()
-        assertTrue(journal.entries().isEmpty())
+        assertEquals(1, journal.entries().size)
         assertEquals(1, fixture.calTopoSessionGateway.countOperations("deleteMarker"))
+        assertTrue(journal.attempts(journal.entries().first().key()) >= 1)
     }
 
     @Test
-    fun markerCleanupGivesUpAfterBoundedFailedAttempts() {
+    fun markerCleanupKeepsRecordAfterFailedAttempts() {
         val domain = CaltopoClient.GetCaltopoDomainAndPort()
         val journal = CaltopoMap::class.java.getDeclaredField("markerJournal").apply { isAccessible = true }
             .get(null) as DeviceMarkerJournal
-        journal.arm(domain, "4J0LF02", "marker-guid-test", "marker-guid-test")
+        journal.arm(domain, "4J0LF02", "833a8140-2a8b-3b23-8876-c3af62524ef0", "marker-guid-test")
         fixture.calTopoSessionGateway.markerDeleteSucceeds = false
-        fixture.calTopoSessionGateway.markerDeleteResponseCode = 500
+        fixture.calTopoSessionGateway.markerDeleteResponseCode = 400
         val retry = CaltopoMap::class.java.getDeclaredMethod("retryMarkerCleanup").apply { isAccessible = true }
-        repeat(3) {
-            retry.invoke(null)
-            drainMarkers()
-        }
-        assertTrue(journal.entries().isEmpty())
-        assertEquals(3, fixture.calTopoSessionGateway.countOperations("deleteMarker"))
+        retry.invoke(null)
+        drainMarkers()
+        // Backoff blocks an immediate second try.
+        retry.invoke(null)
+        drainMarkers()
+        assertEquals(1, journal.entries().size)
+        assertEquals(1, fixture.calTopoSessionGateway.countOperations("deleteMarker"))
+        MarkerCleanupRetry.clockMs = MarkerCleanupRetry.now() + 120_000L
+        retry.invoke(null)
+        drainMarkers()
+        assertEquals(1, journal.entries().size)
+        assertEquals(2, fixture.calTopoSessionGateway.countOperations("deleteMarker"))
+        assertEquals(2, journal.attempts(journal.entries().first().key()))
     }
 
 

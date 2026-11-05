@@ -21,7 +21,6 @@ import org.opendroneid.android.data.SelfIdData;
 import org.opendroneid.android.data.SystemData;
 import org.opendroneid.android.data.OperatorIdData;
 import org.ncssar.rid2caltopo.data.CaltopoClient;
-import org.ncssar.rid2caltopo.util.LogThrottle;
 import org.ncssar.rid2caltopo.data.RidLocationAccuracyPrefs;
 import org.ncssar.rid2caltopo.app.R2CApplication;
 
@@ -606,7 +605,7 @@ public class OpenDroneIdDataManager {
         DroneScoutRelayMetadata relayMetadata = droneScoutRelayMetadata(ac);
         if (relayMetadata != null) {
             long bridgeEventCount = DroneScoutBridgeMonitor.noteRelayedPacket(rssi);
-            // Per-packet detail is Ludicrous-only (CTInfo). Normal DEBUG gets a 5s summary.
+            // Per-packet detail is Ludicrous-only (CTInfo).
             CaltopoClient.CTInfo(
                     "DroneScoutBridge",
                     String.format(Locale.US,
@@ -623,14 +622,6 @@ public class OpenDroneIdDataManager {
                             rssi,
                             relayMetadata.getDroneToBridgeRssiDbm(),
                             relayMetadata.getReceptionMode()));
-            // Count changes every packet; gate by interval, not by message identity.
-            if (LogThrottle.shouldLog("dronescout.bridge.summary", 5_000L)) {
-                CaltopoClient.CTDebug(
-                        "DroneScoutBridge",
-                        String.format(Locale.US,
-                                "Bridge event=%d classification=relayed-aircraft (summary)",
-                                bridgeEventCount));
-            }
         }
         boolean isDroneScoutBridgePing = bridgePingAlreadyNoted || noteDroneScoutBridgePing(
                 ac, rssi, macAddress, message.msgCounter);

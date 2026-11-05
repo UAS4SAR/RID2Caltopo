@@ -1110,15 +1110,16 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
             long clueTimestamp
     ) {
         CTDebug(TAG, String.format(Locale.US,
-                "SubmitClue() received for %s(%s):%s lat=%.6f lng=%.6f alt=%.1f",
+                "SubmitClue() received for %s(%s):%s alt=%.1f",
                 droneSpec.getMappedId(), droneSpec.getRemoteId(), clueTitle,
-                clueLat, clueLng, clueAlt));
+                clueAlt));
         CaltopoMap.SubmitClueWithPhoto(droneSpec, clueLat, clueLng, clueAlt, clueTitle, clueDescription, clueTimestamp, clueImage);
     }
 
     public static void CTLog(String type, String tag, String msg) {
+        final String safe = org.ncssar.rid2caltopo.util.CoordinateLogSanitizer.redact(msg);
         final long eventTime = System.currentTimeMillis();
-        DiagnosticLogWork.append(msg, () -> WriteDiagnosticLog(type, tag, msg, eventTime));
+        DiagnosticLogWork.append(safe, () -> WriteDiagnosticLog(type, tag, safe, eventTime));
     }
 
     private static void WriteDiagnosticLog(String type, String tag, String msg, long eventTime) {
@@ -1190,6 +1191,7 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
     }
 
     public static void CTInfo(String tag, String msg) {
+        msg = org.ncssar.rid2caltopo.util.CoordinateLogSanitizer.redact(msg);
         RegisterDebugTag(tag);
         if (DebugLevel >= DebugLevelInfo) {
             if (!CTDebugEnabled(tag)) return;
@@ -1202,6 +1204,7 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
     }
 
     public static void CTDebug(String tag, String msg) {
+        msg = org.ncssar.rid2caltopo.util.CoordinateLogSanitizer.redact(msg);
         RegisterDebugTag(tag);
         if (!CTDebugEnabled(tag)) return;
         long myTid = Process.myTid();
@@ -1212,6 +1215,7 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
     }
 
     public static void CTError(String tag, String msg) {
+        msg = org.ncssar.rid2caltopo.util.CoordinateLogSanitizer.redact(msg);
         RegisterDebugTag(tag);
         long myTid = Process.myTid();
         String tidString = "[" + ProcessId + "-" + ((MainThreadId == myTid) ? "main]" : myTid + "]");
@@ -1249,6 +1253,7 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
     }
 
     public static void CTError(String tag, String msg, Throwable e) {
+        msg = org.ncssar.rid2caltopo.util.CoordinateLogSanitizer.redact(msg);
         RegisterDebugTag(tag);
         long myTid = Process.myTid();
         String tidString = "[" + ProcessId + "-" + ((MainThreadId == myTid) ? "main]" : myTid + "]");
@@ -1263,6 +1268,7 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
     }
 
     public static void CTWarn(String tag, String msg) {
+        msg = org.ncssar.rid2caltopo.util.CoordinateLogSanitizer.redact(msg);
         RegisterDebugTag(tag);
         if (DebugLevel >= DebugLevelWarn) {
             long myTid = Process.myTid();
@@ -1278,6 +1284,7 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
     }
 
     public static void CTWarn(String tag, String msg, Throwable e) {
+        msg = org.ncssar.rid2caltopo.util.CoordinateLogSanitizer.redact(msg);
         RegisterDebugTag(tag);
         if (DebugLevel >= DebugLevelWarn) {
             long myTid = Process.myTid();

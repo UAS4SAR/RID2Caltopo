@@ -117,13 +117,11 @@ internal fun clueProjectionMethodLogLine(
     val yaw = gimbalYawDeg?.let { String.format(Locale.US, "%.1f", it) } ?: "nil"
     return String.format(
         Locale.US,
-        "Clue projection method=%s tile=%s gimbalPitch=%.1f gimbalYaw=%s deltaLat=%.6f deltaLon=%.6f demSource=%s",
+        "Clue projection method=%s tile=%s gimbalPitch=%.1f gimbalYaw=%s demSource=%s",
         method,
         hit,
         gimbalPitchDeg,
         yaw,
-        clueLat - droneLat,
-        clueLng - droneLng,
         demSource ?: "none",
     )
 }
@@ -259,10 +257,8 @@ internal suspend fun refineCapturedClueTerrain(
                 "Clue",
                 String.format(
                     Locale.US,
-                    "Clue DEM miss reason=%s lat=%.6f lon=%.6f demSource=%s designator=%s",
+                    "Clue DEM miss reason=%s demSource=%s designator=%s",
                     reason,
-                    clue.droneLat,
-                    clue.droneLng,
                     projection.demSource ?: "none",
                     clue.designator,
                 ),
@@ -341,10 +337,8 @@ internal suspend fun refineCapturedClueTerrainLocalSession(
             "Clue",
             String.format(
                 Locale.US,
-                "Clue DEM miss reason=%s lat=%.6f lon=%.6f demSource=%s designator=%s",
+                "Clue DEM miss reason=%s demSource=%s designator=%s",
                 reason,
-                clue.droneLat,
-                clue.droneLng,
                 projection.demSource ?: "none",
                 clue.designator,
             ),

@@ -1425,7 +1425,11 @@ private actor AppleMappingStorageReader {
         let roots = roots()
         if !force, let cached = MappingStorageSummary.loadCached(roots: roots),
            MappingStorageSummary.isFresh(cached, current: roots.stamp()) {
-            return cached
+            var hit = cached
+            hit.scanReason = "cache"
+            hit.scanElapsedMs = 0
+            AppleLog.debug("MappingStorage", MappingStorageSummary.scanLogLine(hit))
+            return hit
         }
         let projects = await projectLines()
         return try MappingStorageSummary.cachedOrRefresh(

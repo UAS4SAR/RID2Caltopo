@@ -1016,8 +1016,18 @@ public actor CaltopoLiveClient {
     /// DELETE status for compact cleanup logs. 2xx and accepted absences (400/404) return normally.
     @discardableResult
     public func deleteMarkerReturningStatus(markerID: String, now: Date = Date()) async throws -> Int {
+        try await deleteFeatureReturningStatus(featureClass: "Marker", featureID: markerID, now: now)
+    }
+
+    /// DELETE `/Marker/` or `/Shape/` for a device feature. 400 is returned to the caller; it is not success.
+    @discardableResult
+    public func deleteFeatureReturningStatus(
+        featureClass: String,
+        featureID: String,
+        now: Date = Date()
+    ) async throws -> Int {
         try await performReturningStatus(
-            makeDeleteMarkerRequest(markerID: markerID, now: now),
+            makeDeleteMarkerRequest(markerID: featureID, now: now, featureClass: featureClass, preserveCase: true),
             acceptedStatusCodes: [400, 404]
         ).status
     }
@@ -1065,10 +1075,17 @@ public actor CaltopoLiveClient {
         )
     }
 
-    func makeDeleteMarkerRequest(markerID: String, now: Date) throws -> URLRequest {
-        let normalizedID = markerID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    func makeDeleteMarkerRequest(
+        markerID: String,
+        now: Date,
+        featureClass: String = "Marker",
+        preserveCase: Bool = false
+    ) throws -> URLRequest {
+        let trimmed = markerID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedID = preserveCase ? trimmed : trimmed.lowercased()
         guard !normalizedID.isEmpty else { throw CaltopoLiveClientError.invalidConfiguration }
-        let path = "/api/v1/map/\(configuration.mapID)/Marker/\(normalizedID)"
+        let cls = featureClass == "Shape" ? "Shape" : "Marker"
+        let path = "/api/v1/map/\(configuration.mapID)/\(cls)/\(normalizedID)"
         let expires = Int64(now.timeIntervalSince1970 * 1_000)
             + CaltopoRequestSigner.validityMilliseconds
         let signature = try configuration.personalSessionID == nil ? CaltopoRequestSigner.signature(

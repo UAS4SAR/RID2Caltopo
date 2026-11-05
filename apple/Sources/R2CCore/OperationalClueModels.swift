@@ -227,18 +227,15 @@ public enum OperationalClueProjectionLog {
             if projection.terrainProjectionApplied { return "hit" }
             return "miss"
         }()
-        let deltaLat = projection.latitude - aircraftLatitude
-        let deltaLon = projection.longitude - aircraftLongitude
+        _ = (aircraftLatitude, aircraftLongitude)
         let yaw = gimbalYawDegrees.map { String(format: "%.1f", locale: Locale(identifier: "en_US_POSIX"), $0) } ?? "nil"
         return String(
-            format: "Clue projection method=%@ tile=%@ gimbalPitch=%.1f gimbalYaw=%@ deltaLat=%.6f deltaLon=%.6f demSource=%@",
+            format: "Clue projection method=%@ tile=%@ gimbalPitch=%.1f gimbalYaw=%@ demSource=%@",
             locale: Locale(identifier: "en_US_POSIX"),
             method,
             hit,
             gimbalPitchDegrees,
             yaw,
-            deltaLat,
-            deltaLon,
             projection.demSource ?? "none"
         )
     }

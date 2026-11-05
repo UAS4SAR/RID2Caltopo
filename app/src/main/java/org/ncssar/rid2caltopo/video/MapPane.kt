@@ -1434,11 +1434,13 @@ internal fun SplitMapPane(
                 val fetchConcurrency = MapTileUsagePolicy.liveFetchConcurrency(source.name())
                 // Skip routine start for trivial single-request passes; slow/cancelled still logged below.
                 if (requests.size > 1) {
-                    MapCacheDebug.debug(
-                        MapCacheDebug.TAG_TILE,
-                        "live-priority pass start zoom=$passZoom requests=${requests.size} " +
-                            "source=${source.name()} concurrency=$fetchConcurrency"
-                    )
+                    LogThrottle.summarize("mapcache.live-priority", 60_000L)?.let { count ->
+                        MapCacheDebug.debug(
+                            MapCacheDebug.TAG_TILE,
+                            "live-priority pass start count=$count zoom=$passZoom requests=${requests.size} " +
+                                "source=${source.name()} concurrency=$fetchConcurrency"
+                        )
+                    }
                 }
                 try {
                     suspend fun fetchOne(request: LiveTileRequest): Boolean {
@@ -3389,12 +3391,9 @@ internal fun SplitMapPane(
                 flightList.add(point)
                 trackOverlayRefreshToken++
                 if (CTDebugEnabled(ICON_LATENCY_TAG)) {
-                    LogThrottle.emit(
-                        "rid.track_ingest.$key",
-                        "track_ingest designator=$key droneTs=$timestampMsec altM=${"%.1f".format(Locale.US, altitudeMeters)}",
-                        minIntervalMs = 30_000L,
-                        onChangeOnly = true,
-                    )?.let { CTDebug(ICON_LATENCY_TAG, it) }
+                    LogThrottle.summarize("rid.track_ingest", 60_000L)?.let { count ->
+                        CTDebug(ICON_LATENCY_TAG, "track_ingest count=$count designator=$key altM=${"%.1f".format(Locale.US, altitudeMeters)}")
+                    }
                 }
                 if (list.size > LOCAL_TRACK_RECENT_POINT_LIMIT) {
                     list.removeAt(0)
@@ -3652,12 +3651,10 @@ internal fun SplitMapPane(
                             MAP_PANE_TAG,
                             String.format(
                                 Locale.US,
-                                "Restored viewport bounds mode=%s measured=%dx%d center=%.6f,%.6f zoom=%.2f bounds=%s",
+                                "Restored viewport bounds mode=%s measured=%dx%d zoom=%.2f bounds=%s",
                                 presentationMode.name,
                                 viewportWidth,
                                 viewportHeight,
-                                mapView.mapCenter.latitude,
-                                mapView.mapCenter.longitude,
                                 mapView.zoomLevelDouble,
                                 bounds?.isUsable == true
                             )
@@ -4257,7 +4254,6 @@ internal fun SplitMapPane(
                         !viewModel.mapInitialLocationApplied &&
                         mapView.width > 0 && mapView.height > 0
                     ) {
-                        val mapCenter = mapView.mapCenter
                         viewModel.mapInitialLocationApplied = true
                         mapView.controller.setCenter(GeoPoint(myLocation.latitude, myLocation.longitude))
                         mapView.controller.setZoom(STARTUP_MY_LOCATION_MIN_ZOOM)
@@ -4270,11 +4266,7 @@ internal fun SplitMapPane(
                             MAP_PANE_TAG,
                             String.format(
                                 Locale.US,
-                                "Local device viewport rescue: lat=%.6f lng=%.6f previousCenter=%.6f,%.6f zoom=%.2f",
-                                myLocation.latitude,
-                                myLocation.longitude,
-                                mapCenter.latitude,
-                                mapCenter.longitude,
+                                "Local device viewport rescue: zoom=%.2f",
                                 mapView.zoomLevelDouble
                             )
                         )
@@ -4293,12 +4285,10 @@ internal fun SplitMapPane(
                     if (localDeviceMarkerStats != lastLocalDeviceMarkerStats) {
                         lastLocalDeviceMarkerStats = localDeviceMarkerStats
                         localDeviceLocationMissingLogged = false
-                        if (CTDebugEnabled(MAP_PANE_TAG)) {
-                            LogThrottle.emit(
-                                "mappane.localDeviceMarker",
-                                "Local device marker: $localDeviceMarkerStats",
-                                onChangeOnly = true,
-                            )?.let { CTDebug(MAP_PANE_TAG, it) }
+                    }
+                    if (CTDebugEnabled(MAP_PANE_TAG)) {
+                        LogThrottle.summarize("mappane.localDeviceMarker", 60_000L)?.let { count ->
+                            CTDebug(MAP_PANE_TAG, "Local device marker count=$count $localDeviceMarkerStats")
                         }
                     }
                 } else if (!localDeviceLocationMissingLogged) {
@@ -4325,15 +4315,13 @@ internal fun SplitMapPane(
                         val renderWallMsec = System.currentTimeMillis()
                         val ingestToRenderMs = point.receivedAtMsec?.let { renderWallMsec - it }
                         if (CTDebugEnabled(ICON_LATENCY_TAG)) {
-                            LogThrottle.emit(
-                                "rid.icon_render.${point.designator}",
-                                "icon_render designator=${point.designator} droneTs=${point.timestampMsec} " +
-                                    "altM=${"%.1f".format(Locale.US, point.altitudeM)} " +
-                                    "heading=${point.headingDeg?.let { "%.1f".format(Locale.US, it) } ?: "n/a"} " +
-                                    "trackToRenderMs=${ingestToRenderMs?.toString() ?: "n/a"}",
-                                minIntervalMs = 30_000L,
-                                onChangeOnly = true,
-                            )?.let { CTDebug(ICON_LATENCY_TAG, it) }
+                            LogThrottle.summarize("rid.icon_render", 60_000L)?.let { count ->
+                                CTDebug(
+                                    ICON_LATENCY_TAG,
+                                    "icon_render count=$count designator=${point.designator} " +
+                                        "trackToRenderMs=${ingestToRenderMs?.toString() ?: "n/a"}",
+                                )
+                            }
                         }
                         renderLatencyKeyByDesignator[point.designator] = pointLatencyKey
                     }
@@ -4552,13 +4540,11 @@ internal fun SplitMapPane(
                         nearestDistanceMeters(focusPoint, allArtifactGeoPoints(artifactOverlayState))
                     val tailDeltaMeters = nearestLocalTrackTailDistanceMeters(focusPoint, localTrackPointsByMappedId)
                     val alignStats = if (nearestArtifactMeters != null) {
-                        "focus=${focusPoint.designator} lat=${"%.6f".format(focusPoint.lat)} " +
-                            "lng=${"%.6f".format(focusPoint.lng)} nearestArtifactM=${"%.1f".format(nearestArtifactMeters)} " +
+                        "focus=${focusPoint.designator} nearestArtifactM=${"%.1f".format(nearestArtifactMeters)} " +
                             "localTailDeltaM=${tailDeltaMeters?.let { "%.1f".format(it) } ?: "n/a"} " +
                             "artifactFeatures=${artifactOverlayState.totalFeatures}"
                     } else {
-                        "focus=${focusPoint.designator} lat=${"%.6f".format(focusPoint.lat)} " +
-                            "lng=${"%.6f".format(focusPoint.lng)} nearestArtifactM=n/a " +
+                        "focus=${focusPoint.designator} nearestArtifactM=n/a " +
                             "localTailDeltaM=${tailDeltaMeters?.let { "%.1f".format(it) } ?: "n/a"} " +
                             "artifactFeatures=${artifactOverlayState.totalFeatures}"
                     }

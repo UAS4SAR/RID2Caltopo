@@ -42,6 +42,49 @@ public final class DeviceMarkerJournal {
     }
     public synchronized void acknowledge(Entry entry) throws Exception {
         List<Entry> rows=entries();rows.removeIf(e->e.key().equals(entry.key())&&e.revision.equals(entry.revision));write(rows);
+        clearRetry(entry.key());
+    }
+    /** True when a failed delete is allowed to run again. Missing state is due immediately. */
+    public synchronized boolean due(String key, long now) {
+        JSONObject row=retryRows().optJSONObject(key);
+        if(row==null)return true;
+        return now>=row.optLong("nextTryAt",0L);
+    }
+    /** Persist the attempt count and the next eligible time. Returns the new attempt count. */
+    public synchronized int noteFailure(String key, long now) throws Exception {
+        JSONObject rows=retryRows();
+        JSONObject row=rows.optJSONObject(key);
+        int attempts=(row==null?0:row.optInt("attempts",0))+1;
+        long next=now+MarkerCleanupRetry.delayMs(attempts);
+        rows.put(key,new JSONObject().put("attempts",attempts).put("nextTryAt",next));
+        writeRetry(rows);
+        return attempts;
+    }
+    public synchronized void clearRetry(String key) {
+        JSONObject rows=retryRows();
+        if(rows.optJSONObject(key)==null)return;
+        rows.remove(key);
+        try{writeRetry(rows);}catch(Exception ignored){}
+    }
+    public synchronized int attempts(String key) {
+        JSONObject row=retryRows().optJSONObject(key);
+        return row==null?0:row.optInt("attempts",0);
+    }
+    private File retryFile(){return new File(file.getPath()+".retry");}
+    private JSONObject retryRows() {
+        File retry=retryFile();
+        if(!retry.isFile())return new JSONObject();
+        try{return new JSONObject(new String(Files.readAllBytes(retry.toPath()),StandardCharsets.UTF_8));}
+        catch(Exception ignored){return new JSONObject();}
+    }
+    private void writeRetry(JSONObject rows) throws Exception {
+        file.getParentFile().mkdirs();
+        File temp=new File(retryFile().getPath()+".tmp");
+        try(java.io.FileOutputStream out=new java.io.FileOutputStream(temp)){
+            out.write(rows.toString().getBytes(StandardCharsets.UTF_8));
+            out.getFD().sync();
+        }
+        Files.move(temp.toPath(),retryFile().toPath(),StandardCopyOption.ATOMIC_MOVE,StandardCopyOption.REPLACE_EXISTING);
     }
     private void write(List<Entry> rows)throws Exception {
         JSONArray array=new JSONArray();

@@ -75,10 +75,18 @@ struct LogThrottleTests {
     }
 
     @Test
-    func bridgePacketLogSummaryIsDebugAndDetailIsLudicrousGated() {
+    func summarizeCountsUntilTheInterval() {
         let clock = installClock()
+        #expect(LogThrottle.summarize(key: "rid.rx", intervalMs: 60_000) == 1)
+        #expect(LogThrottle.summarize(key: "rid.rx", intervalMs: 60_000) == nil)
+        clock.nowMs += 60_000
+        #expect(LogThrottle.summarize(key: "rid.rx", intervalMs: 60_000) == 2)
+    }
+
+    @Test
+    func bridgePacketLogDetailIsLudicrousOnly() {
+        _ = installClock()
         OperationalBridgePacketLog.resetForTest()
-        LogThrottle.clockMs = { clock.nowMs }
         final class Lines: @unchecked Sendable {
             var values: [(String, String, String)] = []
         }
@@ -90,22 +98,15 @@ struct LogThrottleTests {
         OperationalBridgePacketLog.note(
             classification: "relayed-aircraft", transmitterID: "T",
             messageCounter: 1, aircraftID: "A", bridgeRssiDbm: -60)
-        #expect(lines.values.count == 1)
-        #expect(lines.values[0].0 == "DEBUG")
-        #expect(lines.values[0].1 == "DroneScoutBridge")
-        #expect(lines.values[0].2.contains("(summary)"))
-        OperationalBridgePacketLog.note(
-            classification: "relayed-aircraft", transmitterID: "T",
-            messageCounter: 2, aircraftID: "A", bridgeRssiDbm: -61)
-        #expect(lines.values.count == 1) // throttled within 5s
-        clock.nowMs += 5_000
+        #expect(lines.values.isEmpty)
         OperationalBridgePacketLog.ludicrousEnabled = true
         OperationalBridgePacketLog.note(
             classification: "relayed-aircraft", transmitterID: "T",
-            messageCounter: 3, aircraftID: "A", bridgeRssiDbm: -62)
-        #expect(lines.values.count == 3) // ludicrous detail + summary
-        #expect(lines.values.contains { $0.0 == "LUDICROUS" && !$0.2.contains("(summary)") })
-        #expect(lines.values.filter { $0.0 == "DEBUG" }.count == 2)
+            messageCounter: 2, aircraftID: "A", bridgeRssiDbm: -61)
+        #expect(lines.values.count == 1)
+        #expect(lines.values[0].0 == "LUDICROUS")
+        #expect(lines.values[0].1 == "DroneScoutBridge")
+        #expect(lines.values[0].2.contains("Bridge event="))
         OperationalBridgePacketLog.resetForTest()
     }
 }

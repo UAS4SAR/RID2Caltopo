@@ -98,6 +98,15 @@ class LogThrottleTest {
     }
 
     @Test
+    fun summarizeCountsUntilTheInterval() {
+        assertEquals(1L, LogThrottle.summarize("rid.rx", 60_000L))
+        assertNull(LogThrottle.summarize("rid.rx", 60_000L))
+        assertNull(LogThrottle.summarize("rid.rx", 60_000L))
+        nowMs.addAndGet(60_000L)
+        assertEquals(3L, LogThrottle.summarize("rid.rx", 60_000L))
+    }
+
+    @Test
     fun bridgeSummary_emitsAtMostOncePerFiveSeconds() {
         assertTrue(LogThrottle.shouldLog("dronescout.bridge.summary", 5_000L))
         assertFalse(LogThrottle.shouldLog("dronescout.bridge.summary", 5_000L))

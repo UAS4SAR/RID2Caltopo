@@ -275,4 +275,108 @@ class MappingStorageSummaryTest {
         assertTrue(line.contains("reason=stale"))
         assertFalse(line.contains("lat="))
     }
+
+    @Test
+    fun exFatClusterRoundsAllocatedBytes() {
+        assertEquals(512L * 1024L, MappingStorageSummary.allocatedBytes(1L, 512L * 1024L))
+        val root = folder.root
+        File(root, "mapping-missions/m1/a.bin").apply {
+            parentFile!!.mkdirs()
+            writeBytes(ByteArray(1))
+        }
+        File(root, "mapping-layers").mkdirs()
+        File(root, "mapping-processing").mkdirs()
+        File(root, "mapping-storage-stats").mkdirs()
+        val report = MappingStorageSummary.measure(root, blockSize = 512L * 1024L)
+        assertEquals(512L * 1024L, report.totalBytes)
+    }
+
+    @Test
+    fun walkDoesNotFollowNestedSymlinks() {
+        val root = folder.root
+        val mission = File(root, "mapping-missions/m1")
+        mission.mkdirs()
+        File(mission, "a.bin").writeBytes(ByteArray(100))
+        File(root, "mapping-layers").mkdirs()
+        File(root, "mapping-processing").mkdirs()
+        File(root, "mapping-storage-stats").mkdirs()
+        val outside = folder.newFolder("outside")
+        File(outside, "big.bin").writeBytes(ByteArray(8_000))
+        java.nio.file.Files.createSymbolicLink(File(mission, "linked").toPath(), outside.toPath())
+        val report = MappingStorageSummary.measure(root, blockSize = 1L)
+        assertEquals(100L, report.totalBytes)
+
+        val working = folder.newFolder("working")
+        File(working, "real.bin").writeBytes(ByteArray(50))
+        java.nio.file.Files.createSymbolicLink(File(working, "jump").toPath(), outside.toPath())
+        val withWorking = MappingStorageSummary.measure(
+            filesDir = root,
+            blockSize = 1L,
+            workingCopyRoot = working,
+        )
+        assertEquals(50L, withWorking.workingCopyBytes)
+        assertEquals(100L, withWorking.totalBytes)
+    }
+
+    @Test
+    fun cacheHitLogsReasonCache() {
+        val root = folder.root
+        File(root, "mapping-missions").mkdirs()
+        File(root, "mapping-layers").mkdirs()
+        File(root, "mapping-processing").mkdirs()
+        File(root, "mapping-storage-stats").mkdirs()
+        val lines = mutableListOf<String>()
+        MappingStorageSummary.scanLogSink = { lines.add(it) }
+        try {
+            MappingStorageSummary.cachedOrRefresh(root, blockSize = 1L)
+            MappingStorageSummary.invalidate()
+            MappingStorageSummary.cachedOrRefresh(root, blockSize = 1L)
+            assertTrue(lines.any { it.contains("reason=cache") })
+        } finally {
+            MappingStorageSummary.scanLogSink = null
+        }
+    }
+
+    @Test
+    fun concurrentScansShareOneFlight() {
+        val root = folder.root
+        File(root, "mapping-missions").mkdirs()
+        File(root, "mapping-layers").mkdirs()
+        File(root, "mapping-processing").mkdirs()
+        File(root, "mapping-storage-stats").mkdirs()
+        val entered = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        val runs = java.util.concurrent.atomic.AtomicInteger()
+        MappingStorageSummary.beforeScan = {
+            runs.incrementAndGet()
+            entered.countDown()
+            release.await(10, java.util.concurrent.TimeUnit.SECONDS)
+        }
+        val results = java.util.Collections.synchronizedList(mutableListOf<MappingStorageSummary.Report>())
+        val errors = java.util.Collections.synchronizedList(mutableListOf<Throwable>())
+        val done = java.util.concurrent.CountDownLatch(2)
+        try {
+            repeat(2) {
+                Thread {
+                    try {
+                        results.add(MappingStorageSummary.cachedOrRefresh(root, blockSize = 1L))
+                    } catch (error: Throwable) {
+                        errors.add(error)
+                    } finally {
+                        done.countDown()
+                    }
+                }.start()
+            }
+            assertTrue(entered.await(10, java.util.concurrent.TimeUnit.SECONDS))
+            Thread.sleep(50)
+            assertEquals(1, runs.get())
+            release.countDown()
+            assertTrue(done.await(10, java.util.concurrent.TimeUnit.SECONDS))
+            assertTrue(errors.toString(), errors.isEmpty())
+            assertEquals(2, results.size)
+        } finally {
+            MappingStorageSummary.beforeScan = null
+            release.countDown()
+        }
+    }
 }
