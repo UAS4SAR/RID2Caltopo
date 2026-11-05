@@ -126,6 +126,9 @@ object FlightStorage {
     private var checkQueued = false
     private var forceQueued = false
     private var fileSizes = mutableMapOf<String, Long>()
+    private var lastRead: Snapshot? = null
+    private var lastReadAt = 0L
+    private const val READ_TTL_MS = 15_000L
     val pressure = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
     @JvmStatic fun observe(context: Context, callback: Runnable) {
         synchronized(stateLock) { listener = callback }
@@ -554,8 +557,17 @@ object FlightStorage {
         requestCheck(context)
         snapshot
     }
+    fun peekSnapshot(): Snapshot? = synchronized(stateLock) { lastRead }
     fun snapshot(context: Context, cancelled: () -> Unit = {}): Snapshot = storageMetadata(context) {
-        scanOnWorker(context, false, 0, cancelled)
+        synchronized(lock) {
+            val recent = lastRead
+            val age = android.os.SystemClock.elapsedRealtime() - lastReadAt
+            if (recent != null && age in 0..READ_TTL_MS) {
+                CaltopoClient.CTDebug("FlightStorage", "Sized flights reason=cache elapsedMs=0")
+                return@synchronized recent
+            }
+            scanOnWorker(context, false, 0, cancelled)
+        }
     }
     private fun scan(context: Context, purge: Boolean, reserving: Long = 0): Snapshot = storageIo(context) {
         scanOnWorker(context, purge, reserving)
@@ -617,6 +629,7 @@ object FlightStorage {
             archiveWriteFailed = recordingArchiveWriteFailed,
         )
         val result = Snapshot(used, auxiliary.filter { it.exists() }.sumOf { it.length() }, failures, issue, archiveReady, deviceAvailable, preparing)
+        synchronized(stateLock) { lastRead = result; lastReadAt = android.os.SystemClock.elapsedRealtime() }
         val blocked = result.blocked
         if (purge || seedEstimate) synchronized(stateLock) {
             val wasBlocked = captureBlocked
@@ -629,7 +642,7 @@ object FlightStorage {
             } else pressure.value = null
             lastIssue = issue
         }
-        CaltopoClient.CTDebug("FlightStorage", "Sized flights purge=$purge days=${folders.size} files=${folders.sumOf { it.fileSizes.size }} preparing=$preparing elapsedMs=${android.os.SystemClock.elapsedRealtime() - started}")
+        CaltopoClient.CTDebug("FlightStorage", "Sized flights purge=$purge days=${folders.size} files=${folders.sumOf { it.fileSizes.size }} preparing=$preparing reason=${if (purge) "stale" else "cold"} elapsedMs=${android.os.SystemClock.elapsedRealtime() - started}")
         return result
     }
     /** Read-only sizing must not queue behind migration, hashing, hydration or retention cleanup. */

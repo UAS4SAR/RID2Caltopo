@@ -16,7 +16,6 @@ import java.util.concurrent.atomic.AtomicLong
 
 private object SafCacheIndexDatabaseHolder {
     private const val DB_DIR = "map_cache"
-    private const val DB_NAME = "saf_cache_index.db"
     private const val OPEN_RETRY_COUNT = 3
     private const val OPEN_RETRY_DELAY_MS = 50L
     private val lock = Any()
@@ -35,9 +34,8 @@ private object SafCacheIndexDatabaseHolder {
     }
 
     private fun openDatabaseWithRetry(context: Context): SQLiteDatabase {
-        val dbDir = org.ncssar.rid2caltopo.storage.TemporaryStorage.directory(context, "map-cache-index")
-        if (!dbDir.exists()) dbDir.mkdirs()
-        val dbFile = File(dbDir, DB_NAME)
+        val dbFile = TileCacheIndexStamp.databaseFile(context.filesDir)
+        dbFile.parentFile?.mkdirs()
         var lastError: SQLiteDatabaseLockedException? = null
         repeat(OPEN_RETRY_COUNT) { attempt ->
             try {
@@ -139,6 +137,7 @@ internal class SafBlobCacheStore(
                 namespaceFileIndex?.set(relativePath, target)
                 bytesUsedAtomic.set(bytesUsedLocked())
             }
+            publishStamp()
             MapCacheDebug.log("saf put ns=$namespace key=$cacheKey bytes=${bytes.size} uri=${target.uri}")
         }
     }
@@ -213,7 +212,7 @@ internal class SafBlobCacheStore(
 
     override fun remove(cacheKey: String): Boolean {
         val gate = keyGate(cacheKey)
-        synchronized(gate) {
+        return synchronized(gate) {
             val row = synchronized(dbLock) { queryRow(cacheKey) } ?: return false
             try {
                 val file = DocumentFile.fromSingleUri(appContext, Uri.parse(row.fileUri))
@@ -230,8 +229,8 @@ internal class SafBlobCacheStore(
                 namespaceFileIndex?.remove(row.fileName)
                 namespaceFileIndex?.remove(legacyFileNameForKey(cacheKey))
                 if (deleted > 0) bytesUsedAtomic.set(bytesUsedLocked())
-                return deleted > 0
-            }
+                deleted > 0
+            }.also { publishStamp() }
         }
     }
 
@@ -242,6 +241,7 @@ internal class SafBlobCacheStore(
             namespaceFileIndex?.clear()
             bytesUsedAtomic.set(0L)
         }
+        publishStamp()
         // Filesystem wipe outside dbLock.
         nsDir?.listFiles()?.forEach { deleteRecursively(it) }
     }
@@ -287,6 +287,19 @@ internal class SafBlobCacheStore(
             if (prewarmed) return
             val startedMs = System.currentTimeMillis()
             MapCacheDebug.debug(MapCacheDebug.TAG_TILE, "cache index start ns=$namespace")
+            val live = synchronized(dbLock) {
+                TileCacheIndexStamp.Value(entryCountLocked(), bytesUsedLocked())
+            }
+            val saved = TileCacheIndexStamp.read(TileCacheIndexStamp.stampFile(appContext.filesDir))[namespace]
+            if (TileCacheIndexStamp.matches(saved, live)) {
+                bytesUsedAtomic.set(live.bytes)
+                prewarmed = true
+                MapCacheDebug.debug(
+                    MapCacheDebug.TAG_TILE,
+                    "cache index ready ns=$namespace files=${live.count} reason=cache elapsedMs=${System.currentTimeMillis() - startedMs}",
+                )
+                return
+            }
             val nsDir = getNamespaceDir()
             if (nsDir == null) {
                 MapCacheDebug.log("saf prewarm ns=$namespace skipped(no namespace dir)")
@@ -298,8 +311,9 @@ internal class SafBlobCacheStore(
             val reused = tryLoadIndexFromDatabaseLocked()
             if (reused != null) {
                 prewarmed = true
+                publishStamp()
                 MapCacheDebug.debug(MapCacheDebug.TAG_TILE,
-                    "cache index ready ns=$namespace files=${reused} reused=1 elapsedMs=${System.currentTimeMillis() - startedMs}")
+                    "cache index ready ns=$namespace files=${reused} reason=stale elapsedMs=${System.currentTimeMillis() - startedMs}")
                 return
             }
             val sizes = HashMap<String, Long>()
@@ -321,8 +335,9 @@ internal class SafBlobCacheStore(
                 MapCacheDebug.log("saf prewarm ns=$namespace ready files=${namespaceFileIndex?.size ?: 0}")
             }
             prewarmed = true
+            publishStamp()
             MapCacheDebug.debug(MapCacheDebug.TAG_TILE,
-                "cache index ready ns=$namespace files=${fileIndex.size} reused=0 elapsedMs=${System.currentTimeMillis() - startedMs}")
+                "cache index ready ns=$namespace files=${fileIndex.size} reason=cold elapsedMs=${System.currentTimeMillis() - startedMs}")
         }
     }
 
@@ -498,6 +513,26 @@ internal class SafBlobCacheStore(
             bytesFreed = bytesFreed,
             bytesRemaining = remaining
         )
+    }
+
+    private fun entryCountLocked(): Long {
+        val cursor = db.rawQuery(
+            "SELECT COUNT(*) FROM saf_entries WHERE namespace = ?",
+            arrayOf(storageNamespace),
+        )
+        cursor.use {
+            if (!it.moveToFirst()) return 0L
+            return it.getLong(0)
+        }
+    }
+
+    private fun publishStamp() {
+        val live = synchronized(dbLock) {
+            TileCacheIndexStamp.Value(entryCountLocked(), bytesUsedLocked())
+        }
+        runCatching {
+            TileCacheIndexStamp.update(TileCacheIndexStamp.stampFile(appContext.filesDir), namespace, live)
+        }
     }
 
     private fun bytesUsedLocked(): Long {

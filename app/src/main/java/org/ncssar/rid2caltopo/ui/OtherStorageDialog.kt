@@ -51,12 +51,15 @@ internal fun OtherStorageDialog(onBrowseArchive: () -> Unit, onDismiss: () -> Un
         }) { Text(if (busy) "Clearing…" else "Clear") } }, dismissButton = { StorageActionButton(enabled = !busy, onClick = { pending = null }) { Text("Cancel") } })
         return
     }
-    AlertDialog(onDismissRequest = onDismiss, title = { Text("Other Storage") }, text = {
+    AlertDialog(onDismissRequest = onDismiss, title = { Text("Other") }, text = {
         Column(Modifier.heightIn(max = 560.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             StorageActionButton(enabled = !state.busy, onClick = { result = ""; pending = "downloaded support data" }) { Text("Clear Downloaded Support Data") }
             StorageActionButton(enabled = !state.busy, onClick = { result = ""; pending = "unused temporary files" }) { Text("Clear Unused Temporary Files") }
             StorageActionButton(enabled = !state.busy, onClick = { result = ""; pending = "abandoned recovery copies" }) { Text("Clear Abandoned Recovery Copies") }
             StorageActionButton(onClick = onBrowseArchive) { Text("Browse Other Archive Files") }
+            var breakdownRefresh by remember { mutableIntStateOf(0) }
+            StorageBreakdown(breakdownRefresh)
+            StorageActionButton(onClick = { breakdownRefresh++ }) { Text("Refresh storage breakdown") }
             if (!state.ready) StorageActionButton(enabled = !state.busy, onClick = { OperationalStorage.retry(context) }) { Text("Retry Archive Preparation") }
             if (state.message.isNotEmpty()) Text(state.message)
             if (result.isNotEmpty()) Text(result)

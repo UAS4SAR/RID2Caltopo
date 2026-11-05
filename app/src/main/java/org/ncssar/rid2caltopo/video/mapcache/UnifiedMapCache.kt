@@ -24,6 +24,7 @@ internal object UnifiedMapCache {
     private var reserved = 0L
     @Volatile var generation = 0L; private set
     @Volatile var blocked = false; private set
+    @Volatile private var lastUsage: MapCacheUsage? = null
 
     fun register(id: String, namespace: String, store: BlobCacheStore) {
         stores[id] = Store(namespace, store)
@@ -66,14 +67,18 @@ internal object UnifiedMapCache {
     fun usage(context: Context): MapCacheUsage = synchronized(lock) {
         initialize(context)
         fun isAol(path: String, entry: Entry) = path.contains("/surface_v1/") || path.contains("surface_v1%2F", true) || entry.name.startsWith("surface_v1/")
-        MapCacheUsage(
+        val value = MapCacheUsage(
             stores.values.filter { it.namespace.startsWith("tile_") }.sumOf { it.cache.snapshot().bytesUsed },
             files.filter { (path, entry) -> entry.terrain && !isAol(path, entry) }.values.sumOf { it.bytes },
             files.filter { (path, entry) -> !entry.terrain && !isAol(path, entry) }.values.sumOf { it.bytes },
             stores.values.filter { !it.namespace.startsWith("tile_") }.sumOf { it.cache.snapshot().bytesUsed }, reserved,
             files.filter { (path, entry) -> isAol(path, entry) }.values.sumOf { it.bytes }
         )
+        lastUsage = value
+        value
     }
+
+    fun peekUsage(): MapCacheUsage? = lastUsage
 
     fun touchTerrain(name: String) = synchronized(lock) { touched[name] = System.currentTimeMillis() }
 

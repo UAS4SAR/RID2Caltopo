@@ -180,6 +180,38 @@ class MappingStorageSummaryTest {
     }
 
     @Test
+    fun workingCopyUsesItsOwnBlockSize() {
+        val root = folder.newFolder("files-block")
+        val archive = folder.newFolder("archive-block")
+        val working = folder.newFolder("work-block")
+        val missionId = "2e30e0b4-0000-4000-8000-000000000009"
+        File(root, "mapping-missions/$missionId").mkdirs()
+        File(root, "mapping-layers").mkdirs()
+        File(root, "mapping-processing").mkdirs()
+        File(root, "mapping-storage-stats").mkdirs()
+        File(archive, "mapping/missions/$missionId/originals/a.jpg").apply {
+            parentFile!!.mkdirs()
+            writeBytes(ByteArray(1_000))
+        }
+        File(archive, "mapping/layers").mkdirs()
+        File(archive, "mapping/processing").mkdirs()
+        File(archive, "mapping/stats").mkdirs()
+        File(working, "missions/$missionId/originals/a.jpg").apply {
+            parentFile!!.mkdirs()
+            writeBytes(ByteArray(2_000))
+        }
+        val report = MappingStorageSummary.measure(
+            filesDir = root,
+            blockSize = 1L,
+            archiveRoots = MappingStorageSummary.fileArchiveRoots(archive),
+            workingCopyRoot = working,
+            workingBlockSize = 4096L,
+        )
+        assertEquals(1_000L, report.totalBytes)
+        assertEquals(4_096L, report.workingCopyBytes)
+    }
+
+    @Test
     fun incrementalRescanOnlyChangedProject() {
         val root = folder.root
         val a = "aaaaaaaa-0000-4000-8000-000000000001"

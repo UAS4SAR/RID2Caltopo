@@ -931,7 +931,7 @@ struct AppleArchiveCleanupView: View {
                     .foregroundStyle(.secondary)
             }
         }
-        .navigationTitle("Delete Flight Storage")
+        .navigationTitle("Flight Storage")
         .task { await loadDirectories() }
         .refreshable { await loadDirectories() }
         .confirmationDialog(
@@ -1211,12 +1211,16 @@ struct AppleStorageManagementView: View {
             NavigationLink {
                 AppleStorageCacheView(manager: maps)
             } label: {
-                Text("Map Cache Management... — used \(maps.cacheStatsReady ? gb(maps.cacheStats.bytes) : "Scanning…") / maximum \(gb(Int64(maps.maximumCacheGB * 1_000_000_000)))")
+                Text("Map Cache — used \(maps.cacheStatsReady ? decimalStorageGb(maps.cacheStats.bytes) : "Scanning…") / maximum \(decimalStorageGb(Int64(maps.maximumCacheGB * 1_000_000_000)))")
+                    .accessibilityIdentifier("manage-storage-map-cache")
+                    .accessibilityLabel("Map Cache")
             }
             NavigationLink {
                 AppleArchiveCleanupView(trackModel: trackModel)
             } label: {
-                Text("Flight Storage: \(used.map(gb) ?? "Scanning…"), Max Size: \(gb(AppleFlightStorage.maximumBytes)), Max Age: \(AppleFlightStorage.maximumDays) days")
+                Text("Flight Storage — used \(used.map(decimalStorageGb) ?? "Scanning…") / maximum \(decimalStorageGb(AppleFlightStorage.maximumBytes)) / \(AppleFlightStorage.maximumDays) days")
+                    .accessibilityIdentifier("manage-storage-flight")
+                    .accessibilityLabel("Flight Storage")
             }
             NavigationLink {
                 AppleMappingStorageView()
@@ -1224,10 +1228,10 @@ struct AppleStorageManagementView: View {
                 Text(localMapsLabel).accessibilityLabel(localMapsLabel)
             }
             .accessibilityIdentifier("manage-storage-local-maps")
-            NavigationLink("Storage Categories...") { AppleStorageCategoriesView(trackModel: trackModel) }
-            NavigationLink("Other Storage...") { AppleOtherStorageView() }
+            NavigationLink("Other") { AppleOtherStorageView() }
+                .accessibilityIdentifier("manage-storage-other")
             if let free {
-                Text("Storage free now: \(gb(free))")
+                Text("Storage free now: \(decimalStorageGb(free))")
                 if let used, maps.cacheStatsReady {
                     AppleStorageAllowanceRows(value: StorageAllocation(freeBytes: free, cacheUsed: maps.cacheStats.bytes, cacheMaximum: Int64(maps.maximumCacheGB * 1_000_000_000), flightUsed: used, flightMaximum: AppleFlightStorage.maximumBytes))
                 }
@@ -1248,9 +1252,8 @@ struct AppleStorageManagementView: View {
         }
     }
     private var localMapsLabel: String {
-        "Local Maps\(mappingBytes.map { " — \(!mappingComplete ? "at least " : "")\(gb($0))" } ?? " — scanning…")"
+        "Local Maps\(mappingBytes.map { " — \(!mappingComplete ? "at least " : "")\(decimalStorageGb($0))" } ?? " — scanning…")"
     }
-    private func gb(_ bytes: Int64) -> String { String(format: "%.2f GB", Double(bytes) / 1_000_000_000) }
 }
 
 /// Manage Storage → Local Maps. Project sizes stay above the mission list (sort, distance, new flight, view, connect, delete).
@@ -1258,7 +1261,6 @@ struct AppleMappingStorageView: View {
     @ObservedObject private var model = AppleLocalMappingModel.shared
     @State private var summary: MappingStorageSummary.Report?
     @State private var totalBytes: Int64 = 0
-    @State private var workingCopyBytes: Int64 = 0
     @State private var complete = true
     @State private var error = ""
     @State private var refreshing = false
@@ -1272,13 +1274,6 @@ struct AppleMappingStorageView: View {
                 Text("Archive on-card size. Projects, originals, map layers and processing checkpoints. Not deleted by map cache cleanup.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
-                if workingCopyBytes > 0 {
-                    LabeledContent(
-                        "Working copy",
-                        value: "\(AppleMapOfflineManager.formatBytes(workingCopyBytes)) (local projection; not part of archive total)"
-                    )
-                    .accessibilityIdentifier("mapping-storage-working-copy")
-                }
                 if let summary {
                     ForEach(summary.projects) { project in
                         LabeledContent(project.name, value: projectSizeLabel(project))
@@ -1312,7 +1307,7 @@ struct AppleMappingStorageView: View {
                 if !error.isEmpty { Text(error).foregroundStyle(.red).font(.footnote) }
             }
             .padding()
-            AppleLocalMappingView(incidentID: "", title: "Local Maps")
+            AppleLocalMappingView(incidentID: "", title: "Local Maps", periodicRefresh: false)
         }
         .navigationTitle("Local Maps")
         .accessibilityIdentifier("local-maps-panel")
@@ -1321,26 +1316,23 @@ struct AppleMappingStorageView: View {
             if let cached = MappingStorageSummary.peekMemory() {
                 summary = cached
                 totalBytes = cached.totalBytes
-                workingCopyBytes = cached.workingCopyBytes
                 complete = cached.complete
             } else {
                 // First open: show project rows immediately with calculating… sizes.
                 if let placeholders = try? await AppleMappingStorageReader.shared.placeholders() {
                     summary = placeholders
                     totalBytes = 0
-                    workingCopyBytes = 0
                     complete = false
                 }
                 refreshing = true
             }
-            // Cheap stamp check; full rescan only when artifacts changed (not force every open).
-            model.refresh(incident: "", newest: true, force: false)
+            // Cheap stamp check only. Library refresh stays on the mission list, and not while heavy storage work is running.
+            guard !MappingStorageGate.heavyBusy() else { return }
             do {
                 if summary?.projects.contains(where: \.sized) == true { refreshing = true }
                 let report = try await AppleMappingStorageReader.shared.read(force: false)
                 summary = report
                 totalBytes = report.totalBytes
-                workingCopyBytes = report.workingCopyBytes
                 complete = report.complete
                 error = ""
                 needsRescan = false
@@ -1361,7 +1353,6 @@ struct AppleMappingStorageView: View {
                     if let report = try? await AppleMappingStorageReader.shared.read(force: true) {
                         summary = report
                         totalBytes = report.totalBytes
-                        workingCopyBytes = report.workingCopyBytes
                         complete = report.complete
                     }
                     refreshing = false
@@ -1427,6 +1418,16 @@ private actor AppleMappingStorageReader {
     func read(force: Bool = false) async throws -> MappingStorageSummary.Report {
         try Task.checkCancellation()
         let roots = roots()
+        if !force, MappingStorageGate.heavyBusy() {
+            if let cached = MappingStorageSummary.loadCached(roots: roots) {
+                var hit = cached
+                hit.scanReason = "cache"
+                hit.scanElapsedMs = 0
+                AppleLog.debug("MappingStorage", MappingStorageSummary.scanLogLine(hit))
+                return hit
+            }
+            return MappingStorageSummary.projectPlaceholders(roots: roots, projects: await projectLines())
+        }
         if !force, let cached = MappingStorageSummary.loadCached(roots: roots),
            MappingStorageSummary.isFresh(cached, current: roots.stamp()) {
             var hit = cached
@@ -1468,36 +1469,61 @@ private actor AppleStorageCategoryReader {
     }
 }
 
-private struct AppleStorageCategoriesView: View {
-    @ObservedObject var trackModel: RIDTrackViewModel
+private actor AppleStorageCategoryCache {
+    static let shared = AppleStorageCategoryCache()
+    private var report: StorageCategoryReport?
+    private var storedAt: Date?
+    func peek() -> StorageCategoryReport? {
+        guard let report, let storedAt, Date().timeIntervalSince(storedAt) < 60 else { return nil }
+        return report
+    }
+    func read(force: Bool) async throws -> StorageCategoryReport {
+        if !force, let hit = peek() {
+            AppleLog.debug("StorageCategories", "breakdown reason=cache elapsedMs=0")
+            return hit
+        }
+        let started = Date()
+        let value = try await AppleStorageCategoryReader.shared.read()
+        report = value
+        storedAt = Date()
+        AppleLog.debug("StorageCategories", "breakdown reason=\(force ? "stale" : "cold") elapsedMs=\(Int(Date().timeIntervalSince(started) * 1000))")
+        return value
+    }
+}
+
+private struct AppleStorageBreakdown: View {
     @State private var report: StorageCategoryReport?
     @State private var error = ""
+    @State private var scanning = false
     var body: some View {
-        List {
+        Section("Storage breakdown") {
             if let report {
-                Section("Storage used") {
-                    ForEach(StorageCategory.allCases, id: \.self) { category in
-                        LabeledContent(category.rawValue, value: AppleMapOfflineManager.formatBytes(report.bytes[category, default: 0]))
-                    }
-                    LabeledContent("Total reported", value: AppleMapOfflineManager.formatBytes(report.total))
-                    if !report.complete { Text("Some storage is unavailable; these figures are incomplete.") }
+                ForEach(StorageCategory.allCases, id: \.self) { category in
+                    LabeledContent(category.rawValue, value: decimalStorageGb(report.bytes[category, default: 0]))
                 }
-            } else if error.isEmpty { ProgressView("Scanning storage…") }
-            if !error.isEmpty { Text(error).foregroundStyle(.red) }
-            Section("Manage") {
-                NavigationLink("Map Cache Management...") { AppleStorageCacheView(manager: .shared) }
-                NavigationLink("Flight Storage") { AppleArchiveCleanupView(trackModel: trackModel) }
-                NavigationLink("Local Maps") { AppleMappingStorageView() }
-                    .accessibilityIdentifier("storage-categories-local-maps")
-                    .accessibilityLabel("Local Maps")
-                NavigationLink("Other Storage...") { AppleOtherStorageView() }
-                Text("Temporary files include current working copies and exports. Settings and saved sign-in data remain persistent.").font(.footnote)
+                LabeledContent("Total reported", value: decimalStorageGb(report.total))
+                if !report.complete { Text("Some storage is unavailable; these figures are incomplete.") }
+            } else {
+                LabeledContent("Map Cache", value: AppleMapOfflineManager.shared.cacheStatsReady ? decimalStorageGb(AppleMapOfflineManager.shared.cacheStats.bytes) : "scanning…")
+                LabeledContent("Local Maps", value: MappingStorageSummary.peekMemory().map { decimalStorageGb($0.totalBytes) } ?? "scanning…")
             }
-        }.navigationTitle("Storage Categories")
-        .task {
-            do { report = try await AppleStorageCategoryReader.shared.read() }
-            catch is CancellationError {} catch { self.error = error.localizedDescription }
+            if scanning { ProgressView("Scanning storage…") }
+            if !error.isEmpty { Text(error).foregroundStyle(.red) }
+            Text("Temporary files include current working copies and exports. Settings and saved sign-in data remain persistent.").font(.footnote)
         }
+        .task {
+            if let cached = await AppleStorageCategoryCache.shared.peek() { report = cached; return }
+            let known = AppleMapOfflineManager.shared.cacheStatsReady || MappingStorageSummary.peekMemory() != nil
+            if known { return }
+            await refresh(force: false)
+        }
+        .refreshable { await refresh(force: true) }
+    }
+    private func refresh(force: Bool) async {
+        scanning = true
+        defer { scanning = false }
+        do { report = try await AppleStorageCategoryCache.shared.read(force: force); error = "" }
+        catch is CancellationError {} catch let failure { error = failure.localizedDescription }
     }
 }
 
@@ -1556,10 +1582,11 @@ private struct AppleOtherStorageView: View {
                 }
             }.disabled(busy)
             NavigationLink("Browse Other Archive Files") { AppleOtherArchiveFilesView(directory: AppleOtherStorageWorker.documents) }
+            AppleStorageBreakdown()
             Text("Use Local Maps for saved projects and results, and Flight Storage for recordings, clue pictures and logs.").font(.footnote)
             if busy { ProgressView() }
             if !message.isEmpty { Text(message) }
-        }.navigationTitle("Other Storage")
+        }.navigationTitle("Other")
         .alert("Clear downloaded support data?", isPresented: $confirmSupport) {
             Button("Cancel", role: .cancel) {}
             Button("Clear", role: .destructive) {
@@ -1621,7 +1648,7 @@ private struct AppleOtherArchiveFilesView: View {
 
 struct AppleStorageAllowanceRows: View {
     let value: StorageAllocation
-    private func gb(_ bytes: Int64) -> String { String(format: "%.2f GB", Double(bytes) / 1_000_000_000) }
+    private func gb(_ bytes: Int64) -> String { decimalStorageGb(bytes) }
     var body: some View {
         LabeledContent("Unused cache allowance", value: gb(value.remainingCache))
         LabeledContent("Unused flight allowance", value: gb(value.remainingFlight))

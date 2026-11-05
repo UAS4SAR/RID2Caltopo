@@ -1,6 +1,10 @@
 import Darwin
 import Foundation
 
+public enum MappingStorageGate {
+    nonisolated(unsafe) public static var heavyBusy: @Sendable () -> Bool = { false }
+}
+
 /// Persisted Manage Storage → Local Maps pane sizes. Survives restarts.
 ///
 /// Change detection stamps real artifacts only (per-mission / per-layer child
@@ -368,6 +372,7 @@ public enum MappingStorageSummary {
         blockSize: Int64? = nil,
         archiveRoots: Roots? = nil,
         workingCopyRoot: URL? = nil,
+        workingBlockSize: Int64? = nil,
         reason: String = "full",
         log: (String) -> Void = { _ in }
     ) throws -> Report {
@@ -376,6 +381,8 @@ public enum MappingStorageSummary {
         // Explicit blockSize (tests) forces block-rounding; nil uses on-disk allocated size.
         let preferDiskAllocated = blockSize == nil
         let resolvedBlock = blockSize ?? MappingStorageSummary.blockSize(for: roots.missions)
+        let workingResolved = workingBlockSize ?? resolvedBlock
+        let workingPreferDisk = workingBlockSize == nil && blockSize == nil
         let stamp = roots.stamp()
         let measureRoots = archiveRoots ?? roots
         let previousById = Dictionary(uniqueKeysWithValues: (previous?.projects ?? []).map { ($0.id, $0) })
@@ -397,6 +404,26 @@ public enum MappingStorageSummary {
             let sized = sizeOfFile(file)
             logicalAcc += sized.logical
             return sized.allocated
+        }
+
+        func workingTreeBytes(_ root: URL) -> Int64 {
+            let fm = FileManager.default
+            guard let enumerator = fm.enumerator(
+                at: root,
+                includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey, .totalFileAllocatedSizeKey]
+            ) else { return 0 }
+            var total: Int64 = 0
+            while let url = enumerator.nextObject() as? URL {
+                guard let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey, .totalFileAllocatedSizeKey]),
+                      values.isRegularFile == true, values.isSymbolicLink != true else { continue }
+                let logical = Int64(values.fileSize ?? 0)
+                if workingPreferDisk, let allocated = values.totalFileAllocatedSize, allocated > 0 {
+                    total += Int64(allocated)
+                } else {
+                    total += allocatedBytes(logical: logical, blockSize: workingResolved)
+                }
+            }
+            return total
         }
 
         func isSymlink(_ url: URL) -> Bool {
@@ -531,6 +558,9 @@ public enum MappingStorageSummary {
             return layerId
         })
         var sharedLayersBytes: Int64 = 0
+        if let previous, layersUnchanged(stamp, previous.stamp), rescanned >= 0, previousStamp != nil {
+            sharedLayersBytes = previous.sharedLayersBytes
+        } else {
         let layerChildren = ((try? FileManager.default.contentsOfDirectory(
             at: measureRoots.layers,
             includingPropertiesForKeys: [.isDirectoryKey],
@@ -548,10 +578,16 @@ public enum MappingStorageSummary {
                 sharedLayersBytes += fileAlloc(child)
             }
         }
+        }
 
-        let processingWalk = walkFileTree(measureRoots.processing)
-        if !processingWalk.complete { complete = false }
-        let processingBytes = processingWalk.allocated
+        let processingBytes: Int64
+        if let previous, previous.stamp.processing == stamp.processing {
+            processingBytes = previous.processingBytes
+        } else {
+            let processingWalk = walkFileTree(measureRoots.processing)
+            if !processingWalk.complete { complete = false }
+            processingBytes = processingWalk.allocated
+        }
 
         var statsBytes: Int64 = 0
         let statsChildren = ((try? FileManager.default.contentsOfDirectory(
@@ -573,12 +609,13 @@ public enum MappingStorageSummary {
         let projectSum = projectLines.reduce(Int64(0)) { $0 + $1.bytes }
         let totalBytes = projectSum + sharedLayersBytes + processingBytes + statsBytes + otherBytes
 
-        // iOS typically has no operational-work dual store. Only measure when a distinct
-        // workingCopyRoot is supplied; never mutate that tree.
         let workingCopyBytes: Int64
         if let workingCopyRoot {
-            let walked = walkFileTree(workingCopyRoot)
-            workingCopyBytes = walked.allocated
+            if let previous, rescanned == 0, previous.stamp.processing == stamp.processing {
+                workingCopyBytes = previous.workingCopyBytes
+            } else {
+                workingCopyBytes = workingTreeBytes(workingCopyRoot)
+            }
         } else {
             workingCopyBytes = 0
         }
@@ -604,6 +641,13 @@ public enum MappingStorageSummary {
         return report
     }
 
+    private static func layersUnchanged(_ stamp: Stamp, _ previous: Stamp) -> Bool {
+        let keys = Set(stamp.projects.keys.filter { $0.hasPrefix("layer:") })
+        let prior = Set(previous.projects.keys.filter { $0.hasPrefix("layer:") })
+        guard keys == prior else { return false }
+        return keys.allSatisfy { stamp.projects[$0] == previous.projects[$0] }
+    }
+
     public static func cachedOrRefresh(
         roots: Roots,
         projects: [ProjectLine] = [],
@@ -615,6 +659,16 @@ public enum MappingStorageSummary {
         log: (String) -> Void = { _ in }
     ) throws -> Report {
         precondition(!Thread.isMainThread)
+        if !force, MappingStorageGate.heavyBusy() {
+            if let cached = loadCached(roots: roots) {
+                var hit = cached
+                hit.scanReason = "cache"
+                hit.scanElapsedMs = 0
+                log(scanLogLine(hit))
+                return hit
+            }
+            return projectPlaceholders(roots: roots, projects: projects)
+        }
         let current = roots.stamp()
         let cached = loadCached(roots: roots)
         if !force, let cached, isFresh(cached, current: current) {
@@ -637,6 +691,7 @@ public enum MappingStorageSummary {
                 blockSize: blockSize,
                 archiveRoots: archiveRoots,
                 workingCopyRoot: workingCopyRoot,
+                workingBlockSize: blockSize == nil ? workingCopyRoot.map { MappingStorageSummary.blockSize(for: $0) } : blockSize,
                 reason: reason,
                 log: log
             )

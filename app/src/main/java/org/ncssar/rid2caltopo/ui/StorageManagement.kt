@@ -37,19 +37,21 @@ internal fun StorageManagementDialog(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var flight by remember { mutableStateOf<FlightStorage.Snapshot?>(null) }
-    var mapBytes by remember { mutableStateOf<Long?>(null) }
+    var mapBytes by remember { mutableStateOf(UnifiedMapCache.peekUsage()?.total) }
     var archiveFree by remember { mutableStateOf<Long?>(null) }
-    var cacheMaximum by remember { mutableStateOf<Long?>(null) }
-    var flightMaximum by remember { mutableStateOf<Long?>(null) }
+    var cacheMaximum by remember { mutableStateOf(MapCacheSettings.maxCacheBytes(context)) }
+    var flightMaximum by remember { mutableStateOf(FlightStorage.maximumBytes(context)) }
+    var flightDays by remember { mutableStateOf(FlightStorage.maximumDays(context)) }
     var cacheSnapshot by remember { mutableStateOf<MapStorageSnapshot?>(null) }
     var loadingCache by remember { mutableStateOf(false) }
     var cacheError by remember { mutableStateOf("") }
     var flightError by remember { mutableStateOf("") }
-    var categories by remember { mutableStateOf(false) }
     var mapping by remember { mutableStateOf(false) }
     var other by remember { mutableStateOf(false) }
     var browseOther by remember { mutableStateOf(false) }
-    var mappingBytes by remember { mutableStateOf<Long?>(null) }
+    var mappingBytes by remember {
+        mutableStateOf(org.ncssar.rid2caltopo.mapping.MappingStorageSummary.peekMemory()?.totalBytes)
+    }
     var mappingComplete by remember { mutableStateOf(true) }
     var mappingError by remember { mutableStateOf("") }
     val storageState by org.ncssar.rid2caltopo.storage.OperationalStorage.status.collectAsState()
@@ -71,12 +73,6 @@ internal fun StorageManagementDialog(
                 onDismiss()
             }
         })
-        return
-    }
-    if (categories) {
-        StorageCategoriesDialog(onCache = { categories = false; loadingCache = true }, onFlight = onFlight,
-            onMaps = { categories = false; mapping = true }, onAdditional = { categories = false; other = true },
-            onDismiss = { categories = false })
         return
     }
     cacheSnapshot?.let { snapshot ->
@@ -102,7 +98,7 @@ internal fun StorageManagementDialog(
             val current = currentCoroutineContext()
             FlightStorage.snapshot(context) { current.ensureActive() } to FlightStorage.maximumBytes(context)
         }
-          flight = snapshot; flightMaximum = maximum
+          flight = snapshot; flightMaximum = maximum; flightDays = FlightStorage.maximumDays(context)
           archiveFree = withContext(Dispatchers.IO) { org.ncssar.rid2caltopo.video.queryAvailableArchiveBytes(context) }
         } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
         catch (error: Exception) { flightError = error.message ?: "Flight storage is unavailable. Reconnect Archive Dir and retry." }
@@ -110,7 +106,6 @@ internal fun StorageManagementDialog(
     LaunchedEffect(Unit) {
         try {
             val (used, maximum) = withContext(Dispatchers.IO) {
-                org.ncssar.rid2caltopo.storage.OperationalStorage.tryRequireReady(context)
                 UnifiedMapCache.usage(context).total to MapCacheSettings.maxCacheBytes(context)
             }
             mapBytes = used; cacheMaximum = maximum
@@ -129,14 +124,21 @@ internal fun StorageManagementDialog(
         Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             if (storageState.busy) { CircularProgressIndicator(Modifier.size(20.dp)); Text(storageState.message) }
             StorageActionButton(enabled = !loadingCache, onClick = { cacheError = ""; loadingCache = true }) {
-                Text("Map Cache Management...${mapBytes?.let { " — used ${MapCacheSettings.formatDecimalGb(it)} / maximum ${MapCacheSettings.formatDecimalGb(cacheMaximum ?: 0)}" } ?: " — scanning…"}")
+                Text("Map Cache${mapBytes?.let { " — used ${MapCacheSettings.formatDecimalGb(it)} / maximum ${MapCacheSettings.formatDecimalGb(cacheMaximum)}" } ?: " — scanning…"}",
+                    modifier = Modifier.testTag("manage-storage-map-cache").semantics { contentDescription = "Map Cache" })
             }
             if (loadingCache) Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
                 Text("Scanning storage…")
             }
             if (cacheError.isNotEmpty()) Text(cacheError, color = MaterialTheme.colorScheme.error)
-            StorageActionButton(onClick = onFlight) { Text("Flight Storage${flight?.let { " — ${if (it.preparingWorkingCopies) "measured so far" else "used"} ${MapCacheSettings.formatDecimalGb(it.used)} / maximum ${MapCacheSettings.formatDecimalGb(flightMaximum ?: 0)}" } ?: if (flightError.isNotEmpty()) " — unavailable" else " — scanning…"}") }
+            StorageActionButton(onClick = onFlight) {
+                val flightLabel = flight?.let {
+                    val measured = if (it.preparingWorkingCopies) "measured so far" else "used"
+                    "Flight Storage — $measured ${MapCacheSettings.formatDecimalGb(it.used)} / maximum ${MapCacheSettings.formatDecimalGb(flightMaximum)} / ${flightDays} days"
+                } ?: if (flightError.isNotEmpty()) "Flight Storage — unavailable" else "Flight Storage — scanning…"
+                Text(flightLabel, modifier = Modifier.testTag("manage-storage-flight").semantics { contentDescription = "Flight Storage" })
+            }
             if (flightError.isNotEmpty()) Text(flightError, color = MaterialTheme.colorScheme.error)
             StorageActionButton(onClick = { mapping = true }) {
                 val localMapsLabel = "Local Maps${mappingBytes?.let {
@@ -148,14 +150,18 @@ internal fun StorageManagementDialog(
                 )
             }
             if (mappingError.isNotEmpty()) Text(mappingError, color = MaterialTheme.colorScheme.error)
-            StorageActionButton(onClick = onArchive) { Text("Archive Storage...") }
-            StorageActionButton(onClick = { categories = true }) { Text("Storage Categories...") }
-            StorageActionButton(onClick = { other = true }) { Text("Other Storage...") }
+            StorageActionButton(onClick = onArchive) {
+                val archiveLabel = if (flight?.archiveReady == true) {
+                    "Archive Location — Storage free now: ${archiveFree?.let(MapCacheSettings::formatDecimalGb) ?: "Unavailable"}"
+                } else "Archive Location"
+                Text(archiveLabel, modifier = Modifier.testTag("manage-storage-archive").semantics { contentDescription = "Archive Location" })
+            }
+            StorageActionButton(onClick = { other = true }) { Text("Other") }
             flight?.let {
                 if (it.preparingWorkingCopies) Text("Flight files sized. Working copies are still being prepared; usage will refresh when preparation finishes.", style = MaterialTheme.typography.bodySmall)
                 if (it.archiveReady) {
-                    Text("Archive storage free now: ${archiveFree?.let(MapCacheSettings::formatDecimalGb) ?: "Unavailable"}")
-                    StorageAllowanceRows(StorageAllocation(archiveFree, mapBytes ?: 0, cacheMaximum ?: 0, it.used, flightMaximum ?: 0))
+                    Text("Storage free now: ${archiveFree?.let(MapCacheSettings::formatDecimalGb) ?: "Unavailable"}")
+                    StorageAllowanceRows(StorageAllocation(archiveFree, mapBytes ?: 0, cacheMaximum, it.used, flightMaximum))
                 }
                 else Text("Archive storage is not connected.", style = MaterialTheme.typography.bodySmall)
                 Text("Includes ${MapCacheSettings.formatDecimalGb(it.auxiliary)} of local clue files and recording working copies.", style = MaterialTheme.typography.bodySmall)

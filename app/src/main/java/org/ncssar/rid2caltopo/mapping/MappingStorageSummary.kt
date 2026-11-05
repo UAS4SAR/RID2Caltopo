@@ -269,7 +269,10 @@ internal object MappingStorageSummary {
         } finally {
             temporary.delete()
         }
-        runCatching { org.ncssar.rid2caltopo.storage.OperationalStorage.retain(target) }
+        // Retaining the size cache must not start or restart a missions hydrate.
+        if (!MappingLibraryListing.heavyBusy()) {
+            runCatching { org.ncssar.rid2caltopo.storage.OperationalStorage.retain(target) }
+        }
     }
 
     fun peekMemory(): Report? = memory.get()
@@ -341,6 +344,7 @@ internal object MappingStorageSummary {
         archiveRoots: Roots? = null,
         workingCopyRoot: File? = null,
         reason: String = "full",
+        workingBlockSize: Long? = null,
     ): Report {
         offMain()
         val startedNs = System.nanoTime()
@@ -454,24 +458,34 @@ internal object MappingStorageSummary {
             }
         }
 
+        val workingBlock = workingBlockSize ?: blockSize
         val importedLayerIds = projects.mapNotNull { line ->
             line.layerId?.takeIf { line.flightId == null }
         }.toSet()
-        var sharedLayersBytes = 0L
-        for (child in measureRoots.layers.listFiles().orEmpty()) {
-            when {
-                child.isFile -> sharedLayersBytes += fileAlloc(child)
-                child.isDirectory && child.name !in importedLayerIds -> {
-                    val walked = walkFileTree(child)
-                    if (!walked.complete) complete = false
-                    sharedLayersBytes += walked.allocated
+        val sharedLayersBytes = if (layersUnchanged(stamp, previousStamp) && previous != null) {
+            previous.sharedLayersBytes
+        } else {
+            var shared = 0L
+            for (child in measureRoots.layers.listFiles().orEmpty()) {
+                when {
+                    child.isFile -> shared += fileAlloc(child)
+                    child.isDirectory && child.name !in importedLayerIds -> {
+                        val walked = walkFileTree(child)
+                        if (!walked.complete) complete = false
+                        shared += walked.allocated
+                    }
                 }
             }
+            shared
         }
 
-        val processingWalk = walkFileTree(measureRoots.processing)
-        if (!processingWalk.complete) complete = false
-        val processingBytes = processingWalk.allocated
+        val processingBytes = if (previous != null && previousStamp?.processing == stamp.processing) {
+            previous.processingBytes
+        } else {
+            val processingWalk = walkFileTree(measureRoots.processing)
+            if (!processingWalk.complete) complete = false
+            processingWalk.allocated
+        }
 
         var statsBytes = 0L
         for (child in measureRoots.stats.listFiles().orEmpty()) {
@@ -493,10 +507,12 @@ internal object MappingStorageSummary {
         val totalBytes = projectSum + sharedLayersBytes + processingBytes + statsBytes + otherBytes
 
         val workingRoot = workingCopyRoot ?: resolveWorkingCopy(filesDir, context)
-        // When archiveRoots was not supplied and local roots are the working projection, the
-        // totals above already describe the working copy. Still report workingCopyBytes from the
-        // operational-work root when distinct; never mutate that tree.
-        val workingCopyBytes = workingRoot?.let { walkAllocated(it, blockSize).allocated } ?: 0L
+        val workingCopyBytes = when {
+            workingRoot == null -> 0L
+            previous != null && rescanned == 0 && previousStamp?.processing == stamp.processing &&
+                layersUnchanged(stamp, previousStamp) -> previous.workingCopyBytes
+            else -> walkAllocated(workingRoot, workingBlock).allocated
+        }
 
         val logicalBytes = if (logicalAcc > 0L) logicalAcc else totalBytes
         val elapsed = ((System.nanoTime() - startedNs) / 1_000_000L).coerceAtLeast(0L)
@@ -531,6 +547,11 @@ internal object MappingStorageSummary {
         offMain()
         val current = rootsFor(filesDir).stamp()
         val cached = loadCached(filesDir)
+        if (!force && MappingLibraryListing.heavyBusy()) {
+            val held = cached ?: projectPlaceholders(filesDir, context)
+            logScan(held.copy(scanReason = "cache", scanElapsedMs = 0L))
+            return held
+        }
         if (!force && cached != null && isFresh(cached, current)) {
             logScan(cached.copy(scanReason = "cache", scanElapsedMs = 0L))
             return cached
@@ -568,9 +589,11 @@ internal object MappingStorageSummary {
             cached == null -> "cold"
             else -> "stale"
         }
-        val resolvedBlock = blockSize ?: blockSizeFor(archiveVolumeFile(context) ?: filesDir)
+        val archiveProbe = archiveVolumeFile(context) ?: filesDir
+        val resolvedBlock = blockSize ?: blockSizeFor(archiveProbe)
         val resolvedArchive = archiveRoots ?: resolveArchiveRoots(context, resolvedBlock)
         val resolvedWorking = workingCopyRoot ?: resolveWorkingCopy(filesDir, context)
+        val workingBlock = if (blockSize != null) blockSize else resolvedWorking?.let { blockSizeFor(it) } ?: blockSizeFor(filesDir)
         beforeScan?.invoke()
         val report = if (resolvedArchive is SafArchiveRoots) {
             measureFromSaf(
@@ -582,6 +605,7 @@ internal object MappingStorageSummary {
                 saf = resolvedArchive,
                 workingCopyRoot = resolvedWorking,
                 reason = reason,
+                workingBlockSize = workingBlock,
             )
         } else {
             measure(
@@ -593,6 +617,7 @@ internal object MappingStorageSummary {
                 archiveRoots = resolvedArchive as? Roots,
                 workingCopyRoot = resolvedWorking,
                 reason = reason,
+                workingBlockSize = workingBlock,
             )
         }
         save(filesDir, report)
@@ -731,6 +756,7 @@ internal object MappingStorageSummary {
         saf: SafArchiveRoots,
         workingCopyRoot: File?,
         reason: String,
+        workingBlockSize: Long? = null,
     ): Report {
         val startedNs = System.nanoTime()
         val localRoots = rootsFor(filesDir)
@@ -822,8 +848,12 @@ internal object MappingStorageSummary {
         val importedLayerIds = projects.mapNotNull { line ->
             line.layerId?.takeIf { line.flightId == null }
         }.toSet()
+        val workingBlock = workingBlockSize ?: blockSize
         var sharedLayersBytes = 0L
-        if (base != null) {
+        val priorReport = previous
+        if (layersUnchanged(stamp, previousStamp) && priorReport != null) {
+            sharedLayersBytes = priorReport.sharedLayersBytes
+        } else if (base != null) {
             for (entry in runCatching { saf.tree.list(layerPrefix) }.getOrDefault(emptyList())) {
                 val child = "$layerPrefix/${entry.name}"
                 if (entry.directory) {
@@ -839,9 +869,14 @@ internal object MappingStorageSummary {
             }
         }
 
-        val processingWalk = if (base != null) saf.walk(processingPrefix) else WalkTotals(0, 0, true)
-        if (!processingWalk.complete) complete = false
-        logicalAcc += processingWalk.logical
+        val processingBytes = if (previous != null && previousStamp?.processing == stamp.processing) {
+            previous.processingBytes
+        } else {
+            val processingWalk = if (base != null) saf.walk(processingPrefix) else WalkTotals(0, 0, true)
+            if (!processingWalk.complete) complete = false
+            logicalAcc += processingWalk.logical
+            processingWalk.allocated
+        }
         val statsWalk = if (base != null) saf.walk(statsPrefix) else WalkTotals(0, 0, true)
         if (!statsWalk.complete) complete = false
         logicalAcc += statsWalk.logical
@@ -850,16 +885,21 @@ internal object MappingStorageSummary {
         val orphanMissionBytes = missionBytes.filterKeys { it !in listedMissionIds }.values.sum()
         val otherBytes = orphanMissionBytes
         val projectSum = projects.sumOf { it.bytes }
-        val totalBytes = projectSum + sharedLayersBytes + processingWalk.allocated + statsWalk.allocated + otherBytes
+        val totalBytes = projectSum + sharedLayersBytes + processingBytes + statsWalk.allocated + otherBytes
 
-        val workingCopyBytes = workingCopyRoot?.let { walkAllocated(it, blockSize).allocated } ?: 0L
+        val workingCopyBytes = when {
+            workingCopyRoot == null -> 0L
+            previous != null && rescanned == 0 && previousStamp?.processing == stamp.processing &&
+                layersUnchanged(stamp, previousStamp) -> previous.workingCopyBytes
+            else -> walkAllocated(workingCopyRoot, workingBlock).allocated
+        }
 
         val elapsed = ((System.nanoTime() - startedNs) / 1_000_000L).coerceAtLeast(0L)
         val report = Report(
             projects = projects,
             sharedLayersBytes = sharedLayersBytes,
             statsBytes = statsWalk.allocated,
-            processingBytes = processingWalk.allocated,
+            processingBytes = processingBytes,
             otherBytes = otherBytes,
             totalBytes = totalBytes,
             logicalBytes = if (logicalAcc > 0L) logicalAcc else totalBytes,
@@ -877,6 +917,14 @@ internal object MappingStorageSummary {
     private data class LibraryView(val entries: List<MappingLibraryEntry>, val stale: Boolean)
 
     /** Loaded index when one exists. A full library refresh walks every mission and is the slow path. */
+    private fun layersUnchanged(stamp: Stamp, previous: Stamp?): Boolean {
+        previous ?: return false
+        val keys = stamp.projects.keys.filter { it.startsWith("layer:") }.toSet()
+        val prior = previous.projects.keys.filter { it.startsWith("layer:") }.toSet()
+        if (keys != prior) return false
+        return keys.all { stamp.projects[it] == previous.projects[it] }
+    }
+
     private fun libraryForScan(
         filesDir: File,
         context: Context?,

@@ -35,6 +35,7 @@ import org.ncssar.rid2caltopo.ui.AlertDialog
     onLayersChanged: () -> Unit = MappingWorkspaceState::layersChanged,
     onMissionClosed: () -> Unit = {},
     leading: LazyListScope.() -> Unit = {},
+    manageStorage: Boolean = false,
 ){
     val context=LocalContext.current
     var inspecting by remember{mutableStateOf<MappingLayer?>(null)}
@@ -50,11 +51,16 @@ import org.ncssar.rid2caltopo.ui.AlertDialog
     var staleBanner by remember { mutableStateOf(false) }
     val busyAreas by org.ncssar.rid2caltopo.storage.OperationalStorage.busyAreas.collectAsState()
     LaunchedEffect(processing?.missionId,processing?.stage,processing?.active,processing?.progress,changes,busyAreas) {
+        val missionsBusy = "missions" in busyAreas || org.ncssar.rid2caltopo.mapping.MappingLibraryListing.heavyBusy()
         if(!loaded) {
             val cached=withContext(Dispatchers.IO){
                 MappingLibraryIndex.load(context.filesDir)?.let{MappingLibraryIndex.entries(it,context,MappingProcessingManager.state.value)}
             }
             if(cached!=null){entries=cached;loaded=true}
+        }
+        if(manageStorage && missionsBusy){
+            refreshing=false
+            return@LaunchedEffect
         }
         refreshing=true
         try {
@@ -64,7 +70,7 @@ import org.ncssar.rid2caltopo.ui.AlertDialog
             val previous=entries.associateBy{it.id}
             entries=next.map{it.copy(storage=previous[it.id]?.storage)}
             loaded=true;loadError=null
-            if(refreshed.stale) {
+            if(!manageStorage && refreshed.stale) {
                 // Wait until missions area is ready, then refresh again.
                 while(isActive && "missions" in org.ncssar.rid2caltopo.storage.OperationalStorage.busyAreas.value) delay(500)
                 if(!isActive) return@LaunchedEffect
@@ -73,7 +79,7 @@ import org.ncssar.rid2caltopo.ui.AlertDialog
                 val prior=entries.associateBy{it.id}
                 entries=retry.entries.map{it.copy(storage=prior[it.id]?.storage)}
             }
-            if(!staleBanner) {
+            if(!manageStorage && !staleBanner) {
                 val index=withContext(Dispatchers.IO){MappingMissionStorage.index(context.filesDir,MappingProcessingManager.state.value)}
                 val pending=mutableListOf<MappingLibraryEntry>()
                 for(entry in entries) {
@@ -98,8 +104,10 @@ import org.ncssar.rid2caltopo.ui.AlertDialog
         }catch(e:CancellationException){throw e}
          catch(e:Exception){loadError="Could not refresh local maps: ${e.message ?: "storage unavailable"}"}
          finally{measuring=false;refreshing=false}
+        if(manageStorage) return@LaunchedEffect
         while(isActive){
             delay(30_000)
+            if(org.ncssar.rid2caltopo.mapping.MappingLibraryListing.heavyBusy()) continue
             try {
                 refreshing=true
                 val refreshed=withContext(Dispatchers.IO){MappingLibraryIndex.refresh(context,MappingProcessingManager.state.value)}

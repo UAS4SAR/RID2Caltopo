@@ -13,6 +13,7 @@ internal object MappingLibraryListing {
     const val REASON_HYDRATING = "hydrating"
     const val REASON_UNAVAILABLE = "missions-unavailable"
     const val STALE_STAGE = "Storage is being prepared · showing saved list"
+    val HEAVY_AREAS = setOf("missions", "decoded-terrain", "recordings", "recording-originals")
 
     /** Injectable for tests. Null = use [OperationalStorage.areaBusy]. */
     @Volatile var areaBusyProbe: ((String) -> Boolean)? = null
@@ -20,6 +21,8 @@ internal object MappingLibraryListing {
     fun areaBusy(id: String): Boolean =
         areaBusyProbe?.invoke(id)
             ?: runCatching { org.ncssar.rid2caltopo.storage.OperationalStorage.areaBusy(id) }.getOrDefault(false)
+
+    fun heavyBusy(): Boolean = HEAVY_AREAS.any { areaBusy(it) }
 
     fun listMissions(filesDir: File): Result = listArea(filesDir, "mapping-missions", "missions")
     fun listLayers(filesDir: File): Result = listArea(filesDir, "mapping-layers", "layers")

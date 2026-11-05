@@ -187,6 +187,17 @@ internal object MappingLibraryIndex {
         val previous = load(filesDir)
         val loadMs = (System.nanoTime() - loadStart) / 1_000_000
         val refreshStart = System.nanoTime()
+        if (MappingLibraryListing.heavyBusy()) {
+            CaltopoClient.CTDebug(TAG, "LibIdx skip reason=${MappingLibraryListing.REASON_HYDRATING}")
+            val tombstoned = MissionDeletionTombstone.load(filesDir)
+            val base = previous ?: Index(SCHEMA, emptyMap(), emptyMap())
+            val index = if (tombstoned.isEmpty()) base else Index(SCHEMA,
+                base.missions.filterKeys { it !in tombstoned },
+                base.layers.filterValues { it.missionId !in tombstoned })
+            val refreshMs = (System.nanoTime() - refreshStart) / 1_000_000
+            return RefreshResult(entries(index, context, live, stale = previous != null), index, loadMs, refreshMs, 0, 0,
+                stale = previous != null, skipReason = MappingLibraryListing.REASON_HYDRATING)
+        }
         MappingLayerRecovery.ensureScheduled(context)
         MappingProcessingManager.ensureResume(context)
         runCatching { MappingLayerRecovery.adoptCompleteOrphans(context) }

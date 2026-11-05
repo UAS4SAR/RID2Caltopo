@@ -44,17 +44,18 @@ class MapCacheLoadingTest {
                 })
             }
         }
-        compose.onNodeWithText("Map Cache Management...", substring = true).performClick()
+        compose.onNodeWithText("Map Cache", substring = true).performClick()
         compose.waitUntil { calls.get() == 1 }
         compose.onNodeWithText("Manage Storage", substring = false).assertIsDisplayed()
         compose.waitUntil(10_000) {
-            compose.onAllNodesWithText("Archive storage", substring = true).fetchSemanticsNodes().isNotEmpty()
+            compose.onAllNodesWithText("Storage free now", substring = true).fetchSemanticsNodes().isNotEmpty() ||
+                compose.onAllNodesWithText("Archive storage is not connected.", substring = true).fetchSemanticsNodes().isNotEmpty()
         }
         compose.onAllNodesWithText("Internal storage free:", substring = true).assertCountEquals(0)
         compose.onNodeWithText("Scanning storage…").assertIsDisplayed()
         compose.onNodeWithText("Map Cache Management", substring = false).assertDoesNotExist()
         compose.onNodeWithText("Max Cache Size (GB)").assertDoesNotExist()
-        compose.onNodeWithText("Map Cache Management...", substring = true).assertIsNotEnabled()
+        compose.onNodeWithText("Map Cache", substring = true).assertIsNotEnabled()
         result.complete(snapshot())
         compose.waitUntil { compose.onAllNodesWithText("Map Cache Management", substring = false).fetchSemanticsNodes().size == 1 }
         compose.onNodeWithText("Manage Storage", substring = false).assertDoesNotExist()
@@ -79,7 +80,7 @@ class MapCacheLoadingTest {
                 })
             }
         }
-        compose.onNodeWithText("Map Cache Management...", substring = true).performClick()
+        compose.onNodeWithText("Map Cache", substring = true).performClick()
         compose.waitUntil { calls.get() == 1 }
         compose.onNodeWithText("Scanning storage…").assertIsDisplayed()
         compose.onNodeWithText("Close", substring = false).performClick()

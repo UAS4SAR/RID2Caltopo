@@ -216,6 +216,59 @@ final class MappingStorageSummaryTests: XCTestCase {
         }
     }
 
+    func testWorkingCopyUsesItsOwnBlockSize() throws {
+        try onIO {
+            let files = self.root.appendingPathComponent("files-block", isDirectory: true)
+            let archive = self.root.appendingPathComponent("archive-block", isDirectory: true)
+            let working = self.root.appendingPathComponent("work-block", isDirectory: true)
+            let missionId = "2e30e0b4-0000-4000-8000-000000000009"
+            let localRoots = MappingStorageSummary.Roots(
+                missions: files.appendingPathComponent("mapping-missions", isDirectory: true),
+                layers: files.appendingPathComponent("mapping-layers", isDirectory: true),
+                processing: files.appendingPathComponent("mapping-processing", isDirectory: true),
+                stats: files.appendingPathComponent("mapping-storage-stats", isDirectory: true)
+            )
+            try FileManager.default.createDirectory(at: localRoots.missions.appendingPathComponent(missionId, isDirectory: true), withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: localRoots.layers, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: localRoots.processing, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: localRoots.stats, withIntermediateDirectories: true)
+            let archiveFile = archive.appendingPathComponent("mapping/missions/\(missionId)/originals/a.jpg")
+            try FileManager.default.createDirectory(at: archiveFile.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data(repeating: 1, count: 1_000).write(to: archiveFile)
+            for name in ["layers", "processing", "stats"] {
+                try FileManager.default.createDirectory(at: archive.appendingPathComponent("mapping/\(name)", isDirectory: true), withIntermediateDirectories: true)
+            }
+            let workingFile = working.appendingPathComponent("missions/\(missionId)/originals/a.jpg")
+            try FileManager.default.createDirectory(at: workingFile.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data(repeating: 1, count: 2_000).write(to: workingFile)
+            let report = try MappingStorageSummary.measure(
+                roots: localRoots,
+                blockSize: 1,
+                archiveRoots: MappingStorageSummary.fileArchiveRoots(archiveRoot: archive),
+                workingCopyRoot: working,
+                workingBlockSize: 4096,
+                reason: "full"
+            )
+            XCTAssertEqual(report.totalBytes, 1_000)
+            XCTAssertEqual(report.workingCopyBytes, 4_096)
+        }
+    }
+
+    func testHeavyBusyServesLastKnownWithoutScanning() throws {
+        try onIO {
+            let r = self.roots()
+            try FileManager.default.createDirectory(at: r.missions, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: r.layers, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: r.processing, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: r.stats, withIntermediateDirectories: true)
+            MappingStorageGate.heavyBusy = { true }
+            defer { MappingStorageGate.heavyBusy = { false } }
+            let report = try MappingStorageSummary.cachedOrRefresh(roots: r, blockSize: 1)
+            XCTAssertEqual(report.scanReason, "placeholders")
+            XCTAssertEqual(report.scanElapsedMs, 0)
+        }
+    }
+
     func testIncrementalRescanOnlyChangedProject() throws {
         try onIO {
             let a = "aaaaaaaa-0000-4000-8000-000000000001"

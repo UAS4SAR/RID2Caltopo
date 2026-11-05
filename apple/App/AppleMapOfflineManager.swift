@@ -82,6 +82,28 @@ enum AppleMapCachePaths {
     }
 }
 
+/// Persisted tile-cache totals. A matching stamp skips reindexing every tile on the next launch.
+private enum TileCacheIndexStamp {
+    struct Value { let files: Int; let bytes: Int64; let tileBytes: Int64; let demBytes: Int64; let supportBytes: Int64 }
+    private static var file: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+            .appendingPathComponent("RID2Caltopo/map-cache-index.stamp")
+    }
+    static func load() -> Value? {
+        guard let text = try? String(contentsOf: file, encoding: .utf8) else { return nil }
+        let parts = text.split(whereSeparator: { $0 == " " || $0 == "\n" })
+        guard parts.count >= 5,
+              let files = Int(parts[0]), let bytes = Int64(parts[1]),
+              let tile = Int64(parts[2]), let dem = Int64(parts[3]), let support = Int64(parts[4]) else { return nil }
+        return Value(files: files, bytes: bytes, tileBytes: tile, demBytes: dem, supportBytes: support)
+    }
+    static func save(files: Int, bytes: Int64, tileBytes: Int64, demBytes: Int64, supportBytes: Int64) {
+        try? FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? "\(files) \(bytes) \(tileBytes) \(demBytes) \(supportBytes)\n".write(to: file, atomically: true, encoding: .utf8)
+    }
+    static func delete() { try? FileManager.default.removeItem(at: file) }
+}
+
 /// One persistent map-data budget. Reservations include downloads not yet published.
 enum AppleUnifiedMapCache {
     private struct Entry { let bytes: Int64; let date: Date }
@@ -89,6 +111,8 @@ enum AppleUnifiedMapCache {
     private final class State: @unchecked Sendable {
         var entries: [URL: Entry] = [:]
         var initialized = false
+        var trustedStamp = false
+        var persistedBytes: Int64 = 0
         var reserved: Int64 = 0
         var visibleReserved: Int64 = 0
         var protectedTerrain = Set<String>()
@@ -124,30 +148,77 @@ enum AppleUnifiedMapCache {
     private static func initialize() {
         guard !state.initialized else { return }
         state.initialized = true
+        if let stamp = TileCacheIndexStamp.load() {
+            state.persistedBytes = stamp.bytes
+            state.trustedStamp = true
+            AppleLog.debug("MapCache", "cache index ready files=\(stamp.files) reason=cache elapsedMs=0")
+            return
+        }
+        materializeEntries(reason: "cold")
+    }
+    /// Builds the in-memory file index. Eviction needs entries; a cold usage read does not.
+    private static func materializeEntries(reason: String) {
+        let started = Date()
+        state.entries.removeAll()
+        state.trustedStamp = false
+        var tileBytes: Int64 = 0
+        var demBytes: Int64 = 0
+        var supportBytes: Int64 = 0
         AppleMapCachePaths.prepare()
         for root in roots {
+            let isDEM = root == AppleMapCachePaths.demRoot
             guard let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey, .contentModificationDateKey]) else { continue }
             for case let url as URL in enumerator {
-                if (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true { remember(url) }
+                guard (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else { continue }
+                let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+                let bytes = Int64(values?.fileSize ?? 0)
+                state.entries[url] = Entry(bytes: bytes, date: values?.contentModificationDate ?? .distantPast)
+                if isDEM { demBytes += bytes }
+                else if root == AppleMapCachePaths.root { tileBytes += bytes }
+                else { supportBytes += bytes }
+                if url.path.hasPrefix(AppleMapCachePaths.demRoot.path + "/") { invalidateTerrain() }
             }
         }
+        state.initialized = true
+        let bytes = tileBytes + demBytes + supportBytes
+        state.persistedBytes = bytes
+        TileCacheIndexStamp.save(files: state.entries.count, bytes: bytes, tileBytes: tileBytes, demBytes: demBytes, supportBytes: supportBytes)
+        AppleLog.debug("MapCache", "cache index ready files=\(state.entries.count) reason=\(reason) elapsedMs=\(Int(Date().timeIntervalSince(started) * 1000))")
+    }
+    private static func invalidateTrustedIndex() {
+        guard state.trustedStamp else { return }
+        state.trustedStamp = false
+        state.initialized = false
+        state.entries.removeAll()
+        TileCacheIndexStamp.delete()
     }
     static func remember(_ url: URL) {
         AppleMapCacheAccess.synchronized {
+            invalidateTrustedIndex()
             guard let value = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey]) else { return }
             state.entries[url] = Entry(bytes: Int64(value.fileSize ?? 0), date: value.contentModificationDate ?? .distantPast)
             if url.path.hasPrefix(AppleMapCachePaths.demRoot.path + "/") { invalidateTerrain() }
         }
     }
-    static func forget(_ url: URL) { AppleMapCacheAccess.synchronized { state.entries[url] = nil } }
+    static func forget(_ url: URL) {
+        AppleMapCacheAccess.synchronized {
+            invalidateTrustedIndex()
+            state.entries[url] = nil
+        }
+    }
     static func protect(_ names: [String]) { AppleMapCacheAccess.synchronized { state.protectedTerrain = Set(names) } }
     static func touch(_ name: String) { AppleMapCacheAccess.synchronized { state.touched[name] = Date() } }
     static func usedBytes() -> Int64 {
         assert(!Thread.isMainThread, "Map-cache enumeration must run on a worker")
-        return AppleMapCacheAccess.synchronized { initialize(); return state.entries.values.reduce(0) { $0 + $1.bytes } }
+        return AppleMapCacheAccess.synchronized {
+            initialize()
+            if state.trustedStamp, state.entries.isEmpty { return state.persistedBytes }
+            return state.entries.values.reduce(0) { $0 + $1.bytes }
+        }
     }
     private static func trim(to target: Int64) {
         var used = usedBytes()
+        var removedAny = false
         for (url, entry) in state.entries.sorted(by: { $0.value.date < $1.value.date }) {
             if used <= target { break }
             if url.pathExtension == "aol" || url.path.hasPrefix(AppleSurfaceStore.root.path + "/") { continue }
@@ -158,18 +229,29 @@ enum AppleUnifiedMapCache {
                 try FileManager.default.removeItem(at: url)
                 state.entries[url] = nil
                 used -= entry.bytes
+                removedAny = true
                 if isTerrain { invalidateTerrain() }
             } catch { }
+        }
+        if removedAny {
+            TileCacheIndexStamp.delete()
+            state.trustedStamp = false
         }
     }
     static func maintain() {
         assert(!Thread.isMainThread, "Map-cache maintenance must run on a worker")
-        AppleMapCacheAccess.synchronized { initialize(); trim(to: max(0, maximumBytes - state.reserved)) }
+        AppleMapCacheAccess.synchronized {
+            initialize()
+            if state.trustedStamp, state.entries.isEmpty, state.persistedBytes <= max(0, maximumBytes - state.reserved) { return }
+            if state.entries.isEmpty { materializeEntries(reason: "stale") }
+            trim(to: max(0, maximumBytes - state.reserved))
+        }
     }
     static func clearUnused() throws -> Int64 {
         precondition(!Thread.isMainThread)
         return try AppleMapCacheAccess.synchronized {
             initialize()
+            if state.entries.isEmpty { materializeEntries(reason: "stale") }
             guard state.reserved == 0 else { throw OperationalSurfacePreparationError.invalid("Wait for map downloads or preparation to finish.") }
             var removed: Int64 = 0
             for (url, entry) in state.entries {
@@ -180,6 +262,7 @@ enum AppleUnifiedMapCache {
                 state.entries[url] = nil; removed += entry.bytes
                 if terrain { invalidateTerrain() }
             }
+            if removed > 0 { TileCacheIndexStamp.delete(); state.trustedStamp = false }
             return removed
         }
     }
@@ -1533,6 +1616,20 @@ final class AppleMapOfflineManager: ObservableObject {
     }
 
     private nonisolated static func scanCache() -> CacheStats {
+        let started = Date()
+        if let stamp = TileCacheIndexStamp.load() {
+            var result = CacheStats()
+            result.files = stamp.files
+            result.bytes = stamp.bytes
+            result.tileBytes = stamp.tileBytes
+            result.demBytes = stamp.demBytes
+            result.supportBytes = stamp.supportBytes
+            result.availableVolumeBytes = try? AppleMapCachePaths.root.resourceValues(
+                forKeys: [.volumeAvailableCapacityForImportantUsageKey]
+            ).volumeAvailableCapacityForImportantUsage
+            AppleLog.debug("MapCache", "cache index ready files=\(stamp.files) reason=cache elapsedMs=\(Int(Date().timeIntervalSince(started) * 1000))")
+            return result
+        }
         var result = CacheStats()
         for root in AppleUnifiedMapCache.roots {
             let isDEM = root == AppleMapCachePaths.demRoot
@@ -1553,6 +1650,8 @@ final class AppleMapOfflineManager: ObservableObject {
         result.availableVolumeBytes = try? AppleMapCachePaths.root.resourceValues(
             forKeys: [.volumeAvailableCapacityForImportantUsageKey]
         ).volumeAvailableCapacityForImportantUsage
+        TileCacheIndexStamp.save(files: result.files, bytes: result.bytes, tileBytes: result.tileBytes, demBytes: result.demBytes, supportBytes: result.supportBytes)
+        AppleLog.debug("MapCache", "cache index ready files=\(result.files) reason=cold elapsedMs=\(Int(Date().timeIntervalSince(started) * 1000))")
         return result
     }
 

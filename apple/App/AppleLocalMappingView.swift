@@ -72,7 +72,8 @@ import R2CMapping
                 }
                 let result = try MappingLibraryIndex.refresh(
                     missionsRoot: missionsRoot, supportRoot: support,
-                    liveMissionID: liveID, liveStage: liveStage, liveProgress: liveProgress
+                    liveMissionID: liveID, liveStage: liveStage, liveProgress: liveProgress,
+                    areaBusy: MappingStorageGate.heavyBusy()
                 )
                 self.libraryCache.index = result.index
                 let rows = result.index.missions
@@ -217,6 +218,7 @@ struct AppleLocalMappingView:View {
     var assignments:[MappingMission] = []
     var mapName:String = "Connected incident map"
     var title:String = "Local maps"
+    var periodicRefresh: Bool = true
     @ObservedObject private var model=AppleLocalMappingModel.shared
     @ObservedObject private var layers=AppleMappingLayerStore.shared
     @Environment(\.dismiss) private var dismiss
@@ -284,10 +286,12 @@ struct AppleLocalMappingView:View {
             }
         }
         .task{
-            model.refresh(incident:incidentID,newest:newest,force:true)
+            guard !MappingStorageGate.heavyBusy() else { return }
+            model.refresh(incident:incidentID,newest:newest,force:false)
+            guard periodicRefresh else { return }
             repeat{
                 do{try await Task.sleep(for:.seconds(30))}catch{return}
-                if !model.busy{model.refresh(incident:incidentID,newest:newest)}
+                if !model.busy && !MappingStorageGate.heavyBusy() {model.refresh(incident:incidentID,newest:newest)}
             }while !Task.isCancelled
         }
         .onChange(of:model.busy){_,busy in if !busy {model.refresh(incident:incidentID,newest:newest,force:true)}}

@@ -74,6 +74,7 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
@@ -2055,7 +2056,7 @@ fun MainScreen(
                     showArchiveDeleteConfirmDialog = false
                 }
             },
-            title = { Text("Delete Flight Storage") },
+            title = { Text("Flight Storage", modifier = Modifier.testTag("flight-storage-panel")) },
             text = {
                 Column(
                     modifier = Modifier.verticalScroll(rememberScrollState()),

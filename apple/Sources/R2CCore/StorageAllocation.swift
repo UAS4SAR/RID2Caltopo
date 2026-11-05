@@ -1,5 +1,9 @@
 import Foundation
 
+public func decimalStorageGb(_ bytes: Int64) -> String {
+    String(format: "%.1f GB", locale: Locale(identifier: "en_US_POSIX"), Double(bytes) / 1_000_000_000)
+}
+
 /// Used bytes already reduce filesystem free space. Limits do not reserve disk space.
 public struct StorageAllocation: Sendable, Equatable {
     public let freeBytes: Int64?

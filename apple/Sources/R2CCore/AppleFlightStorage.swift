@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// Why a dated flight folder cannot be deleted right now. Same reasons and
 /// wording as Android `FlightFolderProtection` (FlightStorage.kt).
@@ -79,6 +80,8 @@ public final class AppleFlightStorage: @unchecked Sendable {
     private var initialized = false
     private var blocked = false
     private var lastSweepDay = ""
+    private var recentRead: Snapshot?
+    private var recentReadAt: Date?
     private var checkQueued = false
     private var forceQueued = false
     /// Once set (quit / cancel), prepareWrite must not wait on directory walks.
@@ -306,6 +309,7 @@ public final class AppleFlightStorage: @unchecked Sendable {
                 for folder in crossDay {
                     try? FileManager.default.removeItem(at: folder)
                 }
+                shared.stateLock.lock(); shared.recentRead = nil; shared.stateLock.unlock()
                 return .ok
             } catch {
                 return .failed(error.localizedDescription)
@@ -408,6 +412,17 @@ public final class AppleFlightStorage: @unchecked Sendable {
         reserving: Int64
     ) -> Snapshot {
         let root = customRoot ?? Self.root
+        if !purge && customRoot == nil && maximum == nil && days == nil && reserving == 0 {
+            shared.stateLock.lock()
+            let recent = shared.recentRead
+            let at = shared.recentReadAt
+            shared.stateLock.unlock()
+            if let recent, let at, Date().timeIntervalSince(at) < 15, Date().timeIntervalSince(at) >= 0 {
+                Logger(subsystem: "org.ncssar.rid2caltopo", category: "FlightStorage").debug("Sized flights reason=cache elapsedMs=0")
+                return recent
+            }
+        }
+        let started = Date()
         let maximumBytes = maximum ?? Self.maximumBytes
         let maximumDays = days ?? Self.maximumDays
         shared.stateLock.lock()
@@ -496,6 +511,16 @@ public final class AppleFlightStorage: @unchecked Sendable {
                 shared.lastSweepDay = dayName(now)
                 shared.stateLock.unlock()
             }
+        }
+        if customRoot == nil && !cancelled() {
+            if !purge {
+                shared.stateLock.lock()
+                shared.recentRead = result
+                shared.recentReadAt = Date()
+                shared.stateLock.unlock()
+            }
+            Logger(subsystem: "org.ncssar.rid2caltopo", category: "FlightStorage")
+                .debug("Sized flights reason=\(purge ? "stale" : "cold", privacy: .public) elapsedMs=\(Int(Date().timeIntervalSince(started) * 1000))")
         }
         return result
     }

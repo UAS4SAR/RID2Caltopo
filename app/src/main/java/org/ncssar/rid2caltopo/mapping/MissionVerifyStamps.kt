@@ -12,26 +12,47 @@ internal object MissionVerifyStamps {
 
     fun file(filesDir: File) = File(filesDir, "mapping-storage-stats/mission-verify-stamps.json")
 
-    fun load(filesDir: File): Map<String, MappingLibraryIndex.MissionFingerprint> {
-        val text = runCatching { file(filesDir).readText() }.getOrNull() ?: return emptyMap()
-        return parse(text)
+    data class Saved(
+        val missions: Map<String, MappingLibraryIndex.MissionFingerprint>,
+        val originalsModified: Map<String, Long>,
+    )
+
+    fun load(filesDir: File): Map<String, MappingLibraryIndex.MissionFingerprint> = loadSaved(filesDir).missions
+
+    fun loadSaved(filesDir: File): Saved {
+        val text = runCatching { file(filesDir).readText() }.getOrNull() ?: return Saved(emptyMap(), emptyMap())
+        return parseSaved(text)
     }
 
-    fun parse(text: String): Map<String, MappingLibraryIndex.MissionFingerprint> = runCatching {
+    fun parse(text: String): Map<String, MappingLibraryIndex.MissionFingerprint> = parseSaved(text).missions
+
+    fun parseSaved(text: String): Saved = runCatching {
         val value = JSONObject(text)
-        if (value.optInt("schema") != SCHEMA) return emptyMap()
-        val missions = value.optJSONObject("missions") ?: return emptyMap()
-        missions.keys().asSequence().mapNotNull { id ->
+        if (value.optInt("schema") != SCHEMA) return Saved(emptyMap(), emptyMap())
+        val missions = value.optJSONObject("missions") ?: return Saved(emptyMap(), emptyMap())
+        val parsed = missions.keys().asSequence().mapNotNull { id ->
             val fp = missions.optJSONObject(id) ?: return@mapNotNull null
             id to MappingLibraryIndex.MissionFingerprint.parse(fp)
         }.toMap()
-    }.getOrDefault(emptyMap())
+        val originals = mutableMapOf<String, Long>()
+        value.optJSONObject("originals")?.let { obj ->
+            for (id in obj.keys()) originals[id] = obj.optLong(id)
+        }
+        Saved(parsed, originals)
+    }.getOrDefault(Saved(emptyMap(), emptyMap()))
 
-    fun write(filesDir: File, stamps: Map<String, MappingLibraryIndex.MissionFingerprint>) {
+    fun write(
+        filesDir: File,
+        stamps: Map<String, MappingLibraryIndex.MissionFingerprint>,
+        originalsModified: Map<String, Long>? = null,
+    ) {
+        val originals = originalsModified ?: loadSaved(filesDir).originalsModified
         val destination = file(filesDir)
         destination.parentFile?.mkdirs()
         val body = JSONObject().put("schema", SCHEMA).put("missions", JSONObject().also { out ->
             stamps.forEach { (id, fp) -> out.put(id, fp.json()) }
+        }).put("originals", JSONObject().also { out ->
+            originals.forEach { (id, modified) -> out.put(id, modified) }
         })
         val temporary = File(destination.parentFile, "${destination.name}.tmp")
         temporary.writeText(body.toString())
@@ -40,15 +61,27 @@ internal object MissionVerifyStamps {
         }
     }
 
-    /** True when cheap folder/manifest fingerprints match the last successful archive verify. */
+    /**
+     * True when folder and manifest mtimes match the last verify.
+     * Does not list inventory or originals — a directory mtime change is enough to re-check.
+     */
     fun unchanged(
         missionDir: File,
         stamps: Map<String, MappingLibraryIndex.MissionFingerprint>,
     ): Boolean {
-        val id = missionDir.name
-        val prior = stamps[id] ?: return false
-        return MappingLibraryIndex.MissionFingerprint.of(missionDir) == prior
+        val prior = stamps[missionDir.name] ?: return false
+        if (missionDir.lastModified() != prior.dirModified) return false
+        if (File(missionDir, "inventory").lastModified() != prior.inventoryModified) return false
+        if (MappingLibraryIndex.FileStamp.of(File(missionDir, "mission.json")) != prior.mission) return false
+        if (MappingLibraryIndex.FileStamp.of(File(missionDir, "processing-status.json")) != prior.status) return false
+        if (MappingLibraryIndex.FileStamp.of(File(missionDir, "received-batch.json")) != prior.batch) return false
+        if (MappingLibraryIndex.FileStamp.of(File(missionDir, "route-summary.json")) != prior.route) return false
+        return true
     }
+
+    /** Unchanged originals directory mtime: do not walk the photo tree. */
+    fun skipOriginalsWalk(storedModified: Long?, currentModified: Long): Boolean =
+        storedModified != null && currentModified > 0L && storedModified == currentModified
 
     /**
      * Partition mission directories into skip vs verify. Non-UUID children always verify.

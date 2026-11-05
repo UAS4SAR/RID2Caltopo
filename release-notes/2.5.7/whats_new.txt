@@ -28,7 +28,8 @@ Latest changes:
 - Mapping storage is its own managed repository (separate from map cache), with a project list and sizes in Manage Storage.
 - Manage Storage → Local Maps opens from a saved size cache when mapping data has not changed, runs one scan at a time, and totals include shared layers, stats, and processing.
 - Manage Storage uses one Local Maps entry. Sort, distance, new flight, view map, Pilot 2 connection, hide preview, and delete stay on that panel.
-- Mapping storage sizes use the card’s allocated space, list a separate Working copy line counted once, and avoid rescanning just because size-cache files were rewritten.
+- Mapping storage sizes use the card’s allocated space and avoid rescanning just because size-cache files were rewritten. Manage Storage shows the Local Maps archive total only.
+- Manage Storage lists Map Cache, Flight Storage, and Local Maps. Where the archive is a chosen folder, Archive Location shows free space. Cache, flight, and map limits stay on those panels. Clear unused files and the storage breakdown are under Other. Free space is labeled Storage free now.
 - Clue capture stays responsive while the photo, thumbnail, and marker are saved.
 - Device markers left on a CalTopo map after the app is killed or suspended are removed on the next launch or return to the foreground.
 - Idle timeout and background cleanup use wall-clock time so a suspended app still disconnects and removes its device marker.

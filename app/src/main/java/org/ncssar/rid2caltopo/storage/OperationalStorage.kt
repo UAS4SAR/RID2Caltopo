@@ -847,8 +847,11 @@ internal object OperationalStorage {
         announce: Boolean,
     ) {
         val filesDir = context.filesDir
-        val stamps = org.ncssar.rid2caltopo.mapping.MissionVerifyStamps.load(filesDir).toMutableMap()
+        val saved = org.ncssar.rid2caltopo.mapping.MissionVerifyStamps.loadSaved(filesDir)
+        val stamps = saved.missions.toMutableMap()
+        val originalsModified = saved.originalsModified.toMutableMap()
         val tombstoned = org.ncssar.rid2caltopo.mapping.MissionDeletionTombstone.load(filesDir)
+        val verifyStarted = android.os.SystemClock.elapsedRealtime()
         var verified = 0
         var skipped = 0
         for (source in area.sources) {
@@ -876,12 +879,30 @@ internal object OperationalStorage {
                     stamps.remove(mission.name)
                     continue
                 }
+                val missionStarted = android.os.SystemClock.elapsedRealtime()
                 if (mission in plan.skip) {
                     skipped++
+                    val originals = File(mission, "originals")
+                    if (originals.isDirectory && mission.name !in originalsModified) {
+                        originalsModified[mission.name] = originals.lastModified()
+                    }
+                    CaltopoClient.CTDebug(
+                        "OperationalStorage",
+                        "Mission verify id=${mission.name.take(8)} action=skip originals=skipped elapsedMs=${android.os.SystemClock.elapsedRealtime() - missionStarted}",
+                    )
                     continue
                 }
+                val originals = File(mission, "originals")
+                val skipOriginals = org.ncssar.rid2caltopo.mapping.MissionVerifyStamps.skipOriginalsWalk(
+                    originalsModified[mission.name],
+                    if (originals.isDirectory) originals.lastModified() else 0L,
+                )
                 try {
-                    copySource(value, area, source, mission, replace = projected, ancestry = emptySet(), projection = projection)
+                    copySource(
+                        value, area, source, mission,
+                        replace = projected, ancestry = emptySet(), projection = projection,
+                        skipChild = if (skipOriginals) "originals" else null,
+                    )
                 } catch (error: IllegalArgumentException) {
                     // Tombstoned or already-deleted source mid-migrate is not a hydrate failure.
                     if (mission.name in tombstoned ||
@@ -908,18 +929,23 @@ internal object OperationalStorage {
                 val id = mission.name
                 if (runCatching { java.util.UUID.fromString(id).toString() == id }.getOrDefault(false)) {
                     stamps[id] = org.ncssar.rid2caltopo.mapping.MappingLibraryIndex.MissionFingerprint.of(mission)
+                    if (originals.isDirectory) originalsModified[id] = originals.lastModified()
                     verified++
                 }
+                CaltopoClient.CTDebug(
+                    "OperationalStorage",
+                    "Mission verify id=${mission.name.take(8)} action=verify originals=${if (skipOriginals) "skipped" else "walked"} elapsedMs=${android.os.SystemClock.elapsedRealtime() - missionStarted}",
+                )
             }
             for (file in other) {
                 checkSelection()
                 copySource(value, area, source, file, replace = projected, ancestry = emptySet(), projection = projection)
             }
         }
-        runCatching { org.ncssar.rid2caltopo.mapping.MissionVerifyStamps.write(filesDir, stamps) }
+        runCatching { org.ncssar.rid2caltopo.mapping.MissionVerifyStamps.write(filesDir, stamps, originalsModified) }
         CaltopoClient.CTDebug(
             "OperationalStorage",
-            "Mission verify incremental verified=$verified skipped=$skipped stamps=${stamps.size}",
+            "Mission verify incremental verified=$verified skipped=$skipped stamps=${stamps.size} elapsedMs=${android.os.SystemClock.elapsedRealtime() - verifyStarted}",
         )
     }
 
@@ -1006,16 +1032,46 @@ internal object OperationalStorage {
             destination.isDirectory -> destination
             else -> null
         }
-        var reuse = area.id !in listOf("processing", "layers") &&
-            destination.isDirectory && Files.isSymbolicLink(area.alias.toPath()) &&
-            projectedRoot(context, area, area.alias) == destination.canonicalFile.toPath() &&
+        val unchangedMissions = if (area.id == "missions" && area.alias.isDirectory) {
+            val stamps = org.ncssar.rid2caltopo.mapping.MissionVerifyStamps.load(context.filesDir)
+            val dirs = area.alias.listFiles().orEmpty().filter { it.isDirectory }
+            org.ncssar.rid2caltopo.mapping.MissionVerifyStamps.plan(dirs, stamps).skip.map { it.name }.toSet()
+        } else emptySet()
+        val projectionMatches = destination.isDirectory && Files.isSymbolicLink(area.alias.toPath()) &&
+            projectedRoot(context, area, area.alias) == destination.canonicalFile.toPath()
+        if (area.id == "missions" && projectionMatches && unchangedMissions.isNotEmpty()) {
+            val localNames = area.alias.listFiles().orEmpty().filter { it.isDirectory }.map { it.name }.toSet()
+            if (localNames.isNotEmpty() && localNames.all { it in unchangedMissions }) {
+                CaltopoClient.CTDebug(
+                    "OperationalStorage",
+                    "Mission verify hydrate skipped reason=cache missions=${localNames.size} elapsedMs=${android.os.SystemClock.elapsedRealtime() - hydrationStarted}",
+                )
+                return
+            }
+        }
+        var reuse = area.id !in listOf("processing", "layers") && projectionMatches &&
             !requiresIsolatedHydration(value, area.retained)
         var staged = if (reuse) destination else File(work.parentFile, ".${area.id}-${UUID.randomUUID()}")
         check(staged.isDirectory || staged.mkdirs())
+        val skipUnchanged = unchangedMissions.map { "${area.retained}/$it" }.toSet()
         try {
-            hydrate(value, area.retained, staged, reuse, hydrationScratch, checkSelection)
+            hydrate(value, area.retained, staged, reuse, hydrationScratch, checkSelection) { relative ->
+                relative in skipUnchanged
+            }
         } catch (error: IllegalStateException) {
             if (!isTransientPrepareFailure(error) || !reuse) throw error
+            if (area.id == "missions") {
+                // A size scan or live writer must not replace the working projection with a full copy.
+                CaltopoClient.CTWarn(
+                    "OperationalStorage",
+                    "Kept missions projection; skipped hydrate without reuse: ${error.message}",
+                )
+                CaltopoClient.CTDebug(
+                    "OperationalStorage",
+                    "Prepared area=missions reused=kept elapsedMs=${android.os.SystemClock.elapsedRealtime() - hydrationStarted}",
+                )
+                return
+            }
             // Working copy changed under us. Rebuild non-clue areas once from archive.
             CaltopoClient.CTWarn("OperationalStorage", "Retrying ${area.id} hydrate without reuse: ${error.message}")
             value.tree.refresh()
@@ -1457,14 +1513,26 @@ internal object OperationalStorage {
         }
         return null
     }
-    private fun copySource(value: Store, area: Area, base: File, source: File, replace: Boolean, ancestry: Set<Path>, projection: Path? = null) {
+    private fun copySource(
+        value: Store,
+        area: Area,
+        base: File,
+        source: File,
+        replace: Boolean,
+        ancestry: Set<Path>,
+        projection: Path? = null,
+        skipChild: String? = null,
+    ) {
         val canonical = source.canonicalFile.toPath()
         val permitted = area.sources.map { File(it.parentFile!!.canonicalFile, it.name).toPath() } + listOf(File(value.work, area.id).canonicalFile.toPath()) + listOfNotNull(projection)
         check(permitted.any { canonical.startsWith(it) }) { "Unexpected link in retained ${area.id}; original files were retained." }
         check(canonical !in ancestry) { "Cyclic link in retained ${area.id}; original files were retained." }
         if (source.isDirectory) {
             val children = source.listFiles() ?: error("Cannot read retained ${area.id}; original copies were retained.")
-            for (child in children) copySource(value, area, base, child, replace, ancestry + setOf(canonical), projection)
+            for (child in children) {
+                if (skipChild != null && child.name == skipChild && child.isDirectory) continue
+                copySource(value, area, base, child, replace, ancestry + setOf(canonical), projection)
+            }
         } else {
             val relative = source.relativeTo(base).invariantSeparatorsPath
             if (!allowed(area, relative)) return
@@ -1542,7 +1610,8 @@ internal object OperationalStorage {
         return entries.any { it.directory && requiresIsolatedHydration(value, "$path/${it.name}") }
     }
     private fun hydrate(value: Store, path: String, directory: File, reuse: Boolean = false,
-                        scratch: File? = null, checkCurrent: () -> Unit = {}) {
+                        scratch: File? = null, checkCurrent: () -> Unit = {},
+                        skipTree: (String) -> Boolean = { false }) {
         if (value.tree.exists("$path/.r2c-current")) {
             val manifest = value.tree.read("$path/.r2c-current").use { VerifiedArchiveTree.json(it) }
             val revision = UUID.fromString(manifest.getString("revision")).toString()
@@ -1594,9 +1663,10 @@ internal object OperationalStorage {
             }
             if (entry.name.endsWith(".r2c-info") || entry.name.contains(".r2c-")) continue
             val relative = "$path/${entry.name}"
+            if (entry.directory && skipTree(relative)) continue
             if (!entry.directory && value.tree.exists("$relative.r2c-chunks")) continue
             val target = File(directory, entry.name)
-            if (entry.directory) { check(target.isDirectory || target.mkdirs()); hydrate(value, relative, target, reuse, scratch, checkCurrent) }
+            if (entry.directory) { check(target.isDirectory || target.mkdirs()); hydrate(value, relative, target, reuse, scratch, checkCurrent, skipTree) }
             else {
                 try {
                     if (reuse) {

@@ -26,4 +26,29 @@ class MissionVerifyStampsTest {
         File(mission, "mission.json").writeText("{\"title\":\"x\"}")
         assertFalse(MissionVerifyStamps.unchanged(mission, MissionVerifyStamps.load(filesDir)))
     }
+
+    @Test fun unchangedSkipsInventoryListingWhenDirectoryStampMatches() {
+        val filesDir = folder.root
+        val id = UUID.randomUUID().toString()
+        val mission = folder.newFolder("mapping-missions", id)
+        val inventory = folder.newFolder("mapping-missions", id, "inventory")
+        File(mission, "mission.json").writeText("{}")
+        File(inventory, "a.json").writeText("{\"a\":1}")
+        val fp = MappingLibraryIndex.MissionFingerprint.of(mission)
+        MissionVerifyStamps.write(filesDir, mapOf(id to fp))
+        val missionStamp = mission.lastModified()
+        val inventoryStamp = inventory.lastModified()
+        File(inventory, "b.json").writeText("{\"b\":2}")
+        mission.setLastModified(missionStamp)
+        inventory.setLastModified(inventoryStamp)
+        assertTrue(MissionVerifyStamps.unchanged(mission, MissionVerifyStamps.load(filesDir)))
+        assertEquals(1, MissionVerifyStamps.plan(listOf(mission), MissionVerifyStamps.load(filesDir)).skip.size)
+    }
+
+    @Test fun skipOriginalsWalkRequiresMatchingPositiveStamp() {
+        assertFalse(MissionVerifyStamps.skipOriginalsWalk(null, 10L))
+        assertFalse(MissionVerifyStamps.skipOriginalsWalk(10L, 11L))
+        assertFalse(MissionVerifyStamps.skipOriginalsWalk(0L, 0L))
+        assertTrue(MissionVerifyStamps.skipOriginalsWalk(10L, 10L))
+    }
 }

@@ -48,7 +48,6 @@ internal fun MappingStorageManagementDialog(onDismiss: () -> Unit, onView: (org.
     val context = LocalContext.current
     var report by remember { mutableStateOf(MappingStorageSummary.peekMemory()) }
     var totalBytes by remember { mutableLongStateOf(report?.totalBytes ?: 0L) }
-    var workingCopyBytes by remember { mutableLongStateOf(report?.workingCopyBytes ?: 0L) }
     var complete by remember { mutableStateOf(report?.complete ?: true) }
     var loading by remember { mutableStateOf(report == null) }
     var refreshing by remember { mutableStateOf(false) }
@@ -81,7 +80,6 @@ internal fun MappingStorageManagementDialog(onDismiss: () -> Unit, onView: (org.
             if (cached != null) {
                 report = cached
                 totalBytes = cached.totalBytes
-                workingCopyBytes = cached.workingCopyBytes
                 complete = cached.complete
                 loading = false
             } else {
@@ -92,7 +90,6 @@ internal fun MappingStorageManagementDialog(onDismiss: () -> Unit, onView: (org.
                 }
                 report = placeholders
                 totalBytes = 0L
-                workingCopyBytes = 0L
                 complete = false
                 loading = false
             }
@@ -110,7 +107,6 @@ internal fun MappingStorageManagementDialog(onDismiss: () -> Unit, onView: (org.
             }
             report = next
             totalBytes = next.totalBytes
-            workingCopyBytes = next.workingCopyBytes
             complete = next.complete
             needsRescan = false
         } catch (cancelled: kotlinx.coroutines.CancellationException) {
@@ -130,6 +126,7 @@ internal fun MappingStorageManagementDialog(onDismiss: () -> Unit, onView: (org.
         title = "Local Maps",
         confirmLabel = "Close",
         listMaxHeight = 560.dp,
+        manageStorage = true,
         requestedFlightId = flightRequest,
         onRequestedFlightHandled = { flightRequest = null },
         requestedLayer = inspectingLayer,
@@ -156,13 +153,6 @@ internal fun MappingStorageManagementDialog(onDismiss: () -> Unit, onView: (org.
                         "Archive on-card size. Projects, originals, map layers and processing checkpoints. Not deleted by map cache cleanup.",
                         style = MaterialTheme.typography.bodySmall,
                     )
-                    if (workingCopyBytes > 0L) {
-                        Text(
-                            "Working copy: ${MapCacheSettings.formatDecimalGb(workingCopyBytes)} (local projection; not part of archive total)",
-                            style = MaterialTheme.typography.bodySmall,
-                            modifier = Modifier.testTag("mapping-storage-working-copy"),
-                        )
-                    }
                     if (loading) {
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)

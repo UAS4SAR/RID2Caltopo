@@ -71,3 +71,55 @@ internal fun readStorageCategoryReport(context: Context, privateDataIsTemporary:
     // from operator storage management by the owner's explicit preference.
     return StorageCategoryReport(totals, complete)
 }
+
+/** Coalesces Manage Storage breakdown readers. Serves the last report inside [TTL_MS]. */
+internal object StorageCategoryCache {
+    const val TTL_MS = 60_000L
+    private val gate = Any()
+    private var report: StorageCategoryReport? = null
+    private var at = 0L
+    private var inflight: java.util.concurrent.CompletableFuture<StorageCategoryReport>? = null
+
+    fun peek(): StorageCategoryReport? = synchronized(gate) {
+        val current = report ?: return null
+        val age = android.os.SystemClock.elapsedRealtime() - at
+        if (age in 0..TTL_MS) current else null
+    }
+
+    fun read(context: android.content.Context, force: Boolean, cancelled: () -> Unit = {}): StorageCategoryReport {
+        check(android.os.Looper.myLooper() != android.os.Looper.getMainLooper())
+        if (!force) peek()?.let {
+            org.ncssar.rid2caltopo.data.CaltopoClient.CTDebug("StorageCategories", "breakdown reason=cache elapsedMs=0")
+            return it
+        }
+        val created = java.util.concurrent.CompletableFuture<StorageCategoryReport>()
+        val leader = synchronized(gate) {
+            inflight?.let { return@synchronized it }
+            inflight = created
+            created
+        }
+        if (leader !== created) {
+            val joined = leader.get(5, java.util.concurrent.TimeUnit.MINUTES)
+            org.ncssar.rid2caltopo.data.CaltopoClient.CTDebug("StorageCategories", "breakdown reason=cache elapsedMs=0")
+            return joined
+        }
+        val started = android.os.SystemClock.elapsedRealtime()
+        try {
+            if (!force) peek()?.let { created.complete(it); return it }
+            val value = readStorageCategoryReport(context, OperationalStorage.ready(), cancelled)
+            synchronized(gate) { report = value; at = android.os.SystemClock.elapsedRealtime() }
+            val reason = if (force) "stale" else "cold"
+            org.ncssar.rid2caltopo.data.CaltopoClient.CTDebug(
+                "StorageCategories",
+                "breakdown reason=$reason elapsedMs=${android.os.SystemClock.elapsedRealtime() - started}",
+            )
+            created.complete(value)
+            return value
+        } catch (error: Throwable) {
+            created.completeExceptionally(error)
+            throw error
+        } finally {
+            synchronized(gate) { if (inflight === created) inflight = null }
+        }
+    }
+}
