@@ -1,4 +1,5 @@
 Latest changes:
+- Download Map retries a USGS lidar file when the server is busy, instead of stopping AOL on the first slowdown.
 - Clue photos stay upright, matching the live video.
 - Live video keeps moving while the map and shared video presence update.
 - One CalTopo live track per flight across tablets, with the captured-video link kept on that archive.

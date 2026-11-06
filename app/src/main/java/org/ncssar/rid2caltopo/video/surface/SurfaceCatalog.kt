@@ -17,7 +17,7 @@ internal object SurfaceCatalog {
     ): ByteArray = withContext(Dispatchers.IO) {
         val catalogClient = client.newBuilder().callTimeout(25, TimeUnit.SECONDS).build()
         val catalogRequest = request.newBuilder()
-            .header("User-Agent", "RID2Caltopo/Android (contact: kjt@uas4sar.com)")
+            .header("User-Agent", USGS_CLIENT_USER_AGENT)
             .header("Accept", "application/json")
             .cacheControl(CacheControl.FORCE_NETWORK).build()
         var attempt = 0

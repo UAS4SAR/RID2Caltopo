@@ -111,7 +111,7 @@ public enum OperationalSurfaceCatalog {
         var request = request
         request.timeoutInterval = 25
         request.cachePolicy = .reloadIgnoringLocalCacheData
-        request.setValue("RID2Caltopo/Apple (contact: kjt@uas4sar.com)", forHTTPHeaderField: "User-Agent")
+        request.setValue(OperationalSurfaceTransferFailure.usgsUserAgent, forHTTPHeaderField: "User-Agent")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         var attempt = 0
         while true {

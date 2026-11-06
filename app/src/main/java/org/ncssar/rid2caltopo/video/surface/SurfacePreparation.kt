@@ -136,11 +136,12 @@ internal object SurfacePreparation {
                     },bytesReceived={ received },host=runCatching { java.net.URI(source.url).host }.getOrNull().orEmpty()) {
                     received=0L
                     onActivity()
-                    val call=client.newCall(Request.Builder().url(source.url).header("Accept-Encoding","identity").build());onCall(call,true)
+                    // One file at a time. Transient HTTP statuses are retried by SurfaceTransferRetry, not failed here.
+                    val call=client.newCall(lidarFileRequest(source.url));onCall(call,true)
                     val digest=MessageDigest.getInstance("SHA-256")
                     var count=0L
                     try { call.execute().use { response ->
-                        check(response.isSuccessful) { "Lidar download HTTP ${response.code}" }
+                        response.failIfLidarHttpStatus()
                         val body=response.body ?: error("Empty lidar download")
                         val expected=body.contentLength();check(expected in 1..MAX_SOURCE_BYTES) { "Lidar file has unsupported size" }
                         check(used+expected+plan.tiles*16_000_000L<=allowance) { "Lidar files exceed the reserved space; select a smaller region" }

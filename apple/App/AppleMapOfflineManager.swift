@@ -2736,22 +2736,46 @@ actor AppleSurfacePreparationRunner {
             try Task.checkCancellation()
             timing.mark("source-\(index+1)-download-start")
             await progress("Downloading AOL lidar \(index+1)/\(plan.sources.count), \(source.bytes/1_000_000) MB advertised")
-            var request=URLRequest(url:URL(string:source.url)!);request.setValue("identity",forHTTPHeaderField:"Accept-Encoding")
-            let delegate=AppleSurfaceDownloadLimit(limit:min(1_000_000_000,allowance-used-Int64(plan.tiles)*16_000_000)) { written,total in
-                Task { await progress("AOL lidar \(index+1)/\(plan.sources.count): \(written/1_000_000)/\(max(0,total)/1_000_000) MB") }
-            }
-            let (temporary,response): (URL,URLResponse)
-            do { (temporary,response)=try await URLSession.shared.download(for:request,delegate:delegate) }
-            catch {
-                // Like Android: a server that never accepted a connection fails at once and names the host.
-                if let unreachable=OperationalSurfaceTransferFailure.unreachableMessage(for:error,host:request.url?.host,bytesReceived:delegate.bytesReceived) {
-                    throw OperationalSurfacePreparationError.invalid(unreachable)
+            // One file at a time. A 408/429/5xx waits and retries before the next file starts.
+            let fileURL=URL(string:source.url)!
+            let request=OperationalSurfaceTransferFailure.lidarFileRequest(url:fileURL)
+            let host=fileURL.host
+            let limit=min(1_000_000_000,allowance-used-Int64(plan.tiles)*16_000_000)
+            var statusAttempt=0
+            var accepted: (URL,URLResponse)?
+            while accepted==nil {
+                try Task.checkCancellation()
+                let delegate=AppleSurfaceDownloadLimit(limit:limit) { written,total in
+                    Task { await progress("AOL lidar \(index+1)/\(plan.sources.count): \(written/1_000_000)/\(max(0,total)/1_000_000) MB") }
                 }
-                throw error
+                let downloaded: (URL,URLResponse)
+                do { downloaded=try await URLSession.shared.download(for:request,delegate:delegate) }
+                catch {
+                    // Like Android: a server that never accepted a connection fails at once and names the host.
+                    if let unreachable=OperationalSurfaceTransferFailure.unreachableMessage(for:error,host:host,bytesReceived:delegate.bytesReceived) {
+                        throw OperationalSurfacePreparationError.invalid(unreachable)
+                    }
+                    throw error
+                }
+                let (file,resp)=downloaded
+                if let http=resp as? HTTPURLResponse,
+                   let delay=OperationalSurfaceTransferFailure.transientStatusDelaySeconds(statusCode:http.statusCode,attempt:statusAttempt,retryAfterHeader:http.value(forHTTPHeaderField:"Retry-After")) {
+                    try? fm.removeItem(at:file)
+                    statusAttempt+=1
+                    await progress(OperationalSurfaceTransferFailure.transientRetryMessage(file:index+1,files:plan.sources.count,retry:statusAttempt))
+                    try await Task.sleep(for:.seconds(delay))
+                    continue
+                }
+                if let http=resp as? HTTPURLResponse,!(200..<300).contains(http.statusCode) {
+                    try? fm.removeItem(at:file)
+                    throw OperationalSurfacePreparationError.invalid(OperationalSurfaceTransferFailure.httpStatusMessage(statusCode:http.statusCode,host:host))
+                }
+                accepted=(file,resp)
             }
+            let (temporary,response)=accepted!
             defer { try? fm.removeItem(at:temporary) }
             let size=Int64((try temporary.resourceValues(forKeys:[.fileSizeKey])).fileSize ?? 0)
-            guard let http=response as? HTTPURLResponse,(200..<300).contains(http.statusCode),size>0,size<=delegate.limit,
+            guard let http=response as? HTTPURLResponse,(200..<300).contains(http.statusCode),size>0,size<=limit,
                   response.expectedContentLength==size else { throw OperationalSurfacePreparationError.invalid("Incomplete or oversized lidar download") }
             // Only a complete, checksummed file gets its final name, then its record; a retry never sees partial data.
             let partial=files[index].appendingPathExtension("part")

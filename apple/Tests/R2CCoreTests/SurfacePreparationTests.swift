@@ -82,6 +82,7 @@ private actor CatalogResponses {
         #expect(request.timeoutInterval == 25)
         #expect(request.cachePolicy == .reloadIgnoringLocalCacheData)
         #expect(request.value(forHTTPHeaderField: "Accept") == "application/json")
+        #expect(request.value(forHTTPHeaderField: "User-Agent") == OperationalSurfaceTransferFailure.usgsUserAgent)
         let status = statuses.removeFirst()
         return (Data("{\"items\":[]}".utf8), HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: ["Retry-After":"0"])!)
     }

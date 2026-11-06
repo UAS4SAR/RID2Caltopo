@@ -8,6 +8,9 @@ import java.net.UnknownHostException
 import javax.net.ssl.SSLHandshakeException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
+import okhttp3.OkHttpClient
+import okhttp3.mockwebserver.MockResponse
+import okhttp3.mockwebserver.MockWebServer
 import org.junit.Assert.*
 import org.junit.Test
 import org.ncssar.rid2caltopo.video.OfflinePrepProgressText
@@ -103,5 +106,144 @@ class SurfaceTransferRetryTest {
             c.unreachableMessage("rockyweb.usgs.gov",ConnectException("Failed to connect")))
         assertEquals("USGS lidar server unreachable (unknown host, timed out)",
             c.unreachableMessage("",SocketTimeoutException("connect timed out")))
+    }
+
+    @Test fun connectionRetriesKeepTheShortBackoff() = runBlocking {
+        val pauses = mutableListOf<Long>()
+        var attempts = 0
+        SurfaceTransferRetry.run(onRetry = { _, _ -> }, pause = { pauses += it }) {
+            attempts++
+            if (attempts < 3) throw IOException("reset")
+        }
+        assertEquals(listOf(500L, 1000L), pauses)
+        assertEquals(3, attempts)
+    }
+
+    @Test fun transientStatusBackoffMatchesTheCatalog() {
+        val c = SurfaceTransferRetry
+        assertEquals(30_000L, c.transientStatusDelayMillis(429, 0, "120"))
+        assertEquals(0L, c.transientStatusDelayMillis(429, 0, "0"))
+        assertEquals(2_000L, c.transientStatusDelayMillis(429, 0, " 2 "))
+        assertEquals(500L, c.transientStatusDelayMillis(429, 0, null))
+        assertEquals(500L, c.transientStatusDelayMillis(429, 0, "later"))
+        assertEquals(500L, c.transientStatusDelayMillis(429, 0, "-1"))
+        assertEquals(500L, c.transientStatusDelayMillis(500, 0, "Wed, 21 Oct 2015 07:28:00 GMT"))
+        assertEquals(1_000L, c.transientStatusDelayMillis(503, 1, null))
+        assertEquals(2_000L, c.transientStatusDelayMillis(408, 2, null))
+        assertEquals(1_000L, c.transientStatusDelayMillis(599, 0, "1"))
+        assertNull(c.transientStatusDelayMillis(429, 3, "1"))
+        assertNull(c.transientStatusDelayMillis(404, 0, "1"))
+        assertNull(c.transientStatusDelayMillis(403, 0, null))
+        assertNull(c.transientStatusDelayMillis(200, 0, null))
+        assertEquals(
+            "Retrying AOL lidar 1/4 after the server asked to wait (retry 1/3)",
+            c.retryMessage(1, 4, 1, SurfaceTransferFailure.TRANSIENT_HTTP)
+        )
+    }
+
+    @Test fun http429RetriesWithRetryAfterThenFailsNamingHostOnly() = runBlocking {
+        val pauses = mutableListOf<Long>()
+        val failures = mutableListOf<SurfaceTransferFailure>()
+        var attempts = 0
+        try {
+            SurfaceTransferRetry.run(onRetry = { _, failure -> failures += failure }, pause = { pauses += it }) {
+                attempts++
+                val retryAfter = if (attempts == 1) "120" else null
+                throw SurfaceHttpStatusException(429, retryAfter, "rockyweb.usgs.gov")
+            }
+            fail("Expected HTTP 429")
+        } catch (error: SurfaceHttpStatusException) {
+            assertEquals(429, error.code)
+            assertEquals("Lidar download HTTP 429 (rockyweb.usgs.gov)", error.message)
+            assertFalse(error.message!!.contains("/"))
+            assertFalse(error.message!!.contains("?"))
+            assertFalse(error.message!!.contains("bbox"))
+            assertEquals("USGS returned HTTP 429", OfflinePrepProgressText.describeFailure(error, "USGS"))
+        }
+        assertEquals(4, attempts)
+        assertEquals(listOf(SurfaceTransferFailure.TRANSIENT_HTTP, SurfaceTransferFailure.TRANSIENT_HTTP, SurfaceTransferFailure.TRANSIENT_HTTP), failures)
+        // First wait honors Retry-After, capped at 30s. Later waits use the catalog schedule.
+        assertEquals(listOf(30_000L, 1_000L, 2_000L), pauses)
+    }
+
+    @Test fun cancellationDuringStatusBackoffDoesNotRetry() = runBlocking {
+        var attempts = 0
+        try {
+            SurfaceTransferRetry.run(onRetry = { _, _ -> }, pause = { throw CancellationException() }) {
+                attempts++
+                throw SurfaceHttpStatusException(429, "0", "rockyweb.usgs.gov")
+            }
+            fail("Expected cancellation")
+        } catch (_: CancellationException) { }
+        assertEquals(1, attempts)
+    }
+
+    @Test fun lidarFileGetSendsUserAgentAndRetries429() = runBlocking {
+        MockWebServer().use { server ->
+            server.enqueue(MockResponse().setResponseCode(429).setHeader("Retry-After", "0").setBody("busy"))
+            server.enqueue(MockResponse().setResponseCode(200).setBody("laz!"))
+            val pauses = mutableListOf<Long>()
+            var body = ""
+            val url = server.url("/vdelivery/Datasets/file.laz").newBuilder().addQueryParameter("bbox", "10,20,30,40").build()
+            SurfaceTransferRetry.run(onRetry = { _, failure ->
+                assertEquals(SurfaceTransferFailure.TRANSIENT_HTTP, failure)
+            }, pause = { pauses += it }) {
+                OkHttpClient().newCall(lidarFileRequest(url.toString())).execute().use { response ->
+                    response.failIfLidarHttpStatus()
+                    body = response.body!!.string()
+                }
+            }
+            assertEquals("laz!", body)
+            assertEquals(listOf(0L), pauses)
+            assertEquals(2, server.requestCount)
+            repeat(2) {
+                val recorded = server.takeRequest()
+                assertEquals(USGS_CLIENT_USER_AGENT, recorded.getHeader("User-Agent"))
+                assertEquals("identity", recorded.getHeader("Accept-Encoding"))
+                assertEquals("10,20,30,40", recorded.requestUrl!!.queryParameter("bbox"))
+            }
+        }
+    }
+
+    @Test fun exhaustedLidar429NamesHostAndStatusWithoutTheUrl() = runBlocking {
+        MockWebServer().use { server ->
+            repeat(4) { server.enqueue(MockResponse().setResponseCode(429).setHeader("Retry-After", "45")) }
+            val url = server.url("/secret/file.laz").newBuilder().addQueryParameter("bbox", "-121,39,-120,40").build()
+            val pauses = mutableListOf<Long>()
+            try {
+                SurfaceTransferRetry.run(onRetry = { _, _ -> }, pause = { pauses += it }) {
+                    OkHttpClient().newCall(lidarFileRequest(url.toString())).execute().use { it.failIfLidarHttpStatus() }
+                }
+                fail("Expected HTTP 429")
+            } catch (error: SurfaceHttpStatusException) {
+                assertEquals("Lidar download HTTP 429 (${url.host})", error.message)
+                assertFalse(error.message!!.contains("bbox"))
+                assertFalse(error.message!!.contains("file.laz"))
+                assertFalse(error.message!!.contains("secret"))
+                assertFalse(error.message!!.contains("?"))
+            }
+            assertEquals(listOf(30_000L, 30_000L, 30_000L), pauses)
+            assertEquals(4, server.requestCount)
+        }
+    }
+
+    @Test fun permanentLidarHttpStatusIsNotRetried() = runBlocking {
+        MockWebServer().use { server ->
+            server.enqueue(MockResponse().setResponseCode(403).setBody("no"))
+            server.enqueue(MockResponse().setResponseCode(200).setBody("should-not-be-read"))
+            var attempts = 0
+            try {
+                SurfaceTransferRetry.run(onRetry = { _, _ -> fail("Must not retry a permanent status") }, pause = { fail("Must not wait") }) {
+                    attempts++
+                    OkHttpClient().newCall(lidarFileRequest(server.url("/x").toString())).execute().use { it.failIfLidarHttpStatus() }
+                }
+                fail("Expected HTTP 403")
+            } catch (error: SurfaceHttpStatusException) {
+                assertTrue(error.message!!.startsWith("Lidar download HTTP 403 ("))
+                assertFalse(error.message!!.contains("/x"))
+            }
+            assertEquals(1, attempts)
+            assertEquals(1, server.requestCount)
+        }
     }
 }

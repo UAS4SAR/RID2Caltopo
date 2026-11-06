@@ -19,6 +19,7 @@ class SurfaceCatalogTest {
             assertEquals(3, server.requestCount)
             val request = server.takeRequest()
             assertEquals("application/json", request.getHeader("Accept"))
+            assertEquals(USGS_CLIENT_USER_AGENT, request.getHeader("User-Agent"))
             assertTrue(request.getHeader("Cache-Control")!!.contains("no-cache"))
         }
     }
