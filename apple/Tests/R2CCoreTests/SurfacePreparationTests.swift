@@ -23,7 +23,52 @@ private func preparationBounds(width: Double) -> OperationalMapBounds {
     let sources=try OperationalSurfacePreparation.sources(pages:[Data(contentsOf:surfaceFixtureRoot.appendingPathComponent("usgs-lpc-catalog.json"))])
     #expect(sources.count==6);#expect(Set(sources.map(\.survey)).count==1)
     #expect(sources.allSatisfy { $0.survey.contains("CA_SierraNevada_2_2022") })
+    #expect(sources.allSatisfy { $0.url.contains("://rockyweb.usgs.gov/") })
     #expect(throws:(any Error).self) { try OperationalSurfacePreparation.sources(pages:[Data("{\"items\":[]}".utf8)]) }
+}
+
+@Test func surfacePreparationPrefersListedS3UrlAndDoesNotBlendSurveys() throws {
+    func lidar(_ host: String, _ prefix: String, _ survey: String, _ file: String) -> String {
+        "https://\(host)\(prefix)/Projects/\(survey)/LAZ/\(file)"
+    }
+    let survey = "CA_SierraNevada_B22/CA_SierraNevada_2_2022"
+    let other = "CA_NoCAL_3DEP_Supp_Funding_2018_D18/CA_NoCAL_Wildfires_B1_2018"
+    let rockyOne = lidar("rockyweb.usgs.gov", "/vdelivery/Datasets/Staged/Elevation/LPC", survey, "one.laz")
+    let s3One = lidar("prd-tnm.s3.amazonaws.com", "/StagedProducts/Elevation/LPC", survey, "one.laz")
+    let rockyTwo = lidar("rockyweb.usgs.gov", "/vdelivery/Datasets/Staged/Elevation/LPC", survey, "two.laz")
+    let olderS3 = lidar("prd-tnm.s3.amazonaws.com", "/StagedProducts/Elevation/LPC", other, "old.laz")
+    let page = Data("""
+    {"items":[
+      {"downloadURL":"\(rockyOne)","publicationDate":"2024-05-01","sizeInBytes":1000000,"metaUrl":"https://www.sciencebase.gov/catalog/item/abc"},
+      {"downloadURL":"\(s3One)","publicationDate":"2020-01-01","sizeInBytes":1000000,"urls":{"LAZ":"\(s3One)"}},
+      {"downloadURL":"\(rockyTwo)","publicationDate":"2024-05-01","sizeInBytes":1000000,"downloadLazURL":"\(rockyTwo)"},
+      {"downloadURL":"\(olderS3)","publicationDate":"2020-01-14","sizeInBytes":1000000}
+    ]}
+    """.utf8)
+    let sources = try OperationalSurfacePreparation.sources(pages: [page])
+    #expect(sources.map(\.url).sorted() == [s3One, rockyTwo].sorted())
+    #expect(Set(sources.map(\.survey)).count == 1)
+    #expect(sources.allSatisfy { $0.survey.contains("CA_SierraNevada_2_2022") })
+    #expect(sources.allSatisfy { $0.published == "2024-05-01" })
+
+    let lazOnly = Data("""
+    {"items":[{"downloadURL":"\(rockyOne)","downloadLazURL":"\(s3One)","publicationDate":"2024-05-01","sizeInBytes":1000000}]}
+    """.utf8)
+    let replaced = try OperationalSurfacePreparation.sources(pages: [lazOnly])
+    #expect(replaced.map(\.url) == [s3One])
+    #expect(replaced.first?.published == "2024-05-01")
+
+    let preview = "https://prd-tnm.s3.amazonaws.com/StagedProducts/Elevation/LPC/Projects/\(survey)/browse/one.jpg"
+    let otherFile = lidar("prd-tnm.s3.amazonaws.com", "/StagedProducts/Elevation/LPC", survey, "two.laz")
+    let mixed = Data("""
+    {"items":[
+      {"downloadURL":"\(rockyOne)","publicationDate":"2024-05-01","sizeInBytes":1000000,"urls":{"JPG":"\(preview)"}},
+      {"downloadURL":"\(otherFile)","publicationDate":"2024-05-01","sizeInBytes":1000000}
+    ]}
+    """.utf8)
+    let kept = try OperationalSurfacePreparation.sources(pages: [mixed])
+    #expect(kept.map(\.url).sorted() == [otherFile, rockyOne].sorted())
+    #expect(kept.first { $0.url.hasSuffix("one.laz") }?.url.contains("rockyweb.usgs.gov") == true)
 }
 @Test func surfaceNativePreparationSeamsReferencesAndCancellation() async throws {
     for projection in ["albers","utm"] {

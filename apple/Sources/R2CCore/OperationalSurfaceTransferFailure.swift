@@ -7,8 +7,11 @@ import Foundation
 public enum OperationalSurfaceTransferFailure {
     /// Same identifying User-Agent the USGS catalog request sends.
     public static let usgsUserAgent = "RID2Caltopo/Apple (contact: kjt@uas4sar.com)"
-    /// Three waits, then the fourth transient status is final. Matches OperationalCacheRetryPolicy.
-    public static let maxTransientStatusRetries = 3
+    /// Four waits, then the fifth transient status is final. Longer than the catalog's short retries.
+    public static let maxTransientStatusRetries = 4
+    /// Missing or non-numeric Retry-After. Seconds. Catalog requests keep OperationalCacheRetryPolicy.
+    private static let transientStatusDelays: [TimeInterval] = [10, 30, 60, 120]
+    private static let retryAfterCapSeconds: TimeInterval = 120
 
     /// Lidar file GET. Serial: the caller downloads one file, and retries of that file, before the next.
     public static func lidarFileRequest(url: URL) -> URLRequest {
@@ -20,9 +23,17 @@ public enum OperationalSurfaceTransferFailure {
 
     /// Seconds to wait before another GET, or nil when the status is permanent or the budget is spent.
     /// `attempt` is how many transient failures have already been seen (0 on the first 429).
+    /// Retry-After is honored up to two minutes. Otherwise the wait is 10, 30, 60, then 120 seconds.
     public static func transientStatusDelaySeconds(statusCode: Int, attempt: Int, retryAfterHeader: String?) -> TimeInterval? {
         guard statusCode == 408 || statusCode == 429 || (500...599).contains(statusCode) else { return nil }
-        return OperationalCacheRetryPolicy.delaySeconds(attempt: attempt, retryAfterHeader: retryAfterHeader)
+        guard attempt >= 0, attempt < transientStatusDelays.count else { return nil }
+        if let retryAfterHeader {
+            let trimmed = retryAfterHeader.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let seconds = TimeInterval(trimmed), seconds >= 0, seconds.isFinite {
+                return min(retryAfterCapSeconds, seconds)
+            }
+        }
+        return transientStatusDelays[attempt]
     }
 
     /// Operator-facing failure. Host and status only.

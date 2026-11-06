@@ -36,20 +36,27 @@ import Foundation
     #expect(request.url == url)
 }
 
-@Test func transientLidarStatusUsesRetryAfterThenACappedBackoff() {
+@Test func transientLidarStatusUsesRetryAfterThenALongerBackoff() {
     let f = OperationalSurfaceTransferFailure.self
-    #expect(f.transientStatusDelaySeconds(statusCode: 429, attempt: 0, retryAfterHeader: "120") == 30)
+    #expect(f.transientStatusDelaySeconds(statusCode: 429, attempt: 0, retryAfterHeader: "600") == 120)
+    #expect(f.transientStatusDelaySeconds(statusCode: 429, attempt: 0, retryAfterHeader: "120") == 120)
+    #expect(f.transientStatusDelaySeconds(statusCode: 429, attempt: 0, retryAfterHeader: "45") == 45)
     #expect(f.transientStatusDelaySeconds(statusCode: 429, attempt: 0, retryAfterHeader: "0") == 0)
     #expect(f.transientStatusDelaySeconds(statusCode: 429, attempt: 0, retryAfterHeader: " 2 ") == 2)
-    #expect(f.transientStatusDelaySeconds(statusCode: 429, attempt: 0, retryAfterHeader: nil) == 0.5)
-    #expect(f.transientStatusDelaySeconds(statusCode: 503, attempt: 1, retryAfterHeader: nil) == 1)
-    #expect(f.transientStatusDelaySeconds(statusCode: 408, attempt: 2, retryAfterHeader: nil) == 2)
-    #expect(f.transientStatusDelaySeconds(statusCode: 500, attempt: 0, retryAfterHeader: "Wed, 21 Oct 2015 07:28:00 GMT") == 0.5)
-    #expect(f.transientStatusDelaySeconds(statusCode: 429, attempt: 3, retryAfterHeader: "1") == nil)
+    #expect(f.transientStatusDelaySeconds(statusCode: 429, attempt: 0, retryAfterHeader: nil) == 10)
+    #expect(f.transientStatusDelaySeconds(statusCode: 503, attempt: 1, retryAfterHeader: nil) == 30)
+    #expect(f.transientStatusDelaySeconds(statusCode: 408, attempt: 2, retryAfterHeader: nil) == 60)
+    #expect(f.transientStatusDelaySeconds(statusCode: 599, attempt: 3, retryAfterHeader: nil) == 120)
+    #expect(f.transientStatusDelaySeconds(statusCode: 500, attempt: 0, retryAfterHeader: "Wed, 21 Oct 2015 07:28:00 GMT") == 10)
+    #expect(f.transientStatusDelaySeconds(statusCode: 429, attempt: 4, retryAfterHeader: "1") == nil)
     #expect(f.transientStatusDelaySeconds(statusCode: 599, attempt: 0, retryAfterHeader: "1") == 1)
     #expect(f.transientStatusDelaySeconds(statusCode: 404, attempt: 0, retryAfterHeader: "1") == nil)
     #expect(f.transientStatusDelaySeconds(statusCode: 403, attempt: 0, retryAfterHeader: nil) == nil)
     #expect(f.transientStatusDelaySeconds(statusCode: 200, attempt: 0, retryAfterHeader: nil) == nil)
+    #expect((f.transientStatusDelaySeconds(statusCode: 429, attempt: 0, retryAfterHeader: nil) ?? 0) > 2)
+    // Catalog retries stay on the short schedule.
+    #expect(OperationalCacheRetryPolicy.delaySeconds(attempt: 0) == 0.5)
+    #expect(OperationalCacheRetryPolicy.delaySeconds(attempt: 2) == 2)
     let message = f.httpStatusMessage(statusCode: 429, host: "rockyweb.usgs.gov")
     #expect(message == "Lidar download HTTP 429 (rockyweb.usgs.gov)")
     #expect(!message.contains("?"))
@@ -57,6 +64,6 @@ import Foundation
     #expect(!message.contains("file.laz"))
     #expect(f.httpStatusMessage(statusCode: 503, host: nil) == "Lidar download HTTP 503 (unknown host)")
     #expect(f.httpStatusMessage(statusCode: 503, host: "") == "Lidar download HTTP 503 (unknown host)")
-    #expect(f.transientRetryMessage(file: 1, files: 4, retry: 1) == "Retrying AOL lidar 1/4 after the server asked to wait (retry 1/3)")
+    #expect(f.transientRetryMessage(file: 1, files: 4, retry: 1) == "Retrying AOL lidar 1/4 after the server asked to wait (retry 1/4)")
     #expect(OperationalOfflineProgressText.describeFailure(OperationalSurfacePreparationError.invalid(message), service: "USGS") == "USGS returned HTTP 429")
 }

@@ -1,4 +1,5 @@
 Latest changes:
+- Download Map prefers a USGS S3 lidar file when that survey lists one, and waits longer if the lidar server is busy.
 - Download Map retries a USGS lidar file when the server is busy, instead of stopping AOL on the first slowdown.
 - Clue photos stay upright, matching the live video.
 - Live video keeps moving while the map and shared video presence update.

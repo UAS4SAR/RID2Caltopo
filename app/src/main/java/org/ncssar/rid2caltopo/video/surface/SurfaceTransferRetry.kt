@@ -27,7 +27,7 @@ internal enum class SurfaceTransferFailure {
     INTERRUPTED,
     /** TLS or protocol failure: retrying the same request will not help. */
     FATAL,
-    /** Transient HTTP status (408, 429, 5xx). Retried with Retry-After, otherwise a short capped wait. */
+    /** Transient HTTP status (408, 429, 5xx). Retried with Retry-After, otherwise a longer capped wait. */
     TRANSIENT_HTTP,
 }
 
@@ -56,20 +56,28 @@ internal class SurfaceServerUnreachableException(val host: String, message: Stri
 /** iOS mirrors the classification and wording in OperationalSurfaceTransferFailure (R2CCore). */
 internal object SurfaceTransferRetry {
     const val MAX_RETRIES = 2
-    /** Matches the catalog: three waits (attempts 0..2), then the fourth failure is final. */
-    const val MAX_TRANSIENT_STATUS_RETRIES = 3
+    /**
+     * Four waits (attempts 0..3), then the fifth transient status is final.
+     * Longer than the catalog's 0.5/1/2 s retries. Downloads stay one file at a time.
+     */
+    const val MAX_TRANSIENT_STATUS_RETRIES = 4
+    private val TRANSIENT_STATUS_DELAYS_MS = longArrayOf(10_000L, 30_000L, 60_000L, 120_000L)
+    private const val RETRY_AFTER_CAP_SECONDS = 120.0
 
     /**
      * Milliseconds to wait before repeating a lidar file GET, or null when [statusCode] is permanent
-     * or [attempt] has used the catalog's retry budget. Retry-After is seconds, capped at 30;
-     * a missing or non-numeric value uses 500, 1000, then 2000 ms. Same schedule as [SurfaceCatalog].
+     * or [attempt] has used the retry budget. Retry-After is seconds, capped at 120;
+     * a missing or non-numeric value waits 10, 30, 60, then 120 seconds.
+     * Catalog requests keep their own short schedule.
      */
     fun transientStatusDelayMillis(statusCode: Int, attempt: Int, retryAfterHeader: String?): Long? {
         if (statusCode != 408 && statusCode != 429 && statusCode !in 500..599) return null
-        if (attempt !in 0..2) return null
+        if (attempt !in TRANSIENT_STATUS_DELAYS_MS.indices) return null
         val seconds = retryAfterHeader?.trim()?.toDoubleOrNull()
-        if (seconds != null && seconds.isFinite() && seconds >= 0.0) return (seconds.coerceAtMost(30.0) * 1000.0).toLong()
-        return listOf(500L, 1000L, 2000L)[attempt]
+        if (seconds != null && seconds.isFinite() && seconds >= 0.0) {
+            return (seconds.coerceAtMost(RETRY_AFTER_CAP_SECONDS) * 1000.0).toLong()
+        }
+        return TRANSIENT_STATUS_DELAYS_MS[attempt]
     }
 
     fun classify(error: Throwable, bytesReceived: Long): SurfaceTransferFailure {

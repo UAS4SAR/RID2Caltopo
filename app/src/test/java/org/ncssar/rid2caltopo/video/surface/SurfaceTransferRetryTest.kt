@@ -119,24 +119,28 @@ class SurfaceTransferRetryTest {
         assertEquals(3, attempts)
     }
 
-    @Test fun transientStatusBackoffMatchesTheCatalog() {
+    @Test fun transientStatusBackoffWaitsLongerThanTheShortCatalogSchedule() {
         val c = SurfaceTransferRetry
-        assertEquals(30_000L, c.transientStatusDelayMillis(429, 0, "120"))
+        assertEquals(120_000L, c.transientStatusDelayMillis(429, 0, "600"))
+        assertEquals(120_000L, c.transientStatusDelayMillis(429, 0, "120"))
+        assertEquals(45_000L, c.transientStatusDelayMillis(429, 0, "45"))
         assertEquals(0L, c.transientStatusDelayMillis(429, 0, "0"))
         assertEquals(2_000L, c.transientStatusDelayMillis(429, 0, " 2 "))
-        assertEquals(500L, c.transientStatusDelayMillis(429, 0, null))
-        assertEquals(500L, c.transientStatusDelayMillis(429, 0, "later"))
-        assertEquals(500L, c.transientStatusDelayMillis(429, 0, "-1"))
-        assertEquals(500L, c.transientStatusDelayMillis(500, 0, "Wed, 21 Oct 2015 07:28:00 GMT"))
-        assertEquals(1_000L, c.transientStatusDelayMillis(503, 1, null))
-        assertEquals(2_000L, c.transientStatusDelayMillis(408, 2, null))
+        assertEquals(10_000L, c.transientStatusDelayMillis(429, 0, null))
+        assertEquals(10_000L, c.transientStatusDelayMillis(429, 0, "later"))
+        assertEquals(10_000L, c.transientStatusDelayMillis(429, 0, "-1"))
+        assertEquals(10_000L, c.transientStatusDelayMillis(500, 0, "Wed, 21 Oct 2015 07:28:00 GMT"))
+        assertEquals(30_000L, c.transientStatusDelayMillis(503, 1, null))
+        assertEquals(60_000L, c.transientStatusDelayMillis(408, 2, null))
+        assertEquals(120_000L, c.transientStatusDelayMillis(599, 3, null))
         assertEquals(1_000L, c.transientStatusDelayMillis(599, 0, "1"))
-        assertNull(c.transientStatusDelayMillis(429, 3, "1"))
+        assertNull(c.transientStatusDelayMillis(429, 4, "1"))
         assertNull(c.transientStatusDelayMillis(404, 0, "1"))
         assertNull(c.transientStatusDelayMillis(403, 0, null))
         assertNull(c.transientStatusDelayMillis(200, 0, null))
+        assertTrue(c.transientStatusDelayMillis(429, 0, null)!! > 2_000L)
         assertEquals(
-            "Retrying AOL lidar 1/4 after the server asked to wait (retry 1/3)",
+            "Retrying AOL lidar 1/4 after the server asked to wait (retry 1/4)",
             c.retryMessage(1, 4, 1, SurfaceTransferFailure.TRANSIENT_HTTP)
         )
     }
@@ -160,10 +164,10 @@ class SurfaceTransferRetryTest {
             assertFalse(error.message!!.contains("bbox"))
             assertEquals("USGS returned HTTP 429", OfflinePrepProgressText.describeFailure(error, "USGS"))
         }
-        assertEquals(4, attempts)
-        assertEquals(listOf(SurfaceTransferFailure.TRANSIENT_HTTP, SurfaceTransferFailure.TRANSIENT_HTTP, SurfaceTransferFailure.TRANSIENT_HTTP), failures)
-        // First wait honors Retry-After, capped at 30s. Later waits use the catalog schedule.
-        assertEquals(listOf(30_000L, 1_000L, 2_000L), pauses)
+        assertEquals(5, attempts)
+        assertEquals(List(4) { SurfaceTransferFailure.TRANSIENT_HTTP }, failures)
+        // First wait honors Retry-After, capped at 120s. Later waits use the longer lidar schedule.
+        assertEquals(listOf(120_000L, 30_000L, 60_000L, 120_000L), pauses)
     }
 
     @Test fun cancellationDuringStatusBackoffDoesNotRetry() = runBlocking {
@@ -207,7 +211,7 @@ class SurfaceTransferRetryTest {
 
     @Test fun exhaustedLidar429NamesHostAndStatusWithoutTheUrl() = runBlocking {
         MockWebServer().use { server ->
-            repeat(4) { server.enqueue(MockResponse().setResponseCode(429).setHeader("Retry-After", "45")) }
+            repeat(5) { server.enqueue(MockResponse().setResponseCode(429).setHeader("Retry-After", "45")) }
             val url = server.url("/secret/file.laz").newBuilder().addQueryParameter("bbox", "-121,39,-120,40").build()
             val pauses = mutableListOf<Long>()
             try {
@@ -222,8 +226,8 @@ class SurfaceTransferRetryTest {
                 assertFalse(error.message!!.contains("secret"))
                 assertFalse(error.message!!.contains("?"))
             }
-            assertEquals(listOf(30_000L, 30_000L, 30_000L), pauses)
-            assertEquals(4, server.requestCount)
+            assertEquals(listOf(45_000L, 45_000L, 45_000L, 45_000L), pauses)
+            assertEquals(5, server.requestCount)
         }
     }
 

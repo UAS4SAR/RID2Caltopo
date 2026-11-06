@@ -30,20 +30,71 @@ public enum OperationalSurfacePreparation {
         return .init(bounds:bounds,latitude:lat,longitude:lon,width:Int(w),height:Int(h),sources:[])
     }
     public static func sources(pages: [Data]) throws -> [OperationalSurfaceSource] {
+        // One entry per lidar file. Prefer a listed prd-tnm URL over rockyweb for that same file.
+        // Do not invent an S3 path: a rockyweb LAZ is not always published on that bucket.
         var found: [String:OperationalSurfaceSource]=[:]
         for page in pages {
             let object=try JSONSerialization.jsonObject(with:page) as? [String:Any]
             for item in object?["items"] as? [[String:Any]] ?? [] {
-                guard let string=item["downloadURL"] as? String,let url=URL(string:string),url.scheme=="https",
-                      ["rockyweb.usgs.gov","prd-tnm.s3.amazonaws.com"].contains(url.host ?? ""),url.path.lowercased().hasSuffix(".laz"),
-                      url.path.contains("/Projects/"),let end=url.path.range(of:"/LAZ/"),let bytes=(item["sizeInBytes"] as? NSNumber)?.int64Value,bytes>0,bytes<=1_000_000_000 else { continue }
-                found[string] = .init(url:string,metadataURL:item["metaUrl"] as? String ?? string,published:item["publicationDate"] as? String ?? "Unknown",survey:String(url.path[..<end.lowerBound]),bytes:bytes)
+                for string in lidarURLStrings(item) {
+                    guard let source=lidarSource(string,item:item), let key=lidarFileKey(string) else { continue }
+                    if let previous=found[key] { found[key]=preferLidarSource(previous,source) }
+                    else { found[key]=source }
+                }
             }
         }
         let groups=Dictionary(grouping:Array(found.values),by: \.survey)
-        guard let chosen=groups.values.max(by: { ($0.map(\.published).max() ?? "") + "|" + ($0.first?.survey ?? "") < ($1.map(\.published).max() ?? "") + "|" + ($1.first?.survey ?? "") }),!chosen.isEmpty else { throw OperationalSurfacePreparationError.invalid("No supported USGS lidar source files found for this area") }
+        guard let chosen=groups.values.max(by: { surveyRank($0) < surveyRank($1) }),!chosen.isEmpty else { throw OperationalSurfacePreparationError.invalid("No supported USGS lidar source files found for this area") }
         guard chosen.count<=64 else { throw OperationalSurfacePreparationError.invalid("Too many lidar files; select a smaller region") }
         return chosen.sorted { $0.url < $1.url }
+    }
+    /// Survey rank is the newest publication date, then the `/Projects/` path. Host prefixes do not split a work unit.
+    private static func surveyRank(_ group: [OperationalSurfaceSource]) -> String {
+        (group.map(\.published).max() ?? "") + "|" + (group.first?.survey ?? "")
+    }
+    private static func lidarURLStrings(_ item: [String:Any]) -> [String] {
+        var urls: [String]=[]
+        func add(_ value: String?) {
+            guard let value, !value.isEmpty, !urls.contains(value) else { return }
+            urls.append(value)
+        }
+        add(item["downloadURL"] as? String)
+        add(item["downloadLazURL"] as? String)
+        if let map=item["urls"] as? [String:Any] {
+            for value in map.values { add(value as? String) }
+        }
+        return urls
+    }
+    /// Survey is the path from `/Projects/` through the directory before `/LAZ/`. `relativePath` identifies the file on either host.
+    private static func lidarIdentity(_ string: String) -> (host: String, survey: String, relativePath: String)? {
+        guard let url=URL(string:string), url.scheme=="https", let host=url.host?.lowercased(),
+              host=="rockyweb.usgs.gov" || host=="prd-tnm.s3.amazonaws.com",
+              url.path.lowercased().hasSuffix(".laz"),
+              let projects=url.path.range(of:"/Projects/"),
+              let laz=url.path.range(of:"/LAZ/", range: projects.lowerBound..<url.path.endIndex) else { return nil }
+        let name=url.lastPathComponent
+        guard name.lowercased().hasSuffix(".laz") else { return nil }
+        return (host, String(url.path[projects.lowerBound..<laz.lowerBound]), String(url.path[projects.lowerBound...]))
+    }
+    private static func lidarFileKey(_ string: String) -> String? { lidarIdentity(string)?.relativePath }
+    private static func lidarSource(_ string: String, item: [String:Any]) -> OperationalSurfaceSource? {
+        guard let identity=lidarIdentity(string), let bytes=(item["sizeInBytes"] as? NSNumber)?.int64Value, bytes>0, bytes<=1_000_000_000 else { return nil }
+        let metadata=(item["metaUrl"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? string
+        let published=(item["publicationDate"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? "Unknown"
+        return .init(url:string, metadataURL:metadata, published:published, survey:identity.survey, bytes:bytes)
+    }
+    /// S3 outranks rockyweb. The newer publication date is kept so survey ranking does not drop.
+    private static func preferLidarSource(_ current: OperationalSurfaceSource, _ candidate: OperationalSurfaceSource) -> OperationalSurfaceSource {
+        let preferred: OperationalSurfaceSource
+        let currentRank=lidarHostRank(current.url), candidateRank=lidarHostRank(candidate.url)
+        if candidateRank != currentRank { preferred = candidateRank > currentRank ? candidate : current }
+        else { preferred = candidate.url < current.url ? candidate : current }
+        let published=max(current.published, candidate.published)
+        guard preferred.published != published else { return preferred }
+        return .init(url:preferred.url, metadataURL:preferred.metadataURL, published:published, survey:preferred.survey, bytes:preferred.bytes)
+    }
+    private static func lidarHostRank(_ url: String) -> Int {
+        URL(string:url)?.host?.lowercased()=="prd-tnm.s3.amazonaws.com" ? 2 : 1
     }
     /// Only called by explicit offline preparation, off the UI actor. Never from telemetry.
     /// `tileFinished` reports how many 1 m tiles are built after each one completes.

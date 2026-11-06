@@ -35,25 +35,81 @@ internal object SurfacePreparation {
         return SurfacePreparationPlan(bounds,lat,lon,w,h,emptyList())
     }
     fun sources(pages: List<JSONObject>): List<SurfaceSource> {
+        // One entry per lidar file. The same work unit may be listed on rockyweb and on
+        // prd-tnm; keep the S3 URL when the catalog actually lists it. Do not invent an S3
+        // path — a rockyweb LAZ is not always published on that bucket.
         val found=linkedMapOf<String,SurfaceSource>()
         for(page in pages) {
             val items=page.optJSONArray("items") ?: continue
             for(i in 0 until items.length()) {
-                val v=items.getJSONObject(i);val url=v.optString("downloadURL")
-                val u=runCatching { java.net.URI(url) }.getOrNull() ?: continue
-                if(u.scheme!="https" || !(u.host=="rockyweb.usgs.gov" || u.host=="prd-tnm.s3.amazonaws.com") || !u.path.endsWith(".laz",true) || !u.path.contains("/Projects/") || !u.path.contains("/LAZ/")) continue
-                val bytes=v.optLong("sizeInBytes",-1)
-                if(bytes !in 1..MAX_SOURCE_BYTES) continue
-                val survey=u.path.substringBefore("/LAZ/")
-                found[url]=SurfaceSource(url,v.optString("metaUrl",url),v.optString("publicationDate","Unknown"),bytes,survey)
+                val v=items.getJSONObject(i)
+                for(url in lidarUrls(v)) {
+                    val source=lidarSource(url,v) ?: continue
+                    val key=lidarFileKey(url) ?: continue
+                    val previous=found[key]
+                    found[key]=if(previous==null) source else preferLidarSource(previous,source)
+                }
             }
         }
         require(found.isNotEmpty()) { "No supported USGS lidar source files found for this area" }
         // Never blend overlapping surveys merely because their bounds overlap.
+        // Survey identity is the /Projects/ path, so both hosts of one work unit stay together.
         val chosen=found.values.groupBy { it.survey }.values.maxBy { group -> group.maxOf { it.published } + "|" + group.first().survey }
         require(chosen.size<=64) { "Too many lidar files; select a smaller region" }
         return chosen.sortedBy { it.url }
     }
+    private fun lidarUrls(item: JSONObject): List<String> {
+        val urls=ArrayList<String>(4)
+        fun add(value: String) { if(value.isNotBlank() && value !in urls) urls.add(value) }
+        add(item.optString("downloadURL"))
+        add(item.optString("downloadLazURL"))
+        val extra=item.optJSONObject("urls")
+        if(extra!=null) {
+            val keys=extra.keys()
+            while(keys.hasNext()) {
+                val value=extra.opt(keys.next())
+                if(value is String) add(value)
+            }
+        }
+        return urls
+    }
+    /** Survey path from `/Projects/` through the directory before `/LAZ/`, plus the LAZ path under it. */
+    private fun lidarIdentity(url: String): LidarIdentity? {
+        val uri=runCatching { java.net.URI(url) }.getOrNull() ?: return null
+        val host=uri.host?.lowercase() ?: return null
+        if(uri.scheme!="https" || (host!="rockyweb.usgs.gov" && host!="prd-tnm.s3.amazonaws.com")) return null
+        val path=uri.path ?: return null
+        if(!path.endsWith(".laz",true)) return null
+        val projects=path.indexOf("/Projects/")
+        if(projects<0) return null
+        val laz=path.indexOf("/LAZ/",projects)
+        if(laz<0) return null
+        val name=path.substringAfterLast('/')
+        if(!name.endsWith(".laz",true)) return null
+        return LidarIdentity(host,path.substring(projects,laz),path.substring(projects))
+    }
+    private fun lidarFileKey(url: String)=lidarIdentity(url)?.relativePath
+    private fun lidarSource(url: String, item: JSONObject): SurfaceSource? {
+        val identity=lidarIdentity(url) ?: return null
+        val bytes=item.optLong("sizeInBytes",-1)
+        if(bytes !in 1..MAX_SOURCE_BYTES) return null
+        val metadata=item.optString("metaUrl").ifBlank { url }
+        val published=item.optString("publicationDate").ifBlank { "Unknown" }
+        return SurfaceSource(url,metadata,published,bytes,identity.survey)
+    }
+    /** S3 outranks rockyweb. An equal host keeps the earlier URL. The newer publication date is kept for survey ranking. */
+    private fun preferLidarSource(current: SurfaceSource, candidate: SurfaceSource): SurfaceSource {
+        val preferred=when {
+            lidarHostRank(candidate.url)>lidarHostRank(current.url) -> candidate
+            lidarHostRank(candidate.url)<lidarHostRank(current.url) -> current
+            candidate.url<current.url -> candidate
+            else -> current
+        }
+        val published=maxOf(current.published,candidate.published)
+        return if(preferred.published==published) preferred else preferred.copy(published=published)
+    }
+    private fun lidarHostRank(url: String)=if(lidarIdentity(url)?.host=="prd-tnm.s3.amazonaws.com") 2 else 1
+    private data class LidarIdentity(val host: String, val survey: String, val relativePath: String)
     suspend fun plan(bounds: SurfaceBounds, client: OkHttpClient, onCall: (Call, Boolean)->Unit = {_,_->}, context: Context? = null): SurfacePreparationPlan = withContext(Dispatchers.IO) {
         if(context != null && SurfaceStore.reusable(context,bounds)) return@withContext grid(bounds).copy(reused=true)
         SurfaceTiming("aol-catalog").use { timing ->
