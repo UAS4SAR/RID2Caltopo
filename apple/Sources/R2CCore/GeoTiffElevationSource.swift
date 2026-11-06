@@ -54,7 +54,16 @@ public final class GeoTiffElevationSource: @unchecked Sendable {
     }
 
     private let directory: URL
+    private let decodedBlockCacheDirectory: URL?
+    private let onDecodedBlockPersisted: (@Sendable (URL) -> Void)?
     private let lock = NSLock()
+    /// Serializes operating-area warms. A newer request supersedes the one in progress.
+    private let warmGate = NSLock()
+    /// Block files are written off the sample caller so a clue ray is not stuck on disk.
+    private let persistQueue = DispatchQueue(label: "RID2Caltopo.dem-block-persist", qos: .utility)
+    private var warmGeneration: UInt64 = 0
+    private var blockDecodeCount = 0
+    private var tileFileSizes: [URL: Int] = [:]
     private var tiles: [Tile] = []
     private var catalogDate = Date.distantPast
     private var catalogReady = false
@@ -77,7 +86,23 @@ public final class GeoTiffElevationSource: @unchecked Sendable {
     private var timingTileOpenDecodeNs: Int64 = 0
     private var timingSampleCount = 0
 
-    public init(directory: URL) { self.directory = directory }
+    /// `decodedBlockCacheDirectory` stores predictor-applied blocks so the next launch
+    /// does not repeat LZW. Nil disables persistence (unit tests). The handler runs
+    /// off this type's lock after a block is durably written.
+    public init(
+        directory: URL,
+        decodedBlockCacheDirectory: URL? = nil,
+        onDecodedBlockPersisted: (@Sendable (URL) -> Void)? = nil
+    ) {
+        self.directory = directory
+        self.decodedBlockCacheDirectory = decodedBlockCacheDirectory
+        self.onDecodedBlockPersisted = onDecodedBlockPersisted
+    }
+
+    func testingBlockDecodeCount() -> Int { lock.r2cWithLock { blockDecodeCount } }
+
+    /// Test hook: block until queued decoded-block writes have finished.
+    func testingWaitForPersistedBlocks() { persistQueue.sync {} }
 
     /// Keep decoded S1M tiles/blocks in memory for a clue walk. Nested; thread-safe.
     public func beginClueSamplingSession() {
@@ -136,44 +161,62 @@ public final class GeoTiffElevationSource: @unchecked Sendable {
     }
 
     /// Pre-decode S1M tiles covering [latitude]/[longitude] ± radius into the elevated cache.
-    /// Call from a background worker after TerrainPrefetch; low priority, cancel-aware.
+    /// Call from a background worker after TerrainPrefetch. One warm runs at a time; a newer
+    /// call supersedes the older grid. Decode work yields so a large LZW pass cannot sit at
+    /// full core for minutes. Returns how many grid points were sampled.
+    @discardableResult
     public func warmDecodedTiles(
         latitude: Double,
         longitude: Double,
         radiusMeters: Double,
-        isCancelled: () -> Bool = { false }
-    ) {
-        guard latitude.isFinite, longitude.isFinite, radiusMeters.isFinite, radiusMeters > 0 else { return }
+        isCancelled: @escaping () -> Bool = { false }
+    ) -> Int {
+        guard latitude.isFinite, longitude.isFinite, radiusMeters.isFinite, radiusMeters > 0 else { return 0 }
+        let token = lock.r2cWithLock { () -> UInt64 in
+            warmGeneration &+= 1
+            return warmGeneration
+        }
+        let stop = { isCancelled() || self.currentWarmGeneration() != token }
+        warmGate.lock()
+        defer { warmGate.unlock() }
+        if stop() { return 0 }
         retainFlightWarmCache()
         beginClueSamplingSession()
         defer { endClueSamplingSession() }
         ensureCatalogCurrent()
-        // ~400 m grid over the operating circle (~1 mi → ~dozen samples) opens tile files + blocks.
+        let pacer = DemDecodePacer()
+        // ~400 m grid over the operating circle (~1 mi) opens the blocks a clue walk will touch.
         let stepMeters = min(400.0, max(100.0, radiusMeters / 4.0))
         let metersPerDegreeLat = 111_195.0
         let metersPerDegreeLon = max(1.0, 111_195.0 * cos(latitude * .pi / 180))
         var lat = latitude - radiusMeters / metersPerDegreeLat
         let latMax = latitude + radiusMeters / metersPerDegreeLat
-        var warmed = 0
+        var visited = 0
         while lat <= latMax + 1e-9 {
-            if isCancelled() { return }
+            if stop() { return visited }
             var lon = longitude - radiusMeters / metersPerDegreeLon
             let lonMax = longitude + radiusMeters / metersPerDegreeLon
             while lon <= lonMax + 1e-9 {
-                if isCancelled() { return }
+                if stop() { return visited }
                 let dLat = (lat - latitude) * metersPerDegreeLat
                 let dLon = (lon - longitude) * metersPerDegreeLon
                 if (dLat * dLat + dLon * dLon).squareRoot() <= radiusMeters + 1.0 {
-                    _ = sample(latitude: lat, longitude: lon, isCancelled: isCancelled)
-                    warmed += 1
+                    _ = pacedSample(
+                        latitude: lat, longitude: lon, isCancelled: stop, pace: pacer
+                    )
+                    visited += 1
                 }
                 lon += stepMeters / metersPerDegreeLon
             }
             lat += stepMeters / metersPerDegreeLat
         }
+        if stop() { return visited }
         // Always touch the center last so the aircraft cell is resident.
-        _ = sample(latitude: latitude, longitude: longitude, isCancelled: isCancelled)
+        _ = pacedSample(latitude: latitude, longitude: longitude, isCancelled: stop, pace: pacer)
+        return visited + 1
     }
+
+    private func currentWarmGeneration() -> UInt64 { lock.r2cWithLock { warmGeneration } }
 
     /// Snapshot and reset session counters (catalog lookup + tile open/decode + samples).
     public func takeClueSamplingTiming() -> (catalogMs: Double, tileOpenDecodeMs: Double, sampleCount: Int) {
@@ -228,6 +271,7 @@ public final class GeoTiffElevationSource: @unchecked Sendable {
             catalogInvalidations &+= 1
             catalogDate = .distantPast
             coarseTileURLs.removeAll()
+            tileFileSizes.removeAll()
         }
         scheduleWarmCatalog()
     }
@@ -290,12 +334,29 @@ public final class GeoTiffElevationSource: @unchecked Sendable {
 
     /// `maximumHorizontalResolutionMeters` drops coarser rasters before any block is decoded.
     /// The footprint asks for S1M (1.5 m) and must not spend the pass inflating 10 m / 30 m tiles.
-    /// `isCancelled` is checked between tiles so a timed-out clue ray-march can stop mid-walk.
+    /// `isCancelled` is checked between tiles and during a long LZW block so a timed-out
+    /// clue ray-march can stop mid-decode.
     public func sample(
         latitude: Double,
         longitude: Double,
         maximumHorizontalResolutionMeters: Double = .infinity,
-        isCancelled: () -> Bool = { false }
+        isCancelled: @escaping () -> Bool = { false }
+    ) -> Sample? {
+        pacedSample(
+            latitude: latitude,
+            longitude: longitude,
+            maximumHorizontalResolutionMeters: maximumHorizontalResolutionMeters,
+            isCancelled: isCancelled,
+            pace: nil
+        )
+    }
+
+    private func pacedSample(
+        latitude: Double,
+        longitude: Double,
+        maximumHorizontalResolutionMeters: Double = .infinity,
+        isCancelled: @escaping () -> Bool,
+        pace: DemDecodePacer?
     ) -> Sample? {
         guard latitude.isFinite, longitude.isFinite else { return nil }
         if isCancelled() { return nil }
@@ -339,8 +400,11 @@ public final class GeoTiffElevationSource: @unchecked Sendable {
                 continue
             }
             if isCancelled() { break }
-            guard let value = sample(tile: tile, data: data, metadata: metadata, latitude: latitude, longitude: longitude),
-                  value.isFinite, (-500 ... 10_000).contains(value)
+            guard let value = sample(
+                tile: tile, data: data, metadata: metadata,
+                latitude: latitude, longitude: longitude,
+                isCancelled: isCancelled, pace: pace
+            ), value.isFinite, (-500 ... 10_000).contains(value)
             else { continue }
             let candidate = Sample(elevationMeters: value, horizontalResolutionMeters: resolution)
             if best == nil || candidate.horizontalResolutionMeters < best!.horizontalResolutionMeters {
@@ -568,7 +632,8 @@ public final class GeoTiffElevationSource: @unchecked Sendable {
 
     private func sample(
         tile: Tile, data: Data, metadata: Metadata,
-        latitude: Double, longitude: Double
+        latitude: Double, longitude: Double,
+        isCancelled: @escaping () -> Bool, pace: DemDecodePacer?
     ) -> Double? {
         guard metadata.planarConfiguration == 1 else { return nil }
         guard let model = metadata.modelCoordinate(latitude: latitude, longitude: longitude) else { return nil }
@@ -577,10 +642,10 @@ public final class GeoTiffElevationSource: @unchecked Sendable {
         guard column >= 0, row >= 0, column <= Double(metadata.width - 1), row <= Double(metadata.height - 1) else { return nil }
         let c0 = min(metadata.width - 1, Int(floor(column))), r0 = min(metadata.height - 1, Int(floor(row)))
         let c1 = min(metadata.width - 1, c0 + 1), r1 = min(metadata.height - 1, r0 + 1)
-        guard let s00 = samplePixel(tile: tile, data: data, metadata: metadata, column: c0, row: r0),
-              let s10 = samplePixel(tile: tile, data: data, metadata: metadata, column: c1, row: r0),
-              let s01 = samplePixel(tile: tile, data: data, metadata: metadata, column: c0, row: r1),
-              let s11 = samplePixel(tile: tile, data: data, metadata: metadata, column: c1, row: r1),
+        guard let s00 = samplePixel(tile: tile, data: data, metadata: metadata, column: c0, row: r0, isCancelled: isCancelled, pace: pace),
+              let s10 = samplePixel(tile: tile, data: data, metadata: metadata, column: c1, row: r0, isCancelled: isCancelled, pace: pace),
+              let s01 = samplePixel(tile: tile, data: data, metadata: metadata, column: c0, row: r1, isCancelled: isCancelled, pace: pace),
+              let s11 = samplePixel(tile: tile, data: data, metadata: metadata, column: c1, row: r1, isCancelled: isCancelled, pace: pace),
               ![s00, s10, s01, s11].contains(where: { isNoData($0, metadata.noData) })
         else { return nil }
         let dx = column - Double(c0), dy = row - Double(r0)
@@ -588,7 +653,10 @@ public final class GeoTiffElevationSource: @unchecked Sendable {
         return top + (bottom - top) * dy
     }
 
-    private func samplePixel(tile: Tile, data: Data, metadata: Metadata, column: Int, row: Int) -> Double? {
+    private func samplePixel(
+        tile: Tile, data: Data, metadata: Metadata, column: Int, row: Int,
+        isCancelled: @escaping () -> Bool, pace: DemDecodePacer?
+    ) -> Double? {
         let blockIndex: Int, blockWidth: Int, blockHeight: Int, localColumn: Int, localRow: Int
         if metadata.tiled {
             guard let width = metadata.tileWidth, let height = metadata.tileHeight else { return nil }
@@ -607,19 +675,35 @@ public final class GeoTiffElevationSource: @unchecked Sendable {
             return extractSample(block: cached, metadata: metadata, blockWidth: blockWidth,
                                  localColumn: localColumn, localRow: localRow)
         }
+        let expected = blockWidth * blockHeight * metadata.samplesPerPixel * max(1, metadata.bitsPerSample / 8)
+        if let persisted = readPersistedBlock(tile: tile.url, blockIndex: blockIndex, expectedSize: expected) {
+            storeDecodedBlock(persisted, for: cacheKey)
+            return extractSample(block: persisted, metadata: metadata, blockWidth: blockWidth,
+                                 localColumn: localColumn, localRow: localRow)
+        }
+        if isCancelled() { return nil }
         let offset = metadata.offsets[blockIndex], count = metadata.byteCounts[blockIndex]
         guard offset >= 0, count > 0, offset <= data.count, count <= data.count - offset else { return nil }
         let raw = data.subdata(in: offset ..< offset + count)
-        guard let decoded = decodeBlock(raw, metadata: metadata, width: blockWidth, height: blockHeight) else { return nil }
+        guard let decoded = decodeBlock(
+            raw, metadata: metadata, width: blockWidth, height: blockHeight,
+            isCancelled: isCancelled, pace: pace
+        ) else { return nil }
+        storeDecodedBlock(decoded, for: cacheKey)
+        persistDecodedBlock(decoded, tile: tile.url, blockIndex: blockIndex)
+        return extractSample(block: decoded, metadata: metadata, blockWidth: blockWidth,
+                             localColumn: localColumn, localRow: localRow)
+    }
+
+    private func storeDecodedBlock(_ decoded: Data, for cacheKey: String) {
         lock.r2cWithLock {
-            blockCache[cacheKey] = decoded; blockOrder.append(cacheKey)
+            blockCache[cacheKey] = decoded
+            blockOrder.append(cacheKey)
             let limit = maxCachedBlocks
             while blockOrder.count > limit {
                 blockCache.removeValue(forKey: blockOrder.removeFirst())
             }
         }
-        return extractSample(block: decoded, metadata: metadata, blockWidth: blockWidth,
-                             localColumn: localColumn, localRow: localRow)
     }
 
     private func extractSample(
@@ -641,23 +725,82 @@ public final class GeoTiffElevationSource: @unchecked Sendable {
         return (metadata.verticalUnitCode == 9002 || metadata.verticalUnitCode == 9003) ? value.map { $0 * 0.3048 } : value
     }
 
-    private func decodeBlock(_ raw: Data, metadata: Metadata, width: Int, height: Int) -> Data? {
+    private func decodeBlock(
+        _ raw: Data, metadata: Metadata, width: Int, height: Int,
+        isCancelled: @escaping () -> Bool, pace: DemDecodePacer?
+    ) -> Data? {
+        if isCancelled() { return nil }
+        pace?.beginSlice()
+        lock.r2cWithLock { blockDecodeCount += 1 }
         let expected = width * height * metadata.samplesPerPixel * max(1, metadata.bitsPerSample / 8)
         var decoded: Data?
         switch metadata.compression {
         case 1: decoded = raw
-        case 5: decoded = lzwDecode(raw, expectedSize: expected)
+        case 5: decoded = lzwDecode(raw, expectedSize: expected, isCancelled: isCancelled, pace: pace)
         case 8, 32946: decoded = compressionDecode(raw, expectedSize: expected, algorithm: COMPRESSION_ZLIB)
         case 32773: decoded = packBitsDecode(raw, expectedSize: expected)
         default: return nil
         }
-        guard var bytes = decoded.map({ Array($0) }), bytes.count >= expected else { return nil }
+        guard !isCancelled(), var bytes = decoded.map({ Array($0) }), bytes.count >= expected else { return nil }
         if metadata.predictor == 2 {
             guard applyHorizontalPredictor2(&bytes, metadata: metadata, width: width, height: height) else { return nil }
         } else if metadata.predictor == 3 {
             guard applyFloatPredictor3(&bytes, metadata: metadata, width: width, height: height) else { return nil }
         } else if metadata.predictor > 1 { return nil }
+        if isCancelled() { return nil }
+        pace?.pauseForWorkSinceLastTick()
         return Data(bytes)
+    }
+
+    /// Predictor-applied block files. Names include the source length so a replaced download
+    /// does not reuse the previous decode. Blocks larger than 8 MB stay memory-only.
+    private func persistedBlockURL(tile: URL, blockIndex: Int) -> URL? {
+        guard let root = decodedBlockCacheDirectory else { return nil }
+        let size = tileByteCount(tile)
+        guard size > 0 else { return nil }
+        let safe = String(tile.lastPathComponent.map { character -> Character in
+            (character.isLetter || character.isNumber || character == "." || character == "_" || character == "-")
+                ? character : "_"
+        })
+        return root
+            .appendingPathComponent(safe, isDirectory: true)
+            .appendingPathComponent(String(size), isDirectory: true)
+            .appendingPathComponent("\(blockIndex).bin")
+    }
+
+    private func tileByteCount(_ tile: URL) -> Int {
+        if let known = lock.r2cWithLock({ tileFileSizes[tile] }) { return known }
+        let size = (try? tile.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+        guard size > 0 else { return 0 }
+        lock.r2cWithLock { tileFileSizes[tile] = size }
+        return size
+    }
+
+    private func readPersistedBlock(tile: URL, blockIndex: Int, expectedSize: Int) -> Data? {
+        guard expectedSize > 0, expectedSize <= 8_388_608,
+              let url = persistedBlockURL(tile: tile, blockIndex: blockIndex),
+              let data = try? Data(contentsOf: url), data.count == expectedSize
+        else { return nil }
+        return data
+    }
+
+    private func persistDecodedBlock(_ decoded: Data, tile: URL, blockIndex: Int) {
+        guard decoded.count > 0, decoded.count <= 8_388_608,
+              let url = persistedBlockURL(tile: tile, blockIndex: blockIndex)
+        else { return }
+        let handler = onDecodedBlockPersisted
+        let bytes = decoded
+        persistQueue.async {
+            do {
+                try FileManager.default.createDirectory(
+                    at: url.deletingLastPathComponent(), withIntermediateDirectories: true
+                )
+                try bytes.write(to: url, options: .atomic)
+                handler?(url)
+            } catch {
+                // A failed cache write still leaves the in-memory block. The next sample can decode again.
+            }
+        }
     }
 
     private func compressionDecode(_ input: Data, expectedSize: Int, algorithm: compression_algorithm) -> Data? {
@@ -689,39 +832,132 @@ public final class GeoTiffElevationSource: @unchecked Sendable {
         return output.count >= expectedSize ? Data(output.prefix(expectedSize)) : nil
     }
 
-    private func lzwDecode(_ input: Data, expectedSize: Int) -> Data? {
-        let bytes = Array(input); var bitOffset = 0
-        func readCode(_ width: Int) -> Int? {
-            guard bitOffset + width <= bytes.count * 8 else { return nil }
-            var value = 0
-            for _ in 0 ..< width {
-                let byte = bytes[bitOffset / 8], shift = 7 - bitOffset % 8
-                value = (value << 1) | Int((byte >> shift) & 1); bitOffset += 1
+    /// TIFF LZW, MSB-first, Clear=256, EOI=257. Code width grows when the next code
+    /// reaches 511, 1023, or 2047 — the same schedule as the previous bit-at-a-time decoder.
+    /// Codes are a prefix index plus one suffix byte, read through a byte buffer, so a
+    /// 512×512 S1M block does not execute one Swift loop per compressed bit.
+    private func lzwDecode(
+        _ input: Data, expectedSize: Int, isCancelled: @escaping () -> Bool, pace: DemDecodePacer?
+    ) -> Data? {
+        guard expectedSize > 0, !input.isEmpty else { return nil }
+        return input.withUnsafeBytes { raw -> Data? in
+            guard let base = raw.bindMemory(to: UInt8.self).baseAddress else { return nil }
+            let byteCount = raw.count
+            var byteIndex = 0
+            var accumulator: UInt64 = 0
+            var accumulatorBits = 0
+            func readCode(_ width: Int) -> Int? {
+                while accumulatorBits < width {
+                    if byteIndex >= byteCount { return nil }
+                    accumulator = (accumulator << 8) | UInt64(base[byteIndex])
+                    byteIndex += 1
+                    accumulatorBits += 8
+                }
+                accumulatorBits -= width
+                let codeMask = UInt64((1 << width) - 1)
+                let code = Int((accumulator >> UInt64(accumulatorBits)) & codeMask)
+                if accumulatorBits == 0 {
+                    accumulator = 0
+                } else {
+                    accumulator &= (1 << UInt64(accumulatorBits)) - 1
+                }
+                return code
             }
-            return value
+
+            var prefix = [Int](repeating: -1, count: 4096)
+            var suffix = [UInt8](repeating: 0, count: 4096)
+            var firstByte = [UInt8](repeating: 0, count: 4096)
+            var length = [Int](repeating: 0, count: 4096)
+            for index in 0 ..< 256 {
+                suffix[index] = UInt8(index)
+                firstByte[index] = UInt8(index)
+                length[index] = 1
+            }
+            var output = [UInt8](repeating: 0, count: expectedSize)
+            var outCount = 0
+            var scratch = [UInt8]()
+            let paceEvery = 262_144
+            var nextPaceAt = paceEvery
+            func emit(_ code: Int) -> Bool {
+                let codeLength = length[code]
+                guard code >= 0, code < 4096, codeLength > 0 else { return false }
+                if scratch.count < codeLength {
+                    scratch = [UInt8](repeating: 0, count: codeLength)
+                }
+                var current = code
+                for index in stride(from: codeLength - 1, through: 0, by: -1) {
+                    scratch[index] = suffix[current]
+                    current = prefix[current]
+                    if current < 0, index != 0 { return false }
+                }
+                let room = expectedSize - outCount
+                guard room > 0 else { return true }
+                let count = min(codeLength, room)
+                for index in 0 ..< count { output[outCount + index] = scratch[index] }
+                outCount += count
+                if outCount >= nextPaceAt {
+                    nextPaceAt = outCount + paceEvery
+                    if isCancelled() { return false }
+                    pace?.pauseForWorkSinceLastTick()
+                    if isCancelled() { return false }
+                }
+                return true
+            }
+
+            var codeWidth = 9
+            var nextCode = 258
+            var previous = -1
+            guard var code = readCode(codeWidth) else {
+                return nil
+            }
+            while true {
+                if code == 256 {
+                    codeWidth = 9
+                    nextCode = 258
+                    previous = -1
+                    guard let next = readCode(codeWidth) else { break }
+                    code = next
+                    continue
+                }
+                if code == 257 { break }
+                let resolved: Int
+                let entryFirst: UInt8
+                if code < 256 || (code < nextCode && code < 4096 && length[code] > 0) {
+                    resolved = code
+                    entryFirst = firstByte[code]
+                } else if code == nextCode, previous >= 0, nextCode < 4096 {
+                    resolved = -1
+                    entryFirst = firstByte[previous]
+                } else {
+                    return nil
+                }
+                if resolved >= 0 {
+                    guard emit(resolved) else { return nil }
+                } else {
+                    guard emit(previous) else { return nil }
+                    if outCount < expectedSize {
+                        output[outCount] = entryFirst
+                        outCount += 1
+                    }
+                }
+                if previous >= 0, nextCode < 4096 {
+                    prefix[nextCode] = previous
+                    suffix[nextCode] = entryFirst
+                    firstByte[nextCode] = firstByte[previous]
+                    length[nextCode] = length[previous] + 1
+                    nextCode += 1
+                    if codeWidth < 12, nextCode == (1 << codeWidth) - 1 { codeWidth += 1 }
+                    previous = resolved >= 0 ? resolved : nextCode - 1
+                } else {
+                    previous = resolved
+                }
+                if outCount >= expectedSize { break }
+                guard let next = readCode(codeWidth) else { break }
+                code = next
+            }
+            guard outCount >= expectedSize else { return nil }
+            return Data(output)
         }
-        var table = (0 ..< 256).map { [UInt8($0)] } + [[UInt8]](repeating: [], count: 258)
-        var codeWidth = 9, nextCode = 258, previous: [UInt8]?; var output: [UInt8] = []; output.reserveCapacity(expectedSize)
-        while let code = readCode(codeWidth) {
-            if code == 256 {
-                table = (0 ..< 256).map { [UInt8($0)] } + [[UInt8]](repeating: [], count: 258)
-                codeWidth = 9; nextCode = 258; previous = nil; continue
-            }
-            if code == 257 { break }
-            let entry: [UInt8]
-            if code < table.count, !table[code].isEmpty { entry = table[code] }
-            else if code == nextCode, let previous, let first = previous.first { entry = previous + [first] }
-            else { return nil }
-            output.append(contentsOf: entry)
-            if let previous, let first = entry.first, nextCode < 4096 {
-                if nextCode >= table.count { table.append(previous + [first]) } else { table[nextCode] = previous + [first] }
-                nextCode += 1
-                if nextCode == (1 << codeWidth) - 1, codeWidth < 12 { codeWidth += 1 }
-            }
-            previous = entry
-            if output.count >= expectedSize { break }
-        }
-        return output.count >= expectedSize ? Data(output.prefix(expectedSize)) : nil
     }
 
     private func applyHorizontalPredictor2(_ bytes: inout [UInt8], metadata: Metadata, width: Int, height: Int) -> Bool {
@@ -821,6 +1057,27 @@ private func u64(_ data: Data, _ offset: Int, _ endian: GeoTiffElevationSource.E
 
 private extension NSLock {
     func r2cWithLock<T>(_ work: () -> T) -> T { lock(); defer { unlock() }; return work() }
+}
+
+/// Spreads DEM block decode so a warm cannot hold a core without a break.
+/// Sleeps 1.5× the work just done (about a 40% duty cycle), capped per slice.
+private final class DemDecodePacer: @unchecked Sendable {
+    private var sliceStart = DispatchTime.now().uptimeNanoseconds
+
+    func beginSlice() {
+        sliceStart = DispatchTime.now().uptimeNanoseconds
+    }
+
+    func pauseForWorkSinceLastTick() {
+        let now = DispatchTime.now().uptimeNanoseconds
+        let elapsed = now > sliceStart ? Double(now &- sliceStart) / 1_000_000_000 : 0
+        sliceStart = now
+        let pause = min(2.0, elapsed * 1.5)
+        if pause >= 0.004 {
+            Thread.sleep(forTimeInterval: pause)
+        }
+        sliceStart = DispatchTime.now().uptimeNanoseconds
+    }
 }
 
 private extension Array {

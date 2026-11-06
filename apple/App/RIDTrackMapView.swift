@@ -4225,7 +4225,11 @@ private final class CameraFootprintMapView: UIView {
     private let dem: GeoTiffElevationSource = {
         let root = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory
-        return GeoTiffElevationSource(directory: root.appendingPathComponent("RID2Caltopo/DEM", isDirectory: true))
+        return GeoTiffElevationSource(
+            directory: root.appendingPathComponent("RID2Caltopo/DEM", isDirectory: true),
+            decodedBlockCacheDirectory: AppleMapCachePaths.decodedDemBlockRoot,
+            onDecodedBlockPersisted: { url in AppleUnifiedMapCache.remember(url) }
+        )
     }()
 
     init() {
@@ -4335,7 +4339,10 @@ private final class CameraFootprintMapView: UIView {
                             dem.sample(
                                 latitude: latitude,
                                 longitude: longitude,
-                                maximumHorizontalResolutionMeters: 1.5
+                                maximumHorizontalResolutionMeters: 1.5,
+                                isCancelled: {
+                                    Task.isCancelled || ProcessInfo.processInfo.systemUptime >= deadline
+                                }
                             )?.elevationMeters
                         }, cancelled: { Task.isCancelled || ProcessInfo.processInfo.systemUptime >= deadline },
                         edgeSubdivisions: 1)

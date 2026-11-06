@@ -4,6 +4,8 @@ import android.content.Context
 import android.content.ContextWrapper
 import java.io.File
 import java.util.concurrent.TimeUnit
+import kotlin.coroutines.cancellation.CancellationException
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -45,5 +47,26 @@ class DemCatalogIndependenceTest {
             "catalog-not-ready sample must return immediately, elapsedMs=$elapsedMs",
             elapsedMs < 500L,
         )
+    }
+
+    @Test
+    fun warmDecodedTilesRejectsANonPositiveRadius() {
+        val source = GeoTiffDemSource(stubContext())
+        assertEquals(0, source.warmDecodedTiles(39.5, -104.5, 0.0))
+    }
+
+    @Test
+    fun warmDecodedTilesStopsWhenCancelled() {
+        val source = GeoTiffDemSource(stubContext())
+        source.warmCatalog()
+        var threw = false
+        try {
+            source.warmDecodedTiles(39.5, -104.5, 1_609.0) { throw CancellationException("stop") }
+        } catch (_: CancellationException) {
+            threw = true
+        }
+        assertTrue(threw)
+        // Session depth must unwind so a later sample is not stuck in the warm cache window.
+        assertNull(source.sample(39.5, -104.5))
     }
 }

@@ -1,4 +1,5 @@
 Latest changes:
+- Live video and the map stay responsive while 1 m terrain is prepared. Elevation is unchanged, and decoded terrain is reused instead of decompressed again.
 - Download Map prefers a USGS S3 lidar file when that survey lists one, and waits longer if the lidar server is busy.
 - Download Map retries a USGS lidar file when the server is busy, instead of stopping AOL on the first slowdown.
 - Clue photos stay upright, matching the live video.

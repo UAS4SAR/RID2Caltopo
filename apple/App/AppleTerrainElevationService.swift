@@ -25,6 +25,7 @@ actor AppleTerrainElevationService {
     private var prefetchFailureCounts: [String: Int] = [:]
     private var prefetchRetryAfter: [String: Date] = [:]
     private var prefetchWorkerRunning = false
+    private var operatingAreaWarm: Task<Void, Never>?
     private var lastLocalMissLogAt = Date.distantPast
 
     init(session: URLSession = URLSession(configuration: .ephemeral)) {
@@ -35,7 +36,11 @@ actor AppleTerrainElevationService {
         // reusing legacy EPQS values quantized into approximately 30 m cells.
         cacheDirectory = root.appendingPathComponent("RID2Caltopo/TerrainV2", isDirectory: true)
         // Must match AppleDEMDownloadCoordinator / TerrainPrefetch destination.
-        localDEM = GeoTiffElevationSource(directory: AppleMapCachePaths.demRoot)
+        localDEM = GeoTiffElevationSource(
+            directory: AppleMapCachePaths.demRoot,
+            decodedBlockCacheDirectory: AppleMapCachePaths.decodedDemBlockRoot,
+            onDecodedBlockPersisted: { url in AppleUnifiedMapCache.remember(url) }
+        )
         // Altitude / AOL / clue projection must not wait for a map view to open.
         let dem = localDEM
         Task.detached(priority: .utility) { dem.warmCatalog() }
@@ -358,17 +363,21 @@ actor AppleTerrainElevationService {
         _ = localDEM.sample(latitude: latitude, longitude: longitude)
             AppleLog.info("TerrainPrefetch", "Terrain preparation complete=\(complete)")
         if complete, radiusMeters > 0 {
+            // A moving device schedules a new cell about every few hundred metres.
+            // Cancel the previous warm so two full-radius LZW passes cannot run together.
+            operatingAreaWarm?.cancel()
             let dem = localDEM
             let centerLat = latitude
             let centerLon = longitude
             let warmRadius = radiusMeters
-            Task.detached(priority: .utility) {
+            operatingAreaWarm = Task.detached(priority: .background) {
                 dem.warmDecodedTiles(
                     latitude: centerLat,
                     longitude: centerLon,
                     radiusMeters: warmRadius,
                     isCancelled: { Task.isCancelled }
                 )
+                guard !Task.isCancelled else { return }
                 AppleLog.info(
                     "TerrainPrefetch",
                     "S1M decode warm complete operatingRadiusM=\(warmRadius)"

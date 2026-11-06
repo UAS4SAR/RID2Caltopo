@@ -1773,6 +1773,80 @@ func operationalDeviceNamePreservesExplicitOverrideAndRejectsOpaqueHostname() {
     #expect(abs(elevation - 250) < 0.001)
 }
 
+@Test func geoTiffLZWRoundTripsRampAndRepeatedFloatBlocks() throws {
+    let ramp = makeSampledLZWFloatTile(width: 128, height: 96) { column, row in
+        Float(row * 1_000 + column) / 8
+    }
+    let repeated = makeSampledLZWFloatTile(width: 64, height: 64) { _, _ in 250 }
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("r2c-dem-lzw-grid-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    try ramp.write(to: directory.appendingPathComponent("USGS_1_n40w105.tif"))
+    let source = GeoTiffElevationSource(directory: directory)
+    source.warmCatalog()
+    // Pixel (10, 20) is an integer column/row, so bilinear returns that sample.
+    let scaleX = 1.0 / 128, scaleY = 1.0 / 96
+    let elevation = try #require(source.sampleElevationMeters(
+        latitude: 40 - 20 * scaleY, longitude: -105 + 10 * scaleX
+    ))
+    let expected = Double(20 * 1_000 + 10) / 8
+    #expect(abs(elevation - expected) < 0.001)
+    #expect(source.testingBlockDecodeCount() == 1)
+
+    let repeatDirectory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("r2c-dem-lzw-repeat-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: repeatDirectory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: repeatDirectory) }
+    try repeated.write(to: repeatDirectory.appendingPathComponent("USGS_1_n40w105.tif"))
+    let repeatedSource = GeoTiffElevationSource(directory: repeatDirectory)
+    repeatedSource.warmCatalog()
+    let constant = try #require(repeatedSource.sampleElevationMeters(latitude: 39.5, longitude: -104.5))
+    #expect(abs(constant - 250) < 0.001)
+}
+
+@Test func geoTiffDecodedBlocksAreReusedFromDisk() throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("r2c-dem-disk-\(UUID().uuidString)", isDirectory: true)
+    let cache = FileManager.default.temporaryDirectory
+        .appendingPathComponent("r2c-dem-disk-cache-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
+    defer {
+        try? FileManager.default.removeItem(at: directory)
+        try? FileManager.default.removeItem(at: cache)
+    }
+    try makeFloatGeoTiff().write(to: directory.appendingPathComponent("USGS_1_n40w105.tif"))
+    let first = GeoTiffElevationSource(directory: directory, decodedBlockCacheDirectory: cache)
+    first.warmCatalog()
+    let elevation = try #require(first.sampleElevationMeters(latitude: 39.5, longitude: -104.5))
+    #expect(abs(elevation - 250) < 0.001)
+    #expect(first.testingBlockDecodeCount() == 1)
+    first.testingWaitForPersistedBlocks()
+
+    let second = GeoTiffElevationSource(directory: directory, decodedBlockCacheDirectory: cache)
+    second.warmCatalog()
+    let reused = try #require(second.sampleElevationMeters(latitude: 39.5, longitude: -104.5))
+    #expect(abs(reused - 250) < 0.001)
+    #expect(second.testingBlockDecodeCount() == 0)
+}
+
+@Test func geoTiffWarmStopsWhenCancelledAndStillCoversTheCenter() throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("r2c-dem-warm-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    try makeFloatGeoTiff().write(to: directory.appendingPathComponent("USGS_1_n40w105.tif"))
+    let source = GeoTiffElevationSource(directory: directory)
+    source.warmCatalog()
+    let stopped = source.warmDecodedTiles(latitude: 39.5, longitude: -104.5, radiusMeters: 1_600) { true }
+    #expect(stopped == 0)
+    #expect(source.testingBlockDecodeCount() == 0)
+    let visited = source.warmDecodedTiles(latitude: 39.5, longitude: -104.5, radiusMeters: 150)
+    #expect(visited > 1)
+    #expect(abs((source.sampleElevationMeters(latitude: 39.5, longitude: -104.5) ?? 0) - 250) < 0.001)
+}
+
 @Test func geoTiffSampleWhileCatalogNotReadyReturnsImmediately() throws {
     let directory = FileManager.default.temporaryDirectory
         .appendingPathComponent("r2c-dem-not-ready-\(UUID().uuidString)", isDirectory: true)
@@ -6527,6 +6601,119 @@ private func makeFloatGeoTiff() -> Data {
 
 private func makeLZWFloatPredictorGeoTiff() -> Data {
     Data(base64Encoded: "SUkqABoAAACAEIAoVALgAQchgApjIcQcAQENAAABAwABAAAAAgAAAAEBAwABAAAAAgAAAAIBAwABAAAAIAAAAAMBAwABAAAABQAAAAYBAwABAAAAAQAAABEBBAABAAAACAAAABYBAwABAAAAAgAAABcBBAABAAAAEgAAABwBAwABAAAAAQAAAD0BAwABAAAAAwAAAFMBAwABAAAAAwAAAA6DDAADAAAAvAAAAIKEDAAGAAAA1AAAAAAAAAAAAAAAAADwPwAAAAAAAPA/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEBawAAAAAAAAERAAAAAAAAAAAA=")!
+}
+
+/// TIFF LZW matching GeoTiffElevationSource: MSB-first, Clear=256, EOI=257.
+/// The encoder's counter runs one code ahead of the decoder, so the width
+/// grows when that counter reaches 512, 1024, or 2048. The decoder then sees
+/// the wider codes at 511, 1023, and 2047.
+private func tiffLzwEncode(_ input: [UInt8]) -> [UInt8] {
+    var table: [UInt64: Int] = [:]
+    func key(_ prefix: Int, _ byte: UInt8) -> UInt64 {
+        (UInt64(prefix + 1) << 8) | UInt64(byte)
+    }
+    var nextCode = 258
+    var width = 9
+    var bitBuffer: UInt64 = 0
+    var bitCount = 0
+    var output: [UInt8] = []
+    output.reserveCapacity(input.count / 2 + 8)
+    func write(_ code: Int) {
+        bitBuffer = (bitBuffer << UInt64(width)) | UInt64(code)
+        bitCount += width
+        while bitCount >= 8 {
+            bitCount -= 8
+            output.append(UInt8(truncatingIfNeeded: (bitBuffer >> UInt64(bitCount)) & 0xFF))
+        }
+        if bitCount == 0 { bitBuffer = 0 }
+        else { bitBuffer &= (1 << UInt64(bitCount)) - 1 }
+    }
+    write(256)
+    var prefix = -1
+    for byte in input {
+        if prefix < 0 {
+            prefix = Int(byte)
+            continue
+        }
+        let candidate = key(prefix, byte)
+        if let existing = table[candidate] {
+            prefix = existing
+        } else {
+            write(prefix)
+            if nextCode < 4096 {
+                table[candidate] = nextCode
+                nextCode += 1
+                if width < 12, nextCode == (1 << width) { width += 1 }
+            }
+            prefix = Int(byte)
+        }
+    }
+    if prefix >= 0 { write(prefix) }
+    write(257)
+    if bitCount > 0 {
+        output.append(UInt8(truncatingIfNeeded: (bitBuffer << UInt64(8 - bitCount)) & 0xFF))
+    }
+    return output
+}
+
+private func makeSampledLZWFloatTile(
+    width: Int, height: Int, sample: (Int, Int) -> Float
+) -> Data {
+    var bytes = [UInt8]()
+    bytes.reserveCapacity(width * height * 4)
+    for row in 0 ..< height {
+        for column in 0 ..< width {
+            var bits = sample(column, row).bitPattern
+            for _ in 0 ..< 4 {
+                bytes.append(UInt8(truncatingIfNeeded: bits))
+                bits >>= 8
+            }
+        }
+    }
+    let compressed = Data(tiffLzwEncode(bytes))
+    return makeGeographicFloatTiff(width: width, height: height, compression: 5, pixels: compressed)
+}
+
+private func makeGeographicFloatTiff(width: Int, height: Int, compression: Int, pixels: Data) -> Data {
+    let entryCount = 14
+    let scaleOffset = 8 + 2 + entryCount * 12 + 4
+    let tieOffset = scaleOffset + 3 * 8
+    let pixelOffset = tieOffset + 6 * 8
+    var bytes = [UInt8](repeating: 0, count: pixelOffset)
+    func put16(_ value: UInt16, _ offset: Int) {
+        bytes[offset] = UInt8(truncatingIfNeeded: value)
+        bytes[offset + 1] = UInt8(truncatingIfNeeded: value >> 8)
+    }
+    func put32(_ value: UInt32, _ offset: Int) {
+        for index in 0 ..< 4 { bytes[offset + index] = UInt8(truncatingIfNeeded: value >> UInt32(index * 8)) }
+    }
+    func put64(_ value: UInt64, _ offset: Int) { for index in 0 ..< 8 { bytes[offset + index] = UInt8(truncatingIfNeeded: value >> UInt64(index * 8)) } }
+    func putDouble(_ value: Double, _ offset: Int) { put64(value.bitPattern, offset) }
+    func entry(_ index: Int, _ tag: UInt16, _ type: UInt16, _ count: UInt32, _ value: UInt32) {
+        let offset = 10 + index * 12
+        put16(tag, offset); put16(type, offset + 2); put32(count, offset + 4); put32(value, offset + 8)
+    }
+    bytes[0] = 0x49; bytes[1] = 0x49; put16(42, 2); put32(8, 4); put16(UInt16(entryCount), 8)
+    entry(0, 256, 4, 1, UInt32(width))
+    entry(1, 257, 4, 1, UInt32(height))
+    entry(2, 258, 3, 1, 32)
+    entry(3, 259, 3, 1, UInt32(compression))
+    entry(4, 262, 3, 1, 1)
+    entry(5, 273, 4, 1, UInt32(pixelOffset))
+    entry(6, 277, 3, 1, 1)
+    entry(7, 278, 4, 1, UInt32(height))
+    entry(8, 279, 4, 1, UInt32(pixels.count))
+    entry(9, 284, 3, 1, 1)
+    entry(10, 317, 3, 1, 1)
+    entry(11, 339, 3, 1, 3)
+    entry(12, 33550, 12, 3, UInt32(scaleOffset))
+    entry(13, 33922, 12, 6, UInt32(tieOffset))
+    let scaleX = 1.0 / Double(width)
+    let scaleY = 1.0 / Double(height)
+    [scaleX, scaleY, 0.0].enumerated().forEach { putDouble($0.element, scaleOffset + $0.offset * 8) }
+    [0.0, 0.0, 0.0, -105.0, 40.0, 0.0].enumerated().forEach { putDouble($0.element, tieOffset + $0.offset * 8) }
+    bytes.append(contentsOf: pixels)
+    return Data(bytes)
 }
 
 private func trackObservation(

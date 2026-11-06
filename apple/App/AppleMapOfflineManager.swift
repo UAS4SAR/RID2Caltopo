@@ -74,6 +74,13 @@ enum AppleMapCachePaths {
         return base.appendingPathComponent("RID2Caltopo/DEM", isDirectory: true)
     }
 
+    /// Predictor-applied S1M blocks. Counted with the map cache so Manage Storage can clear them.
+    static var decodedDemBlockRoot: URL {
+        let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        return caches.appendingPathComponent("RID2Caltopo/dem_blocks_v2", isDirectory: true)
+    }
+
     static func tile(_ tile: OperationalOfflineTile, layerKey: String, fileExtension: String) -> URL {
         root.appendingPathComponent(layerKey, isDirectory: true)
             .appendingPathComponent(String(tile.zoom), isDirectory: true)
@@ -134,6 +141,7 @@ enum AppleUnifiedMapCache {
         let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
         return [AppleSurfaceStore.root, AppleMapCachePaths.root, AppleMapCachePaths.demRoot,
                 caches.appendingPathComponent("RID2Caltopo/TerrainV2"),
+                AppleMapCachePaths.decodedDemBlockRoot,
                 caches.appendingPathComponent("RID2Caltopo/CalTopoMarkerIcons")]
     }
     static func configuredGB(defaults: UserDefaults = .standard) -> Double {

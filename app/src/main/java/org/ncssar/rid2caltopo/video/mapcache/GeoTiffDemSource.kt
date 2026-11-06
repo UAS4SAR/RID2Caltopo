@@ -68,6 +68,9 @@ internal class GeoTiffDemSource(context: Context) {
     private var clueSessionDepth = 0
     /** Flight-start warm keeps elevated limits so form/post-save walks stay hot. */
     @Volatile private var flightWarmRetained = false
+    /** One operating-area warm at a time. A newer call supersedes the older grid. */
+    private val warmGate = Any()
+    private val warmGeneration = java.util.concurrent.atomic.AtomicLong()
     private var timingCatalogNs = 0L
     private var timingTileOpenDecodeNs = 0L
     private var timingSampleCount = 0
@@ -120,41 +123,87 @@ internal class GeoTiffDemSource(context: Context) {
     /**
      * Pre-decode S1M tiles covering [lat]/[lng] ± radius into the elevated in-memory cache
      * (and persistent .f32raw blocks). Call from a background worker after TerrainPrefetch.
+     * One warm runs at a time on a background priority. Each expensive sample yields so a
+     * large first-time LZW pass cannot hold a core without a break. Returns points sampled.
      */
     fun warmDecodedTiles(
         lat: Double,
         lng: Double,
         radiusMeters: Double,
         checkCancelled: () -> Unit = {},
-    ) {
-        if (!lat.isFinite() || !lng.isFinite() || !radiusMeters.isFinite() || radiusMeters <= 0.0) return
-        retainFlightWarmCache()
-        beginClueSamplingSession()
+    ): Int {
+        if (!lat.isFinite() || !lng.isFinite() || !radiusMeters.isFinite() || radiusMeters <= 0.0) return 0
+        val token = warmGeneration.incrementAndGet()
+        val previousPriority = try {
+            val current = android.os.Process.getThreadPriority(android.os.Process.myTid())
+            android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND)
+            current
+        } catch (_: RuntimeException) {
+            null
+        }
         try {
-            ensureCatalogCurrent()
-            val stepMeters = minOf(400.0, maxOf(100.0, radiusMeters / 4.0))
-            val metersPerDegreeLat = 111_195.0
-            val metersPerDegreeLon = maxOf(1.0, 111_195.0 * cos(Math.toRadians(lat)))
-            var sampleLat = lat - radiusMeters / metersPerDegreeLat
-            val latMax = lat + radiusMeters / metersPerDegreeLat
-            while (sampleLat <= latMax + 1e-9) {
-                checkCancelled()
-                var sampleLng = lng - radiusMeters / metersPerDegreeLon
-                val lngMax = lng + radiusMeters / metersPerDegreeLon
-                while (sampleLng <= lngMax + 1e-9) {
-                    checkCancelled()
-                    val dLat = (sampleLat - lat) * metersPerDegreeLat
-                    val dLon = (sampleLng - lng) * metersPerDegreeLon
-                    if (sqrt(dLat * dLat + dLon * dLon) <= radiusMeters + 1.0) {
-                        sample(sampleLat, sampleLng, checkCancelled)
+            synchronized(warmGate) {
+                if (warmGeneration.get() != token) return 0
+                retainFlightWarmCache()
+                beginClueSamplingSession()
+                try {
+                    ensureCatalogCurrent()
+                    val stepMeters = minOf(400.0, maxOf(100.0, radiusMeters / 4.0))
+                    val metersPerDegreeLat = 111_195.0
+                    val metersPerDegreeLon = maxOf(1.0, 111_195.0 * cos(Math.toRadians(lat)))
+                    var sampleLat = lat - radiusMeters / metersPerDegreeLat
+                    val latMax = lat + radiusMeters / metersPerDegreeLat
+                    var visited = 0
+                    while (sampleLat <= latMax + 1e-9) {
+                        checkCancelled()
+                        if (warmGeneration.get() != token) return visited
+                        var sampleLng = lng - radiusMeters / metersPerDegreeLon
+                        val lngMax = lng + radiusMeters / metersPerDegreeLon
+                        while (sampleLng <= lngMax + 1e-9) {
+                            checkCancelled()
+                            if (warmGeneration.get() != token) return visited
+                            val dLat = (sampleLat - lat) * metersPerDegreeLat
+                            val dLon = (sampleLng - lng) * metersPerDegreeLon
+                            if (sqrt(dLat * dLat + dLon * dLon) <= radiusMeters + 1.0) {
+                                val started = System.nanoTime()
+                                sample(sampleLat, sampleLng, checkCancelled)
+                                visited += 1
+                                paceDemDecode(started)
+                            }
+                            sampleLng += stepMeters / metersPerDegreeLon
+                        }
+                        sampleLat += stepMeters / metersPerDegreeLat
                     }
-                    sampleLng += stepMeters / metersPerDegreeLon
+                    checkCancelled()
+                    if (warmGeneration.get() != token) return visited
+                    val started = System.nanoTime()
+                    sample(lat, lng, checkCancelled)
+                    paceDemDecode(started)
+                    return visited + 1
+                } finally {
+                    endClueSamplingSession()
                 }
-                sampleLat += stepMeters / metersPerDegreeLat
             }
-            sample(lat, lng, checkCancelled)
         } finally {
-            endClueSamplingSession()
+            if (previousPriority != null) {
+                try {
+                    android.os.Process.setThreadPriority(previousPriority)
+                } catch (_: RuntimeException) {
+                }
+            }
+        }
+    }
+
+    /** About a 40% duty cycle after a slow block decode. Cache hits return too fast to sleep. */
+    private fun paceDemDecode(startedNs: Long) {
+        val elapsedNs = System.nanoTime() - startedNs
+        if (elapsedNs < 5_000_000L) return
+        val sleepMs = minOf(2_000L, elapsedNs * 3 / 2_000_000L)
+        if (sleepMs < 4L) return
+        try {
+            Thread.sleep(sleepMs)
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
         }
     }
 
