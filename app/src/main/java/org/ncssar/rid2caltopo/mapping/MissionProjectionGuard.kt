@@ -51,8 +51,9 @@ internal object MissionProjectionGuard {
     }
 
     /**
-     * Create [alias] -> [destination] without a missing window: write alias.tmp then
-     * ATOMIC_MOVE over the previous alias (or plain rename if atomic is unavailable).
+     * Create [alias] -> [destination]: write a temporary symlink, then ATOMIC_MOVE over
+     * the previous alias. A real directory cannot be the target of that rename on
+     * Android/Linux, so move the directory aside, install the link, then remove it.
      */
     fun installAliasAtomically(alias: File, destination: File) {
         alias.parentFile!!.mkdirs()
@@ -61,6 +62,24 @@ internal object MissionProjectionGuard {
             if (Files.isSymbolicLink(tmp.toPath())) Files.delete(tmp.toPath()) else tmp.deleteRecursively()
         }
         Files.createSymbolicLink(tmp.toPath(), destination.toPath().toAbsolutePath())
+        try {
+            moveAliasIntoPlace(tmp, alias)
+        } catch (error: java.nio.file.FileSystemException) {
+            if (Files.isSymbolicLink(alias.toPath()) || !alias.isDirectory) throw error
+            val aside = File(alias.parentFile, "${alias.name}.aside-${java.util.UUID.randomUUID()}")
+            check(alias.renameTo(aside)) { "Cannot move previous ${alias.name} aside for the projection link." }
+            try {
+                moveAliasIntoPlace(tmp, alias)
+            } catch (moveError: Exception) {
+                if (!Files.isSymbolicLink(alias.toPath()) && aside.exists()) aside.renameTo(alias)
+                if (Files.isSymbolicLink(tmp.toPath()) || tmp.exists()) Files.deleteIfExists(tmp.toPath())
+                throw moveError
+            }
+            if (aside.exists()) aside.deleteRecursively()
+        }
+    }
+
+    private fun moveAliasIntoPlace(tmp: File, alias: File) {
         try {
             Files.move(
                 tmp.toPath(), alias.toPath(),

@@ -41,6 +41,21 @@ class MissionProjectionGuardTest {
         assertTrue(MissionProjectionGuard.assertStagedPreservesWorking(working, staged).ok)
     }
 
+    @Test fun atomicAliasInstallReplacesRealDirectory() {
+        val dest = folder.newFolder("dest")
+        File(dest, "hydrated.txt").writeText("ready")
+        val alias = folder.newFolder("operational-state")
+        File(alias, "legacy.txt").writeText("old")
+        assertTrue(alias.isDirectory)
+        assertFalse(Files.isSymbolicLink(alias.toPath()))
+        MissionProjectionGuard.installAliasAtomically(alias, dest)
+        assertTrue(MissionProjectionGuard.aliasPresent(alias))
+        assertTrue(Files.isSymbolicLink(alias.toPath()))
+        assertEquals(dest.canonicalFile, alias.canonicalFile)
+        assertEquals("ready", File(alias, "hydrated.txt").readText())
+        assertFalse(File(alias, "legacy.txt").exists())
+    }
+
     @Test fun atomicAliasInstallNeverLeavesAliasAbsent() {
         val dest = folder.newFolder("dest")
         val alias = File(folder.root, "mapping-missions")
