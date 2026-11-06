@@ -265,6 +265,7 @@ internal object OperationalStorage {
         }
         // SAF hydration stays off `gate`. Publication and live-track writes must be able
         // to enter that monitor while Archive Dir is still being prepared.
+        var joinHeavyForTest = false
         if (!prepareBody.tryLock()) {
             prepareBody.lock()
             prepareBody.unlock()
@@ -370,6 +371,9 @@ internal object OperationalStorage {
                         }
                     }
                 }
+                // Explicit test archives assert migrated bytes when prepare returns.
+                // Production launch still finishes heavy areas off this call.
+                joinHeavyForTest = testArchive != null && heavy.isNotEmpty()
             } catch (error: Exception) {
                 state.value = Status(message = error.message ?: "Archive storage could not be prepared; original copies were retained.")
                 throw error
@@ -377,6 +381,7 @@ internal object OperationalStorage {
         } finally {
             prepareBody.unlock()
         }
+        if (joinHeavyForTest) startup.submit {}.get()
     }
 
     private fun prepareHeavyAreas(
