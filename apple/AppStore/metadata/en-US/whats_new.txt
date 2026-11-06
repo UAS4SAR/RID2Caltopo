@@ -18,7 +18,10 @@ Latest changes:
 - Mapping no longer reports storage full at publish when space is available, and shows a realistic storage estimate before processing.
 - Local Maps opens faster and keeps saved missions and their original images safe while the list loads.
 - Deleted Local Maps missions stay deleted and no longer reappear while storage is preparing.
+- Imported shared maps open in Local Maps, including their 3D surface.
 - View 2D map shows the mapping overlay, or explains when the map has no imagery yet.
+- Opening the app no longer jumps the map to a saved mapping layer. The layer still draws; View 2D map moves the camera to it.
+- Returning to device GPS recenters the map on the device location.
 - Orthophotos fill holes near the flight edges from estimated 3D surface heights, sized to the flight footprint. Mission plans add settings for edge overrun, 3D surface detail, and hole fill.
 - Faster startup verification of mapping missions.
 - Reconstruction progress and time remaining follow measured stage timings, including slower late tiles.
