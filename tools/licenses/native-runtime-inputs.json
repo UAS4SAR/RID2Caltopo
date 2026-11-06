@@ -1,22 +1,22 @@
 {
   "libraries": {
     "libR2CFFmpegMobile.a": {
-      "sha256": "7114171ea168cee41c8b13d772c4e3daf861677a4a9b9cf19bc404ff2a58ebbd",
-      "bytes": 4407272,
+      "sha256": "8f9e5e7a44c40cbe773df73eaad6a46370f04e5b52563437ee31cd6efa7113c0",
+      "bytes": 4407312,
       "scope": "FFmpeg n7.0 LGPL-2.1-or-later; GPL, nonfree and version3 disabled"
     },
     "libr2c_mapping_runtime.a": {
-      "sha256": "ebf9f02ca13722e9ab52e14ed07ad7fe2139b7b4475948cfc383f9d77c57a01f",
-      "bytes": 22285616,
+      "sha256": "e5cbd7f1aa08fce77548e40bb1d87d7176393310802f790aca92315d41ffced4",
+      "bytes": 22314200,
       "scope": "OpenCV 4.12.0, Ceres BSD and MPL-licensed Eigen headers"
     },
     "libmediamtx_mobile.a": {
-      "sha256": "6e2caf7bc59c2b2e48c9a4ce4f1cc99e1cecdef3039ed68cdd265f2a9a778390",
+      "sha256": "10de03c4a77c15f7816dc604e0efc50c3643d39b8bd31081db73e6aaa7b55883",
       "bytes": 85610128,
       "scope": "MediaMTX v1.16.2 plus the 60 linked Go modules and Go 1.25.6 runtime"
     },
     "libR2CAnomalyApple.a": {
-      "sha256": "fd93625a25108a4f9900fd30cd73d004319ab4f1b0eb15b6fa7db3d28a6e8040",
+      "sha256": "c7bb58ae00c36a1b5e6696a895749bf5a03b771c7983f7cd8eb87a1be1181a4b",
       "bytes": 339744,
       "scope": "RID2Caltopo original Apache-2.0 native anomaly code"
     }
