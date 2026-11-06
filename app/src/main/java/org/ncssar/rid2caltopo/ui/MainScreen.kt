@@ -1730,6 +1730,14 @@ fun MainScreen(
     }
 
     var showWorkspaceStats by remember { mutableStateOf(false) }
+    val aircraftReceptionAutoOpen by localViewModel.aircraftReceptionAutoOpenGeneration.collectAsState()
+    val aircraftReceptionFocusRemoteId by localViewModel.aircraftReceptionFocusRemoteId.collectAsState()
+    LaunchedEffect(showWorkspaceStats) {
+        localViewModel.setAircraftReceptionPanelOpen(showWorkspaceStats)
+    }
+    LaunchedEffect(aircraftReceptionAutoOpen) {
+        if (aircraftReceptionAutoOpen > 0) showWorkspaceStats = true
+    }
     workspace({
         Box {
                         IconButton(onClick = { menuExpanded = true }) {
@@ -1800,7 +1808,7 @@ fun MainScreen(
     }, { showAboutPrivacyDialog = true }, { showWorkspaceStats = true })
     if (showWorkspaceStats) {
         val drones by localViewModel.drones.collectAsState()
-        WorkspaceBluetoothStats(drones = drones, onDismiss = { showWorkspaceStats = false }, onDrone = { drone ->
+        WorkspaceBluetoothStats(drones = drones, focusRemoteId = aircraftReceptionFocusRemoteId, onDismiss = { showWorkspaceStats = false }, onDrone = { drone ->
             showWorkspaceStats = false
             if (drone.mappedId == drone.remoteId) addRidMapRemoteId = drone.remoteId
             else localViewModel.requestDroneConfirmation(drone)

@@ -4,6 +4,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -48,7 +50,12 @@ fun WorkspaceAboutHeader(device: String, uptime: String) {
 }
 
 @Composable
-fun WorkspaceBluetoothStats(drones: List<CtDroneSpec>, onDismiss: () -> Unit, onDrone: (CtDroneSpec) -> Unit) {
+fun WorkspaceBluetoothStats(
+    drones: List<CtDroneSpec>,
+    focusRemoteId: String? = null,
+    onDismiss: () -> Unit,
+    onDrone: (CtDroneSpec) -> Unit,
+) {
     val config = LocalConfiguration.current
     val density = LocalDensity.current
     val maxWidth = (config.screenWidthDp - 24).coerceAtLeast(240).toFloat()
@@ -66,7 +73,20 @@ fun WorkspaceBluetoothStats(drones: List<CtDroneSpec>, onDismiss: () -> Unit, on
                 }
                 Text("InvalidRID Msgs: $invalid")
                 Box(Modifier.weight(1f).horizontalScroll(rememberScrollState()).verticalScroll(rememberScrollState())) {
-                    Column { RidmapHeader(); drones.forEach { drone -> key(drone.remoteId) { DroneItem(drone = drone, totalCount = drone.totalCount) { onDrone(drone) } } } }
+                    Column {
+                        RidmapHeader()
+                        drones.forEach { drone ->
+                            key(drone.remoteId) {
+                                val bringIntoViewRequester = remember { BringIntoViewRequester() }
+                                LaunchedEffect(focusRemoteId) {
+                                    if (focusRemoteId == drone.remoteId) bringIntoViewRequester.bringIntoView()
+                                }
+                                Box(Modifier.bringIntoViewRequester(bringIntoViewRequester)) {
+                                    DroneItem(drone = drone, totalCount = drone.totalCount) { onDrone(drone) }
+                                }
+                            }
+                        }
+                    }
                 }
                 Text("Resize ↘", Modifier.align(Alignment.End).padding(10.dp).pointerInput(maxWidth, maxHeight) {
                     detectDragGestures { change, drag -> change.consume(); width = (width + drag.x / density.density).coerceIn(240f, maxWidth); height = (height + drag.y / density.density).coerceIn(240f, maxHeight) }

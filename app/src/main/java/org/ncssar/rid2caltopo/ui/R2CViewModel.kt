@@ -213,6 +213,14 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
     private val _activeScreen = MutableStateFlow(ActiveScreen.STREAMS)
     val activeScreen : StateFlow<ActiveScreen> = _activeScreen.asStateFlow()
     private val promptedCurrentFlightRemoteIds = linkedSetOf<String>()
+    private val aircraftReceptionPrompts = AircraftReceptionPromptSession()
+    @Volatile private var aircraftReceptionPanelOpen = false
+    private val _aircraftReceptionAutoOpenGeneration = MutableStateFlow(0)
+    /** Increments only when Aircraft and Reception should be shown. Already-open stays put. */
+    val aircraftReceptionAutoOpenGeneration: StateFlow<Int> = _aircraftReceptionAutoOpenGeneration.asStateFlow()
+    private val _aircraftReceptionFocusRemoteId = MutableStateFlow<String?>(null)
+    /** Aircraft to bring into view inside the already-open or just-opened panel. */
+    val aircraftReceptionFocusRemoteId: StateFlow<String?> = _aircraftReceptionFocusRemoteId.asStateFlow()
     private val confirmedCurrentFlightRemoteIds = linkedSetOf<String>()
     private val publicationGateLoggedRemoteIds = linkedSetOf<String>()
     private var pendingDroneConfirmationRequestedByOperator = false
@@ -1055,6 +1063,53 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
             }
         } else if (delayedUptimePoll.isRunning) {
             delayedUptimePoll.stop()
+        }
+        reconcileAircraftReceptionPrompts(droneListSnapshot.drones)
+    }
+
+    /** UI reports the real panel. An auto-open also sets this so the next aircraft does not stack. */
+    fun setAircraftReceptionPanelOpen(open: Boolean) {
+        aircraftReceptionPanelOpen = open
+    }
+
+    /**
+     * First in-session sighting of an aircraft that is not on the team list and has no
+     * Confirm / Don't Publish / automatic confirmation. In-memory only; no disk.
+     */
+    private fun reconcileAircraftReceptionPrompts(drones: List<CtDroneSpec>) {
+        var panelOpen = aircraftReceptionPanelOpen
+        val pending = _pendingDroneConfirmation.value
+        val autoConfirmationRemoteId = if (pending != null && !pendingDroneConfirmationRequestedByOperator) {
+            pending.remoteId
+        } else {
+            null
+        }
+        for (drone in drones) {
+            val remoteId = drone.remoteId
+            val unidentified = AircraftReceptionPromptSession.isUnidentifiedAircraft(
+                remoteId,
+                drone.mappedId,
+                drone.org,
+            )
+            val dispositioned = CaltopoClient.IsSessionUnknownDrone(remoteId) || remoteId == autoConfirmationRemoteId
+            when (aircraftReceptionPrompts.observe(
+                aircraftId = remoteId,
+                unidentified = unidentified,
+                dispositionedThisSession = dispositioned,
+                panelOpen = panelOpen,
+            )) {
+                AircraftReceptionPromptDecision.Open -> {
+                    panelOpen = true
+                    aircraftReceptionPanelOpen = true
+                    _aircraftReceptionFocusRemoteId.value = remoteId
+                    _aircraftReceptionAutoOpenGeneration.value = _aircraftReceptionAutoOpenGeneration.value + 1
+                    CTDebug(tag, "AircraftReception auto-open id=${AircraftReceptionPromptSession.logToken(remoteId)}")
+                }
+                AircraftReceptionPromptDecision.AlreadyVisible -> {
+                    _aircraftReceptionFocusRemoteId.value = remoteId
+                }
+                AircraftReceptionPromptDecision.Skip -> Unit
+            }
         }
     }
 

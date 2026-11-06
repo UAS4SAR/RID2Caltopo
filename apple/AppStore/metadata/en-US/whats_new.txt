@@ -4,6 +4,7 @@ Latest changes:
 - Local clues stay visible on the map even when no incident map is selected.
 - Unconfirmed flights stay local until the Drone Confirmation Panel is Confirmed: no CalTopo LiveTrack/archive publish and no tracker live traffic or flight record without acknowledgement.
 - A drone seen again after the 30-second message gap starts a new flight that needs its own Confirm. Drones marked Don't Publish stay ignored for the rest of the session until you select them in Aircraft and Reception.
+- The first time an aircraft that is not already on the team list is heard during an app session, Aircraft and Reception opens so you can add it or ignore it. Later messages from that aircraft do not open the panel again.
 - Don't Publish now only stops CalTopo and tracker publishing; the flight track, video and clues are still saved locally.
 - Flights marked Don't Publish and finished flights stay out of recovery and tracker upload.
 - New USGS Scanned Topo and USFS Topo base layers, with faster tile fill that no longer stalls the map.

@@ -146,6 +146,8 @@ struct ContentView: View {
     @State private var showTrackMap = true
     @State private var showWorkspaceAbout = false
     @State private var showWorkspaceStats = false
+    @State private var aircraftReceptionPrompts = AircraftReceptionPromptSession()
+    @State private var aircraftReceptionFocusID: String?
     @State private var showCaltopoSettings = false
     @State private var showProximitySettings = false
     @State private var showDiagnosticLogs = false
@@ -287,7 +289,13 @@ struct ContentView: View {
                     WorkspaceResizablePane(title: "Aircraft and Reception", onClose: { showWorkspaceStats = false }) {
                         VStack(alignment: .leading) {
                             Text("InvalidRID Msgs: \(ridTracks.invalidObservationCount)")
-                            ScrollView([.horizontal, .vertical]) { androidAircraftTable.padding(4) }
+                            ScrollViewReader { proxy in
+                                ScrollView([.horizontal, .vertical]) { androidAircraftTable.padding(4) }
+                                    .onAppear { scrollAircraftReception(to: aircraftReceptionFocusID, proxy: proxy) }
+                                    .onChange(of: aircraftReceptionFocusID) { _, id in
+                                        scrollAircraftReception(to: id, proxy: proxy)
+                                    }
+                            }
                         }
                     }
                 }
@@ -2081,7 +2089,9 @@ struct ContentView: View {
             ) {
                 androidAircraftHeader
             }
-            ForEach(ridTracks.tracks) { track in androidAircraftRow(track) }
+            ForEach(ridTracks.tracks) { track in
+                androidAircraftRow(track).id(track.aircraftID)
+            }
         }
     }
 
@@ -3130,6 +3140,49 @@ struct ContentView: View {
            !droneConfirmations.isUnassociated(remoteID) {
             pendingDroneConfirmation = DroneConfirmationRequest(id: remoteID)
         }
+        presentAircraftReceptionIfNeeded(tracks)
+    }
+
+    /// First sighting of an aircraft that is not on the team list. In-memory for this process.
+    /// Does not confirm, publish, or ignore. An open panel stays open and scrolls to the new row.
+    private func presentAircraftReceptionIfNeeded(_ tracks: [RidAircraftTrack]) {
+        guard !ProcessInfo.processInfo.arguments.contains("--suppress-auto-confirmation") else { return }
+        var panelOpen = showWorkspaceStats
+        let confirmationRemoteID = pendingDroneConfirmation?.id
+        for track in tracks {
+            let remoteID = track.aircraftID
+            let identity = droneConfirmations.identity(for: remoteID)
+            let unidentified = AircraftReceptionPromptSession.isUnidentified(
+                remoteID: remoteID,
+                mappedID: identity?.mappedID ?? remoteID,
+                organization: identity?.organization ?? ""
+            )
+            let decision = aircraftReceptionPrompts.observe(
+                aircraftID: remoteID,
+                unidentified: unidentified,
+                dispositionedThisSession: droneConfirmations.isIgnored(remoteID) || confirmationRemoteID == remoteID,
+                panelOpen: panelOpen
+            )
+            switch decision {
+            case .open:
+                panelOpen = true
+                showWorkspaceStats = true
+                aircraftReceptionFocusID = remoteID
+                AppleLog.debug(
+                    "AircraftReception",
+                    "auto-open id=\(AircraftReceptionPromptSession.logToken(remoteID))"
+                )
+            case .alreadyVisible:
+                aircraftReceptionFocusID = remoteID
+            case .skip:
+                break
+            }
+        }
+    }
+
+    private func scrollAircraftReception(to remoteID: String?, proxy: ScrollViewProxy) {
+        guard let remoteID else { return }
+        proxy.scrollTo(remoteID, anchor: .center)
     }
 
     /// Binds the process-wide alert coordinator (iOS counterpart of Android's
