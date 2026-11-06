@@ -1,51 +1,55 @@
 Latest changes:
-- Live video and the map stay responsive while 1 m terrain is prepared. Elevation is unchanged, and decoded terrain is reused instead of decompressed again.
-- Download Map prefers a USGS S3 lidar file when that survey lists one, and waits longer if the lidar server is busy.
-- Download Map retries a USGS lidar file when the server is busy, instead of stopping AOL on the first slowdown.
-- Clue photos stay upright, matching the live video.
-- Live video keeps moving while the map and shared video presence update.
-- One CalTopo live track per flight across tablets, with the captured-video link kept on that archive.
-- Local clues stay visible on the map even when no incident map is selected.
-- Unconfirmed flights stay local until the Drone Confirmation Panel is Confirmed: no CalTopo LiveTrack/archive publish and no tracker live traffic or flight record without acknowledgement.
-- A drone seen again after the 30-second message gap starts a new flight that needs its own Confirm. Drones marked Don't Publish stay ignored for the rest of the session until you select them in Aircraft and Reception.
-- The first time an aircraft that is not already on the team list is heard during an app session, Aircraft and Reception opens so you can add it or ignore it. Later messages from that aircraft do not open the panel again.
-- Don't Publish now only stops CalTopo and tracker publishing; the flight track, video and clues are still saved locally.
-- Flights marked Don't Publish and finished flights stay out of recovery and tracker upload.
-- New USGS Scanned Topo and USFS Topo base layers, with faster tile fill that no longer stalls the map.
-- Download Map lets you choose USGS Scanned Topo and/or USFS Topo and their zoom levels, independent of the map currently shown.
-- Smaller flight-archive records for receive times and drone clock data.
-- Discarding an awaiting map is final, even after a power loss or journal recovery.
-- Mapping no longer reports storage full at publish when space is available, and shows a realistic storage estimate before processing.
-- Local Maps opens faster and keeps saved missions and their original images safe while the list loads.
-- Deleted Local Maps missions stay deleted and no longer reappear while storage is preparing.
-- Imported shared maps open in Local Maps, including their 3D surface.
-- View 2D map shows the mapping overlay, or explains when the map has no imagery yet.
-- Opening the app no longer jumps the map to a saved mapping layer. The layer still draws; View 2D map moves the camera to it.
-- Returning to device GPS recenters the map on the device location.
-- Orthophotos fill holes near the flight edges from estimated 3D surface heights, sized to the flight footprint. Mission plans add settings for edge overrun, 3D surface detail, and hole fill.
-- Faster startup verification of mapping missions.
-- Reconstruction progress and time remaining follow measured stage timings, including slower late tiles.
-- Interrupted reconstructions are shown as interrupted and can resume; failed jobs no longer stay stuck as running.
-- Connect to Pilot stays available while a reconstruction is running.
-- Fewer redundant log messages, in a more compact format, and diagnostic logs omit precise coordinates.
-- Device marker cleanup only removes markers this tablet published. A delete CalTopo rejects stays queued and retries later; the record is cleared only after the marker is confirmed gone.
-- Clue photos now stay on their clue marker after terrain correction, and existing drifted photos are repaired.
-- Clues live in each flight’s log folder; every flight KMZ keeps its clues with a local-only flag when not published.
-- Pending clues list every map’s unfinished uploads, including photo-missing, with Retry, Upload as new marker, and Discard.
-- Deleting old flight logs also deletes their clues, with a warning when any were never uploaded.
-- Marker cleanup success now matches verified removal, and never touches markers this tablet did not publish.
-- Mapping storage is its own managed repository (separate from map cache), with a project list and sizes in Manage Storage.
-- Manage Storage → Local Maps opens from a saved size cache when mapping data has not changed, runs one scan at a time, and totals include shared layers, stats, and processing.
-- Manage Storage uses one Local Maps entry. Sort, distance, new flight, view map, Pilot 2 connection, hide preview, and delete stay on that panel.
-- Mapping storage sizes use the card’s allocated space and avoid rescanning just because size-cache files were rewritten. Manage Storage shows the Local Maps archive total only.
-- Manage Storage lists Map Cache, Flight Storage, and Local Maps. Where the archive is a chosen folder, Archive Location shows free space. Cache, flight, and map limits stay on those panels. Clear unused files and the storage breakdown are under Other. Free space is labeled Storage free now.
+- Map and live video stay responsive while 1 m terrain is prepared. Decoded terrain is reused.
+- Download Map prefers a listed USGS S3 lidar file and retries when that server is busy.
+- Clue photos stay upright, matching live video.
+- Live video keeps moving while the map and shared presence update.
+- One CalTopo live track per flight, with its captured-video link.
+- Local clues stay on the map when no incident map is selected.
+- Unconfirmed flights stay local until you confirm them. Nothing is published before that.
+- A sighting after the 30-second gap starts a new flight and needs Confirm again.
+- Don't Publish lasts until you select that aircraft again.
+- The first unlisted aircraft opens Aircraft and Reception once.
+- Don't Publish stops CalTopo publishing. Track, video, and clues stay on the device.
+- Don't Publish and finished flights skip recovery and tracker upload.
+- USGS Scanned Topo and USFS Topo are available, with faster tile fill.
+- Download Map can fetch those topo layers at zooms you choose.
+- Flight archives store smaller receive-time and clock records.
+- Discarded awaiting maps stay discarded after power loss.
+- Mapping no longer says storage is full when space remains, and estimates space first.
+- Local Maps opens faster while missions and original images stay safe.
+- Deleted Local Maps missions stay deleted during storage prepare.
+- Imported shared maps open in Local Maps, including the 3D surface.
+- View 2D map shows the overlay, or says when imagery is not ready.
+- Opening the app no longer jumps to a saved layer. View 2D map centers it.
+- Returning to device GPS recenters the map on this device.
+- Orthophotos fill edge holes inside the flight footprint.
+- Mission plans add edge overrun, surface detail, and hole fill.
+- Mapping missions are checked faster at startup.
+- Reconstruction time remaining follows measured timings, including slower late tiles.
+- Interrupted reconstructions can resume. Failed jobs are not left looking active.
+- Connect to Pilot stays available during reconstruction.
+- Logs are shorter, and diagnostic logs omit precise coordinates.
+- Marker cleanup removes only markers this tablet published.
+- A rejected marker delete stays queued until removal is confirmed.
+- Clue photos stay on the marker after terrain correction. Drifted photos are repaired.
+- Clues live in the flight log folder and in its KMZ, marked local-only when unpublished.
+- Pending clues lists every unfinished upload, including missing photos.
+- Pending clues can Retry, upload as a new marker, or Discard.
+- Deleting flight logs also deletes their clues and warns if any were never uploaded.
+- Marker cleanup succeeds only after the marker is confirmed gone.
+- Mapping storage is separate from map cache, with project sizes in Manage Storage.
+- Local Maps reuses a saved size, scans once, and includes layers, stats, and processing.
+- One Local Maps panel holds sort, distance, flights, map, Pilot 2, preview, and delete.
+- Mapping sizes use allocated space and skip a rescan that only rewrote the size cache.
+- Manage Storage lists Map Cache, Flight Storage, Local Maps, and free space for a chosen folder.
+- Limits stay on those panels. Unused-file cleanup and the breakdown are under Other.
 - Clue capture stays responsive while the photo, thumbnail, and marker are saved.
-- Device markers left on a CalTopo map after the app is killed or suspended are removed on the next launch or return to the foreground.
-- Idle timeout and background cleanup use wall-clock time so a suspended app still disconnects and removes its device marker.
-- Local Maps data moves into a dedicated Mapping archive folder, keeping originals safe during the move.
-- Confirming a team drone near flight end no longer creates a second CalTopo archive under the raw serial.
-- A tablet that does not own a flight no longer starts a CalTopo live track for it.
-- Mapping archive migration starts promptly at launch and reports progress, without risking originals.
-- Flight KMZ files keep migrated clue photos after rewrite.
-- Deleting a day’s flight logs also removes that day’s clue folders, including midnight edge cases.
-- Smoother map response while sharing video presence with other tablets.
+- Markers left after a kill or suspend are removed the next time the app is open.
+- A suspended app still disconnects and removes its marker on wall-clock time.
+- Local Maps moves into its archive folder without risking originals.
+- Confirming a team drone no longer writes a second archive for the raw serial.
+- A device that does not own a flight no longer starts its live track.
+- Mapping migration starts at launch, shows progress, and keeps originals safe.
+- Rewritten flight KMZ files still contain migrated clue photos.
+- Deleting a day's logs also removes that day's clue folders.
+- The map stays smoother while video presence is shared.
