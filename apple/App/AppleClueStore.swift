@@ -1646,6 +1646,16 @@ final class AppleClueStore: ObservableObject {
             kCGImageSourceCreateThumbnailWithTransform: true,
         ]
         guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { return nil }
-        return UIImage(cgImage: image).jpegData(compressionQuality: 0.75)
+        let encoded = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(encoded, "public.jpeg" as CFString, 1, nil) else {
+            return nil
+        }
+        CGImageDestinationAddImage(
+            destination,
+            image,
+            [kCGImageDestinationLossyCompressionQuality: 0.75] as CFDictionary
+        )
+        guard CGImageDestinationFinalize(destination) else { return nil }
+        return encoded as Data
     }
 }

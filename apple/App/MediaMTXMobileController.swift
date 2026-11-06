@@ -91,7 +91,11 @@ actor MediaMTXMobileController: MediaServerController {
     #endif
 
     fileprivate func receive(logLine: String) {
-        if !logLine.contains("RTMP control: sent Acknowledge") {
+        LiveIngressTimingStore.shared.record(line: logLine)
+        let handshakeNoise = logLine.contains("RTMP handshake failed")
+        let suppressHandshake = handshakeNoise
+            && !LogThrottle.shouldLog(key: "mediamtx.rtmp.handshake", intervalMs: 60_000)
+        if !suppressHandshake && !logLine.contains("RTMP control: sent Acknowledge") {
             AppleLog.debug("MediaMTX", logLine)
         }
         if let event = parser.parse(line: logLine) {

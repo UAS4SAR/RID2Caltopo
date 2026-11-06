@@ -667,6 +667,15 @@ final class AppleTrackerCoordinator: ObservableObject {
     private var videoPreflightWatchdogTask: Task<Void, Never>?
     /// Last thumbnailRevision whose JPEG bytes were included in a presence send.
     private var lastSentThumbnailRevisionBySessionID: [String: String] = [:]
+    private var presenceSendInFlight = false
+    private var presenceSendDirty = false
+    private var lastPresenceFingerprint = ""
+    private var lastPresenceSentAt: TimeInterval = 0
+
+    private final class PresenceSocketBox: @unchecked Sendable {
+        let task: URLSessionWebSocketTask
+        init(_ task: URLSessionWebSocketTask) { self.task = task }
+    }
     private lazy var videoPreflightPeer = AppleManagedVideoPreflightPeer(
         answerSink: { [weak self] requestID, sdp in
             Task { @MainActor [weak self] in
@@ -1972,7 +1981,9 @@ final class AppleTrackerCoordinator: ObservableObject {
         } else {
             scheduleStandbyIfEligible()
         }
-        if presenceChanged {
+        if presenceChanged
+            || ProcessInfo.processInfo.systemUptime - lastPresenceSentAt
+                >= ManagedVideoPresencePolicy.unchangedAdvertiseInterval {
             sendManagedVideoPresence()
         }
         refreshManagedVideoThumbnails()
@@ -3117,7 +3128,7 @@ final class AppleTrackerCoordinator: ObservableObject {
         }
     }
 
-    private func sendManagedVideoPresence() {
+    private func sendManagedVideoPresence(force: Bool = false) {
         guard
             connected,
             !managedVideoIncidentName.isEmpty
@@ -3161,59 +3172,121 @@ final class AppleTrackerCoordinator: ObservableObject {
             timeZone: TimeZone.current.identifier,
             streams: streamSnapshots
         )
-        ClueTerrainDiagnostics.noteMainWork("presence.schedule")
-        Task { [weak self] in
-            let prepared = await Task.detached(priority: .utility) { () -> (text: String, sentRevisions: [String: String])? in
-                var streams: [[String: Any]] = []
-                var sentRevisions: [String: String] = [:]
-                for stream in snapshot.streams {
-                    var advertised: [String: Any] = [
-                        "sessionId": stream.sessionId,
-                        "droneDesignator": stream.droneDesignator,
-                        "sourceWidth": stream.sourceWidth,
-                        "sourceHeight": stream.sourceHeight,
-                        "sourceFps": stream.sourceFps,
-                        "sourceBitrateBps": stream.sourceBitrateBps,
-                        "sourceSizeBytes": stream.sourceSizeBytes,
-                        "sourceCodec": stream.sourceCodec,
-                        "mediaKind": stream.mediaKind,
-                        "durationMs": stream.durationMs,
-                        "thumbnailRevision": stream.thumbnailRevision,
-                    ]
-                    if let recordedAt = stream.recordedAt {
-                        advertised["recordedAt"] = recordedAt
-                    }
-                    if stream.includeThumbnailJpeg,
-                       let jpeg = stream.thumbnailJpegData,
-                       !jpeg.isEmpty {
-                        advertised["thumbnailJpegBase64"] = jpeg.base64EncodedString()
-                        sentRevisions[stream.sessionId] = stream.thumbnailRevision
-                    }
-                    streams.append(advertised)
-                }
-                let payload: [String: Any] = [
-                    "type": "video_stream_advertisement",
-                    "remoteControlEnabled": snapshot.remoteControlEnabled,
-                    "incidentName": snapshot.incidentName,
-                    "deviceName": snapshot.deviceName,
-                    "timeZone": snapshot.timeZone,
-                    "streams": streams,
-                ]
-                guard let data = try? JSONSerialization.data(withJSONObject: payload),
-                      let text = String(data: data, encoding: .utf8)
-                else { return nil }
-                return (text, sentRevisions)
-            }.value
-            guard let self, let prepared else { return }
-            for (sessionID, revision) in prepared.sentRevisions {
-                self.lastSentThumbnailRevisionBySessionID[sessionID] = revision
+        let fingerprint = ManagedVideoPresencePolicy.fingerprint(
+            remoteControlEnabled: snapshot.remoteControlEnabled,
+            incidentName: snapshot.incidentName,
+            streams: snapshot.streams.map {
+                ManagedVideoPresencePolicy.StreamIdentity(
+                    sessionId: $0.sessionId,
+                    droneDesignator: $0.droneDesignator,
+                    mediaKind: $0.mediaKind,
+                    sourceWidth: $0.sourceWidth,
+                    sourceHeight: $0.sourceHeight,
+                    sourceFps: $0.sourceFps,
+                    thumbnailRevision: $0.thumbnailRevision,
+                    durationMs: $0.durationMs,
+                    recordedAt: $0.recordedAt
+                )
             }
-            let activeSessionIDs = Set(snapshot.streams.map(\.sessionId))
-            self.lastSentThumbnailRevisionBySessionID = self.lastSentThumbnailRevisionBySessionID
-                .filter { activeSessionIDs.contains($0.key) }
-            ClueTerrainDiagnostics.noteMainWork("presence.send", bytes: prepared.text.utf8.count)
-            self.sendText(prepared.text)
+        )
+        let decision = ManagedVideoPresencePolicy.advertiseDecision(
+            fingerprint: fingerprint,
+            lastFingerprint: lastPresenceFingerprint,
+            now: ProcessInfo.processInfo.systemUptime,
+            lastSentAt: lastPresenceSentAt,
+            inFlight: presenceSendInFlight,
+            force: force
+        )
+        guard decision.startSend || decision.foldIntoInFlight else { return }
+        if decision.foldIntoInFlight {
+            presenceSendDirty = true
+            return
         }
+        presenceSendInFlight = true
+        lastPresenceFingerprint = fingerprint
+        lastPresenceSentAt = ProcessInfo.processInfo.systemUptime
+        let socketBox = socket.map(PresenceSocketBox.init)
+        let generation = generation
+        let reportSendFailure: @Sendable (String) -> Void = { [weak self] description in
+            Task { @MainActor [weak self] in
+                guard let self, generation == self.generation else { return }
+                self.socketClosed(
+                    generation: generation,
+                    detail: "Send failed: \(description)"
+                )
+            }
+        }
+        Task.detached(priority: .utility) { [weak self] in
+            let prepared = Self.encodeManagedVideoPresence(snapshot)
+            if let prepared, let socketBox {
+                socketBox.task.send(.string(prepared.text)) { error in
+                    guard let error else { return }
+                    reportSendFailure(error.localizedDescription)
+                }
+            }
+            let revisions = prepared?.sentRevisions ?? [:]
+            let activeSessionIDs = Set(snapshot.streams.map(\.sessionId))
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                if generation == self.generation {
+                    for (sessionID, revision) in revisions {
+                        self.lastSentThumbnailRevisionBySessionID[sessionID] = revision
+                    }
+                    self.lastSentThumbnailRevisionBySessionID = self.lastSentThumbnailRevisionBySessionID
+                        .filter { activeSessionIDs.contains($0.key) }
+                }
+                self.presenceSendInFlight = false
+                let dirty = self.presenceSendDirty
+                self.presenceSendDirty = false
+                if dirty {
+                    self.sendManagedVideoPresence(force: true)
+                }
+            }
+        }
+    }
+
+    private nonisolated static func encodeManagedVideoPresence(
+        _ snapshot: AppleManagedVideoPresenceSnapshot
+    ) -> (text: String, sentRevisions: [String: String])? {
+        var streams: [[String: Any]] = []
+        var sentRevisions: [String: String] = [:]
+        for stream in snapshot.streams {
+            var advertised: [String: Any] = [
+                "sessionId": stream.sessionId,
+                "droneDesignator": stream.droneDesignator,
+                "sourceWidth": stream.sourceWidth,
+                "sourceHeight": stream.sourceHeight,
+                "sourceFps": stream.sourceFps,
+                "sourceBitrateBps": stream.sourceBitrateBps,
+                "sourceSizeBytes": stream.sourceSizeBytes,
+                "sourceCodec": stream.sourceCodec,
+                "mediaKind": stream.mediaKind,
+                "durationMs": stream.durationMs,
+                "thumbnailRevision": stream.thumbnailRevision,
+            ]
+            if let recordedAt = stream.recordedAt {
+                advertised["recordedAt"] = recordedAt
+            }
+            if stream.includeThumbnailJpeg,
+               let jpeg = stream.thumbnailJpegData,
+               !jpeg.isEmpty {
+                advertised["thumbnailJpegBase64"] = jpeg.base64EncodedString()
+                sentRevisions[stream.sessionId] = stream.thumbnailRevision
+            }
+            streams.append(advertised)
+        }
+        let payload: [String: Any] = [
+            "type": "video_stream_advertisement",
+            "remoteControlEnabled": snapshot.remoteControlEnabled,
+            "incidentName": snapshot.incidentName,
+            "deviceName": snapshot.deviceName,
+            "timeZone": snapshot.timeZone,
+            "streams": streams,
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: payload),
+              let text = String(data: data, encoding: .utf8)
+        else { return nil }
+        return (text, sentRevisions)
     }
 
     func caltopoCameraMetadata(droneDesignator: String) -> CaltopoCameraMetadata? {

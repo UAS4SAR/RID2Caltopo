@@ -73,3 +73,20 @@ public enum AircraftMapAnnotationDiff {
         return delta
     }
 }
+
+/// Limits MapKit annotation configure work while Remote ID positions churn.
+/// Structural changes (aircraft added or removed, focus, inset) apply immediately.
+/// Ordinary position and status ticks coalesce to `minimumInterval`.
+public enum AircraftMapAnnotationUpdatePolicy {
+    public static let minimumInterval: TimeInterval = 0.25
+
+    public static func shouldApply(
+        now: TimeInterval,
+        lastAppliedAt: TimeInterval?,
+        structuralChange: Bool
+    ) -> Bool {
+        if structuralChange { return true }
+        guard let lastAppliedAt else { return true }
+        return now - lastAppliedAt >= minimumInterval
+    }
+}

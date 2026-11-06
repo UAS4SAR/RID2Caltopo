@@ -844,6 +844,133 @@ import Testing
     #expect(!AircraftMapAnnotationDiff.isVisuallyUnchanged(base, turned))
 }
 
+@Test func aircraftMapAnnotationUpdatesCoalesceRidTicks() {
+    #expect(AircraftMapAnnotationUpdatePolicy.shouldApply(
+        now: 10,
+        lastAppliedAt: nil,
+        structuralChange: false
+    ))
+    #expect(!AircraftMapAnnotationUpdatePolicy.shouldApply(
+        now: 10.1,
+        lastAppliedAt: 10,
+        structuralChange: false
+    ))
+    #expect(AircraftMapAnnotationUpdatePolicy.shouldApply(
+        now: 10.25,
+        lastAppliedAt: 10,
+        structuralChange: false
+    ))
+    #expect(AircraftMapAnnotationUpdatePolicy.shouldApply(
+        now: 10.05,
+        lastAppliedAt: 10,
+        structuralChange: true
+    ))
+}
+
+@Test func liveFramePresentationDoesNotWaitOnTheMainActor() {
+    let showing = LiveFramePresentation.plan(hasFrame: true, renderingSuspended: false)
+    #expect(showing.enqueueOnDisplayQueue)
+    #expect(showing.coalesceTelemetryOnMain)
+    let locked = LiveFramePresentation.plan(hasFrame: true, renderingSuspended: true)
+    #expect(!locked.enqueueOnDisplayQueue)
+    #expect(locked.coalesceTelemetryOnMain)
+    #expect(LiveFramePresentation.presentedFrameCount(pacedFrames: 30, mainActorBlocked: true) == 30)
+    #expect(LiveFramePresentation.presentedFrameCount(pacedFrames: 30, mainActorBlocked: false) == 30)
+    #expect(LiveFramePresentation.presentedFrameCount(pacedFrames: 0, mainActorBlocked: true) == 0)
+}
+
+@Test func managedVideoPresenceCoalescesUnchangedAdvertisements() {
+    let stream = ManagedVideoPresencePolicy.StreamIdentity(
+        sessionId: "session",
+        droneDesignator: "1sar7",
+        mediaKind: "live",
+        sourceWidth: 1920,
+        sourceHeight: 1080,
+        sourceFps: 29.6,
+        thumbnailRevision: "10",
+        durationMs: 0,
+        recordedAt: nil
+    )
+    var jitter = stream
+    jitter.sourceFps = 30.4
+    let stable = ManagedVideoPresencePolicy.fingerprint(
+        remoteControlEnabled: true,
+        incidentName: "Incident",
+        streams: [stream]
+    )
+    let same = ManagedVideoPresencePolicy.fingerprint(
+        remoteControlEnabled: true,
+        incidentName: "Incident",
+        streams: [jitter]
+    )
+    #expect(stable == same)
+    var revised = stream
+    revised.thumbnailRevision = "11"
+    let changed = ManagedVideoPresencePolicy.fingerprint(
+        remoteControlEnabled: true,
+        incidentName: "Incident",
+        streams: [revised]
+    )
+    #expect(changed != stable)
+
+    let skipped = ManagedVideoPresencePolicy.advertiseDecision(
+        fingerprint: stable,
+        lastFingerprint: stable,
+        now: 12,
+        lastSentAt: 10,
+        inFlight: false
+    )
+    #expect(!skipped.startSend)
+    #expect(!skipped.foldIntoInFlight)
+
+    let heartbeat = ManagedVideoPresencePolicy.advertiseDecision(
+        fingerprint: stable,
+        lastFingerprint: stable,
+        now: 16,
+        lastSentAt: 10,
+        inFlight: false
+    )
+    #expect(heartbeat.startSend)
+
+    let folded = ManagedVideoPresencePolicy.advertiseDecision(
+        fingerprint: changed,
+        lastFingerprint: stable,
+        now: 16,
+        lastSentAt: 10,
+        inFlight: true
+    )
+    #expect(!folded.startSend)
+    #expect(folded.foldIntoInFlight)
+
+    let forced = ManagedVideoPresencePolicy.advertiseDecision(
+        fingerprint: changed,
+        lastFingerprint: stable,
+        now: 10.1,
+        lastSentAt: 10,
+        inFlight: false,
+        force: true
+    )
+    #expect(forced.startSend)
+    #expect(!forced.foldIntoInFlight)
+}
+
+@Test func liveIngressTimingParsesSocketWaitWithoutCoordinates() {
+    let line = "RTMP timing path=1sar7djmn4pr wallMs=1793927986061 windowMs=6495 reads=504 mediaUnits=145 readMs=57 beforeMediaMs=57 afterMediaMs=0 mediaGapMs=729 maxReadMs=153 maxBeforeMediaMs=131 maxAfterMediaMs=4 maxMediaGapMs=729 ended=false socketWaitMs=57 nonSocketMs=0 maxSocketWaitMs=153 maxNonSocketMs=0 socketReads=1353 socketBytes=3873643 maxSocketReadMs=153"
+    let sample = LiveIngressTimingLog.parse(line)
+    #expect(sample?.path == "1sar7djmn4pr")
+    #expect(sample?.socketWaitMs == 57)
+    #expect(sample?.afterMediaMs == 0)
+    #expect(sample?.maxSocketWaitMs == 153)
+    #expect(sample?.maxAfterMediaMs == 4)
+    #expect(sample?.maxMediaGapMs == 729)
+    #expect(LiveIngressTimingLog.parse("RTMP handshake failed") == nil)
+    LiveIngressTimingStore.shared.resetForTest()
+    LiveIngressTimingStore.shared.record(line: line)
+    #expect(LiveIngressTimingStore.shared.latest(path: "1sar7djmn4pr")?.socketWaitMs == 57)
+    #expect(LiveIngressTimingStore.shared.latest(path: "other") == nil)
+    LiveIngressTimingStore.shared.resetForTest()
+}
+
 @Test func managedVideoSourceGraceTreatsCatalogedRecordingAsAvailable() {
     let unavailable = ManagedVideoPresencePolicy.unavailableApprovedSessionIDs(
         approvedSessionIDs: ["live", "recording", "missing"],

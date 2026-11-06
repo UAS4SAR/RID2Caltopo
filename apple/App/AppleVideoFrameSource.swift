@@ -318,6 +318,15 @@ private final class NativeDisplayFeed: @unchecked Sendable {
         weak var source: AppleVideoFrameSource?
     }
 
+    struct TimingSnapshot: Sendable {
+        var submitted: UInt64
+        var busyDrops: UInt64
+        var callbackCount: Int
+        var callbackWorkSeconds: TimeInterval
+        var callbackMaxGapSeconds: TimeInterval
+        var windowSeconds: TimeInterval
+    }
+
     let queue = DispatchQueue(label: "org.ncssar.video.display-feed", qos: .userInteractive)
     private let lock = NSLock()
     private var session: OpaquePointer?
@@ -326,10 +335,101 @@ private final class NativeDisplayFeed: @unchecked Sendable {
     private var lastDJITelemetrySequence: UInt64 = 0
     private var pendingSample: Sample?
     private var deliveryScheduled = false
+    private var renderingSuspended = false
+    private var renderers: [RendererBox] = []
+    private var frameConsumer: AppleDecodedVideoFrameConsumer?
+    private var displaySubmissionCount: UInt64 = 0
+    private var displayBusyDrops: UInt64 = 0
+    private var callbackCount = 0
+    private var callbackWorkSeconds: TimeInterval = 0
+    private var callbackWindowStartedAt: TimeInterval = 0
+    private var callbackLastAt: TimeInterval = 0
+    private var callbackMaxGapSeconds: TimeInterval = 0
+    private var loggedNativeFrameFormat = false
+    private var loggedNativeDisplayFailure = false
     private let sink = SinkBox()
+
+    private final class RendererBox: @unchecked Sendable {
+        weak var value: AVSampleBufferVideoRenderer?
+        init(_ value: AVSampleBufferVideoRenderer) { self.value = value }
+    }
 
     func bind(source: AppleVideoFrameSource) {
         sink.source = source
+    }
+
+    func setRenderingSuspended(_ suspended: Bool) {
+        lock.lock()
+        renderingSuspended = suspended
+        lock.unlock()
+    }
+
+    func setFrameConsumer(_ consumer: AppleDecodedVideoFrameConsumer?) {
+        lock.lock()
+        frameConsumer = consumer
+        lock.unlock()
+    }
+
+    func addRenderer(_ renderer: AVSampleBufferVideoRenderer) {
+        let box = RendererBox(renderer)
+        queue.async { [self, box] in
+            let current = box.value
+            renderers.removeAll { $0.value == nil || $0.value === current }
+            current?.flush(removingDisplayedImage: true, completionHandler: nil)
+            if current != nil {
+                renderers.append(box)
+            }
+        }
+    }
+
+    func removeRenderer(_ renderer: AVSampleBufferVideoRenderer) {
+        let box = RendererBox(renderer)
+        queue.async { [self, box] in
+            let current = box.value
+            renderers.removeAll { $0.value == nil || $0.value === current }
+        }
+    }
+
+    /// File/AVPlayer frames are not on this queue yet. Live ticks call `present` directly.
+    func presentAsync(_ pixelBuffer: CVPixelBuffer) {
+        let transfer = PixelBufferTransfer(value: pixelBuffer)
+        queue.async { [self] in
+            present(transfer.value)
+        }
+    }
+
+    func copyTimingAndResetWindow() -> TimingSnapshot {
+        let now = CACurrentMediaTime()
+        lock.lock()
+        let elapsed = callbackWindowStartedAt > 0 ? max(0.001, now - callbackWindowStartedAt) : 0.001
+        let snapshot = TimingSnapshot(
+            submitted: displaySubmissionCount,
+            busyDrops: displayBusyDrops,
+            callbackCount: callbackCount,
+            callbackWorkSeconds: callbackWorkSeconds,
+            callbackMaxGapSeconds: callbackMaxGapSeconds,
+            windowSeconds: elapsed
+        )
+        callbackCount = 0
+        callbackWorkSeconds = 0
+        callbackWindowStartedAt = now
+        callbackMaxGapSeconds = 0
+        lock.unlock()
+        return snapshot
+    }
+
+    func resetTiming() {
+        lock.lock()
+        displaySubmissionCount = 0
+        displayBusyDrops = 0
+        callbackCount = 0
+        callbackWorkSeconds = 0
+        callbackWindowStartedAt = 0
+        callbackLastAt = 0
+        callbackMaxGapSeconds = 0
+        loggedNativeFrameFormat = false
+        loggedNativeDisplayFailure = false
+        lock.unlock()
     }
 
     func start(session: OpaquePointer) {
@@ -343,6 +443,11 @@ private final class NativeDisplayFeed: @unchecked Sendable {
             deliveryScheduled = false
             lastConsumedSequence = 0
             lastDJITelemetrySequence = 0
+            callbackCount = 0
+            callbackWorkSeconds = 0
+            callbackWindowStartedAt = 0
+            callbackLastAt = 0
+            callbackMaxGapSeconds = 0
             lock.unlock()
 
             let timer = DispatchSource.makeTimerSource(queue: queue)
@@ -394,18 +499,138 @@ private final class NativeDisplayFeed: @unchecked Sendable {
 
     private func handleTick() {
         guard let sample = popSample() else { return }
+        let started = CACurrentMediaTime()
+        lock.lock()
+        if callbackWindowStartedAt == 0 { callbackWindowStartedAt = started }
+        if callbackLastAt > 0 {
+            callbackMaxGapSeconds = max(callbackMaxGapSeconds, started - callbackLastAt)
+        }
+        callbackLastAt = started
+        callbackCount += 1
+        let suspended = renderingSuspended
+        let consumer = frameConsumer
+        lock.unlock()
+        // Pixels enqueue here. A stalled MainActor must not replace them.
+        let plan = LiveFramePresentation.plan(hasFrame: true, renderingSuspended: suspended)
+        if plan.enqueueOnDisplayQueue {
+            present(sample.pixelBuffer)
+        }
+        consumer?.consumeDecodedVideoFrame(
+            sample.pixelBuffer,
+            timestampNanoseconds: Int64(CACurrentMediaTime() * 1_000_000_000)
+        )
+        if plan.coalesceTelemetryOnMain {
+            scheduleTelemetry(sample)
+        }
+        lock.lock()
+        callbackWorkSeconds += CACurrentMediaTime() - started
+        lock.unlock()
+    }
+
+    /// Latest telemetry only. Display samples are already enqueued and are not held here.
+    private func scheduleTelemetry(_ sample: Sample) {
         lock.lock()
         pendingSample = sample
         let shouldSchedule = !deliveryScheduled
         if shouldSchedule { deliveryScheduled = true }
         lock.unlock()
         guard shouldSchedule else { return }
-        // Hop from this nonisolated queue; only UI/layer consumption runs on MainActor.
         Task { @MainActor [sink] in
             while let sample = self.takePending() {
                 sink.source?.consumeNativeDisplaySample(sample)
             }
         }
+    }
+
+    /// Caller is the display-feed queue. Uses AVSampleBufferVideoRenderer, which may enqueue off the main thread.
+    private func present(_ pixelBuffer: CVPixelBuffer) {
+        renderers.removeAll { $0.value == nil }
+        let targets = renderers.compactMap(\.value)
+        guard !targets.isEmpty else { return }
+        if !loggedNativeFrameFormat {
+            loggedNativeFrameFormat = true
+            let pixelFormat = CVPixelBufferGetPixelFormatType(pixelBuffer)
+            let format = String(format: "%c%c%c%c",
+                (pixelFormat >> 24) & 0xff,
+                (pixelFormat >> 16) & 0xff,
+                (pixelFormat >> 8) & 0xff,
+                pixelFormat & 0xff
+            )
+            AppleLog.info(
+                "Video",
+                "Native first frame \(CVPixelBufferGetWidth(pixelBuffer))x\(CVPixelBufferGetHeight(pixelBuffer)) format='\(format)'"
+            )
+        }
+        guard let sampleBuffer = Self.displaySampleBuffer(from: pixelBuffer) else {
+            logNativeDisplayFailureOnce("Could not create display sample")
+            return
+        }
+        var submitted = 0
+        var busy = 0
+        for renderer in targets {
+            if renderer.status == .failed {
+                renderer.flush()
+            }
+            guard renderer.isReadyForMoreMediaData else {
+                busy += 1
+                continue
+            }
+            renderer.enqueue(sampleBuffer)
+            submitted += 1
+            if renderer.status == .failed {
+                logNativeDisplayFailureOnce(
+                    "Display renderer rejected native frame: \(renderer.error?.localizedDescription ?? "unknown error")"
+                )
+            }
+        }
+        guard submitted > 0 || busy > 0 else { return }
+        lock.lock()
+        displaySubmissionCount += UInt64(submitted)
+        displayBusyDrops += UInt64(busy)
+        lock.unlock()
+    }
+
+    private func logNativeDisplayFailureOnce(_ message: String) {
+        lock.lock()
+        let already = loggedNativeDisplayFailure
+        if !already { loggedNativeDisplayFailure = true }
+        lock.unlock()
+        guard !already else { return }
+        AppleLog.warning("Video", message)
+    }
+
+    private static func displaySampleBuffer(from pixelBuffer: CVPixelBuffer) -> CMSampleBuffer? {
+        var formatDescription: CMVideoFormatDescription?
+        let formatStatus = CMVideoFormatDescriptionCreateForImageBuffer(
+            allocator: kCFAllocatorDefault,
+            imageBuffer: pixelBuffer,
+            formatDescriptionOut: &formatDescription
+        )
+        guard formatStatus == noErr, let formatDescription else { return nil }
+        var timing = CMSampleTimingInfo(
+            duration: .invalid,
+            presentationTimeStamp: CMClockGetTime(CMClockGetHostTimeClock()),
+            decodeTimeStamp: .invalid
+        )
+        var sampleBuffer: CMSampleBuffer?
+        let sampleStatus = CMSampleBufferCreateReadyWithImageBuffer(
+            allocator: kCFAllocatorDefault,
+            imageBuffer: pixelBuffer,
+            formatDescription: formatDescription,
+            sampleTiming: &timing,
+            sampleBufferOut: &sampleBuffer
+        )
+        guard sampleStatus == noErr, let sampleBuffer else { return nil }
+        guard let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: true),
+              CFArrayGetCount(attachments) > 0
+        else { return nil }
+        let attachment = unsafeBitCast(CFArrayGetValueAtIndex(attachments, 0), to: CFMutableDictionary.self)
+        CFDictionarySetValue(
+            attachment,
+            Unmanaged.passUnretained(kCMSampleAttachmentKey_DisplayImmediately).toOpaque(),
+            Unmanaged.passUnretained(kCFBooleanTrue).toOpaque()
+        )
+        return sampleBuffer
     }
 
     private func takePending() -> Sample? {
@@ -689,9 +914,9 @@ final class AppleVideoFrameSource: ObservableObject {
     private var nativeFailureHandled = false
     private var nativeEndHandled = false
     private var displayLink: CADisplayLink?
-    /// Live native display feed runs off the main actor so RID/UI backlog cannot
-    /// starve RTSP dequeue (MediaMTX "reader is too slow"). Queue-owned timer
-    /// closures stay nonisolated; only layer/UI consumption hops to MainActor.
+    /// Live native display feed pops and enqueues off the main actor so a map or
+    /// presence hitch cannot blank the picture. Telemetry UI still coalesces onto
+    /// MainActor. Queue-owned timer closures stay nonisolated.
     private let displayFeed = NativeDisplayFeed()
     /// CADisplayLink stops while the display is locked. In background a timer
     /// keeps pulling decoded frames so DJI SEI telemetry, lag measurement, and
@@ -734,6 +959,7 @@ final class AppleVideoFrameSource: ObservableObject {
         anomalyProcessor = AppleAnomalyProcessor(mode: mode, configuration: configuration)
         displayFeed.bind(source: self)
         renderingSuspended = UIApplication.shared.applicationState == .background
+        displayFeed.setRenderingSuspended(renderingSuspended)
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(applicationDidEnterBackground),
@@ -751,12 +977,13 @@ final class AppleVideoFrameSource: ObservableObject {
     @objc private func applicationDidEnterBackground() {
         guard !renderingSuspended else { return }
         renderingSuspended = true
+        displayFeed.setRenderingSuspended(true)
         let hadLiveFeed = displayLink != nil || (ffmpegSession != nil && currentURL?.isFileURL != true)
         guard hadLiveFeed else { return }
         displayLink?.invalidate()
         displayLink = nil
-        // Live native: keep NativeDisplayFeed pops off-main (980e4a00). Only layer
-        // presentation is suspended. File/AVPlayer still needs a main timer.
+        // Live native: pop and enqueue stay on the display-feed queue. Only the
+        // picture is suspended. File/AVPlayer still needs a main timer.
         if let ffmpegSession, currentURL?.isFileURL != true {
             displayFeed.start(session: ffmpegSession)
         } else {
@@ -769,6 +996,7 @@ final class AppleVideoFrameSource: ObservableObject {
     @objc private func applicationWillEnterForeground() {
         guard renderingSuspended else { return }
         renderingSuspended = false
+        displayFeed.setRenderingSuspended(false)
         backgroundFrameTimer?.invalidate()
         backgroundFrameTimer = nil
         installDisplayLink()
@@ -788,6 +1016,7 @@ final class AppleVideoFrameSource: ObservableObject {
 
     func setManagedVideoFrameConsumer(_ consumer: AppleDecodedVideoFrameConsumer?) {
         managedVideoFrameConsumer = consumer
+        displayFeed.setFrameConsumer(consumer)
     }
 
     func setAnomalyMode(_ mode: AppleAnomalyMode) {
@@ -1189,14 +1418,15 @@ final class AppleVideoFrameSource: ObservableObject {
         self.displayLink = displayLink
     }
 
-    /// MainActor UI/layer apply for a frame already popped and enriched on the feed queue.
+    /// MainActor telemetry apply. The sample was already enqueued on the display-feed queue.
     fileprivate func consumeNativeDisplaySample(_ sample: NativeDisplayFeed.Sample) {
-        let callbackStarted = CACurrentMediaTime()
-        if callbackWindowStartedAt == 0 { callbackWindowStartedAt = callbackStarted }
-        if callbackLastAt > 0 { callbackMaxGapSeconds = max(callbackMaxGapSeconds, callbackStarted - callbackLastAt) }
-        callbackLastAt = callbackStarted
-        callbackCount += 1
-        defer { callbackWorkSeconds += CACurrentMediaTime() - callbackStarted }
+        let applyStarted = CACurrentMediaTime()
+        if mainApplyWindowStartedAt == 0 { mainApplyWindowStartedAt = applyStarted }
+        if mainApplyLastAt > 0 {
+            mainApplyMaxGapSeconds = max(mainApplyMaxGapSeconds, applyStarted - mainApplyLastAt)
+        }
+        mainApplyLastAt = applyStarted
+        mainApplyCount += 1
         guard sample.sequence != ffmpegFrameSequence else { return }
         ffmpegFrameSequence = sample.sequence
         if let telemetry = sample.djiTelemetry,
@@ -1225,7 +1455,8 @@ final class AppleVideoFrameSource: ObservableObject {
             sourceTimestampMicroseconds: sample.presentationTimeMicroseconds > 0
                 ? sample.presentationTimeMicroseconds
                 : nil,
-            renderNatively: true
+            renderNatively: true,
+            displayAlreadyPresented: true
         )
     }
 
@@ -1249,6 +1480,7 @@ final class AppleVideoFrameSource: ObservableObject {
         let session = ffmpegSession
         ffmpegSession = nil
         displayFeed.stopAndDestroy(session)
+        displayFeed.resetTiming()
         ffmpegFrameSequence = 0
         ffmpegDJICameraTelemetrySequence = 0
         displaySubmissionCount = 0
@@ -1259,7 +1491,16 @@ final class AppleVideoFrameSource: ObservableObject {
         callbackWindowStartedAt = 0
         callbackLastAt = 0
         callbackMaxGapSeconds = 0
+        mainApplyCount = 0
+        mainApplyMaxGapSeconds = 0
+        mainApplyLastAt = 0
+        mainApplyWindowStartedAt = 0
     }
+
+    private var mainApplyCount = 0
+    private var mainApplyMaxGapSeconds: TimeInterval = 0
+    private var mainApplyLastAt: TimeInterval = 0
+    private var mainApplyWindowStartedAt: TimeInterval = 0
 
     private var callbackCount = 0
     private var callbackWorkSeconds: TimeInterval = 0
@@ -1417,7 +1658,8 @@ final class AppleVideoFrameSource: ObservableObject {
         _ pixelBuffer: CVPixelBuffer,
         itemTime: CMTime,
         sourceTimestampMicroseconds: Int64?,
-        renderNatively: Bool
+        renderNatively: Bool,
+        displayAlreadyPresented: Bool = false
     ) {
         consumedFrameCount += 1
         let uiNow = CACurrentMediaTime()
@@ -1450,10 +1692,12 @@ final class AppleVideoFrameSource: ObservableObject {
                   framePTS == cameraPTS else { return nil }
             return sample
         }
-        managedVideoFrameConsumer?.consumeDecodedVideoFrame(
-            pixelBuffer,
-            timestampNanoseconds: Int64(CACurrentMediaTime() * 1_000_000_000)
-        )
+        if !displayAlreadyPresented {
+            managedVideoFrameConsumer?.consumeDecodedVideoFrame(
+                pixelBuffer,
+                timestampNanoseconds: Int64(CACurrentMediaTime() * 1_000_000_000)
+            )
+        }
         let decoderDelay = lagEstimator.observe(
             sourceTimestampMicroseconds: sourceTimestampMicroseconds,
             observedAtMilliseconds: Self.nowMilliseconds
@@ -1474,8 +1718,8 @@ final class AppleVideoFrameSource: ObservableObject {
             if renderDelayMilliseconds != delay { renderDelayMilliseconds = delay }
         }
         if !renderingSuspended {
-            if renderNatively {
-                enqueueForImmediateDisplay(pixelBuffer)
+            if renderNatively && !displayAlreadyPresented {
+                displayFeed.presentAsync(pixelBuffer)
             }
             // GPU work is not permitted in background; analysis resumes with the display.
             submitForAnomalyAnalysis(pixelBuffer: pixelBuffer, itemTime: itemTime)
@@ -1498,103 +1742,23 @@ final class AppleVideoFrameSource: ObservableObject {
         frameRateWindowFrameCount = 1
     }
 
-    private func enqueueForImmediateDisplay(_ pixelBuffer: CVPixelBuffer) {
-        if !loggedNativeFrameFormat {
-            loggedNativeFrameFormat = true
-            let pixelFormat = CVPixelBufferGetPixelFormatType(pixelBuffer)
-            let format = String(format: "%c%c%c%c",
-                (pixelFormat >> 24) & 0xff,
-                (pixelFormat >> 16) & 0xff,
-                (pixelFormat >> 8) & 0xff,
-                pixelFormat & 0xff
-            )
-            AppleLog.info(
-                "Video",
-                "Native first frame \(CVPixelBufferGetWidth(pixelBuffer))x\(CVPixelBufferGetHeight(pixelBuffer)) format='\(format)'"
-            )
-        }
-        var formatDescription: CMVideoFormatDescription?
-        let formatStatus = CMVideoFormatDescriptionCreateForImageBuffer(
-            allocator: kCFAllocatorDefault,
-            imageBuffer: pixelBuffer,
-            formatDescriptionOut: &formatDescription
-        )
-        guard formatStatus == noErr, let formatDescription else {
-            logNativeDisplayFailureOnce("Could not create video format description status=\(formatStatus)")
-            return
-        }
-        var timing = CMSampleTimingInfo(
-            duration: .invalid,
-            presentationTimeStamp: CMClockGetTime(CMClockGetHostTimeClock()),
-            decodeTimeStamp: .invalid
-        )
-        var sampleBuffer: CMSampleBuffer?
-        let sampleStatus = CMSampleBufferCreateReadyWithImageBuffer(
-            allocator: kCFAllocatorDefault,
-            imageBuffer: pixelBuffer,
-            formatDescription: formatDescription,
-            sampleTiming: &timing,
-            sampleBufferOut: &sampleBuffer
-        )
-        guard sampleStatus == noErr, let sampleBuffer else {
-            logNativeDisplayFailureOnce("Could not create display sample status=\(sampleStatus)")
-            return
-        }
-        if let attachments = CMSampleBufferGetSampleAttachmentsArray(
-            sampleBuffer,
-            createIfNecessary: true
-        ), CFArrayGetCount(attachments) > 0 {
-            let attachment = unsafeBitCast(
-                CFArrayGetValueAtIndex(attachments, 0),
-                to: CFMutableDictionary.self
-            )
-            CFDictionarySetValue(
-                attachment,
-                Unmanaged.passUnretained(kCMSampleAttachmentKey_DisplayImmediately).toOpaque(),
-                Unmanaged.passUnretained(kCFBooleanTrue).toOpaque()
-            )
-        } else {
-            logNativeDisplayFailureOnce("Could not attach display-immediately flag")
-            return
-        }
-        displayLayers = displayLayers.filter { $0.value.value != nil }
-        for entry in displayLayers.values {
-            guard let displayLayer = entry.value else { continue }
-            if displayLayer.status == .failed {
-                displayLayer.flush()
-            }
-            // Native live frames have already been paced by the adaptive FIFO.
-            // Avoid adding a second queue inside a blocked display surface.
-            guard displayLayer.isReadyForMoreMediaData else {
-                displayBusyDrops += 1
-                continue
-            }
-            displayLayer.enqueue(sampleBuffer)
-            displaySubmissionCount += 1
-            if displayLayer.status == .failed {
-                logNativeDisplayFailureOnce(
-                    "Display layer rejected native frame: \(displayLayer.error?.localizedDescription ?? "unknown error")"
-                )
-            }
-        }
-    }
-
     func registerDisplayLayer(_ layer: AVSampleBufferDisplayLayer) {
         displayLayers[ObjectIdentifier(layer)] = WeakVideoDisplayLayer(layer)
-        layer.flushAndRemoveImage()
+        // sampleBufferRenderer enqueues off the main thread. Do not also use the layer's enqueue.
+        displayFeed.addRenderer(layer.sampleBufferRenderer)
         AppleLog.info("Video", "Attached native video surface count=\(displayLayers.count)")
     }
 
     func unregisterDisplayLayer(_ layer: AVSampleBufferDisplayLayer) {
         displayLayers.removeValue(forKey: ObjectIdentifier(layer))
+        displayFeed.removeRenderer(layer.sampleBufferRenderer)
         AppleLog.info("Video", "Detached native video surface count=\(displayLayers.count)")
     }
 
     private func flushDisplayLayers(removeImage: Bool) {
         displayLayers = displayLayers.filter { $0.value.value != nil }
         for entry in displayLayers.values {
-            if removeImage { entry.value?.flushAndRemoveImage() }
-            else { entry.value?.flush() }
+            entry.value?.sampleBufferRenderer.flush(removingDisplayedImage: removeImage, completionHandler: nil)
         }
     }
 
@@ -1624,16 +1788,25 @@ final class AppleVideoFrameSource: ObservableObject {
             var renderDetail = [CChar](repeating: 0, count: 512)
             if R2CFFmpegSessionCopyRenderDiagnostics(ffmpegSession, &renderDetail, Int32(renderDetail.count)) {
                 let text = String(decoding: renderDetail.prefix { $0 != 0 }.map(UInt8.init(bitPattern:)), as: UTF8.self)
-                let elapsed = max(0.001, diagnosticNow - callbackWindowStartedAt)
-                let timing = String(format: " callbackHz=%.1f callbackWorkMeanMs=%.2f callbackMaxGapMs=%.1f",
-                    Double(callbackCount) / elapsed,
-                    callbackCount > 0 ? callbackWorkSeconds * 1000 / Double(callbackCount) : 0,
-                    callbackMaxGapSeconds * 1000)
-                AppleLog.info("Video", "Render buffer path=\(currentPath ?? "unknown") \(text) displaySubmitted=\(displaySubmissionCount) surfaceBusyDrops=\(displayBusyDrops)\(timing)")
-                callbackCount = 0
-                callbackWorkSeconds = 0
-                callbackWindowStartedAt = diagnosticNow
-                callbackMaxGapSeconds = 0
+                let present = displayFeed.copyTimingAndResetWindow()
+                let ingress = LiveIngressTimingStore.shared.latest(path: currentPath)
+                let ingressText = ingress.map {
+                    " socketWaitMs=\($0.socketWaitMs) afterMediaMs=\($0.afterMediaMs) maxSocketWaitMs=\($0.maxSocketWaitMs) maxAfterMediaMs=\($0.maxAfterMediaMs) maxMediaGapMs=\($0.maxMediaGapMs)"
+                } ?? " socketWaitMs=none afterMediaMs=none"
+                let timing = String(
+                    format: " callbackHz=%.1f callbackWorkMeanMs=%.2f callbackMaxGapMs=%.1f mainApplyMaxGapMs=%.1f hitchRecent=%@%@",
+                    Double(present.callbackCount) / present.windowSeconds,
+                    present.callbackCount > 0 ? present.callbackWorkSeconds * 1000 / Double(present.callbackCount) : 0,
+                    present.callbackMaxGapSeconds * 1000,
+                    mainApplyMaxGapSeconds * 1000,
+                    ClueTerrainDiagnostics.recentMainWorkSummary(),
+                    ingressText
+                )
+                AppleLog.info("Video", "Render buffer path=\(currentPath ?? "unknown") \(text) displaySubmitted=\(present.submitted) surfaceBusyDrops=\(present.busyDrops)\(timing)")
+                mainApplyCount = 0
+                mainApplyMaxGapSeconds = 0
+                mainApplyLastAt = 0
+                mainApplyWindowStartedAt = diagnosticNow
             }
         }
         if status == R2C_FFMPEG_STATUS_ENDED {

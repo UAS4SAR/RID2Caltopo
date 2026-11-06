@@ -2431,18 +2431,12 @@ enum ClueTerrainDiagnostics {
         let peers = state.peerRecvCount
         let annots = state.mapAnnotCount
         let now = ProcessInfo.processInfo.systemUptime
-        let recent = state.recentMainWork.suffix(8).map { work in
-            let ageMs = Int((now - work.uptime) * 1_000)
-            if work.bytes > 0 {
-                return "\(work.tag)@\(ageMs)ms/\(work.bytes)B"
-            }
-            return "\(work.tag)@\(ageMs)ms"
-        }
-        let shouldLogSources = now - state.lastHitchSourceLogAt >= 1.0
+        let recent = Self.recentLabels(from: state.recentMainWork, now: now, maxAge: 5)
+        let shouldLogSources = now - state.lastHitchSourceLogAt >= 1.0 && !recent.isEmpty
         if shouldLogSources { state.lastHitchSourceLogAt = now }
         state.lock.unlock()
         guard shouldLogSources else { return }
-        let recentText = recent.isEmpty ? "none" : recent.joined(separator: ",")
+        let recentText = recent.joined(separator: ",")
         AppleLog.info(
             "ClueTerrain",
             String(
@@ -2451,6 +2445,29 @@ enum ClueTerrainDiagnostics {
                 hitches, tasks, mapRebuilds, mapMs, mapPoints, thumbs, peers, annots, recentText
             )
         )
+    }
+
+    /// Tags from the last few seconds, for hitch and live-video gap lines.
+    static func recentMainWorkSummary(maxAge: TimeInterval = 5) -> String {
+        let now = ProcessInfo.processInfo.systemUptime
+        state.lock.lock()
+        let recent = recentLabels(from: state.recentMainWork, now: now, maxAge: maxAge)
+        state.lock.unlock()
+        return recent.isEmpty ? "none" : recent.joined(separator: ",")
+    }
+
+    private static func recentLabels(
+        from work: [RecentWork],
+        now: TimeInterval,
+        maxAge: TimeInterval
+    ) -> [String] {
+        work.suffix(8).compactMap { item in
+            let age = now - item.uptime
+            guard age >= 0, age <= maxAge else { return nil }
+            let ageMs = Int(age * 1_000)
+            if item.bytes > 0 { return "\(item.tag)@\(ageMs)ms/\(item.bytes)B" }
+            return "\(item.tag)@\(ageMs)ms"
+        }
     }
 
     static func noteMapOverlayRebuild(elapsedMs: Double, pointCount: Int) {

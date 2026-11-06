@@ -3796,7 +3796,7 @@ private struct ClueSubmissionView: View {
             let result = await withTaskGroup(of: Data?.self) { group in
                 group.addTask {
                     await Task.detached(priority: .userInitiated) {
-                        UIImage(data: data).flatMap { stampClueCrosshair($0, coordinates: coordinates).jpegData(compressionQuality: 0.9) } ?? data
+                        stampClueCrosshairJPEG(data, coordinates: coordinates, quality: 0.9) ?? data
                     }.value
                 }
                 group.addTask {
@@ -3870,22 +3870,13 @@ private struct ClueSubmissionView: View {
 
 /// Form preview only: downsample off the main thread so SwiftUI never holds a full-res UIImage.
 private func clueFormPreviewImage(jpegData: Data, coordinates: String?) -> UIImage? {
-    guard let image = UIImage(data: jpegData) else { return nil }
-    let maxDimension: CGFloat = 1024
-    let longest = max(image.size.width, image.size.height)
-    let scaled: UIImage
-    if longest > maxDimension, longest > 0 {
-        let scale = maxDimension / longest
-        let size = CGSize(width: image.size.width * scale, height: image.size.height * scale)
-        let format = UIGraphicsImageRendererFormat()
-        format.scale = 1
-        scaled = UIGraphicsImageRenderer(size: size, format: format).image { _ in
-            image.draw(in: CGRect(origin: .zero, size: size))
-        }
-    } else {
-        scaled = image
-    }
-    return stampClueCrosshair(scaled, coordinates: coordinates)
+    guard let stamped = stampClueCrosshairJPEG(
+        jpegData,
+        coordinates: coordinates,
+        quality: 0.85,
+        maxEdge: 1024
+    ) else { return nil }
+    return UIImage(data: stamped)
 }
 
 private struct ClueProjectionInput: Hashable {
@@ -4944,6 +4935,7 @@ private struct OperationalMKMapView: UIViewRepresentable {
         private var aircraftActivePolylinesByID: [String: StyledPolyline] = [:]
         private var aircraftBearingPolylinesByID: [String: StyledPolyline] = [:]
         private var aircraftAnnotationsByRemoteID: [String: AircraftAnnotation] = [:]
+        private var lastAircraftAnnotationApplyAt: TimeInterval = 0
         private var clueAnnotationsByID: [UUID: ClueAnnotation] = [:]
         private var positionTimingByAircraftID: [String: Date] = [:]
         private var operatorCoordinate: CLLocationCoordinate2D?
@@ -5398,7 +5390,20 @@ private struct OperationalMKMapView: UIViewRepresentable {
             // Full tear-down only when the flight set changes (or first paint). Point growth
             // replaces individual aircraft polylines below without rebuilding the whole layer.
             let shouldRebuildPolylines = flightSetChanged || previous == nil
-            let aircraftChanged = shouldRebuildPolylines || annotationsChanged
+            let previousIDs = Set(previous?.annotations.heads.map(\.aircraftID) ?? [])
+            let nextIDs = Set(nextAnnotations.heads.map(\.aircraftID))
+            let structuralAnnotationChange = shouldRebuildPolylines
+                || previousIDs != nextIDs
+                || previous?.annotations.focusedAircraftID != nextAnnotations.focusedAircraftID
+                || previous?.annotations.inset != nextAnnotations.inset
+                || previous?.annotations.followFocusedDrone != nextAnnotations.followFocusedDrone
+            let annotationApplyDue = AircraftMapAnnotationUpdatePolicy.shouldApply(
+                now: ProcessInfo.processInfo.systemUptime,
+                lastAppliedAt: lastAircraftAnnotationApplyAt > 0 ? lastAircraftAnnotationApplyAt : nil,
+                structuralChange: structuralAnnotationChange
+            )
+            // RID position ticks must not reconfigure every annotation on every MainActor pass.
+            let aircraftChanged = structuralAnnotationChange || (annotationsChanged && annotationApplyDue)
             if shouldRebuildPolylines {
                 let rebuildStarted = ProcessInfo.processInfo.systemUptime
                 map.removeOverlays(map.overlays.filter { overlay in
@@ -5415,6 +5420,7 @@ private struct OperationalMKMapView: UIViewRepresentable {
             }
             if aircraftChanged {
                 aircraftRenderState = nextAircraftState
+                lastAircraftAnnotationApplyAt = ProcessInfo.processInfo.systemUptime
             }
 
             if aircraftChanged {
