@@ -1,8 +1,6 @@
 import Darwin
 import AVKit
 import Combine
-import CoreText
-import ImageIO
 import MapKit
 import R2CCore
 import SwiftUI
@@ -1642,117 +1640,7 @@ private struct AppleStreamDeviceLoadSection: View {
 }
 
 func stampClueCrosshair(_ image: UIImage, coordinates: String?) -> UIImage {
-    guard let cgImage = image.cgImage,
-          let stamped = drawClueCrosshair(on: cgImage, coordinates: coordinates)
-    else { return image }
+    guard let cgImage = image.cgImage else { return image }
+    let stamped = stampClueCrosshairCGImage(cgImage, coordinates: coordinates)
     return UIImage(cgImage: stamped, scale: 1, orientation: .up)
-}
-
-/// JPEG stamp using ImageIO and CoreGraphics only, so a clue save cannot draw on the main thread.
-func stampClueCrosshairJPEG(
-    _ data: Data,
-    coordinates: String?,
-    quality: Double = 0.9,
-    maxEdge: Int? = nil
-) -> Data? {
-    guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
-    let image: CGImage?
-    if let maxEdge, maxEdge > 0 {
-        let options = [
-            kCGImageSourceCreateThumbnailFromImageAlways: true,
-            kCGImageSourceThumbnailMaxPixelSize: maxEdge,
-            kCGImageSourceCreateThumbnailWithTransform: true,
-        ] as CFDictionary
-        image = CGImageSourceCreateThumbnailAtIndex(source, 0, options)
-    } else {
-        image = CGImageSourceCreateImageAtIndex(source, 0, nil)
-    }
-    guard let image else { return nil }
-    let stamped = drawClueCrosshair(on: image, coordinates: coordinates) ?? image
-    let out = NSMutableData()
-    guard let destination = CGImageDestinationCreateWithData(out, "public.jpeg" as CFString, 1, nil) else {
-        return nil
-    }
-    CGImageDestinationAddImage(
-        destination,
-        stamped,
-        [kCGImageDestinationLossyCompressionQuality: quality] as CFDictionary
-    )
-    guard CGImageDestinationFinalize(destination) else { return nil }
-    return out as Data
-}
-
-private func drawClueCrosshair(on image: CGImage, coordinates: String?) -> CGImage? {
-    let prefs = UserDefaults.standard
-    let style = prefs.string(forKey: "crosshair.style") ?? "Simple"
-    guard style != "None" else { return image }
-    let lineWidth = max(0.1, prefs.object(forKey: "crosshair.widthPx") as? Double ?? 1)
-    let percent = min(25, max(2, prefs.object(forKey: "crosshair.sizePercent") as? Double ?? 5))
-    let pixelWidth = image.width
-    let pixelHeight = image.height
-    guard pixelWidth > 0, pixelHeight > 0,
-          let context = CGContext(
-            data: nil,
-            width: pixelWidth,
-            height: pixelHeight,
-            bitsPerComponent: 8,
-            bytesPerRow: 0,
-            space: CGColorSpaceCreateDeviceRGB(),
-            bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue
-          )
-    else { return nil }
-    context.translateBy(x: 0, y: CGFloat(pixelHeight))
-    context.scaleBy(x: 1, y: -1)
-    context.interpolationQuality = .high
-    context.draw(image, in: CGRect(x: 0, y: 0, width: pixelWidth, height: pixelHeight))
-    let center = CGPoint(x: CGFloat(pixelWidth) / 2, y: CGFloat(pixelHeight) / 2)
-    let arm = min(CGFloat(pixelWidth), CGFloat(pixelHeight)) * percent / 200
-    let path = CGMutablePath()
-    path.move(to: CGPoint(x: center.x - arm, y: center.y))
-    path.addLine(to: CGPoint(x: center.x + arm, y: center.y))
-    path.move(to: CGPoint(x: center.x, y: center.y - arm))
-    path.addLine(to: CGPoint(x: center.x, y: center.y + arm))
-    if style == "Bordered" {
-        context.addPath(path)
-        context.setStrokeColor(clueCrosshairCGColor(prefs.string(forKey: "crosshair.borderColor") ?? "000000"))
-        context.setLineWidth(lineWidth + 2)
-        context.strokePath()
-    }
-    context.addPath(path)
-    context.setStrokeColor(clueCrosshairCGColor(prefs.string(forKey: "crosshair.mainColor") ?? "FFFFFF"))
-    context.setLineWidth(lineWidth)
-    context.strokePath()
-    if let coordinates, prefs.object(forKey: "crosshair.showCoordinates") as? Bool ?? true {
-        let fontSize = max(14, min(CGFloat(pixelWidth), CGFloat(pixelHeight)) * 0.018)
-        let font = CTFontCreateWithName("Menlo-Bold" as CFString, fontSize, nil)
-        let attributes: [NSAttributedString.Key: Any] = [
-            .font: font,
-            .foregroundColor: CGColor(gray: 1, alpha: 1),
-        ]
-        let line = CTLineCreateWithAttributedString(NSAttributedString(string: coordinates, attributes: attributes))
-        var ascent: CGFloat = 0
-        var descent: CGFloat = 0
-        let textWidth = CGFloat(CTLineGetTypographicBounds(line, &ascent, &descent, nil))
-        let textHeight = ascent + descent
-        let origin = CGPoint(x: center.x - textWidth / 2, y: center.y + arm + 8)
-        context.setFillColor(CGColor(gray: 0, alpha: 0.75))
-        context.fill(CGRect(x: origin.x - 4, y: origin.y - 3, width: textWidth + 8, height: textHeight + 6))
-        context.saveGState()
-        context.translateBy(x: origin.x, y: origin.y + textHeight)
-        context.scaleBy(x: 1, y: -1)
-        context.textPosition = CGPoint(x: 0, y: descent)
-        CTLineDraw(line, context)
-        context.restoreGState()
-    }
-    return context.makeImage()
-}
-
-private func clueCrosshairCGColor(_ hex: String) -> CGColor {
-    let value = UInt32(hex, radix: 16) ?? 0xFFFFFF
-    return CGColor(
-        red: CGFloat((value >> 16) & 255) / 255,
-        green: CGFloat((value >> 8) & 255) / 255,
-        blue: CGFloat(value & 255) / 255,
-        alpha: 1
-    )
 }
