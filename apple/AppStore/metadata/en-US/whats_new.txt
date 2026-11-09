@@ -1,3 +1,3 @@
 Latest changes:
-- An unverified Mine claim stays on the device for review before CalTopo or tracker publication.
-- Recovered flights keep a local record and do not invent a pilot when the older journal has none.
+- Drone Ownership is saved on this device. Organization distribution uses System Admin configuration upload.
+- Organization members who are not config administrators can view the setting but cannot change it.

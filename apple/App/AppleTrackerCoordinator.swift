@@ -364,6 +364,7 @@ enum AppleManagedOrganizationConfig {
         let mappingRevision = identities.backupRevision
         let configuration = caltopo.configuration, teams = caltopo.teamsCredentialDraft
         let folder = organization.trackFolder
+        let droneOwnership = organization.droneOwnership
         let templateSnapshot = organization.mutualAidTemplate
         let mappingSnapshot = identities.importedMappings
         let published = AppleAircraftOrganizationAccess.currentPreparedState
@@ -372,7 +373,7 @@ enum AppleManagedOrganizationConfig {
         let bytes = try await Task.detached(priority: .utility) {
             try ManagedOrganizationWireSnapshot.encode(teams: teams, trackFolder: folder,
                 mutualAid: templateSnapshot, identities: mappingSnapshot, published: published,
-                appVersion: appVersion, appBuild: appBuild)
+                appVersion: appVersion, appBuild: appBuild, droneOwnership: droneOwnership)
         }.value
         try Task.checkCancellation()
         guard !CredentialMutationGate.shared.isBusy,
@@ -472,7 +473,9 @@ enum AppleManagedOrganizationConfig {
                   revision == identities.backupRevision else { throw CancellationError() }
             try await identities.applyImportedMappings(prepared.mappings, managedDownload: true)
             guard token == organization.trackerAPIKey, prefix == organization.trackerURLPrefix else { throw CancellationError() }
-            organization.setDroneOwnership(prepared.droneOwnership)
+            if snapshot["droneOwnership"] != nil {
+                organization.receivePublishedDroneOwnership(prepared.droneOwnership)
+            }
             defaults.set(versionMs, forKey: versionDefaultsKey)
             defaults.set(prepared.aircraftSchema, forKey: "org.managedReadinessSchemaVersion")
             AppleLog.info("OrgConfig", "Applied managed organization configuration \(versionMs)")

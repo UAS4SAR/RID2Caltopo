@@ -3405,6 +3405,7 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
         if (notifySettings) {
             NotifySettingsChanged();
         }
+        if (ctxt != null) OrgConfigManager.bindCurrentOwnershipScope(ctxt);
         return true;
     }
 

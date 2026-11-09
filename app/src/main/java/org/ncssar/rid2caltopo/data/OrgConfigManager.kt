@@ -12,6 +12,7 @@ import android.os.Handler
 import android.os.Looper
 import com.google.android.gms.auth.api.signin.GoogleSignInAccount
 import org.ncssar.rid2caltopo.BuildConfig
+import org.ncssar.rid2caltopo.app.R2CApplication
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import org.json.JSONArray
@@ -45,16 +46,102 @@ object OrgConfigManager {
     private const val KEY_ORG_NAME = "org_name"
     private const val KEY_MANAGED_VERSION_MS = "managed_version_ms"
     private const val KEY_DRONE_OWNERSHIP = "drone_ownership"
-    @Volatile private var ownershipMode = "all_detected"
+    private const val KEY_OWNERSHIP_RECORDS = "drone_ownership_records"
+    @Volatile private var ownershipMode = DroneOwnershipPolicy.ALL
+    @Volatile private var ownershipModeForTesting: String? = null
+    @Volatile private var boundOwnershipScope = ""
+    private val ownershipRecords = mutableMapOf<String, DroneOwnershipPolicy.Record>()
     private val _droneOwnership = MutableStateFlow(ownershipMode)
     val droneOwnership = _droneOwnership.asStateFlow()
-    @JvmStatic fun droneOwnershipMode(): String = ownershipMode
+    @JvmStatic fun droneOwnershipMode(): String {
+        ownershipModeForTesting?.let { return it }
+        bindCurrentOwnershipScope(R2CApplication.getAppCtxt())
+        return ownershipMode
+    }
     /** Called by the startup settings worker, before scanning starts. */
     fun restoreDroneOwnership(context: Context) {
-        ownershipMode = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            .getString(KEY_DRONE_OWNERSHIP, "all_detected")
-            .takeIf { it == "streaming_device" || it == "streaming_shared_incident" } ?: "all_detected"
+        loadOwnershipRecords(context)
+        bindCurrentOwnershipScope(context)
+    }
+
+    @JvmStatic fun ownershipScope(): String = DroneOwnershipPolicy.scope(
+        AircraftOrganizationAccess.belongsToOrganization(),
+        CaltopoClient.GetTrackerCoordinationUrlPfx(),
+    )
+
+    /** Local edit. Returns false when this account may only inspect the value. No network call. */
+    @JvmStatic fun setLocalDroneOwnership(context: Context, mode: String): Boolean {
+        if (!AircraftOrganizationAccess.canEdit()) return false
+        bindCurrentOwnershipScope(context)
+        val scope = boundOwnershipScope.ifEmpty { ownershipScope() }
+        val next = DroneOwnershipPolicy.edit(ownershipRecords[scope] ?: DroneOwnershipPolicy.Record.initial, mode)
+        ownershipRecords[scope] = next
+        boundOwnershipScope = scope
+        publishOwnership(next.mode)
+        saveOwnershipRecords(context)
+        return true
+    }
+
+    /** Apply a published organization snapshot for [scope]. A repeat of the applied value keeps a staged edit. */
+    @JvmStatic fun receivePublishedDroneOwnership(context: Context, scope: String, mode: String) {
+        loadOwnershipRecords(context)
+        val key = scope.ifEmpty { DroneOwnershipPolicy.STANDALONE }
+        val next = DroneOwnershipPolicy.receive(ownershipRecords[key] ?: DroneOwnershipPolicy.Record.initial, mode)
+        ownershipRecords[key] = next
+        saveOwnershipRecords(context)
+        if (key == ownershipScope()) {
+            boundOwnershipScope = key
+            publishOwnership(next.mode)
+        }
+    }
+
+    @JvmStatic fun bindCurrentOwnershipScope(context: Context?) {
+        if (context != null && ownershipRecords.isEmpty()) loadOwnershipRecords(context)
+        val scope = ownershipScope()
+        if (scope == boundOwnershipScope && ownershipRecords.containsKey(scope)) {
+            publishOwnership(ownershipRecords.getValue(scope).mode)
+            return
+        }
+        val record = ownershipRecords[scope] ?: DroneOwnershipPolicy.Record.initial
+        ownershipRecords[scope] = record
+        boundOwnershipScope = scope
+        publishOwnership(record.mode)
+    }
+
+    @JvmStatic fun setDroneOwnershipForTesting(mode: String?) {
+        ownershipModeForTesting = mode?.let(DroneOwnershipPolicy::normalize)
+        ownershipModeForTesting?.let(::publishOwnership)
+    }
+
+    private fun publishOwnership(mode: String) {
+        ownershipMode = DroneOwnershipPolicy.normalize(mode)
         _droneOwnership.value = ownershipMode
+    }
+
+    private fun prefs(context: Context) = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+
+    private fun loadOwnershipRecords(context: Context) {
+        val stored = prefs(context).getString(KEY_OWNERSHIP_RECORDS, null)
+        ownershipRecords.clear()
+        if (!stored.isNullOrBlank()) {
+            val root = runCatching { JSONObject(stored) }.getOrNull() ?: return
+            for (key in root.keys()) {
+                ownershipRecords[key] = DroneOwnershipPolicy.Record.fromJson(root.optJSONObject(key))
+            }
+            return
+        }
+        val legacy = prefs(context).getString(KEY_DRONE_OWNERSHIP, null) ?: return
+        val mode = DroneOwnershipPolicy.normalize(legacy)
+        ownershipRecords[ownershipScope()] = DroneOwnershipPolicy.Record(mode, mode, false)
+    }
+
+    private fun saveOwnershipRecords(context: Context) {
+        val root = JSONObject()
+        ownershipRecords.forEach { (key, record) -> root.put(key, record.toJson()) }
+        prefs(context).edit()
+            .putString(KEY_OWNERSHIP_RECORDS, root.toString())
+            .putString(KEY_DRONE_OWNERSHIP, ownershipMode)
+            .apply()
     }
 
     // Type tags used in the bundle JSON to mark encrypted credential blocks.
@@ -227,6 +314,7 @@ object OrgConfigManager {
                 OrgConfigToken.encryptPayload(OrgConfigToken.canonicalCredentialPayload(it))
             } ?: "")
             .put("droneSpecs", droneSpecs)
+            .put("droneOwnership", droneOwnershipMode())
     }
 
     private fun filteredObject(source: JSONObject, names: List<String>): JSONObject {
@@ -282,10 +370,10 @@ object OrgConfigManager {
             context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
                 .putLong(KEY_MANAGED_VERSION_MS, versionMs)
                 .putInt("managed_readiness_schema_version", snapshot.optInt("aircraftSchemaVersion", 0))
-                .putString(KEY_DRONE_OWNERSHIP, snapshot.optString("droneOwnership").takeIf { it == "streaming_device" || it == "streaming_shared_incident" } ?: "all_detected")
                 .apply()
-            ownershipMode = snapshot.optString("droneOwnership").takeIf { it == "streaming_device" || it == "streaming_shared_incident" } ?: "all_detected"
-            _droneOwnership.value = ownershipMode
+            if (snapshot.has("droneOwnership")) {
+                receivePublishedDroneOwnership(context, ownershipScope(), snapshot.optString("droneOwnership"))
+            }
         }
         return applied
     }

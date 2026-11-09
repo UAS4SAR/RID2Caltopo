@@ -55,10 +55,6 @@ import org.ncssar.rid2caltopo.data.ExternalDisplayMode
 import org.ncssar.rid2caltopo.data.RidLocationAccuracyPrefs
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
-import okhttp3.RequestBody.Companion.toRequestBody
-import org.json.JSONObject
-import org.ncssar.rid2caltopo.BuildConfig
-import org.ncssar.rid2caltopo.data.CaltopoSession
 import org.ncssar.rid2caltopo.data.OrgConfigManager
 
 @Composable
@@ -221,12 +217,27 @@ fun CaltopoSettingsScreen(
                     modifier = Modifier.fillMaxWidth()
                 )
                 Text("Drone Ownership", style = MaterialTheme.typography.labelLarge, modifier = Modifier.fillMaxWidth())
-                OutlinedButton(onClick = { ownershipDialog = true }, enabled = !ownershipBusy, modifier = Modifier.fillMaxWidth()) { Text(when (droneOwnership) {
+                OutlinedButton(onClick = {
+                    ownershipBusy = true
+                    ownershipScope.launch {
+                        val editable = withContext(Dispatchers.IO) {
+                            if (org.ncssar.rid2caltopo.data.AircraftOrganizationAccess.belongsToOrganization()) {
+                                org.ncssar.rid2caltopo.data.AircraftOrganizationAccess.refresh()
+                            }
+                            org.ncssar.rid2caltopo.data.AircraftOrganizationAccess.canEdit()
+                        }
+                        ownershipBusy = false
+                        if (editable) ownershipDialog = true
+                        else ownershipMessage = "Read-only. This organization account cannot change Drone Ownership."
+                    }
+                }, enabled = !ownershipBusy, modifier = Modifier.fillMaxWidth()) { Text(when (droneOwnership) {
                     "streaming_device" -> "Drones streaming to this device"
                     "streaming_shared_incident" -> "Drones streaming to this device w/in same incident"
                     else -> "All detected drones"
                 }) }
-                Text("Changes apply to the entire organization and require an administrator's enrolled account.",
+                Text(if (org.ncssar.rid2caltopo.data.AircraftOrganizationAccess.belongsToOrganization())
+                    "Saved on this device. A config administrator distributes it by uploading organization configuration from System Admin."
+                    else "Saved on this device.",
                     style = MaterialTheme.typography.bodySmall, modifier = Modifier.fillMaxWidth())
                 if (ownershipMessage.isNotEmpty()) Text(ownershipMessage, style = MaterialTheme.typography.bodySmall)
                 SettingsHelpLabel("Organization designator")
@@ -708,41 +719,18 @@ fun CaltopoSettingsScreen(
         AlertDialog(onDismissRequest = { ownershipDialog = false }, title = { Text("Drone Ownership") },
             text = {
                 Column {
-                    Text("Choose which detected drones prompt for ownership. This change applies to your organization immediately.")
+                    Text("Choose which detected drones prompt for ownership. This is saved on this device and takes effect immediately.")
                     listOf("all_detected" to "All detected drones", "streaming_device" to "Drones streaming to this device",
                         "streaming_shared_incident" to "Drones streaming to this device w/in same incident").forEach { (mode, label) ->
                         TextButton(onClick = {
                             ownershipDialog = false
-                            ownershipBusy = true
-                            ownershipMessage = "Saving organization setting…"
-                            val prefix = CaltopoClient.GetTrackerCoordinationUrlPfx().trimEnd('/')
-                            val token = CaltopoClient.GetTrackerCoordinationApiKey()
-                            ownershipScope.launch {
-                                val result = withContext(Dispatchers.IO) {
-                                    runCatching {
-                                        require(prefix.isNotBlank() && token.startsWith("r2c_dev_")) { "Enroll this device with your organization first." }
-                                        val request = Request.Builder().url("$prefix/api/v1/organization-config/drone-ownership")
-                                            .header("X-SAR-Token", token)
-                                            .header("X-R2C-Functionality-Release", BuildConfig.TRACKER_FUNCTIONALITY_RELEASE.toString())
-                                            .put(JSONObject().put("mode", mode).toString().toRequestBody("application/json".toMediaType())).build()
-                                        CaltopoSession.MyOkHttpClient.newCall(request).execute().use { response ->
-                                            when (response.code) {
-                                                200 -> Unit
-                                                401, 403 -> error("An enrolled organization administrator account is required. Sign in or contact an administrator.")
-                                                409 -> error("Tracker has no published organization configuration, or could not update it.")
-                                                else -> error("Tracker could not save Drone Ownership (HTTP ${response.code}).")
-                                            }
-                                        }
-                                    }
-                                }
-                                if (prefix == CaltopoClient.GetTrackerCoordinationUrlPfx().trimEnd('/') && token == CaltopoClient.GetTrackerCoordinationApiKey()) {
-                                    ownershipMessage = result.fold({
-                                        OrgConfigManager.syncManagedConfigurationAfterEnrollment(appContext, prefix, token)
-                                        "Saved for the organization. This device will update when it syncs."
-                                    }, { it.message ?: "Could not reach Tracker. Try again." })
-                                }
-                                ownershipBusy = false
-                            }
+                            val saved = org.ncssar.rid2caltopo.data.OrgConfigManager.setLocalDroneOwnership(appContext, mode)
+                            if (saved) org.ncssar.rid2caltopo.app.R2CActivity.getR2CActivity()?.notifyDroneOwnershipChanged()
+                            ownershipMessage = if (saved) {
+                                if (org.ncssar.rid2caltopo.data.AircraftOrganizationAccess.belongsToOrganization())
+                                    "Saved on this device. Upload organization configuration from System Admin to distribute it."
+                                else "Saved on this device."
+                            } else "Read-only. This organization account cannot change Drone Ownership."
                         }, enabled = !ownershipBusy) { Text(if (droneOwnership == mode) "✓ $label" else label) }
                     }
                 }

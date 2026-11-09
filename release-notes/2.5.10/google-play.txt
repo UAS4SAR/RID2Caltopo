@@ -1,0 +1,1 @@
+Drone Ownership is saved on this device and distributed through System Admin configuration upload.

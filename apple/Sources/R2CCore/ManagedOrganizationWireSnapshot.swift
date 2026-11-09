@@ -5,7 +5,8 @@ public enum ManagedOrganizationWireSnapshot {
     public static func encode(
         teams: OperationalTeamsCredentialDraft, trackFolder: String,
         mutualAid: MutualAidTemplateCredentials?, identities: [RidAircraftIdentity],
-        published: PreparedOrganizationState, appVersion: String, appBuild: Int
+        published: PreparedOrganizationState, appVersion: String, appBuild: Int,
+        droneOwnership: String = DroneOwnershipPolicy.all
     ) throws -> Data {
         dispatchPrecondition(condition: .notOnQueue(.main))
         let credentials = try OrgConfigTokenCodec.canonicalCredentialPayload([
@@ -36,7 +37,9 @@ public enum ManagedOrganizationWireSnapshot {
                 return ["remoteId": clean.remoteID, "mappedId": clean.mappedID, "org": clean.organization,
                         "model": clean.droneDescription, "owner": clean.pilotCallsign, "ownerName": clean.ownerName,
                         "ownerCallsign": clean.pilotCallsign, "readiness": clean.readiness.dictionary] as [String: Any]
-            }]
+            },
+            "droneOwnership": DroneOwnershipPolicy.normalize(droneOwnership),
+        ]
         return try JSONSerialization.data(withJSONObject: result, options: [.sortedKeys])
     }
 }

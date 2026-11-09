@@ -88,7 +88,10 @@ class OrgConfigBundleTest {
             ).also { it.connectKey = "SHARED-UAS" }
         )
 
+        OrgConfigManager.setDroneOwnershipForTesting("streaming_device")
         val snapshot = OrgConfigManager.buildManagedSnapshot()
+        OrgConfigManager.setDroneOwnershipForTesting(null)
+        assertEquals("streaming_device", snapshot.getString("droneOwnership"))
         val credentials = JSONObject(
             OrgConfigToken.decryptPayload(snapshot.getString("organizationCaltopoEnc"))
         )

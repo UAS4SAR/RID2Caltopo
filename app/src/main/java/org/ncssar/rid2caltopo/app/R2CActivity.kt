@@ -966,6 +966,10 @@ class R2CActivity :
         if (::localViewModel.isInitialized) localViewModel.onOwnershipPolicyChanged()
     }
 
+    fun notifyDroneOwnershipChanged() {
+        if (::localViewModel.isInitialized) localViewModel.onOwnershipPolicyChanged()
+    }
+
     suspend fun listAvailableLogArchiveDays(): List<LogArchiveDayOption> = withContext(Dispatchers.IO) {
         val archiveDir = CaltopoClient.GetArchiveDir() ?: return@withContext emptyList()
         val todayDirName = todayArchiveDirectoryName()
