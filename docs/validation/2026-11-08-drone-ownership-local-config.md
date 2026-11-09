@@ -42,7 +42,7 @@ In-place only. Neither app was uninstalled or launched. Android `firstInstallTim
 
 | Device | Evidence | Artifact SHA-256 |
 | --- | --- | --- |
-| A5 Pro, R52Y90C9XST | `dumpsys package org.ncssar.rid2caltopo` reports versionName 2.5.10, versionCode 439, lastUpdateTime 2026-11-08 17:18:07. | APK `f32a397c85f6c5e7919cacc3cc4d26d87b9c6a90584e28efb3728c12d5ec4cc0` |
+| A5 Pro, R52Y90C9XST | `dumpsys package org.ncssar.rid2caltopo` reports versionName 2.5.10, versionCode 439, lastUpdateTime 2026-11-08 17:19:21. | APK `95cb436b9e2b7b41f6b229fa89c7c9b470759745b7d9e2e3756b162624516d1b` |
 | Ken's iPad, 00008103-0010596E1AD3001E | `devicectl device info apps` reports RID2Caltopo 2.5.10 (439). The inventory did not expose an installation time. `codesign --verify --deep --strict` passed. | Signed app bundle ZIP `e958dd860e3c26e68983860706e7ff6cf2e3d16743269a44705dac49c1513303` |
 
 iPad executable SHA-256 `780e64f3eb95b4248312f2f833af762575618c0a5c9bd29add59a6279a1a65dc`. Code-directory hash `4ba7818dfcd87471e18ee4e22d22d549ffb481bb`.
