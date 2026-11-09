@@ -210,15 +210,31 @@ fun AwaitingMapPublicationPanel(onChooseMap: () -> Unit = {}) {
         val destinationName = remember(flight) { if (flight.optString("map").isNotBlank() && flight.optString("map") != mapId) "Original incident map" else mapName }
         val team = remember(flight) { if (flight.optString("map").isNotBlank()) flight.optString("team") else AwaitingMapFlights.selectedPublicationScope() }
         AlertDialog(onDismissRequest = { selected = null }, title = { Text("Publish earlier flight?") },
-            text = { Text("${flight.optString("label")}\nTo $destinationName ($destination)\nIncludes the recorded track and associated clues marked for publication. Clues kept local stay local.") },
+            text = { Text("${flight.optString("label")}\nTo $destinationName ($destination)\n" +
+                (if (flight.optBoolean("ownershipReviewPending") || flight.optBoolean("automaticPublicationBlocked"))
+                    org.ncssar.rid2caltopo.data.FlightOwnershipContext.reviewMessage(
+                        flight.optBoolean("ownershipContextKnown"),
+                        flight.optString("claim"),
+                        flight.optString("recordedPilot"),
+                        flight.optBoolean("automaticPublicationBlocked")) + "\n"
+                else "") +
+                "Includes the recorded track and associated clues marked for publication. Clues kept local stay local.") },
             confirmButton = { TextButton(onClick = {
                 selected = null
+                val held = flight.optBoolean("ownershipReviewPending")
+                val flightId = flight.getString("id")
                 scope.launch {
-                    awaitingMapStorage { AwaitingMapFlights.decide(flight.getString("id"), destination, team) }
-                        .onFailure { CaltopoClient.ShowToast("Publication choice could not be saved; please retry.") }
+                    awaitingMapStorage {
+                        if (held && !AwaitingMapFlights.authorizeOwnershipReview(flightId)) {
+                            error("Ownership review was not authorized")
+                        }
+                        AwaitingMapFlights.decide(flightId, destination, team)
+                    }.onFailure { CaltopoClient.ShowToast("Publication choice could not be saved; please retry.") }
                     refreshPending()
                 }
-            }, enabled = destination.isNotBlank() && team.isNotBlank()) { Text("Publish") } },
+            }, enabled = destination.isNotBlank() && team.isNotBlank() && !flight.optBoolean("automaticPublicationBlocked")) {
+                Text(if (flight.optBoolean("ownershipReviewPending")) "Confirm and publish" else "Publish")
+            } },
             dismissButton = { TextButton(onClick = {
                 selected = null
                 scope.launch {
@@ -480,7 +496,7 @@ private fun FlightGroup(
                 proximity = location?.let { AwaitingMapFlightProximity.forFlight(flight, it.latitude, it.longitude) },
                 cluePhotoCount = cluePhotoCounts[id] ?: 0,
                 nearIc = nearIc[id] == true,
-                canPublish = mapId.isNotBlank(),
+                canPublish = mapId.isNotBlank() && !flight.optBoolean("automaticPublicationBlocked"),
                 wide = wide,
                 onPublish = { onPublish(flight) },
                 onDiscard = { onDiscard(flight) },

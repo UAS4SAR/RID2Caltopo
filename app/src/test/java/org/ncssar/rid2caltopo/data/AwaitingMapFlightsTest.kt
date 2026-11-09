@@ -8,6 +8,32 @@ import org.junit.After
 import java.io.File
 
 class AwaitingMapFlightsTest {
+    @Test fun unverifiedOwnershipRemainsHeldAcrossRestart() {
+        val file = File.createTempFile("ownership-review", ".json").also { it.delete() }
+        try {
+            AwaitingMapFlights.useFileForTesting(file)
+            val points = flight().getJSONArray("points")
+            AwaitingMapFlights.record("one", "RID", "Aircraft", points, false, "map-a", "team-a", true)
+            assertEquals("", AwaitingMapFlights.publicationId("RID", "map-a", "team-a"))
+            AwaitingMapFlights.notePublication("RID", "map-a")
+            AwaitingMapFlights.record("one", "RID", "Aircraft", points, true, "map-a", "team-a", true)
+            AwaitingMapFlights.useFileForTesting(file)
+            val held = AwaitingMapFlights.pending().single()
+            assertEquals("review", held.getString("decision"))
+            assertTrue(held.getBoolean("ownershipReviewPending"))
+            assertThrows(IllegalStateException::class.java) { AwaitingMapFlights.decide("one", "map-a", "team-a") }
+            assertEquals("review", AwaitingMapFlights.allEntries().single().getString("decision"))
+            AwaitingMapFlights.record("two", "RID-2", "Other", points, false, "map-b", "team-b", false)
+            AwaitingMapFlights.record("two", "RID-2", "Other", points, true, "map-b", "team-b", false)
+            assertEquals("publish", AwaitingMapFlights.allEntries().first { it.getString("id") == "two" }.getString("decision"))
+            assertFalse(AwaitingMapFlights.authorizeOwnershipReview("two"))
+            assertTrue(AwaitingMapFlights.authorizeOwnershipReview("one"))
+            AwaitingMapFlights.decide("one", "map-a", "team-a")
+            assertEquals("publish", AwaitingMapFlights.allEntries().first { it.getString("id") == "one" }.getString("decision"))
+            assertEquals("publish", AwaitingMapFlights.allEntries().first { it.getString("id") == "two" }.getString("decision"))
+            assertFalse(AwaitingMapFlights.allEntries().first { it.getString("id") == "one" }.has("recordedPilot"))
+        } finally { file.delete() }
+    }
     @After fun reset() {
         AwaitingMapFlights.useFileForTesting(null)
         FlightPublicationLedger.useFileForTesting(null)

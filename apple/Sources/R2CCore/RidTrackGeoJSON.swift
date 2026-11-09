@@ -21,6 +21,7 @@ public struct RidTrackArchiveMetadata: Sendable, Equatable {
     /// `r2c_prop.tracker_upload_authorized`; `false` makes the archive permanently ineligible
     /// for tracker upload (non-owners must not upload).
     public var trackerUploadAuthorized: Bool
+    public var trackerClaimPending: Bool
 
     public init(
         mappedID: String = "",
@@ -37,7 +38,8 @@ public struct RidTrackArchiveMetadata: Sendable, Equatable {
         flightReadiness: FlightReadiness? = nil,
         flightID: String = "",
         capturedVideoDescription: String = "",
-        trackerUploadAuthorized: Bool = false
+        trackerUploadAuthorized: Bool = false,
+        trackerClaimPending: Bool = false
     ) {
         self.flightReadiness = flightReadiness
         self.mappedID = mappedID
@@ -54,6 +56,7 @@ public struct RidTrackArchiveMetadata: Sendable, Equatable {
         self.flightID = flightID
         self.capturedVideoDescription = capturedVideoDescription
         self.trackerUploadAuthorized = trackerUploadAuthorized
+        self.trackerClaimPending = trackerClaimPending
     }
 }
 
@@ -91,6 +94,7 @@ public enum RidTrackGeoJSON {
             "mid": mappedID,
             "local_archive_only": metadata.localArchiveOnly,
             "tracker_upload_authorized": metadata.trackerUploadAuthorized,
+            "tracker_claim_pending": metadata.trackerClaimPending,
             "incident": metadata.incident,
             "op_period": metadata.operationalPeriod,
             "map_id": metadata.mapID,
@@ -172,15 +176,16 @@ public enum RidTrackGeoJSON {
                                points: points, flightID: flightID)
     }
 
-    /// Match live CalTopo publication, including when no incident map is selected.
-    /// The pilot callsign remains separate flight metadata.
+    /// Match the confirmed pilot label used for live CalTopo publication.
     public static func archiveTitle(
         for track: RidAircraftTrack,
         metadata: RidTrackArchiveMetadata,
         timeZone: TimeZone = .current
     ) -> String {
-        CaltopoTrackLabel.androidCompatible(
-            baseLabel: metadata.mappedID.isEmpty ? track.aircraftID : metadata.mappedID,
+        let mappedID = metadata.mappedID.isEmpty ? track.aircraftID : metadata.mappedID
+        let pilot = (metadata.flightReadiness?.dictionary["pilot"] as? [String: Any])?["callsign"] as? String ?? ""
+        return CaltopoTrackLabel.androidCompatible(
+            baseLabel: RidAircraftIdentity.flightLabel(mappedID: mappedID, pilotCallsign: pilot),
             firstWaypointAt: track.points.first?.receivedAt ?? track.lastObservation.receivedAt,
             timeZone: timeZone
         )

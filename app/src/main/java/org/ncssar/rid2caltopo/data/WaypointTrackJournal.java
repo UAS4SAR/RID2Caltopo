@@ -37,6 +37,8 @@ public final class WaypointTrackJournal {
     private static final String HEADER = "header";
     private static final String POINT = "point";
     private static final String FINISHED = "finished";
+    private static final String CONTEXT = "context";
+    private static final ConcurrentHashMap<String, String> LastContext = new ConcurrentHashMap<>();
 
     private static final ExecutorService Writer = Executors.newSingleThreadExecutor(task -> {
         Thread thread = new Thread(task, "waypoint-track-journal");
@@ -172,6 +174,32 @@ public final class WaypointTrackJournal {
         });
     }
 
+    /**
+     * Append the latest known pilot/claim facts. Identical repeats are skipped.
+     * Legacy journals simply have no context line; recovery must not invent one.
+     */
+    public static void noteContext(@NonNull String flightId, @NonNull FlightOwnershipContext.Snapshot snapshot) {
+        JSONObject row = FlightOwnershipContext.toJson(snapshot);
+        String encoded = row.toString();
+        if (encoded.equals(LastContext.get(flightId))) return;
+        Writer.execute(() -> {
+            synchronized (lockFor(flightId)) {
+                try {
+                    File file = journalFile(flightId);
+                    if (!file.exists()) {
+                        LastContext.remove(flightId);
+                        return;
+                    }
+                    if (encoded.equals(LastContext.get(flightId))) return;
+                    appendLine(file, row);
+                    LastContext.put(flightId, encoded);
+                } catch (Exception error) {
+                    CTError(TAG, "noteContext failed for " + flightId, error);
+                }
+            }
+        });
+    }
+
     /** Append one accepted waypoint. Safe to call from any thread; I/O is serialized. */
     public static void appendPoint(
             @NonNull String flightId,
@@ -292,30 +320,23 @@ public final class WaypointTrackJournal {
                         deleteJournalFile(file, "ledger-or-finished-gate");
                         continue;
                     }
+                    FlightOwnershipContext.Snapshot context = recovered.context;
+                    boolean hold = context.getRequiresHold();
+                    boolean autoPublish = context.getMayAutoPublish();
+                    boolean block = context.getBlocksOperatorPublish();
                     CTDebug(TAG, String.format(Locale.US,
-                            "recoverUnfinished(): promoting %s (%d points) into awaiting-map / flight storage",
-                            recovered.id, recovered.points.length()));
+                            "recoverUnfinished(): promoting %s (%d points) hold=%s auto=%s block=%s",
+                            recovered.id, recovered.points.length(), hold, autoPublish, block));
                     // Commit-then-delete: only remove the journal after AwaitingMapFlights
                     // open+finish succeed. A kill or failure mid-way leaves the .ndjson.
-                    AwaitingMapFlights.record(
-                            recovered.id,
-                            recovered.remote,
-                            recovered.label,
-                            recovered.points,
-                            false,
-                            recovered.map,
-                            recovered.team);
+                    // Legacy and unverified Mine claims stay in review. Known unconfirmed
+                    // flights are retained but cannot be published. Only a verified Mine
+                    // selection (or one tracker was never asked to verify) may auto-publish.
+                    recordRecovered(recovered, false, hold, block);
                     Runnable between = recoverBetweenRecordStepsHook;
                     if (between != null) between.run();
-                    AwaitingMapFlights.record(
-                            recovered.id,
-                            recovered.remote,
-                            recovered.label,
-                            recovered.points,
-                            true,
-                            recovered.map,
-                            recovered.team);
-                    writeLocalTrackIfPossible(recovered, /*localOnly=*/false);
+                    recordRecovered(recovered, true, hold, block);
+                    writeLocalTrackIfPossible(recovered, !autoPublish);
                     Runnable beforeDelete = recoverBeforeDeleteHook;
                     if (beforeDelete != null) beforeDelete.run();
                     deleteJournalFile(file, "promoted");
@@ -325,6 +346,24 @@ public final class WaypointTrackJournal {
                 }
             }
         }
+    }
+
+    private static void recordRecovered(
+            @NonNull RecoveredFlight recovered, boolean finished, boolean hold, boolean block) {
+        FlightOwnershipContext.Snapshot context = recovered.context;
+        AwaitingMapFlights.recordOwned(
+                recovered.id,
+                recovered.remote,
+                recovered.label,
+                recovered.points,
+                finished,
+                recovered.map,
+                recovered.team,
+                hold,
+                context.getRecordedPilot(),
+                context.getKnown() ? context.getClaim() : "",
+                context.getKnown(),
+                block);
     }
 
     private static boolean shouldRetireWithoutPromotion(@NonNull RecoveredFlight recovered) {
@@ -371,6 +410,15 @@ public final class WaypointTrackJournal {
             JSONObject r2cProp = new JSONObject();
             r2cProp.put("rid", recovered.remote);
             r2cProp.put("local_archive_only", localOnly);
+            FlightOwnershipContext.Snapshot context = recovered.context;
+            // Only a pilot actually stored on the journal is written. Legacy files omit it.
+            if (!context.getRecordedPilot().isEmpty()) r2cProp.put("owner", context.getRecordedPilot());
+            if (context.getKnown() && !context.getOrg().isEmpty()) r2cProp.put("org", context.getOrg());
+            if (context.getKnown() && !context.getModel().isEmpty()) r2cProp.put("model", context.getModel());
+            if (context.getKnown() && !context.getMappedId().isEmpty()) r2cProp.put("mid", context.getMappedId());
+            boolean adverse = context.getRequiresHold();
+            r2cProp.put("tracker_claim_pending", adverse && context.getKnown() && context.getConfirmation().equals(FlightOwnershipContext.MINE));
+            r2cProp.put("tracker_upload_authorized", context.getMayAutoPublish());
             properties.put("r2c_prop", r2cProp);
             feature.put("properties", properties);
             JSONObject geometry = new JSONObject();
@@ -415,6 +463,8 @@ public final class WaypointTrackJournal {
         JSONArray points = new JSONArray();
         long firstTimestampMs = 0L;
         long startedAtMs = 0L;
+        FlightOwnershipContext.Snapshot context = FlightOwnershipContext.legacy();
+        boolean sawContext = false;
         try (BufferedReader reader = new BufferedReader(
                 new InputStreamReader(new FileInputStream(file), StandardCharsets.UTF_8))) {
             String line;
@@ -437,14 +487,18 @@ public final class WaypointTrackJournal {
                             .put(String.format(Locale.US, "%d", row.optLong("t")));
                     points.put(coordinate);
                     if (firstTimestampMs <= 0L) firstTimestampMs = row.optLong("t");
+                } else if (CONTEXT.equals(type)) {
+                    context = FlightOwnershipContext.fromJson(row);
+                    sawContext = true;
                 } else if (FINISHED.equals(type)) {
                     finished = true;
                 }
             }
         }
         if (id.isEmpty()) return null;
+        if (!sawContext) context = FlightOwnershipContext.legacy();
         return new RecoveredFlight(id, remote, label, map, team, points, finished,
-                firstTimestampMs, startedAtMs);
+                firstTimestampMs, startedAtMs, context);
     }
 
     @VisibleForTesting
@@ -458,14 +512,23 @@ public final class WaypointTrackJournal {
         final boolean finished;
         final long firstTimestampMs;
         final long startedAtMs;
+        final FlightOwnershipContext.Snapshot context;
 
         RecoveredFlight(String id, String remote, String label, String map, String team,
                         JSONArray points, boolean finished, long firstTimestampMs) {
-            this(id, remote, label, map, team, points, finished, firstTimestampMs, 0L);
+            this(id, remote, label, map, team, points, finished, firstTimestampMs, 0L,
+                    FlightOwnershipContext.legacy());
         }
 
         RecoveredFlight(String id, String remote, String label, String map, String team,
                         JSONArray points, boolean finished, long firstTimestampMs, long startedAtMs) {
+            this(id, remote, label, map, team, points, finished, firstTimestampMs, startedAtMs,
+                    FlightOwnershipContext.legacy());
+        }
+
+        RecoveredFlight(String id, String remote, String label, String map, String team,
+                        JSONArray points, boolean finished, long firstTimestampMs, long startedAtMs,
+                        FlightOwnershipContext.Snapshot context) {
             this.id = id;
             this.remote = remote;
             this.label = label;
@@ -475,6 +538,7 @@ public final class WaypointTrackJournal {
             this.finished = finished;
             this.firstTimestampMs = firstTimestampMs;
             this.startedAtMs = startedAtMs;
+            this.context = context == null ? FlightOwnershipContext.legacy() : context;
         }
     }
 

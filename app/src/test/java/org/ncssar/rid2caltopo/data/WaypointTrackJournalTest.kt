@@ -3,6 +3,7 @@ package org.ncssar.rid2caltopo.data
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -66,6 +67,73 @@ class WaypointTrackJournalTest {
         assertEquals(0, AwaitingMapFlights.allEntries().size)
         assertFalse(File(root, "$flightId.ndjson").exists())
     }
+
+    @Test
+    fun legacyJournalIsHeldAndDoesNotInventAPilotOrAutoPublish() {
+        val flightId = "flight-legacy"
+        WaypointTrackJournal.ensureOpen(flightId, "RID-L", "Legacy", "map-a", "team-a", 1_000L)
+        WaypointTrackJournal.appendPoint(flightId, 39.15, -121.13, 10.0, 1_000L, 1_001L, "rid", true)
+        WaypointTrackJournal.drainForTesting()
+        WaypointTrackJournal.recoverUnfinished()
+        val entry = AwaitingMapFlights.allEntries().single()
+        assertEquals("review", entry.getString("decision"))
+        assertTrue(entry.getBoolean("ownershipReviewPending"))
+        assertFalse(entry.has("recordedPilot"))
+        assertFalse(entry.optBoolean("ownershipContextKnown"))
+        assertEquals("review", entry.getString("decision"))
+    }
+
+    @Test
+    fun pendingMineSurvivesRestartAndVerifiedMineCanPublish() {
+        val pending = "flight-pending"
+        WaypointTrackJournal.ensureOpen(pending, "RID-P", "Pending", "map-a", "team-a", 2_000L)
+        WaypointTrackJournal.appendPoint(pending, 39.15, -121.13, 10.0, 2_000L, 2_001L, "rid", true)
+        WaypointTrackJournal.noteContext(pending, FlightOwnershipContext.capture(
+            true, false, false, FlightOwnershipContext.PENDING, "1SAR7", "NCSSAR", "Mini", "mid"))
+        WaypointTrackJournal.drainForTesting()
+        WaypointTrackJournal.recoverUnfinished()
+        val held = AwaitingMapFlights.allEntries().single()
+        assertEquals("1SAR7", held.getString("recordedPilot"))
+        assertEquals(FlightOwnershipContext.PENDING, held.getString("claim"))
+        assertTrue(held.getBoolean("ownershipReviewPending"))
+        assertEquals("review", held.getString("decision"))
+
+        AwaitingMapFlights.useFileForTesting(awaitingFile)
+        val verified = "flight-verified"
+        WaypointTrackJournal.ensureOpen(verified, "RID-V", "Verified", "map-a", "team-a", 3_000L)
+        WaypointTrackJournal.appendPoint(verified, 39.16, -121.14, 11.0, 3_000L, 3_001L, "rid", true)
+        WaypointTrackJournal.noteContext(verified, FlightOwnershipContext.capture(
+            true, false, false, FlightOwnershipContext.VERIFIED, "1SAR8", "NCSSAR", "Mini", "mid"))
+        WaypointTrackJournal.drainForTesting()
+        WaypointTrackJournal.recoverUnfinished()
+        val published = AwaitingMapFlights.allEntries().single { it.getString("id") == verified }
+        assertEquals("publish", published.getString("decision"))
+        assertFalse(published.optBoolean("ownershipReviewPending"))
+        assertEquals("1SAR8", published.getString("recordedPilot"))
+    }
+
+    @Test
+    fun unconfirmedRecoveryStaysLocalAndDoesNotBlockAnotherFlight() {
+        val blocked = "flight-unconfirmed"
+        WaypointTrackJournal.ensureOpen(blocked, "RID-U", "Open", "map-a", "team-a", 4_000L)
+        WaypointTrackJournal.appendPoint(blocked, 39.1, -121.1, 10.0, 4_000L, 4_001L, "rid", true)
+        WaypointTrackJournal.noteContext(blocked, FlightOwnershipContext.capture(
+            false, false, false, FlightOwnershipContext.NONE, "Somebody", "NCSSAR", "Mini", "mid"))
+        WaypointTrackJournal.drainForTesting()
+        WaypointTrackJournal.recoverUnfinished()
+        val entry = AwaitingMapFlights.allEntries().single()
+        assertTrue(entry.getBoolean("automaticPublicationBlocked"))
+        assertFalse(entry.has("recordedPilot"))
+        assertThrows(IllegalStateException::class.java) {
+            AwaitingMapFlights.decide(blocked, "map-a", "team-a")
+        }
+        AwaitingMapFlights.record("other", "RID-O", "Other", flightPoints(), false, "map-a", "team-a", false)
+        AwaitingMapFlights.record("other", "RID-O", "Other", flightPoints(), true, "map-a", "team-a", false)
+        assertEquals("publish", AwaitingMapFlights.allEntries().first { it.getString("id") == "other" }.getString("decision"))
+        assertEquals("review", AwaitingMapFlights.allEntries().first { it.getString("id") == blocked }.getString("decision"))
+    }
+
+    private fun flightPoints() = org.json.JSONArray().put(org.json.JSONArray().put(-121.0).put(39.0).put(10).put(9_000L))
 
     @Test
     fun readJournalParsesHeaderAndPoints() {

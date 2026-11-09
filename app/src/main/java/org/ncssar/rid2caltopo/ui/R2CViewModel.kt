@@ -43,6 +43,13 @@ import org.ncssar.rid2caltopo.data.TabletPilotCallsignPrefs
 import org.ncssar.rid2caltopo.util.LogThrottle
 import java.util.concurrent.atomic.AtomicBoolean
 
+internal fun ownershipRequiresStream(mode: String, incidentSelected: Boolean,
+                                     peerPresenceKnown: Boolean, otherDeviceOnline: Boolean): Boolean = when (mode) {
+    "streaming_device" -> true
+    "streaming_shared_incident" -> incidentSelected && (!peerPresenceKnown || otherDeviceOnline)
+    else -> false
+}
+
 enum class ActiveScreen {
     MAIN,
     STREAMS,
@@ -138,6 +145,7 @@ private class DroneSpecUiList(
 private data class DroneSpecUiSignature(
     val remoteId: String,
     val mappedId: String,
+    val displayLabel: String,
     val publishingLocally: Boolean,
     val bt4Count: Int,
     val bt4Rssi: Int,
@@ -179,6 +187,7 @@ private fun normalizedDroneSpecUiSnapshot(
         DroneSpecUiSignature(
             remoteId = drone.remoteId,
             mappedId = drone.mappedId,
+            displayLabel = drone.displayLabel,
             publishingLocally = drone.publishingLocally(),
             bt4Count = drone.getTransportCount(CtDroneSpec.TransportTypeEnum.BT4),
             bt4Rssi = drone.getLastRssi(CtDroneSpec.TransportTypeEnum.BT4),
@@ -257,6 +266,11 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
         CaltopoMap.AddMapStatusListener(this)
         CaltopoLiveTrack.AddLocalTrackListener(this)
         CaltopoLiveTrack.AddLocalTrackFinishedListener(this)
+        R2cRuntimeRegistry.getDefaultRuntime().peerCoordinator.setClaimConflictListener { remoteId ->
+            viewModelScope.launch(Dispatchers.Main.immediate) {
+                CaltopoClient.GetDroneSpec(remoteId)?.let { requestDroneConfirmation(it) }
+            }
+        }
         overlay = OverlayState.None
         connectionState = CaltopoConnectionState.StandAlone
         refreshMapBrowserProfiles()
@@ -753,6 +767,7 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
         CaltopoMap.RemoveMapStatusListener(this)
         CaltopoLiveTrack.RemoveLocalTrackListener(this)
         CaltopoLiveTrack.RemoveLocalTrackFinishedListener(this)
+        R2cRuntimeRegistry.getDefaultRuntime().peerCoordinator.setClaimConflictListener(null)
         delayedUptimePoll.stop()
     }
 
@@ -887,8 +902,23 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
         pendingDroneConfirmationRequestedByOperator = false
     }
 
-    fun savePendingDroneConfirmation(recordUnresolvedPilot: Boolean = false) {
+    fun savePendingDroneConfirmation(recordUnresolvedPilot: Boolean = false, prepared: PreparedDroneConfirmation? = null) {
         val current = _pendingDroneConfirmation.value ?: return
+        if (prepared != null && (prepared.state !== current ||
+                prepared.settingsRevision != CaltopoClient.GetSettingsRevision() ||
+                prepared.mapId != CaltopoMap.GetMapId())) {
+            CaltopoClient.ShowToast("Flight details changed. Please confirm again.")
+            return
+        }
+        val peerCoordinator = R2cRuntimeRegistry.getDefaultRuntime().peerCoordinator
+        val currentClaim = peerCoordinator.claimForRemoteId(current.remoteId)
+        val approvedClaim = prepared?.replacing
+        if ((currentClaim != null || approvedClaim != null) &&
+            (currentClaim == null || approvedClaim == null || currentClaim.guid != approvedClaim.guid ||
+                currentClaim.confirmedAtMs != approvedClaim.confirmedAtMs)) {
+            CaltopoClient.ShowToast("The drone's claim changed. Review the current owner and try again.")
+            return
+        }
         val remoteId = current.remoteId.trim()
         val organization = if (current.bootstrapDesignator != null) "" else current.organization.trim().ifEmpty { CaltopoClient.GetHomeOrgName() }
         val callsign = if (recordUnresolvedPilot) "" else current.pilotCallsign.trim()
@@ -914,7 +944,9 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
         if (current.usesUnknownOrganizationDefault) {
             lastUnknownDroneConfirmationOrganization = organization
         }
-        val existingMappedId = CaltopoClient.GetDroneSpec(remoteId)?.mappedId?.trim().orEmpty()
+        val existingMappedId = CaltopoClient.GetDroneSpec(remoteId)?.mappedId?.trim()
+            ?.takeIf { it.isNotEmpty() && it != remoteId }
+            ?: liveStreamConfirmationSpecs[remoteId]?.mappedId?.trim().orEmpty()
         val mappedId = current.bootstrapDesignator ?: if (DroneSpecConfirmationLogic.shouldPreserveMappedId(
                 existingMappedId = existingMappedId,
                 remoteId = remoteId,
@@ -938,7 +970,6 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
             dismissConfirmationForInspection()
             return
         }
-        val peerCoordinator = R2cRuntimeRegistry.getDefaultRuntime().peerCoordinator
         CTDebug(
             tag,
             "savePendingDroneConfirmation(): notifying peer remoteId=$remoteId mappedId='$mappedId' peer=${peerCoordinator.javaClass.simpleName}"
@@ -951,20 +982,32 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
         confirmedCurrentFlightRemoteIds.add(remoteId)
         publicationGateLoggedRemoteIds.remove(remoteId)
         CTDebug(tag, "savePendingDroneConfirmation(): saving local confirmation remoteId=$remoteId mappedId='$mappedId'")
-        CaltopoClient.SaveDroneSpecConfirmation(
+        val saved = CaltopoClient.SaveDroneSpecConfirmation(
             remoteId,
             organization,
             droneDescription,
             callsign,
-            mappedId
+            mappedId,
+            prepared?.sourceSpec,
+            prepared?.readinessRevision ?: 0L,
+            prepared?.readiness
         )
+        if (!saved) {
+            confirmedCurrentFlightRemoteIds.remove(remoteId)
+            CaltopoClient.ShowToast("Flight details changed. Please confirm again.")
+            return
+        }
         peerCoordinator.onDroneConfirmed(
             remoteId,
             organization,
             droneDescription,
             callsign,
-            mappedId
+            mappedId,
+            approvedClaim
         )
+        CaltopoClient.GetDroneSpec(remoteId)?.let { spec ->
+            if (!spec.isLocalArchiveOnly) org.ncssar.rid2caltopo.data.WaypointTrack.CapturePublicationIntent(spec)
+        }
         logPublicationGateIfNeeded(remoteId, confirmed = true, ignored = false)
         _pendingDroneConfirmation.value = null
         pendingDroneConfirmationRequestedByOperator = false
@@ -1117,6 +1160,7 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
     private val completedFlightConfirmationGuard = CompletedFlightConfirmationGuard { CTDebug(tag, "$it ${confirmationMediaDiagnostics()}") }
 
     private var liveStreamConfirmationSpecs: Map<String,CtDroneSpec> = emptyMap()
+    private var lastAutomaticPolicyRequiresStream = false
 
     @Synchronized
     fun onLiveStreamDesignatorsChanged(
@@ -1161,6 +1205,9 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
     private fun queueConfirmationIfNeeded(drone: CtDroneSpec, reason: String): Boolean {
         if (_pendingDroneConfirmation.value != null) return false
         val remoteId = drone.remoteId.takeIf { it.isNotBlank() } ?: return false
+        val requiresStream = ownershipRequiresStreamNow()
+        lastAutomaticPolicyRequiresStream = requiresStream
+        if (requiresStream && remoteId !in liveStreamConfirmationSpecs) return false
         if (!completedFlightConfirmationGuard.allows(remoteId, if (drone.isActive) drone.mostRecentAircraftReceiptMsecTimestamp else 0L)) return false
         val declined = CaltopoClient.IsSessionUnknownDrone(remoteId)
         // Don't Publish stays ignored for the session until Aircraft and Reception selection.
@@ -1195,6 +1242,34 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
         // The activity hosts the dialog above every page. Keep Live View mounted so
         // confirmation does not recreate its panels or reset the operator's map viewport.
         return true
+    }
+
+    private fun ownershipRequiresStreamNow(): Boolean {
+        val peers = R2cRuntimeRegistry.getDefaultRuntime().peerCoordinator
+        return ownershipRequiresStream(
+            org.ncssar.rid2caltopo.data.OrgConfigManager.droneOwnershipMode(),
+            CaltopoMap.GetMapId().isNotEmpty(), peers.isIncidentPeerPresenceKnown,
+            peers.hasOnlineIncidentPeer())
+    }
+
+    /** Peer/managed-policy changes may withdraw a still-open automatic prompt. */
+    fun onOwnershipPolicyChanged() {
+        viewModelScope.launch(Dispatchers.Main.immediate) {
+            applyOwnershipPolicyChange(ownershipRequiresStreamNow())
+        }
+    }
+
+    internal fun applyOwnershipPolicyChange(requiresStream: Boolean) {
+        val becameRestrictive = !lastAutomaticPolicyRequiresStream && requiresStream
+        lastAutomaticPolicyRequiresStream = requiresStream
+        val pending = _pendingDroneConfirmation.value ?: return
+        if (becameRestrictive && !pendingDroneConfirmationRequestedByOperator) {
+            promptedCurrentFlightRemoteIds.remove(pending.remoteId)
+            _pendingDroneConfirmation.value = null
+            liveStreamConfirmationSpecs[pending.remoteId]?.let {
+                queueConfirmationIfNeeded(it, "ownership policy changed")
+            }
+        }
     }
 
     private fun logPublicationGateIfNeeded(remoteId: String, confirmed: Boolean, ignored: Boolean) {

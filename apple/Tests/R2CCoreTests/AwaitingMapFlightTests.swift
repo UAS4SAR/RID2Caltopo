@@ -164,6 +164,27 @@ private func awaitingSample(_ time: TimeInterval = 1_000_000, latitude: Double =
     #expect(Set((await reopened.entries).map(\.remoteID)) == ["RID-1", "RID-2"])
 }
 
+@Test func unverifiedOwnershipSurvivesRestartAndCannotPromoteToPublication() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let url = root.appendingPathComponent("pending.json")
+    let journal = await AwaitingMapFlightJournal.loaded(fileURL: url)
+    let points = [awaitingSample(), awaitingSample(1_000_010)]
+    try await journal.record(remoteID: "RID-1", label: "Flight", observations: points,
+        mapID: "map-a", teamID: "team-a", finished: false, flightID: "flight-a", ownershipReviewPending: true)
+    try await journal.notePublication(remoteID: "RID-1", mapID: "map-a")
+    try await journal.record(remoteID: "RID-1", label: "Flight", observations: points,
+        mapID: "map-a", teamID: "team-a", finished: true, flightID: "flight-a", ownershipReviewPending: true)
+    let reopened = await AwaitingMapFlightJournal.loaded(fileURL: url)
+    let flight = try #require((await reopened.entries).first)
+    #expect(flight.decision == "review")
+    #expect(flight.ownershipReviewPending == true)
+    await #expect(throws: AwaitingMapFlightJournalError.self) {
+        try await reopened.decide(id: flight.id, mapID: "map-a", teamID: "team-a")
+    }
+    #expect((await reopened.entries).first?.decision == "review")
+}
+
 @Test @MainActor func failedJournalWriteDoesNotExposeUncommittedFlight() async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }

@@ -410,6 +410,7 @@ final class AppleCaltopoProfileLifecycle: ObservableObject {
 @MainActor
 final class AppleOrgConfigSettings: ObservableObject {
     @Published private(set) var organizationName: String
+    @Published private(set) var droneOwnership: String
     @Published private(set) var incident: String
     @Published private(set) var operationalPeriod: String
     @Published private(set) var trackFolder: String
@@ -449,6 +450,7 @@ final class AppleOrgConfigSettings: ObservableObject {
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         organizationName = defaults.string(forKey: "org.name") ?? ""
+        droneOwnership = defaults.string(forKey: "org.droneOwnership") ?? "all_detected"
         // Incident and operational period are session choices on Android.
         // Begin every process with Android's defaults instead of restoring the
         // previous operational session.
@@ -507,6 +509,12 @@ final class AppleOrgConfigSettings: ObservableObject {
     }
 
     var trackerAPIKey: String { Self.loadTrackerAPIKey() ?? "" }
+
+    func setDroneOwnership(_ value: String) {
+        let mode = ["streaming_device", "streaming_shared_incident"].contains(value) ? value : "all_detected"
+        droneOwnership = mode
+        defaults.set(mode, forKey: "org.droneOwnership")
+    }
 
     var hasManagedTrackerEnrollment: Bool {
         sourceDescription == "Managed r2c-tracker enrollment" &&

@@ -54,6 +54,48 @@ struct CaltopoSettingsView: View {
     @State private var showingTeamMaps = false
     @State private var showingIncidentSelection = false
     @State private var connectMapAfterIncidentSelection = false
+    @State private var showOwnershipChoices = false
+    @State private var ownershipBusy = false
+    @State private var ownershipMessage = ""
+
+    @MainActor private func saveDroneOwnership(_ mode: String) async {
+        guard !ownershipBusy else { return }
+        let prefix = orgSettings.trackerURLPrefix
+        let token = orgSettings.trackerAPIKey
+        guard token.hasPrefix("r2c_dev_"), let base = URL(string: prefix), !prefix.isEmpty else {
+            ownershipMessage = "Enroll this device with your organization first."
+            return
+        }
+        ownershipBusy = true
+        ownershipMessage = "Saving organization setting…"
+        defer { ownershipBusy = false }
+        var request = URLRequest(url: base.appendingPathComponent("api/v1/organization-config/drone-ownership"))
+        request.httpMethod = "PUT"
+        request.setValue(token, forHTTPHeaderField: "X-SAR-Token")
+        request.setValue(String(TrackerCoordinationClient.trackerFunctionalityRelease), forHTTPHeaderField: "X-R2C-Functionality-Release")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = Data("{\"mode\":\"\(mode)\"}".utf8)
+        request.timeoutInterval = 20
+        do {
+            let (_, response) = try await URLSession.shared.data(for: request)
+            guard prefix == orgSettings.trackerURLPrefix, token == orgSettings.trackerAPIKey else { return }
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            guard status == 200 else {
+                ownershipMessage = [401, 403].contains(status)
+                    ? "An enrolled organization administrator account is required. Sign in or contact an administrator."
+                    : "Tracker could not save Drone Ownership (HTTP \(status))."
+                return
+            }
+            ownershipMessage = "Saved for the organization; updating this device…"
+            await importer.refreshManagedConfiguration(caltopoSettings: settings, orgSettings: orgSettings,
+                identityStore: identityStore, force: true, waitForInFlight: true)
+            guard prefix == orgSettings.trackerURLPrefix, token == orgSettings.trackerAPIKey else { return }
+            ownershipMessage = orgSettings.droneOwnership == mode ? "Saved for the organization." : "Saved for the organization; this device will update when it reconnects."
+        } catch {
+            guard prefix == orgSettings.trackerURLPrefix, token == orgSettings.trackerAPIKey else { return }
+            ownershipMessage = "Could not reach Tracker. Try again."
+        }
+    }
 
     private var hasChanges: Bool {
         draft.edits.hasChanges || teamsDraft.normalized != initialTeamsDraft.normalized ||
@@ -117,6 +159,23 @@ struct CaltopoSettingsView: View {
                     .font(.footnote)
             }
             Section("Organization and operational defaults") {
+                Button { showOwnershipChoices = true } label: { LabeledContent("Drone Ownership", value: {
+                    switch orgSettings.droneOwnership {
+                    case "streaming_device": "Drones streaming to this device"
+                    case "streaming_shared_incident": "Drones streaming to this device w/in same incident"
+                    default: "All detected drones"
+                    }
+                }()) }.disabled(ownershipBusy)
+                .confirmationDialog("Drone Ownership", isPresented: $showOwnershipChoices, titleVisibility: .visible) {
+                    Button("All detected drones") { Task { await saveDroneOwnership("all_detected") } }
+                    Button("Drones streaming to this device") { Task { await saveDroneOwnership("streaming_device") } }
+                    Button("Drones streaming to this device w/in same incident") { Task { await saveDroneOwnership("streaming_shared_incident") } }
+                    Button("Cancel", role: .cancel) { }
+                } message: { Text("This change applies to the entire organization immediately.") }
+                Text("Changes apply to the entire organization and require an administrator's enrolled account.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                if !ownershipMessage.isEmpty { Text(ownershipMessage).font(.footnote) }
                 SettingsTextField(
                     "Organization designator",
                     text: draft.binding("orgSettings.organizationName", Binding(

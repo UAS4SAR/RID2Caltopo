@@ -13,6 +13,15 @@ public struct CurrentFlightConfirmationLifecycle: Sendable, Equatable {
 
     public init() {}
 
+    public static func requiresStream(mode: String, incidentSelected: Bool,
+                                      peerPresenceKnown: Bool, otherDeviceOnline: Bool) -> Bool {
+        switch mode {
+        case "streaming_device": return true
+        case "streaming_shared_incident": return incidentSelected && (!peerPresenceKnown || otherDeviceOnline)
+        default: return false
+        }
+    }
+
     /// Standalone tablets must obtain their own local flight confirmation.
     public static func acceptsPeerConfirmation(mapID: String) -> Bool {
         !mapID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -22,7 +31,8 @@ public struct CurrentFlightConfirmationLifecycle: Sendable, Equatable {
         orderedRemoteIDs: [String],
         confirmedRemoteIDs: Set<String>,
         ignoredRemoteIDs: Set<String>,
-        allowPrompt: Bool = true
+        allowPrompt: Bool = true,
+        promptEligibleRemoteIDs: Set<String>? = nil
     ) -> CurrentFlightConfirmationReconciliation {
         let currentRemoteIDs = Set(orderedRemoteIDs.filter { !$0.isEmpty })
         let endedRemoteIDs = activeRemoteIDs.subtracting(currentRemoteIDs)
@@ -36,6 +46,7 @@ public struct CurrentFlightConfirmationLifecycle: Sendable, Equatable {
         // selection reopens the panel (outside this automatic reconcile path).
         let candidate = orderedRemoteIDs.first { remoteID in
             allowPrompt && !remoteID.isEmpty
+                && (promptEligibleRemoteIDs == nil || promptEligibleRemoteIDs!.contains(remoteID))
                 && !promptedRemoteIDs.contains(remoteID)
                 && !decisionsAfterFlightEnd.contains(remoteID)
         }
@@ -51,6 +62,11 @@ public struct CurrentFlightConfirmationLifecycle: Sendable, Equatable {
     /// An explicit telemetry track end takes precedence over a still-listed video stream.
     public mutating func endFlight(remoteID: String) {
         activeRemoteIDs.remove(remoteID)
+        promptedRemoteIDs.remove(remoteID)
+    }
+
+    /// A policy change may withdraw an automatic prompt without ending the flight.
+    public mutating func rearmPrompt(remoteID: String) {
         promptedRemoteIDs.remove(remoteID)
     }
 

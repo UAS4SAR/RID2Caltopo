@@ -169,6 +169,7 @@ struct ContentView: View {
     @State private var selectedAircraftID: String?
     @State private var addRidMapRemoteID: String?
     @State private var confirmationPresentation = PendingFlightConfirmation()
+    @State private var inspectedAircraft: DroneConfirmationRequest?
     private var workspaceAboutHeader: some View {
         VStack(spacing: 14) {
             Text("About RID2Caltopo").font(.title2)
@@ -278,11 +279,21 @@ struct ContentView: View {
                     mapViewportMemory.inspectionRemoteID = remoteID
                 }
             }
+            .onReceive(NotificationCenter.default.publisher(for: Notification.Name("droneClaimConflict"))) { event in
+                guard let remoteID = event.object as? String else { return }
+                pendingDroneConfirmation = DroneConfirmationRequest(id: remoteID)
+            }
             .sheet(isPresented: $showWorkspaceAbout) {
                 NavigationStack {
                     AboutPrivacyView(header: AnyView(workspaceAboutHeader))
                     .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Close") { showWorkspaceAbout = false } } }
                 }.presentationDetents([.medium, .large])
+            }
+            .sheet(item: $inspectedAircraft) { request in
+                NavigationStack {
+                    aircraftDestination(request.id)
+                        .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Close") { inspectedAircraft = nil } } }
+                }
             }
             .overlay {
                 if showWorkspaceStats {
@@ -717,6 +728,21 @@ struct ContentView: View {
                 }
                 // Record locally for every flight; CurrentFlightPublicationGate alone gates publish.
                 ridTracks.configureFlightRecording { _ in true }
+                peerCoordinator.ownershipContextChanged = { remoteID in
+                    ridTracks.noteOwnershipContext(remoteID: remoteID)
+                }
+                ridTracks.configureOwnershipContext { remoteID in
+                    let identity = droneConfirmations.identity(for: remoteID)
+                    return FlightOwnershipContext.capture(
+                        confirmed: droneConfirmations.isCurrentFlightConfirmed(remoteID),
+                        ignored: droneConfirmations.isIgnored(remoteID),
+                        localOnly: droneConfirmations.isIgnored(remoteID),
+                        claim: peerCoordinator.ownershipClaimState(remoteID: remoteID),
+                        pilot: identity?.pilotCallsign ?? "",
+                        organization: identity?.organization ?? "",
+                        model: identity?.droneDescription ?? "",
+                        mappedID: identity?.mappedID ?? "")
+                }
                 ridTracks.configurePublicationSuppression { remoteID in
                     droneConfirmations.logPublicationGateIfNeeded(remoteID: remoteID)
                     let decision = CurrentFlightPublicationGate.decide(
@@ -1288,6 +1314,13 @@ struct ContentView: View {
             .onChange(of: peerCoordinator.peers.count) { _, _ in
                 publishLocalDeviceMarker(force: true)
             }
+            .onChange(of: ownershipRequiresStream) { oldValue, newValue in
+                if !oldValue && newValue, confirmationPresentation.isAutomatic,
+                   let remoteID = confirmationPresentation.remoteID {
+                    droneConfirmations.rearmAutomaticPrompt(remoteID: remoteID)
+                    pendingDroneConfirmation = nil
+                }
+            }
             // RID track snapshots are handled by AppleAlertCoordinator (handleTrackSnapshot),
             // which keeps running while this subtree is replaced by the access gate.
             .onReceive(peerCoordinator.objectWillChange) { _ in
@@ -1840,7 +1873,11 @@ struct ContentView: View {
                 track: track,
                 operatorLocation: locationProvider.lastLocation,
                 identityStore: droneConfirmations,
-                onConfirm: confirmDrone
+                onConfirm: confirmDrone,
+                onIgnore: {
+                    droneConfirmations.ignore(aircraftID)
+                    ridTracks.suppressCaltopoPublication(remoteID: aircraftID)
+                }
             )
         } else {
             ContentUnavailableView("Aircraft no longer active", systemImage: "airplane")
@@ -2131,18 +2168,11 @@ struct ContentView: View {
             }
                 .frame(width: cell(28), height: cell(42))
                 .background(Color(uiColor: .secondarySystemBackground))
-            Button(
-                identity?.displayLabel
-                    ?? (droneConfirmations.isUnassociated(track.aircraftID) ? "Add to RID Map" : "Confirm Drone")
-            ) {
-                showWorkspaceStats = false
-                if droneConfirmations.isUnassociated(track.aircraftID) {
-                    addRidMapRemoteID = track.aircraftID
-                } else {
-                    // Manual confirmation must remain available after Don't publish,
-                    // just like the Android Main Screen drone-spec button.
-                    pendingDroneConfirmation = DroneConfirmationRequest(id: track.aircraftID)
-                }
+            Menu {
+                Button("Inspect") { showWorkspaceStats = false; inspectedAircraft = DroneConfirmationRequest(id: track.aircraftID) }
+                Button("Claim ownership") { showWorkspaceStats = false; pendingDroneConfirmation = DroneConfirmationRequest(id: track.aircraftID) }
+            } label: {
+                Text(identity?.displayLabel ?? track.aircraftID)
             }
                 .font(.caption.monospaced())
                 .lineLimit(1)
@@ -2340,7 +2370,11 @@ struct ContentView: View {
                             track: track,
                             operatorLocation: locationProvider.lastLocation,
                             identityStore: droneConfirmations,
-                            onConfirm: confirmDrone
+                            onConfirm: confirmDrone,
+                            onIgnore: {
+                                droneConfirmations.ignore(track.aircraftID)
+                                ridTracks.suppressCaltopoPublication(remoteID: track.aircraftID)
+                            }
                         )
                     } label: {
                         RIDAircraftSummaryRow(
@@ -3054,6 +3088,15 @@ struct ContentView: View {
         return result
     }
 
+    private var ownershipRequiresStream: Bool {
+        CurrentFlightConfirmationLifecycle.requiresStream(
+            mode: orgConfigSettings.droneOwnership,
+            incidentSelected: !caltopoSettings.mapID.isEmpty,
+            peerPresenceKnown: peerCoordinator.status == .healthy && peerCoordinator.onlineIncidentPeer != nil,
+            otherDeviceOnline: peerCoordinator.onlineIncidentPeer == true
+        )
+    }
+
     private var confirmationActiveRemoteIDs: [String] {
         confirmationActiveRemoteIDs(tracks: ridTracks.tracks)
     }
@@ -3078,23 +3121,25 @@ struct ContentView: View {
                 confirmationActiveRemoteIDs,
                 aircraftReceivedAt: Dictionary(ridTracks.tracks.map { ($0.aircraftID, $0.lastAircraftMessageAt) }, uniquingKeysWith: max),
                 videoSessions: confirmationVideoSessions,
+                promptEligibleRemoteIDs: ownershipRequiresStream ? Set(confirmationVideoSessions.keys) : nil,
                 mediaDiagnostics: confirmationMediaDiagnostics,
                 onFlightEnded: { remoteID in
+                    ridTracks.retirePendingConfirmation(remoteID: remoteID)
                     peerCoordinator.droneLost(remoteID: remoteID)
                     dismissEndedDroneConfirmation(remoteID)
                 }
               ),
               !droneConfirmations.isUnassociated(remoteID)
         else { return }
-        pendingDroneConfirmation = DroneConfirmationRequest(id: remoteID)
+        confirmationPresentation.present(remoteID: remoteID, automatic: true)
     }
 
     private func confirmDrone(_ identity: RidAircraftIdentity) {
         // Pass the confirmed team label explicitly — identityProvider may not yet
         // reflect this session confirmation when capture runs.
+        peerCoordinator.confirm(identity, replacing: droneConfirmations.takeAcceptedClaim(remoteID: identity.remoteID))
         ridTracks.capturePublicationIntent(
-            remoteID: identity.remoteID, label: identity.displayLabel)
-        peerCoordinator.confirm(identity)
+            remoteID: identity.remoteID, label: identity.displayLabel, identity: identity)
         automaticStreamPairingAircraftID = identity.remoteID
         guard let flightEpoch = ridTracks.peerTrafficFlightEpoch(remoteID: identity.remoteID) else {
             return
@@ -3128,8 +3173,10 @@ struct ContentView: View {
             aircraftReceivedAt: Dictionary(tracks.map { ($0.aircraftID, $0.lastAircraftMessageAt) }, uniquingKeysWith: max),
             videoSessions: confirmationVideoSessions,
             allowPrompt: pendingDroneConfirmation == nil,
+            promptEligibleRemoteIDs: ownershipRequiresStream ? Set(confirmationVideoSessions.keys) : nil,
             mediaDiagnostics: confirmationMediaDiagnostics,
             onFlightEnded: { endedRemoteID in
+                ridTracks.retirePendingConfirmation(remoteID: endedRemoteID)
                 peerCoordinator.droneLost(remoteID: endedRemoteID)
                 dismissEndedDroneConfirmation(endedRemoteID)
             }
@@ -3138,7 +3185,7 @@ struct ContentView: View {
            pendingDroneConfirmation == nil,
            let remoteID,
            !droneConfirmations.isUnassociated(remoteID) {
-            pendingDroneConfirmation = DroneConfirmationRequest(id: remoteID)
+            confirmationPresentation.present(remoteID: remoteID, automatic: true)
         }
         presentAircraftReceptionIfNeeded(tracks)
     }
@@ -3688,7 +3735,7 @@ private struct AwaitingMapPublicationPanel: View {
                         }
                         .task { await tracks.refreshIncidentCommandLocations() }
                         .alert("Publish earlier flight?", isPresented: Binding(get: { selected != nil }, set: { if !$0 { selected = nil } })) {
-                            Button("Publish") {
+                            Button(selected?.ownershipReviewPending == true ? "Confirm and publish" : "Publish") {
                                 guard let flight = selected else { return }
                                 let map = destinationMap; let team = destinationTeam
                                 Task {
@@ -3710,7 +3757,15 @@ private struct AwaitingMapPublicationPanel: View {
                             }
                             Button("Later", role: .cancel) { selected = nil }
                         } message: {
-                            Text("\(selected?.label ?? "Flight")\nTo \(destinationTitle) (\(destinationMap))\nIncludes the recorded track and associated clues marked for publication. Clues kept local stay local.")
+                            Text("\(selected?.label ?? "Flight")\nTo \(destinationTitle) (\(destinationMap))\n" +
+                                 ((selected?.ownershipReviewPending == true || selected?.automaticPublicationBlocked == true)
+                                  ? FlightOwnershipContext.reviewMessage(
+                                    known: selected?.ownershipContextKnown == true,
+                                    claim: selected?.claim ?? "",
+                                    pilot: selected?.recordedPilot ?? "",
+                                    publicationBlocked: selected?.automaticPublicationBlocked == true) + "\n"
+                                  : "") +
+                                 "Includes the recorded track and associated clues marked for publication. Clues kept local stay local.")
                         }
                     }
                     .alert(
@@ -3798,7 +3853,7 @@ private struct AwaitingMapPublicationPanel: View {
                     proximity: row.proximity,
                     cluePhotoCount: row.cluePhotoCount,
                     nearIC: row.nearIC,
-                    canPublish: !settings.mapID.isEmpty,
+                    canPublish: !settings.mapID.isEmpty && row.flight.automaticPublicationBlocked != true,
                     wide: wide,
                     onPublish: { beginPublish(row.flight) },
                     onDiscard: { discardCandidate = row.flight }

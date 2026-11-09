@@ -1,0 +1,3 @@
+Latest changes:
+- Drone ownership options and aircraft inspection are available for testing.
+- Flight track labels show the pilot's callsign.

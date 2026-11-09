@@ -10,6 +10,11 @@ final class RIDTrackViewModel: ObservableObject {
     let shortFlightDecisions = ShortFlightRecordingGate()
     private let awaitingMapJournal = AwaitingMapFlightJournal(fileURL:
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("awaiting-map-flights.json"))
+    private static var ownershipReleaseURL: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("ownership-review-releases.json")
+    }
+
     private let waypointAppendJournal = WaypointTrackAppendJournal(directory:
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("waypoint-track-journals", isDirectory: true))
@@ -86,11 +91,22 @@ final class RIDTrackViewModel: ObservableObject {
     private var publicationMapID = ""
     private var publicationTeamID = ""
     private var lastDeferredSnapshot: [String: Date] = [:]
+    // Session confirmation can be retired before the asynchronous archive starts.
+    // Bind it to a flight ID so a later flight of the same aircraft cannot inherit it.
+    private var confirmedFlightIdentities: [String: RidAircraftIdentity] = [:]
+    private var pendingConfirmedIdentities: [String: (identity: RidAircraftIdentity, confirmedAt: Date, endedAt: Date?)] = [:]
+
+    func retirePendingConfirmation(remoteID: String) {
+        guard var pending = pendingConfirmedIdentities[remoteID] else { return }
+        pending.endedAt = Date()
+        pendingConfirmedIdentities[remoteID] = pending
+    }
 
     /// Confirm-time handoff: persist the team label, mark publicationStarted when a map is
     /// connected, and seed the publisher with the stable RidFlightID so finish cannot mint a
     /// second archive id. Chains onto `awaitingFlightWrites` so flight-end awaits this write.
-    func capturePublicationIntent(remoteID: String, label: String? = nil) {
+    func capturePublicationIntent(remoteID: String, label: String? = nil, identity: RidAircraftIdentity? = nil) {
+        noteOwnershipContext(remoteID: remoteID)
         lastDeferredSnapshot.removeValue(forKey: remoteID)
         let confirmedLabel = {
             let trimmed = label?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -98,6 +114,15 @@ final class RIDTrackViewModel: ObservableObject {
             return identityProvider?(remoteID)?.displayLabel ?? remoteID
         }()
         let track = tracks.first(where: { $0.aircraftID == remoteID })
+        if let identity {
+            if let track {
+                let id = RidFlightID.make(aircraftID: track.aircraftID, startedAt: track.flightStartedAt)
+                confirmedFlightIdentities[id] = identity
+                pendingConfirmedIdentities.removeValue(forKey: remoteID)
+            } else {
+                pendingConfirmedIdentities[remoteID] = (identity, Date(), nil)
+            }
+        }
         let previous = track.flatMap { recordAwaitingFlight($0) }
         let mapID = publicationMapID
         let flightID = track.map {
@@ -105,7 +130,10 @@ final class RIDTrackViewModel: ObservableObject {
         }
         let task = Task {
             await previous?.value
-            if !mapID.isEmpty {
+            let context: FlightOwnershipContext? = ownershipContextProvider?(remoteID)
+            let hold = context?.requiresHold == true
+                || peerCoordinator?.claimPending(remoteID: remoteID) == true
+            if !mapID.isEmpty && !hold {
                 do {
                     try await awaitingMapJournal.notePublication(
                         remoteID: remoteID, mapID: mapID, label: confirmedLabel)
@@ -160,6 +188,7 @@ final class RIDTrackViewModel: ObservableObject {
                         try await waypointAppendJournal.acknowledgeRecovered(flightID: flight.id)
                         continue
                     }
+                    let ownership = flight.ownership
                     try await awaitingMapJournal.record(
                         remoteID: flight.remoteID,
                         label: flight.label,
@@ -167,7 +196,12 @@ final class RIDTrackViewModel: ObservableObject {
                         mapID: flight.mapID,
                         teamID: flight.teamID,
                         finished: false,
-                        flightID: flight.id)
+                        flightID: flight.id,
+                        ownershipReviewPending: ownership.requiresHold,
+                        recordedPilot: ownership.recordedPilot,
+                        claim: ownership.known ? ownership.claim : "",
+                        ownershipContextKnown: ownership.known,
+                        blockAutomaticPublication: ownership.blocksOperatorPublish)
                     try await awaitingMapJournal.record(
                         remoteID: flight.remoteID,
                         label: flight.label,
@@ -175,7 +209,12 @@ final class RIDTrackViewModel: ObservableObject {
                         mapID: flight.mapID,
                         teamID: flight.teamID,
                         finished: true,
-                        flightID: flight.id)
+                        flightID: flight.id,
+                        ownershipReviewPending: ownership.requiresHold,
+                        recordedPilot: ownership.recordedPilot,
+                        claim: ownership.known ? ownership.claim : "",
+                        ownershipContextKnown: ownership.known,
+                        blockAutomaticPublication: ownership.blocksOperatorPublish)
                     try await waypointAppendJournal.acknowledgeRecovered(flightID: flight.id)
                 } catch {
                     // Leave the .ndjson until awaiting-map commit succeeds on a later pass.
@@ -198,6 +237,9 @@ final class RIDTrackViewModel: ObservableObject {
                     flightID: flightID, remoteID: track.aircraftID, label: label,
                     mapID: mapID, teamID: teamID,
                     startedAtMs: Int64((track.flightStartedAt.timeIntervalSince1970 * 1_000).rounded()))
+                if let context = ownershipContextProvider?(track.aircraftID) {
+                    await noteOwnershipContextIfChanged(context, flightID: flightID)
+                }
                 try await waypointAppendJournal.append(observation: observation, flightID: flightID)
             } catch {
                 archiveStatus = "Waypoint journal write failed: \(error.localizedDescription)"
@@ -206,14 +248,16 @@ final class RIDTrackViewModel: ObservableObject {
     }
 
     @discardableResult
-    private func recordAwaitingFlight(_ track: RidAircraftTrack, finished: Bool = false) -> Task<Void, Never>? {
+    private func recordAwaitingFlight(_ track: RidAircraftTrack, finished: Bool = false, labelOverride: String? = nil) -> Task<Void, Never>? {
         guard flightRecordingAllowed?(track.aircraftID) == true,
               publicationSuppressionProvider?(track.aircraftID) != true else { return nil }
         let now = Date()
         if !finished, now.timeIntervalSince(lastDeferredSnapshot[track.aircraftID] ?? .distantPast) < 5 { return nil }
         let points = track.points, fallbackSource = track.lastObservation.source, aircraftID = track.aircraftID
-        let label = identityProvider?(track.aircraftID)?.displayLabel ?? track.aircraftID
+        let label = labelOverride ?? identityProvider?(track.aircraftID)?.displayLabel ?? track.aircraftID
         let mapID = publicationMapID, teamID = publicationTeamID
+        let ownership = ownershipContextProvider?(track.aircraftID)
+        let ownershipReviewPending = ownership?.requiresHold ?? (peerCoordinator?.claimPending(remoteID: track.aircraftID) == true)
         let previous = awaitingFlightWrites[track.aircraftID]
         lastDeferredSnapshot[track.aircraftID] = now
         let task = Task {
@@ -227,7 +271,11 @@ final class RIDTrackViewModel: ObservableObject {
             do {
                 try await awaitingMapJournal.record(remoteID: track.aircraftID, label: label,
                     observations: samples, mapID: mapID, teamID: teamID, finished: finished,
-                    flightID: RidFlightID.make(aircraftID: track.aircraftID, startedAt: track.flightStartedAt))
+                    flightID: RidFlightID.make(aircraftID: track.aircraftID, startedAt: track.flightStartedAt),
+                    ownershipReviewPending: ownershipReviewPending,
+                    recordedPilot: ownership?.recordedPilot,
+                    claim: ownership?.claim,
+                    ownershipContextKnown: ownership == nil ? nil : true)
                 await refreshAwaitingMapState()
             } catch { archiveStatus = "Could not save pending publication: \(error.localizedDescription)" }
         }
@@ -235,8 +283,37 @@ final class RIDTrackViewModel: ObservableObject {
         return task
     }
 
+    func configureOwnershipContext(_ provider: @escaping (String) -> FlightOwnershipContext) {
+        ownershipContextProvider = provider
+    }
+
+    private var lastOwnershipContext: [String: String] = [:]
+
+    func noteOwnershipContext(remoteID: String) {
+        guard let context = ownershipContextProvider?(remoteID),
+              let track = tracks.first(where: { $0.aircraftID == remoteID }) else { return }
+        let flightID = RidFlightID.make(aircraftID: track.aircraftID, startedAt: track.flightStartedAt)
+        Task(priority: .utility) {
+            await self.noteOwnershipContextIfChanged(context, flightID: flightID)
+        }
+    }
+
+    private func noteOwnershipContextIfChanged(_ context: FlightOwnershipContext, flightID: String) async {
+        let signature = "\(context.known)|\(context.confirmation)|\(context.claim)|\(context.recordedPilot)|\(context.organization)|\(context.model)|\(context.mappedID)"
+        if lastOwnershipContext[flightID] == signature { return }
+        if (try? await waypointAppendJournal.noteContext(context, flightID: flightID)) == true {
+            lastOwnershipContext[flightID] = signature
+        }
+    }
+
     func decideAwaitingFlight(_ id: String, mapID: String?, teamID: String) async -> Bool {
         do {
+            if mapID != nil, try await awaitingMapJournal.authorizeOwnershipReview(id: id) {
+                let releaseURL = Self.ownershipReleaseURL
+                try? await Task.detached(priority: .utility) {
+                    try OwnershipReviewReleaseFile.allowTrackerUpload(flightID: id, fileURL: releaseURL)
+                }.value
+            }
             try await awaitingMapJournal.decide(id: id, mapID: mapID, teamID: teamID)
             if mapID == nil {
                 try? await publicationLedger.remember(flightID: id, disposition: .declined)
@@ -364,6 +441,7 @@ final class RIDTrackViewModel: ObservableObject {
     private var peerCoordinator: AppleTrackerCoordinator?
     private var identityProvider: ((String) -> RidAircraftIdentity?)?
     private var publicationSuppressionProvider: ((String) -> Bool)? = { _ in true }
+    private var ownershipContextProvider: ((String) -> FlightOwnershipContext)?
     private var flightRecordingAllowed: ((String) -> Bool)?
     private var peerConfirmationConsumer: ((TrackerCoordinationIdentity) -> Void)?
     private var peerConfirmationClearer: ((String) -> Void)?
@@ -588,6 +666,13 @@ final class RIDTrackViewModel: ObservableObject {
         switch result {
         case let .accepted(track):
             acceptedObservationCount += 1
+            if let pending = pendingConfirmedIdentities[track.aircraftID],
+               FlightConfirmationWindow.matches(confirmedAt: pending.confirmedAt, endedAt: pending.endedAt,
+                   flightStartedAt: track.flightStartedAt, lastMessageAt: track.lastAircraftMessageAt) {
+                let id = RidFlightID.make(aircraftID: track.aircraftID, startedAt: track.flightStartedAt)
+                confirmedFlightIdentities[id] = pending.identity
+                pendingConfirmedIdentities.removeValue(forKey: track.aircraftID)
+            }
             if observation.source == .djiVideo {
                 if lastAcceptedStreamAt[observation.aircraftId] == nil {
                     AppleLog.info("VideoTelemetry", "First accepted stream position aircraft=\(observation.aircraftId) height=\(observation.heightMeters.map(String.init(describing:)) ?? "unknown")")
@@ -1530,8 +1615,12 @@ final class RIDTrackViewModel: ObservableObject {
                     self.publishRelay(relay)
                 case let .peerTrafficPosition(traffic):
                     await self.ingestPeerTraffic(traffic)
-                case let .droneConfirmed(identity, _, _):
+                case let .droneConfirmed(identity, _, confirmedLocally):
+                    if confirmedLocally { self.peerConfirmationClearer?(identity.remoteID) }
+                    else { self.peerConfirmationConsumer?(identity) }
+                case let .droneClaimConflict(identity):
                     self.peerConfirmationConsumer?(identity)
+                    NotificationCenter.default.post(name: Notification.Name("droneClaimConflict"), object: identity.remoteID)
                 case let .ownerExpired(remoteID):
                     self.peerConfirmationClearer?(remoteID)
                 default:
@@ -1703,6 +1792,8 @@ final class RIDTrackViewModel: ObservableObject {
     private struct FlightPublicationDecision: Sendable {
         let allowsPublication: Bool
         let localOwner: Bool
+        let claimPending: Bool
+        let coordinatorAllowsPublication: Bool
     }
 
     private func publicationDecision(for remoteID: String) -> FlightPublicationDecision {
@@ -1711,7 +1802,9 @@ final class RIDTrackViewModel: ObservableObject {
         let localOwner = peerCoordinator?.isLocalOwner(remoteID: remoteID) ?? true
         return FlightPublicationDecision(
             allowsPublication: !suppressed && recordingAllowed,
-            localOwner: localOwner
+            localOwner: localOwner,
+            claimPending: peerCoordinator?.claimPending(remoteID: remoteID) == true,
+            coordinatorAllowsPublication: peerCoordinator?.publicationAllowed(remoteID: remoteID) != false
         )
     }
 
@@ -1739,15 +1832,33 @@ final class RIDTrackViewModel: ObservableObject {
     private func archive(_ track: RidAircraftTrack, publishFlightEnd: Bool = false) async {
         let flightID = liveFlightID(aircraftID: track.aircraftID)
             ?? RidFlightID.make(aircraftID: track.aircraftID, startedAt: track.flightStartedAt)
+        let snapshotID = RidFlightID.make(aircraftID: track.aircraftID, startedAt: track.flightStartedAt)
+        let pending = pendingConfirmedIdentities[track.aircraftID]
+        let pendingForFlight = pending.flatMap {
+            FlightConfirmationWindow.matches(confirmedAt: $0.confirmedAt, endedAt: $0.endedAt,
+                flightStartedAt: track.flightStartedAt, lastMessageAt: track.lastAircraftMessageAt)
+                ? $0.identity : nil
+        }
+        let flightIdentity = confirmedFlightIdentities[snapshotID] ?? pendingForFlight ?? identityProvider?(track.aircraftID)
+        if pendingForFlight != nil { pendingConfirmedIdentities.removeValue(forKey: track.aircraftID) }
+        if publishFlightEnd { confirmedFlightIdentities.removeValue(forKey: snapshotID) }
         // Snapshot publish gate before flight-end observers clear DCP state.
         let recordingAllowed = flightRecordingAllowed?(track.aircraftID) != false
         let publicationSuppressed = publicationSuppressionProvider?(track.aircraftID) == true
+        let archiveDecision = publicationDecision(for: track.aircraftID)
         let alreadyDeclined =
             (try? await publicationLedger.isDeclinedOrSuppressed(flightID: flightID)) == true
         let localOnly = !recordingAllowed || publicationSuppressed || alreadyDeclined
         // Only the local flight owner may upload this archive to the tracker.
-        let archiveDecision = publicationDecision(for: track.aircraftID)
-        let trackerUploadAuthorized = archiveDecision.localOwner && archiveDecision.allowsPublication && !alreadyDeclined
+        let ownership = ownershipContextProvider?(track.aircraftID)
+        let claimPending = ownership?.requiresHold ?? (peerCoordinator?.claimPending(remoteID: track.aircraftID) == true)
+        let trackerUploadAuthorized = ownership.map {
+            $0.mayAutoPublish && archiveDecision.localOwner && archiveDecision.allowsPublication && !alreadyDeclined
+        } ?? (!claimPending && archiveDecision.localOwner && archiveDecision.allowsPublication && !alreadyDeclined)
+        if let ownership {
+            let flightID = RidFlightID.make(aircraftID: track.aircraftID, startedAt: track.flightStartedAt)
+            try? await waypointAppendJournal.noteContext(ownership, flightID: flightID)
+        }
 
         if track.points.isEmpty {
             let disposition: FlightPublicationLedger.Disposition =
@@ -1769,7 +1880,7 @@ final class RIDTrackViewModel: ObservableObject {
             try? await publicationLedger.remember(flightID: flightID, disposition: disposition)
             try? await waypointAppendJournal.markFinishedAndRemove(flightID: flightID)
             _ = try? await awaitingMapJournal.discard(id: flightID)
-            let identity = identityProvider?(track.aircraftID)
+            let identity = flightIdentity
             let recording = CaltopoRecordingAssociation(track: track, identity: identity)
             let videoURL = peerCoordinator?.capturedVideoURL(
                 matching: recording.designators,
@@ -1813,10 +1924,10 @@ final class RIDTrackViewModel: ObservableObject {
             return
         }
 
-        await recordAwaitingFlight(track, finished: true)?.value
+        await recordAwaitingFlight(track, finished: true, labelOverride: flightIdentity?.displayLabel)?.value
         try? await waypointAppendJournal.markFinishedAndRemove(flightID: flightID)
         await queueCompletedDeferredFlights()
-        let identity = identityProvider?(track.aircraftID)
+        let identity = flightIdentity
         let recording = CaltopoRecordingAssociation(track: track, identity: identity)
         let videoURL = peerCoordinator?.capturedVideoURL(
             matching: recording.designators,
@@ -1838,7 +1949,8 @@ final class RIDTrackViewModel: ObservableObject {
             flightReadiness: identity?.flightReadiness,
             flightID: flightID,
             capturedVideoDescription: CaltopoArchiveDescription.build(capturedVideoURL: videoURL),
-            trackerUploadAuthorized: trackerUploadAuthorized
+            trackerUploadAuthorized: trackerUploadAuthorized,
+            trackerClaimPending: claimPending
         )
         let start = track.points.first?.receivedAt ?? track.lastAircraftMessageAt
         let otherFlights = await archiveStore.archivedFlights(aircraftID: track.aircraftID, around: start)
@@ -1911,6 +2023,7 @@ final class RIDTrackViewModel: ObservableObject {
         case .malformedArchive: "invalid archive"
         case .localArchiveOnly: "local only"
         case .notUploadAuthorized: "not flight owner"
+        case .claimPending: "ownership review pending"
         case .missingOrganization: "organization missing"
         case .organizationMismatch: "organization mismatch"
         case .unknownTeamAircraft: "aircraft not in team config"
@@ -2231,7 +2344,7 @@ final class RIDTrackViewModel: ObservableObject {
         // would discard a confirmed flight as gated_unconfirmed.
         let blockedByLedger =
             (try? await publicationLedger.isDeclinedOrSuppressed(flightID: flightID)) == true
-        if !publicationDecision.allowsPublication || blockedByLedger {
+        if !publicationDecision.allowsPublication || !publicationDecision.coordinatorAllowsPublication || publicationDecision.claimPending || blockedByLedger {
             await caltopoPublisher.discard(remoteID: remoteID)
             return
         }

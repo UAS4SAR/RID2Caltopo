@@ -17,6 +17,55 @@ import org.ncssar.rid2caltopo.data.CtDroneSpec
 import org.ncssar.rid2caltopo.data.SimpleTimer
 
 class R2CViewModelDroneConfirmationTest {
+    @Test fun restrictivePolicyWithdrawsAutomaticPanelButKeepsManualClaim() {
+        val drone = activeDrone("POLICYTRANSITION", waypointTimestampMsec = 1234L)
+            .apply { setMappedId("mini4pro") }
+        val model = R2CViewModel(SimpleTimer())
+        model.onDroneConfirmationCandidate(drone)
+        assertNotNull(model.pendingDroneConfirmation.value)
+        model.applyOwnershipPolicyChange(true)
+        assertNull(model.pendingDroneConfirmation.value)
+        model.onLiveStreamDesignatorsChanged(setOf(drone.mappedId), listOf(drone))
+        assertEquals(drone.remoteId, model.pendingDroneConfirmation.value?.remoteId)
+        model.requestDroneConfirmation(drone)
+        model.applyOwnershipPolicyChange(false)
+        model.applyOwnershipPolicyChange(true)
+        assertEquals(drone.remoteId, model.pendingDroneConfirmation.value?.remoteId)
+    }
+
+    @Test fun sharedIncidentPolicyUsesVideoOnlyWhenPresenceRequiresIt() {
+        assertFalse(ownershipRequiresStream("all_detected", true, false, true))
+        assertTrue(ownershipRequiresStream("streaming_device", false, true, false))
+        assertFalse(ownershipRequiresStream("streaming_shared_incident", false, false, false))
+        assertFalse(ownershipRequiresStream("streaming_shared_incident", true, true, false))
+        assertTrue(ownershipRequiresStream("streaming_shared_incident", true, true, true))
+        assertTrue(ownershipRequiresStream("streaming_shared_incident", true, false, false))
+    }
+
+    @Test fun streamingOwnershipAllowsManualClaimForTelemetryAndPromptsWhenVideoArrives() {
+        val mode = org.ncssar.rid2caltopo.data.OrgConfigManager::class.java
+            .getDeclaredField("ownershipMode").apply { isAccessible = true }
+        val previous = mode.get(null)
+        try {
+            mode.set(null, "streaming_device")
+            val drone = activeDrone("TELEMETRYONLY", waypointTimestampMsec = 1234L)
+                .apply { setMappedId("mini4pro") }
+            val manual = R2CViewModel(SimpleTimer())
+            manual.onDroneConfirmationCandidate(drone)
+            assertNull(manual.pendingDroneConfirmation.value)
+            manual.requestDroneConfirmation(drone)
+            assertEquals(drone.remoteId, manual.pendingDroneConfirmation.value?.remoteId)
+
+            val automatic = R2CViewModel(SimpleTimer())
+            automatic.onDroneConfirmationCandidate(drone)
+            assertNull(automatic.pendingDroneConfirmation.value)
+            automatic.onLiveStreamDesignatorsChanged(setOf(drone.mappedId), listOf(drone))
+            assertEquals(drone.remoteId, automatic.pendingDroneConfirmation.value?.remoteId)
+        } finally {
+            mode.set(null, previous)
+        }
+    }
+
     @Test fun proximitySettingsKeepsMainOrLiveViewUnderneath() {
         for (liveView in listOf(false, true)) {
             val model = R2CViewModel(SimpleTimer())
@@ -169,6 +218,57 @@ class R2CViewModelDroneConfirmationTest {
         model.markPendingDroneConfirmationUnknown()
         model.onDroneConfirmationCandidate(drone)
         assertNull(model.pendingDroneConfirmation.value)
+    }
+
+    @Test fun videoConfirmationBeforeTelemetryRetainsPreparedPilot() {
+        val remoteId = "VIDEOPILOT"
+        val drone = CtDroneSpec(remoteId, "1sar1001-01DjMtrc4td", "NCSSAR", "DJI Matrice 4TD", "1SAR1001")
+        val model = R2CViewModel(SimpleTimer())
+        model.onLiveStreamDesignatorsChanged(setOf(drone.mappedId), listOf(drone))
+        model.updatePendingDroneConfirmation("NCSSAR", "10", "DJI Matrice 4TD")
+        assertNull(CaltopoClient.GetDroneSpec(remoteId))
+        val state = model.pendingDroneConfirmation.value!!
+        val prepared = PreparedDroneConfirmation(state, CaltopoClient.GetSettingsRevision(), CaltopoMap.GetMapId(), null, 0,
+            "{\"pilot\":{\"callsign\":\"10\"}}")
+        model.savePendingDroneConfirmation(prepared = prepared)
+        val active = CaltopoClient.GetDroneSpec(remoteId)!!
+        assertTrue(active.isCurrentFlightConfirmed)
+        assertEquals("10", org.json.JSONObject(active.flightReadinessJson).getJSONObject("pilot").getString("callsign"))
+        assertEquals("10-01DjMtrc4td", active.displayLabel)
+        assertEquals("1sar1001-01DjMtrc4td", active.mappedId)
+    }
+
+    @Test fun confirmedPilotLabelRefreshesDroneRowWithoutNewTelemetry() {
+        val drone = activeDrone("LABELROW", waypointTimestampMsec = 1234L)
+        drone.setMappedId("1sar1001-01DjMtrc4td")
+        drone.owner = "10"
+        val model = R2CViewModel(SimpleTimer())
+        model.onDroneSpecsChanged(listOf(drone))
+        val before = model.drones.value
+        drone.setCurrentFlightConfirmed(true)
+        model.onDroneSpecsChanged(listOf(drone))
+        assertNotSame(before, model.drones.value)
+        assertEquals("10-01DjMtrc4td", model.drones.value.single().displayLabel)
+    }
+
+    @Test fun stalePreparedPilotCannotConfirmChangedReadiness() {
+        val remoteId = "STALEPILOT"
+        val drone = activeDrone(remoteId, waypointTimestampMsec = 1234L)
+        val model = R2CViewModel(SimpleTimer())
+        model.onDroneSpecsChanged(listOf(drone))
+        CaltopoClient.SaveDroneSpecConfirmation(remoteId, "NCSSAR", "Mavic", "1SAR7", "1sar7Mavic")
+        val active = CaltopoClient.GetDroneSpec(remoteId)!!
+        val snapshot = active.flightReadinessSnapshot()
+        val state = model.pendingDroneConfirmation.value!!
+        active.setFlightReadinessJson("{\"pilot\":{\"callsign\":\"1SAR8\"}}")
+        val saved = CaltopoClient.SaveDroneSpecConfirmation(remoteId, "NCSSAR", "Mavic", "1SAR7", "1sar7Mavic",
+            active, snapshot.revision, "{\"pilot\":{\"callsign\":\"1SAR7\"}}")
+        assertFalse(saved)
+        assertEquals("1SAR8", org.json.JSONObject(active.flightReadinessJson).getJSONObject("pilot").getString("callsign"))
+        val other = CtDroneSpec(remoteId)
+        assertFalse(CaltopoClient.SaveDroneSpecConfirmation(remoteId, "NCSSAR", "Mavic", "1SAR7", "1sar7Mavic",
+            other, active.flightReadinessSnapshot().revision, "{\"pilot\":{\"callsign\":\"1SAR7\"}}"))
+        assertEquals(remoteId, state.remoteId)
     }
     @Test
     fun automaticConfirmationKeepsLiveViewOpenThroughSaveAndIgnore() {

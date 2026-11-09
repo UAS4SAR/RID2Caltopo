@@ -52,6 +52,8 @@ class DefaultPeerCoordinatorTest {
             callback?.onFailure(RuntimeException("HTTP $responseCode"), responseCode, responseMessage)
         }
 
+        fun receive(text: String) { callback?.onMessage(text) }
+
     }
 
     private lateinit var transport: FakeTransport
@@ -317,6 +319,11 @@ class DefaultPeerCoordinatorTest {
 
         coordinator.start("MAP1", "zone-alpha", "Alpha", null)
 
+        assertFalse(localOwner)
+        transport.receive(JSONObject().put("type", "drone_confirmed")
+            .put("remoteId", "DRONE1").put("confirmedByGuid", "zone-alpha")
+            .put("org", "NCSSAR").put("model", "DJI Mini 4 Pro")
+            .put("ownerName", "1sar7").put("mappedId", "1sar7DjMn4Pr").toString())
         assertTrue(localOwner)
         val sentMessages = synchronized(transport.sentMessages) { transport.sentMessages.toList() }
         assertTrue(sentMessages.any {

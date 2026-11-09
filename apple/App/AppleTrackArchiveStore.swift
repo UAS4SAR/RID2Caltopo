@@ -454,6 +454,14 @@ actor AppleTrackArchiveStore {
         }
     }
 
+    private static func flightID(in data: Data) -> String {
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let feature = (root["features"] as? [[String: Any]])?.first,
+              let properties = feature["properties"] as? [String: Any],
+              let flightID = properties["r2c_flight_id"] as? String else { return "" }
+        return flightID.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     private func processOnce(data: Data, file: URL) async -> AppleTrackArchiveOutcome.TrackerResult {
         // Recheck inside the coalesced operation; replay's directory snapshot can be stale.
         guard !reportedFilenames(in: file.deletingLastPathComponent()).contains(file.lastPathComponent) else {
@@ -461,11 +469,17 @@ actor AppleTrackArchiveStore {
         }
         guard let configuration, configuration.tracker.isConfigured else { return .notConfigured }
         let knownIDs = Set(configuration.identities.keys)
+        let flightID = Self.flightID(in: data)
+        let releaseURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("ownership-review-releases.json")
+        let released = OwnershipReviewReleaseFile.allowsTrackerUpload(flightID: flightID, fileURL: releaseURL)
         let eligibility = TrackerArchiveUploadContract.eligibility(
             geoJSON: data,
             configuration: configuration.tracker,
-            knownRemoteIDs: knownIDs
+            knownRemoteIDs: knownIDs,
+            releasedFlightIDs: released ? [flightID] : []
         )
+        if eligibility == .claimPending { return .pending(0) }
         guard eligibility == .eligible else {
             try? markReported(file)
             AppleLog.info("TrackerArchive", "Skipped \(file.lastPathComponent): \(String(describing: eligibility))")

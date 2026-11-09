@@ -157,6 +157,7 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
         CaltopoLiveTrack track = LiveTrackByRemoteId.get(remoteId);
         if (track == null) return;
         synchronized (track) {
+            if (label != null && !label.isEmpty() && !label.equals(track.droneSpec.trackLabel())) return;
             if (track.requestedLiveTrackId == null && track.liveTrackId == null
                     && flightId != null && !flightId.isEmpty()) {
                 track.requestedLiveTrackId = flightId;
@@ -1817,6 +1818,7 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
                         droneSpec.trackLabel(), reason), e);
             }
         }
+        WaypointTrack.PrepareTrackForFlightEnd(droneSpec);
         notifyPeerCoordinatorTrackEnded(true);
         NotifyLocalTrackFinished(droneSpec, reason);
     }

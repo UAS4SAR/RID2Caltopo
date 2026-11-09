@@ -35,6 +35,16 @@ public struct AwaitingMapFlight: Codable, Sendable, Equatable, Identifiable {
     public var caltopoArchiveFolder: String?
     /// Durable confirmation that the Shape archive completed (never auto-reupload).
     public var archiveConfirmed: Bool?
+    /// A Mine selection was not acknowledged by Tracker before this flight ended.
+    public var ownershipReviewPending: Bool?
+    /// Operator explicitly released that hold. Does not invent a pilot.
+    public var ownershipReviewAuthorized: Bool?
+    /// Pilot entered with Mine. Empty when the journal did not record one.
+    public var recordedPilot: String?
+    public var claim: String?
+    public var ownershipContextKnown: Bool?
+    /// Recovered without Mine / Not Mine. Retained locally and not publishable.
+    public var automaticPublicationBlocked: Bool?
     public var firstTime: Date { points.first?.receivedAt ?? .distantPast }
     public var lastTime: Date { points.last?.receivedAt ?? .distantPast }
     /// First/last waypoint on the drone clock (falls back to receive time), used for clue ownership.
@@ -74,8 +84,12 @@ public struct AwaitingMapFlight: Codable, Sendable, Equatable, Identifiable {
 
 public enum AwaitingMapFlightJournalError: Error, LocalizedError, Sendable {
     case unavailable
+    case ownershipReviewRequired
     public var errorDescription: String? {
-        "Saved flight history could not be read. Reconnect its storage and retry. The saved journal has been kept."
+        switch self {
+        case .unavailable: "Saved flight history could not be read. Reconnect its storage and retry. The saved journal has been kept."
+        case .ownershipReviewRequired: "This flight requires an ownership review before it can be published."
+        }
     }
 }
 
@@ -158,7 +172,9 @@ public actor AwaitingMapFlightJournal {
     }
     /// `flightID` (RidFlightID) becomes the id of a newly created entry; an open entry keeps its id.
     public func record(remoteID: String, label: String, observations: [RidObservation], mapID: String, teamID: String, finished: Bool,
-                       flightID: String? = nil) async throws {
+                       flightID: String? = nil, ownershipReviewPending: Bool? = nil,
+                       recordedPilot: String? = nil, claim: String? = nil, ownershipContextKnown: Bool? = nil,
+                       blockAutomaticPublication: Bool = false) async throws {
         try await beginMutation()
         defer { endMutation() }
         guard let first = observations.first else { return }
@@ -166,10 +182,23 @@ public actor AwaitingMapFlightJournal {
         if let index = next.lastIndex(where: { $0.remoteID == remoteID && !$0.finished }) {
             next[index].points = observations.map(CaltopoInterruptedPublicationPoint.init)
             next[index].label = label; next[index].finished = finished
+            if let ownershipReviewPending { next[index].ownershipReviewPending = ownershipReviewPending }
+            if let recordedPilot { next[index].recordedPilot = recordedPilot.isEmpty ? nil : recordedPilot }
+            if let claim { next[index].claim = claim }
+            if let ownershipContextKnown { next[index].ownershipContextKnown = ownershipContextKnown }
+            if finished && next[index].ownershipReviewPending == true {
+                next[index].decision = "review"
+                next[index].publicationStarted = false
+            }
             // Match Android: a connected-map bound flight that never started LiveTrack still
             // publishes through the archive path — it must not fall into the review inbox.
             if finished && next[index].decision == "bound" && next[index].publicationStarted != true {
                 next[index].decision = next[index].mapID.isEmpty ? "review" : "publish"
+            }
+            if blockAutomaticPublication || next[index].automaticPublicationBlocked == true {
+                next[index].automaticPublicationBlocked = true
+                next[index].decision = "review"
+                next[index].publicationStarted = false
             }
             // Live-published flights are removed here; Shape confirmation is recorded separately
             // via confirmArchive (and must not reappear as a review offer).
@@ -178,20 +207,50 @@ public actor AwaitingMapFlightJournal {
             guard !finished, !next.contains(where: { $0.remoteID == remoteID && $0.firstTime == first.receivedAt }) else { return }
             var entry = AwaitingMapFlight(id: flightID, remoteID: remoteID, label: label, observations: observations, teamID: teamID)
             if !mapID.isEmpty { entry.mapID = mapID; entry.decision = "bound" }
+            entry.ownershipReviewPending = ownershipReviewPending
+            entry.recordedPilot = recordedPilot.flatMap { $0.isEmpty ? nil : $0 }
+            entry.claim = claim
+            entry.ownershipContextKnown = ownershipContextKnown
+            if blockAutomaticPublication {
+                entry.automaticPublicationBlocked = true
+                entry.decision = "review"
+                entry.publicationStarted = false
+            }
             next.append(entry)
         }
         try await commit(next)
+    }
+    /// Explicit operator release of one held flight. Does not invent a pilot.
+    /// Returns whether tracker upload of a recorded Mine pilot may proceed.
+    @discardableResult
+    public func authorizeOwnershipReview(id: String) async throws -> Bool {
+        try await beginMutation()
+        defer { endMutation() }
+        var next = entries
+        guard let index = next.firstIndex(where: {
+            $0.id == id && $0.decision == "review" && $0.ownershipReviewPending == true && $0.automaticPublicationBlocked != true
+        }) else { return false }
+        let pilot = next[index].recordedPilot ?? ""
+        let claim = next[index].claim ?? ""
+        let known = next[index].ownershipContextKnown == true
+        next[index].ownershipReviewPending = false
+        next[index].ownershipReviewAuthorized = true
+        try await commit(next)
+        return known && !pilot.isEmpty && claim == FlightOwnershipContext.pending
     }
     public func decide(id: String, mapID: String?, teamID: String) async throws {
         try await beginMutation()
         defer { endMutation() }
         var next = entries
         guard let index = next.firstIndex(where: { $0.id == id && $0.decision == "review" }) else { return }
+        guard mapID == nil || next[index].ownershipReviewPending != true else { throw AwaitingMapFlightJournalError.ownershipReviewRequired }
+        guard mapID == nil || next[index].automaticPublicationBlocked != true else { throw AwaitingMapFlightJournalError.ownershipReviewRequired }
         if let mapID { guard !mapID.isEmpty, !teamID.isEmpty else { throw CaltopoLiveClientError.invalidConfiguration } }
         next[index].decision = mapID == nil ? "local" : "publish"
         next[index].mapID = mapID ?? ""; next[index].teamID = teamID
         try await commit(next)
     }
+
 
     /// Bind an unfinished empty-map review intent to the connected map so LiveTrack can start
     /// without waiting for the review inbox. Finished review offers are left alone.
@@ -202,7 +261,7 @@ public actor AwaitingMapFlightJournal {
         guard !mapID.isEmpty else { return nil }
         var next = entries
         guard let index = next.lastIndex(where: {
-            $0.remoteID == remoteID && !$0.finished && $0.decision == "review" && $0.mapID.isEmpty
+            $0.remoteID == remoteID && !$0.finished && $0.decision == "review" && $0.mapID.isEmpty && $0.ownershipReviewPending != true && $0.automaticPublicationBlocked != true
         }) else { return nil }
         next[index].mapID = mapID
         next[index].teamID = teamID
@@ -218,7 +277,7 @@ public actor AwaitingMapFlightJournal {
         // Live publish to a connected map must bind an empty-map review intent captured before
         // connect; requiring mapID equality left those rows as finished review forever.
         guard let index = next.lastIndex(where: {
-            $0.remoteID == remoteID && !$0.finished
+            $0.remoteID == remoteID && !$0.finished && $0.ownershipReviewPending != true
                 && ($0.mapID == mapID || ($0.mapID.isEmpty && $0.decision == "review"))
         }) else { return }
         var changed = false

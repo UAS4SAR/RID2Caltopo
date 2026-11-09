@@ -59,13 +59,20 @@ public struct TrackerCoordinationIdentity: Sendable, Equatable {
     public let organization: String
     public let model: String
     public let ownerName: String
+    public let confirmedByGuid: String
+    public let confirmedAtMs: Int64
+    public let confirmedByDeviceName: String
 
-    public init(remoteID: String, mappedID: String, organization: String, model: String, ownerName: String) {
+    public init(remoteID: String, mappedID: String, organization: String, model: String, ownerName: String,
+                confirmedByGuid: String = "", confirmedAtMs: Int64 = 0, confirmedByDeviceName: String = "") {
         self.remoteID = remoteID
         self.mappedID = mappedID
         self.organization = organization
         self.model = model
         self.ownerName = ownerName
+        self.confirmedByGuid = confirmedByGuid
+        self.confirmedAtMs = confirmedAtMs
+        self.confirmedByDeviceName = confirmedByDeviceName
     }
 }
 
@@ -218,6 +225,7 @@ public enum TrackerCoordinationEvent: Sendable, Equatable {
     case peerTrafficPosition(TrackerPeerTrafficPosition)
     case trafficSchedule(TrackerTrafficSchedule)
     case droneConfirmed(identity: TrackerCoordinationIdentity, confirmedByZoneID: String, confirmedLocally: Bool)
+    case droneClaimConflict(identity: TrackerCoordinationIdentity)
     case reconnectRequired(reason: String)
     case ignored(messageType: String)
 }
@@ -423,20 +431,28 @@ public enum TrackerCoordinationWire {
 
     public static func droneConfirmed(
         client: TrackerCoordinationClient,
-        identity: TrackerCoordinationIdentity
+        identity: TrackerCoordinationIdentity,
+        replacing: TrackerCoordinationIdentity? = nil
     ) throws -> Data {
-        try encode([
+        var payload: [String: Any] = [
             "type": "drone_confirmed",
             "mapId": client.mapID,
             "zoneId": client.zoneID,
             "guid": client.zoneID,
             "remoteId": identity.remoteID,
             "mappedId": identity.mappedID,
+            // No waypoint timestamp is available here. Peers derive the visible
+            // pilot label from ownerName until a complete track title is known.
             "trackLabel": identity.mappedID,
             "org": identity.organization,
             "model": identity.model,
             "ownerName": identity.ownerName,
-        ])
+        ]
+        if let replacing {
+            payload["replaceConfirmedBy"] = replacing.confirmedByGuid
+            payload["replaceConfirmedAtMs"] = replacing.confirmedAtMs
+        }
+        return try encode(payload)
     }
 
     private static func baseSighting(
@@ -665,6 +681,11 @@ public struct TrackerCoordinationProtocolState: Sendable {
     private mutating func handleDroneConfirmed(_ object: [String: Any]) -> [TrackerCoordinationEvent] {
         let remoteID = string(object["remoteId"])
         guard !remoteID.isEmpty else { return [.ignored(messageType: "invalid drone_confirmed")] }
+        let incomingLeaseSequence = number(object["leaseSeq"])?.int64Value ?? -1
+        if incomingLeaseSequence >= 0,
+           let current = leaseSequencesByRemoteID[remoteID], incomingLeaseSequence < current {
+            return [.ignored(messageType: "stale drone_confirmed")]
+        }
         let confirmedBy = firstNonEmpty(
             string(object["confirmedByGuid"]),
             firstNonEmpty(string(object["guid"]), string(object["zoneId"]))
@@ -680,7 +701,10 @@ public struct TrackerCoordinationProtocolState: Sendable {
             mappedID: string(object["mappedId"]),
             organization: string(object["org"]),
             model: string(object["model"]),
-            ownerName: string(object["ownerName"])
+            ownerName: string(object["ownerName"]),
+            confirmedByGuid: confirmedBy,
+            confirmedAtMs: number(object["confirmedAtMs"])?.int64Value ?? 0,
+            confirmedByDeviceName: string(object["confirmedByDeviceName"])
         )
         var events: [TrackerCoordinationEvent] = [
             .droneConfirmed(identity: identity, confirmedByZoneID: confirmedBy, confirmedLocally: confirmedLocally),

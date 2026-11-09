@@ -963,9 +963,7 @@ class R2CActivity :
     }
 
     override fun onPeerListChanged(peers: List<R2CMqttManager.PeerState>) {
-        // Peer list changes still matter to the coordination layer, but the peer-specific
-        // main-screen UI has been removed. Keep the listener registered so future diagnostics
-        // can still hook in without changing runtime wiring.
+        if (::localViewModel.isInitialized) localViewModel.onOwnershipPolicyChanged()
     }
 
     suspend fun listAvailableLogArchiveDays(): List<LogArchiveDayOption> = withContext(Dispatchers.IO) {
@@ -1890,12 +1888,14 @@ class R2CActivity :
                                 droneDescription = droneDescription
                             )
                         },
-                        onSave = {
+                        onSave = { prepared ->
                             CTDebug("R2CActivity", "Drone confirmation Save clicked: remoteId=${confirmationState.remoteId}")
-                            localViewModel.savePendingDroneConfirmation()
-                            streamsViewModel.requestAutomaticStreamPairingAfterConfirmation(
-                                confirmationState.remoteId
-                            )
+                            localViewModel.savePendingDroneConfirmation(prepared = prepared)
+                            if (localViewModel.pendingDroneConfirmation.value == null) {
+                                streamsViewModel.requestAutomaticStreamPairingAfterConfirmation(
+                                    confirmationState.remoteId
+                                )
+                            }
                         },
                         onPairSession = localViewModel::pairPendingDroneForSession,
                         onCancelPairing = localViewModel::dismissConfirmationForInspection,
@@ -2648,8 +2648,7 @@ class R2CActivity :
         InitializedCalled = true
         CaltopoClient.InitArchiveDir()
 
-        // Long-lived application-scoped client — never create/tear down GMS location
-        // clients from the activity lifecycle (unbind stalls the main looper).
+        // The monitor follows visible app activities and performs GMS work on its worker.
         DeviceLocationMonitor.setLocationListener { location ->
             streamsViewModel.prefetchTerrainForLocation(location.latitude, location.longitude)
         }
@@ -2685,8 +2684,7 @@ class R2CActivity :
 
     private fun stopLocationUpdates() {
         detachLocationListener()
-        // Only release the shared GMS client on real session shutdown. Config-change
-        // and non-primary destroys must not unbind Play Services on the main looper.
+        // Disable the monitor for this app session without unbinding on the main thread.
         DeviceLocationMonitor.stop()
     }
 

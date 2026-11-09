@@ -110,6 +110,42 @@ class WaypointTrackTest {
     }
 
     @Test
+    fun flightConfirmationRelabelsAndSnapshotsPilotWithoutChangingRoutingOrPoints() {
+        val drone = activeDrone("RID-PILOT", "1sar1001-01DjMtrc4td", "1sar1001-01")
+        WaypointTrack.AddWaypointForTrack(drone, 39.153061, -121.132946, 101L, 1_000L)
+        drone.setFlightReadinessJson("{\"pilot\":{\"callsign\":\"10\"}}")
+        drone.owner = "10"
+        drone.setCurrentFlightConfirmed(true)
+        val expected = "10-01DjMtrc4td_" + CaltopoClient.TimeDatestampString(1_000L)
+        assertEquals(expected, drone.trackLabel())
+        assertEquals("1sar1001-01DjMtrc4td", drone.mappedId)
+        assertEquals(1, WaypointTrack.GetTrackPointsSnapshot(drone).size)
+        @Suppress("UNCHECKED_CAST")
+        val track = (trackMapField.get(null) as Map<String, WaypointTrack>).getValue(expected)
+        track.prepareForArchive()
+        drone.reset()
+        val props = track.getGeoJson()!!.getJSONArray("features").getJSONObject(0).getJSONObject("properties")
+        val metadata = props.getJSONObject("r2c_prop")
+        assertEquals(expected, props.getString("title"))
+        assertEquals("10", metadata.getString("owner"))
+        assertEquals("10", metadata.getJSONObject("flightReadiness").getJSONObject("pilot").getString("callsign"))
+        assertEquals("1sar1001-01DjMtrc4td", metadata.getString("mid"))
+    }
+
+    @Test
+    fun matchingPilotLabelsKeepDifferentAircraftTracksSeparate() {
+        val alpha = activeDrone("RID-ALPHA", "1sar1001-01DjMtrc4td", "10")
+        val bravo = activeDrone("RID-BRAVO", "1sar1002-01DjMtrc4td", "10")
+        WaypointTrack.AddWaypointForTrack(alpha, 39.1, -121.1, 100L, 1_000L)
+        WaypointTrack.AddWaypointForTrack(bravo, 39.2, -121.2, 200L, 1_000L)
+        alpha.setCurrentFlightConfirmed(true)
+        bravo.setCurrentFlightConfirmed(true)
+        assertFalse(alpha.trackLabel() == bravo.trackLabel())
+        assertEquals(39.1, WaypointTrack.GetTrackPointsSnapshot(alpha).single().lat, 0.000001)
+        assertEquals(39.2, WaypointTrack.GetTrackPointsSnapshot(bravo).single().lat, 0.000001)
+    }
+
+    @Test
     fun geoJsonStoresDroneTimeAndDiagnosticReceiveTimeAndFlightId() {
         val drone = activeDrone("RID-BIND", "RID-BIND")
         WaypointTrack.AddWaypointForTrack(drone, 39.153, -121.132, 100L, 1_790_553_873_000L, 1_790_553_873_400L, "rid", true)
@@ -209,6 +245,18 @@ class WaypointTrackTest {
         assertTrue(WaypointTrack.ShouldPublishGeoJsonStatsForTracker(geoJsonWithOrgAndRid(" ncssar ", "RIDTEAM1")))
         assertFalse(WaypointTrack.ShouldPublishGeoJsonStatsForTracker(geoJsonWithOrgAndRid("MUTUALAID", "RIDTEAM1")))
         assertFalse(WaypointTrack.ShouldPublishGeoJsonStatsForTracker(geoJsonWithOrgAndRid("", "RIDTEAM1")))
+    }
+
+    @Test
+    fun trackerClaimPendingNeverPublishesBeforeReview() {
+        CaltopoClient.SetHomeOrgName("NCSSAR")
+        confirmTeamDrone("RIDPENDING", "NCSSAR")
+        val geoJson = geoJsonWithOrgAndRid("NCSSAR", "RIDPENDING")
+        val metadata = geoJson.getJSONArray("features").getJSONObject(0)
+            .getJSONObject("properties").getJSONObject("r2c_prop")
+        metadata.put("tracker_upload_authorized", true)
+        metadata.put("tracker_claim_pending", true)
+        assertFalse(WaypointTrack.ShouldPublishGeoJsonStatsForTracker(geoJson))
     }
 
     @Test

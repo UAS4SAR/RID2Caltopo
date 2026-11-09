@@ -55,6 +55,7 @@ fun WorkspaceBluetoothStats(
     focusRemoteId: String? = null,
     onDismiss: () -> Unit,
     onDrone: (CtDroneSpec) -> Unit,
+    onInspect: (CtDroneSpec) -> Unit,
 ) {
     val config = LocalConfiguration.current
     val density = LocalDensity.current
@@ -82,7 +83,10 @@ fun WorkspaceBluetoothStats(
                                     if (focusRemoteId == drone.remoteId) bringIntoViewRequester.bringIntoView()
                                 }
                                 Box(Modifier.bringIntoViewRequester(bringIntoViewRequester)) {
-                                    DroneItem(drone = drone, totalCount = drone.totalCount) { onDrone(drone) }
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        DroneItem(drone = drone, totalCount = drone.totalCount) { onDrone(drone) }
+                                        TextButton(onClick = { onInspect(drone) }) { Text("Inspect") }
+                                    }
                                 }
                             }
                         }

@@ -36,7 +36,7 @@ object AwaitingMapFlights {
     private fun publishChoices() {
         publicationChoices = all().filterNot { it.optBoolean("finished") }.associate { item ->
             item.optString("remote") to PublicationChoice(item.optString("id"), item.optString("map"),
-                item.optString("team"), item.optString("decision"))
+                item.optString("team"), if (item.optBoolean("ownershipReviewPending")) "review" else item.optString("decision"))
         }
     }
     private var loaded = false
@@ -97,8 +97,16 @@ object AwaitingMapFlights {
     }
     private fun all() = (0 until entries.length()).mapNotNull { entries.optJSONObject(it) }
 
+    @JvmStatic @Synchronized fun recordOwned(
+        id: String, remote: String, label: String, points: JSONArray, finished: Boolean,
+        selectedMap: String, selectedTeam: String, ownershipReviewPending: Boolean,
+        recordedPilot: String, claim: String, contextKnown: Boolean, blockAutomaticPublication: Boolean,
+    ) = record(id, remote, label, points, finished, selectedMap, selectedTeam, ownershipReviewPending,
+        recordedPilot, claim, contextKnown, blockAutomaticPublication)
+
     @JvmStatic @JvmOverloads @Synchronized fun record(id: String, remote: String, label: String, points: JSONArray, finished: Boolean,
-        selectedMap: String = CaltopoMap.GetMapId(), selectedTeam: String = selectedPublicationScope()) {
+        selectedMap: String = CaltopoMap.GetMapId(), selectedTeam: String = selectedPublicationScope(), ownershipReviewPending: Boolean? = null,
+        recordedPilot: String? = null, claim: String? = null, contextKnown: Boolean? = null, blockAutomaticPublication: Boolean = false) {
         load()
         if (points.length() == 0) return
         val existing = all().firstOrNull { it.optString("id") == id }
@@ -110,6 +118,16 @@ object AwaitingMapFlights {
         val item = existing ?: JSONObject().put("id", id).put("remote", remote).put("map", initialMap)
             .put("team", selectedTeam).put("decision", if (initialMap.isEmpty()) "review" else "bound").also { entries.put(it) }
         item.put("label", label).put("points", JSONArray(points.toString())).put("finished", finished)
+        if (ownershipReviewPending != null) item.put("ownershipReviewPending", ownershipReviewPending)
+        if (recordedPilot != null) {
+            if (recordedPilot.isBlank()) item.remove("recordedPilot") else item.put("recordedPilot", recordedPilot.trim())
+        }
+        if (claim != null) item.put("claim", claim)
+        if (contextKnown != null) item.put("ownershipContextKnown", contextKnown)
+        if (finished && item.optBoolean("ownershipReviewPending")) {
+            item.put("decision", "review").put("publicationStarted", false)
+            pendingPublicationStarted.remove(remote)
+        }
         // An archive callback can finish before its queued final intent checkpoint.
         // Keep the completed flight's compact ownership endpoints in that ordering too.
         if (finished && item.optString("decision") == "published" && points.length() > 1) {
@@ -123,6 +141,11 @@ object AwaitingMapFlights {
             // A flight that already had a connected map should publish through the archive,
             // not wait in the review inbox while that same map is still up.
             item.put("decision", if (item.optString("map").isNotEmpty()) "publish" else "review")
+        }
+        if (blockAutomaticPublication || item.optBoolean("automaticPublicationBlocked")) {
+            item.put("automaticPublicationBlocked", true)
+            item.put("decision", "review").put("publicationStarted", false)
+            pendingPublicationStarted.remove(remote)
         }
         if (finished && item.optString("decision") in listOf("bound", "local")) {
             entries = JSONArray(all().filterNot { it.optString("id") == id }); saveOffMainIfNeeded(); publishChoices(); intentSaved(remote, id); return
@@ -164,7 +187,7 @@ object AwaitingMapFlights {
         load()
         reservedPublicationId(remote)?.let { return it }
         val item = all().lastOrNull { it.optString("remote") == remote && !it.optBoolean("finished") } ?: return null
-        if (item.optString("decision") != "review") return null
+        if (item.optString("decision") != "review" || item.optBoolean("ownershipReviewPending") || item.optBoolean("automaticPublicationBlocked")) return null
         if (item.optString("map").isNotEmpty()) return null
         item.put("map", map).put("team", team).put("decision", "bound")
         save()
@@ -181,7 +204,7 @@ object AwaitingMapFlights {
         // Live publish to a connected map must bind an empty-map review intent captured before
         // connect; requiring map equality left those rows as finished review forever.
         val entry = all().lastOrNull {
-            it.optString("remote") == remote && !it.optBoolean("finished") &&
+            it.optString("remote") == remote && !it.optBoolean("finished") && !it.optBoolean("ownershipReviewPending") &&
                 (it.optString("map") == map ||
                     (it.optString("map").isEmpty() && it.optString("decision") == "review"))
         } ?: return
@@ -251,6 +274,29 @@ object AwaitingMapFlights {
             )
         }.map { JSONObject(it.toString()) }
     }
+    /**
+     * Operator explicitly releases one held flight. Does not copy a pilot from the
+     * current device or from another tablet's claim. Tracker upload is released only
+     * when this flight already recorded a Mine pilot and the claim was merely unverified.
+     */
+    @JvmStatic @Synchronized fun authorizeOwnershipReview(id: String): Boolean {
+        load()
+        val item = all().firstOrNull {
+            it.optString("id") == id && it.optString("decision") == "review" && it.optBoolean("ownershipReviewPending")
+                && !it.optBoolean("automaticPublicationBlocked")
+        } ?: return false
+        val pilot = item.optString("recordedPilot")
+        val claim = item.optString("claim")
+        val known = item.optBoolean("ownershipContextKnown")
+        item.put("ownershipReviewPending", false).put("ownershipReviewAuthorized", true)
+        saveOffMainIfNeeded()
+        publishChoices()
+        if (known && pilot.isNotBlank() && claim == FlightOwnershipContext.PENDING) {
+            OwnershipReviewReleases.allowTrackerUpload(id)
+        }
+        return true
+    }
+
     fun decide(id: String, map: String?, team: String) {
         val bindItem: JSONObject?
         val bindOthers: List<JSONObject>?
@@ -258,6 +304,8 @@ object AwaitingMapFlights {
         synchronized(this) {
             load()
             val item = all().firstOrNull { it.optString("id") == id && it.optString("decision") == "review" } ?: return
+            check(map == null || !item.optBoolean("ownershipReviewPending")) { "This flight requires an ownership review before publication." }
+            check(map == null || !item.optBoolean("automaticPublicationBlocked")) { "This flight was not confirmed and cannot be published." }
             if (map != null) require(map.isNotBlank() && team.isNotBlank())
             val prior = entries.toString()
             item.put("decision", if (map == null) "local" else "publish").put("map", map ?: "").put("team", team)

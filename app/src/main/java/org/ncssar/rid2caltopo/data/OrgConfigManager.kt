@@ -12,6 +12,8 @@ import android.os.Handler
 import android.os.Looper
 import com.google.android.gms.auth.api.signin.GoogleSignInAccount
 import org.ncssar.rid2caltopo.BuildConfig
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import org.json.JSONArray
 import org.json.JSONObject
 import okhttp3.Request
@@ -42,6 +44,18 @@ object OrgConfigManager {
     private const val KEY_TOKEN = "join_token"
     private const val KEY_ORG_NAME = "org_name"
     private const val KEY_MANAGED_VERSION_MS = "managed_version_ms"
+    private const val KEY_DRONE_OWNERSHIP = "drone_ownership"
+    @Volatile private var ownershipMode = "all_detected"
+    private val _droneOwnership = MutableStateFlow(ownershipMode)
+    val droneOwnership = _droneOwnership.asStateFlow()
+    @JvmStatic fun droneOwnershipMode(): String = ownershipMode
+    /** Called by the startup settings worker, before scanning starts. */
+    fun restoreDroneOwnership(context: Context) {
+        ownershipMode = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getString(KEY_DRONE_OWNERSHIP, "all_detected")
+            .takeIf { it == "streaming_device" || it == "streaming_shared_incident" } ?: "all_detected"
+        _droneOwnership.value = ownershipMode
+    }
 
     // Type tags used in the bundle JSON to mark encrypted credential blocks.
     private const val TYPE_CREDENTIALS_ENC = "ct_credentials_enc"
@@ -268,7 +282,10 @@ object OrgConfigManager {
             context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
                 .putLong(KEY_MANAGED_VERSION_MS, versionMs)
                 .putInt("managed_readiness_schema_version", snapshot.optInt("aircraftSchemaVersion", 0))
+                .putString(KEY_DRONE_OWNERSHIP, snapshot.optString("droneOwnership").takeIf { it == "streaming_device" || it == "streaming_shared_incident" } ?: "all_detected")
                 .apply()
+            ownershipMode = snapshot.optString("droneOwnership").takeIf { it == "streaming_device" || it == "streaming_shared_incident" } ?: "all_detected"
+            _droneOwnership.value = ownershipMode
         }
         return applied
     }

@@ -40,8 +40,9 @@ object AircraftOrganizationAccess {
     private val managedDownload = ThreadLocal.withInitial { false }
     private fun preferences() = requireNotNull(R2CApplication.getAppCtxt()).getSharedPreferences("aircraft-readiness", Context.MODE_PRIVATE)
     private fun scope() = CaltopoClient.GetTrackerCoordinationUrlPfx().trimEnd('/')
-    fun cachedState(): JSONObject = runCatching {
-        JSONObject(preferences().getString(scope(), "{}").orEmpty())
+    fun cachedState(): JSONObject = cachedStateForScope(scope())
+    fun cachedStateForScope(scope: String): JSONObject = runCatching {
+        JSONObject(preferences().getString(scope, "{}").orEmpty())
     }.getOrDefault(JSONObject())
 
     fun eligiblePilot(pilotJson: String): Boolean {
@@ -56,7 +57,10 @@ object AircraftOrganizationAccess {
 
     fun rememberedProfileId(): String? = preferences().getString(OperatingProfiles.preferenceKey(scope()), null)
     fun rememberProfile(profile: JSONObject) {
-        preferences().edit().putString(OperatingProfiles.preferenceKey(scope()),
+        rememberProfileForScope(scope(), profile)
+    }
+    fun rememberProfileForScope(scope: String, profile: JSONObject) {
+        preferences().edit().putString(OperatingProfiles.preferenceKey(scope),
             profile.optString("missingProfileId", profile.optString("id"))).apply()
     }
 
@@ -65,7 +69,10 @@ object AircraftOrganizationAccess {
             ?: JSONObject().put("selectedAccessories", org.json.JSONArray(preferences().getStringSet("${scope()}:$remoteId:accessories", emptySet()).orEmpty().toList()))
 
     fun rememberEquipment(remoteId: String, value: FlightReadiness) {
-        preferences().edit().putString("${scope()}:$remoteId:equipment", value.equipmentJSON().toString()).apply()
+        rememberEquipmentForScope(scope(), remoteId, value)
+    }
+    fun rememberEquipmentForScope(scope: String, remoteId: String, value: FlightReadiness) {
+        preferences().edit().putString("$scope:$remoteId:equipment", value.equipmentJSON().toString()).apply()
     }
 
     @JvmStatic fun belongsToOrganization(): Boolean =

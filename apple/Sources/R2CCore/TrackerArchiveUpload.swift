@@ -23,6 +23,7 @@ public enum TrackerArchiveEligibility: Sendable, Equatable {
     case eligible
     case malformedArchive
     case localArchiveOnly
+    case claimPending
     /// Archive explicitly marked `tracker_upload_authorized == false` (non-owner); never uploads.
     case notUploadAuthorized
     case missingOrganization
@@ -34,7 +35,8 @@ public enum TrackerArchiveUploadContract {
     public static func eligibility(
         geoJSON: Data,
         configuration: TrackerArchiveUploadConfiguration,
-        knownRemoteIDs: Set<String>
+        knownRemoteIDs: Set<String>,
+        releasedFlightIDs: Set<String> = []
     ) -> TrackerArchiveEligibility {
         guard let root = try? JSONSerialization.jsonObject(with: geoJSON) as? [String: Any],
               let feature = (root["features"] as? [[String: Any]])?.first,
@@ -42,6 +44,10 @@ public enum TrackerArchiveUploadContract {
               let metadata = properties["r2c_prop"] as? [String: Any]
         else { return .malformedArchive }
         if (metadata["local_archive_only"] as? Bool) == true { return .localArchiveOnly }
+        if (metadata["tracker_claim_pending"] as? Bool) == true {
+            let flightID = (properties["r2c_flight_id"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if flightID.isEmpty || !releasedFlightIDs.contains(flightID) { return .claimPending }
+        }
         // Archives written before this field existed omit it and keep prior behavior.
         if (metadata["tracker_upload_authorized"] as? Bool) == false { return .notUploadAuthorized }
         let organization = normalize(metadata["org"] as? String)
