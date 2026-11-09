@@ -6421,6 +6421,17 @@ private func bluetoothServiceData(message: [UInt8], counter: UInt8) -> Data {
     #expect(wire["mappedId"] as? String == "1sar1001-01DjMtrc4td")
     #expect(wire["trackLabel"] as? String == "1sar1001-01DjMtrc4td")
     #expect(wire["ownerName"] as? String == "1SAR8")
+    #expect(wire["replaceConfirmedBy"] == nil)
+    let prior = TrackerCoordinationIdentity(
+        remoteID: "DRONE1", mappedID: "1sar7DjMn4Pr", organization: "NCSSAR",
+        model: "DJI Mini 4 Pro", ownerName: "1SAR7", confirmedByGuid: "zone-bravo",
+        confirmedAtMs: 1_700_000_000_000, confirmedByDeviceName: "Ken T.'s iPad"
+    )
+    let replacement = try jsonObject(TrackerCoordinationWire.droneConfirmed(
+        client: client, identity: confirmed, replacing: prior
+    ))
+    #expect(replacement["replaceConfirmedBy"] as? String == "zone-bravo")
+    #expect((replacement["replaceConfirmedAtMs"] as? NSNumber)?.int64Value == 1_700_000_000_000)
     let telemetry = first["telemetry"] as? [String: Any]
     #expect((telemetry?["headingDeg"] as? NSNumber)?.doubleValue == 92)
 }

@@ -2480,6 +2480,7 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
                 || pendingConfirmationsByRemoteId.containsKey(remoteId);
         ownerByRemoteId.remove(remoteId);
         leaseSeqByRemoteId.remove(remoteId);
+        peerClaims.remove(remoteId);
         locallyConfirmedRemoteIds.remove(remoteId);
         pendingConfirmationsByRemoteId.remove(remoteId);
         confirmationSentAtByRemoteId.remove(remoteId);

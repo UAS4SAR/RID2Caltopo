@@ -466,7 +466,6 @@ fun DroneSpecConfirmationDialog(
     val pilotCallsign = state.pilotCallsign.trim()
     val pilotMatched = org.json.JSONObject(readiness.pilotJson).optString("memberId").isNotBlank() &&
         org.json.JSONObject(readiness.pilotJson).optString("callsign").equals(pilotCallsign, true)
-    var claimToReplace by remember(state.remoteId) { mutableStateOf<org.ncssar.rid2caltopo.data.PeerCoordinator.DroneClaim?>(null) }
 
     fun prepareClaim(replacing: org.ncssar.rid2caltopo.data.PeerCoordinator.DroneClaim?) {
                     if (state.pairingOnly) { onSave(null); return }
@@ -567,7 +566,7 @@ fun DroneSpecConfirmationDialog(
                 enabled = !saving && (state.bootstrapDesignator == null || pilotCallsign.isNotBlank()),
                 onClick = {
                     val claim = if (state.pairingOnly) null else R2cRuntimeRegistry.getDefaultRuntime().peerCoordinator.claimForRemoteId(state.remoteId)
-                    if (claim != null) claimToReplace = claim else prepareClaim(null)
+                    prepareClaim(claim)
                 }
             ) {
                 Text(if (state.pairingOnly) "Save mapping" else "Mine")
@@ -586,12 +585,6 @@ fun DroneSpecConfirmationDialog(
             }
         },
     )
-    claimToReplace?.let { claim ->
-        AlertDialog(onDismissRequest = { claimToReplace = null }, title = { Text("Drone already claimed") },
-            text = { Text("This drone is already claimed by ${claim.callsign.ifBlank { "Unknown RPIC" }} on ${claim.deviceName.ifBlank { "another device" }}. Claim it anyway?") },
-            confirmButton = { TextButton(onClick = { claimToReplace = null; prepareClaim(claim) }) { Text("Claim ownership") } },
-            dismissButton = { TextButton(onClick = { claimToReplace = null }) { Text("Cancel") } })
-    }
 }
 
 data class PreparedDroneConfirmation(val state: DroneSpecConfirmationUiState, val settingsRevision: Long, val mapId: String, val sourceSpec: CtDroneSpec?, val readinessRevision: Long, val readiness: String, val replacing: org.ncssar.rid2caltopo.data.PeerCoordinator.DroneClaim? = null)

@@ -3,6 +3,8 @@ package org.ncssar.rid2caltopo.data
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Before
@@ -1494,6 +1496,62 @@ class TrackerPeerCoordinatorTest {
 
         assertFalse(track.localOwnerFlag)
         assertFalse(coordinator.isLocalOwner("DRONE1"))
+    }
+
+    @Test
+    fun peerClaimIsNamedOnReplacement_andClearedWhenThatOwnerExpires() {
+        coordinator.start("MAP1", "zone-alpha", "Alpha", null)
+        transport.receive(
+            JSONObject()
+                .put("type", "drone_confirmed")
+                .put("remoteId", "DRONE1")
+                .put("confirmedByGuid", "zone-bravo")
+                .put("confirmedByDeviceName", "Ken T.'s iPad")
+                .put("ownerName", "1SAR7")
+                .put("confirmedAtMs", 1_700_000_000_000L)
+                .put("org", "NCSSAR")
+                .put("model", "DJI Mini 4 Pro")
+                .put("mappedId", "1sar7DjMn4Pr")
+                .toString()
+        )
+        val claim = coordinator.claimForRemoteId("DRONE1")
+        assertNotNull(claim)
+        assertEquals("zone-bravo", claim!!.guid)
+        assertEquals("1SAR7", claim.callsign)
+        assertEquals("Ken T.'s iPad", claim.deviceName)
+        assertEquals(1_700_000_000_000L, claim.confirmedAtMs)
+
+        transport.receive(
+            JSONObject()
+                .put("type", "owner_expired")
+                .put("remoteId", "DRONE1")
+                .put("prevOwnerGuid", "zone-bravo")
+                .toString()
+        )
+        assertNull(coordinator.claimForRemoteId("DRONE1"))
+
+        transport.receive(
+            JSONObject()
+                .put("type", "drone_confirmed")
+                .put("remoteId", "DRONE1")
+                .put("confirmedByGuid", "zone-bravo")
+                .put("confirmedByDeviceName", "Ken T.'s iPad")
+                .put("ownerName", "1SAR7")
+                .put("confirmedAtMs", 1_700_000_000_000L)
+                .put("org", "NCSSAR")
+                .put("model", "DJI Mini 4 Pro")
+                .put("mappedId", "1sar7DjMn4Pr")
+                .toString()
+        )
+        val liveClaim = coordinator.claimForRemoteId("DRONE1")
+        assertNotNull(liveClaim)
+        coordinator.onDroneConfirmed(
+            "DRONE1", "NCSSAR", "DJI Mini 4 Pro", "1SAR7", "1sar7DjMn4Pr", liveClaim
+        )
+        val replacement = transport.sentMessages.map { JSONObject(it) }
+            .last { it.optString("type") == "drone_confirmed" && it.optString("remoteId") == "DRONE1" }
+        assertEquals("zone-bravo", replacement.optString("replaceConfirmedBy"))
+        assertEquals(1_700_000_000_000L, replacement.optLong("replaceConfirmedAtMs"))
     }
 
     @Test

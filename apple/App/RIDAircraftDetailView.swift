@@ -669,8 +669,6 @@ struct DroneConfirmationView: View {
     @State private var pairingTask: Task<Void, Never>?
     @State private var savingPairing = false
     @State private var pairingSaveError: String?
-    @State private var claimToReplace: TrackerCoordinationIdentity?
-    @State private var showClaimWarning = false
 
     init(
         remoteID: String,
@@ -787,18 +785,6 @@ struct DroneConfirmationView: View {
                 applyReadinessState()
             }
             .onChange(of: pilotCallsign) { _, _ in matchReportedPilot() }
-            .alert("Drone already claimed", isPresented: $showClaimWarning) {
-                Button("Cancel", role: .cancel) { claimToReplace = nil }
-                Button("Claim ownership") {
-                    guard let claim = claimToReplace, identityStore.peerClaim(for: remoteID) == claim else {
-                        pairingSaveError = "The existing claim changed. Review the current owner and try again."
-                        return
-                    }
-                    beginConfirmation(replacing: claim)
-                }
-            } message: {
-                Text("This drone is already claimed by \(claimToReplace?.ownerName.nonEmptyAircraftSuggestion ?? "Unknown RPIC") on \(claimToReplace?.confirmedByDeviceName.nonEmptyAircraftSuggestion ?? "another device"). Claim it anyway?")
-            }
             .navigationTitle(existingIdentity == nil ? "Add New Drone" : "Drone Ownership")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -821,10 +807,7 @@ struct DroneConfirmationView: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button(pairingOnly ? "Save mapping" : "Mine") {
-                        if !pairingOnly, let claim = identityStore.peerClaim(for: remoteID) {
-                            claimToReplace = claim
-                            showClaimWarning = true
-                        } else { beginConfirmation(replacing: nil) }
+                        beginConfirmation(replacing: pairingOnly ? nil : identityStore.peerClaim(for: remoteID))
                     }
                     .onDisappear { pairingTask?.cancel() }
                     .disabled(savingPairing || (bootstrapDesignator != nil && pilotCallsign.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty))
@@ -880,12 +863,12 @@ struct DroneConfirmationView: View {
                         guard !Task.isCancelled, scope == AppleAircraftOrganizationAccess.scope else { return }
                         if let claim {
                             guard identityStore.peerClaim(for: remoteID) == claim else {
-                                pairingSaveError = "The existing claim changed. Review the current owner and try again."
+                                pairingSaveError = "The existing claim changed. Tap Mine again to take ownership."
                                 return
                             }
                             identityStore.acceptClaimChange(claim)
                         } else if identityStore.peerClaim(for: remoteID) != nil {
-                            pairingSaveError = "Another device claimed this drone. Review its claim before continuing."
+                            pairingSaveError = "Another device claimed this drone. Tap Mine again to take ownership."
                             return
                         }
                         identityStore.confirm(confirmedIdentity, recordUnresolvedPilot: true)

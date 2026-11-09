@@ -916,7 +916,7 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
         if ((currentClaim != null || approvedClaim != null) &&
             (currentClaim == null || approvedClaim == null || currentClaim.guid != approvedClaim.guid ||
                 currentClaim.confirmedAtMs != approvedClaim.confirmedAtMs)) {
-            CaltopoClient.ShowToast("The drone's claim changed. Review the current owner and try again.")
+            CaltopoClient.ShowToast("The drone's claim changed. Tap Mine again to take ownership.")
             return
         }
         val remoteId = current.remoteId.trim()
