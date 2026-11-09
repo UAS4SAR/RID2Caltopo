@@ -1,0 +1,3 @@
+Latest changes:
+- Mine takes ownership without a second prompt when another device already claimed the drone.
+- Live video keeps reading while a recording is saved.
