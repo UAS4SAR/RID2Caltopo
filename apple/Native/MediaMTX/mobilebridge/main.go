@@ -20,11 +20,14 @@ import "C"
 
 import (
 	"bufio"
+	"fmt"
 	"os"
 	"sync"
+	"sync/atomic"
 	"unsafe"
 
 	"github.com/bluenviron/mediamtx/internal/core"
+	"github.com/bluenviron/mediamtx/internal/r2cingress"
 )
 
 var instance struct {
@@ -93,21 +96,49 @@ func R2CMediaMTXStop() {
 func forwardLogLines(reader *os.File) {
 	defer reader.Close()
 
+	// The scanner must keep the stdout pipe empty. A full pipe blocks whichever
+	// MediaMTX goroutine is logging, including the RTMP reader between reads.
+	lines := make(chan string, 256)
+	var dropped atomic.Uint64
+	var reported atomic.Uint64
+	go deliverLogLines(lines, &dropped, &reported)
+
 	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
 	for scanner.Scan() {
-		instance.Lock()
-		callback := instance.logCallback
-		context := instance.logContext
-		instance.Unlock()
-		if callback == nil {
-			continue
+		line := scanner.Text()
+		select {
+		case lines <- line:
+		default:
+			next := dropped.Add(1)
+			r2cingress.NoteLogOverflow(next)
 		}
-
-		line := C.CString(scanner.Text())
-		C.R2CMediaMTXInvokeLogCallback(callback, context, line)
-		C.free(unsafe.Pointer(line))
 	}
+	close(lines)
+}
+
+func deliverLogLines(lines <-chan string, dropped, reported *atomic.Uint64) {
+	for line := range lines {
+		invokeLogLine(line)
+		overflow := dropped.Load()
+		if overflow != reported.Load() {
+			reported.Store(overflow)
+			invokeLogLine(fmt.Sprintf("RTMP log buffer overflow dropped=%d", overflow))
+		}
+	}
+}
+
+func invokeLogLine(line string) {
+	instance.Lock()
+	callback := instance.logCallback
+	context := instance.logContext
+	instance.Unlock()
+	if callback == nil {
+		return
+	}
+	owned := C.CString(line)
+	C.R2CMediaMTXInvokeLogCallback(callback, context, owned)
+	C.free(unsafe.Pointer(owned))
 }
 
 func main() {}

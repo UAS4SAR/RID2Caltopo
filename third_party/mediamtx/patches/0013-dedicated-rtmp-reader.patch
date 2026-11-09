@@ -1,0 +1,891 @@
+diff -ruN a/internal/protocols/rtmp/publish_handoff.go b/internal/protocols/rtmp/publish_handoff.go
+--- a/internal/protocols/rtmp/publish_handoff.go	1969-12-31 16:00:00
++++ b/internal/protocols/rtmp/publish_handoff.go	2026-11-09 08:09:34
+@@ -0,0 +1,215 @@
++package rtmp
++
++import (
++	"sync"
++
++	"github.com/bluenviron/gortsplib/v5/pkg/description"
++	"github.com/bluenviron/gortsplib/v5/pkg/format"
++	"github.com/bluenviron/mediamtx/internal/unit"
++)
++
++// PublishHandoffCapacity is the number of demuxed units the reader may queue
++// before it drops to the next keyframe. The reader never waits for this queue.
++const PublishHandoffCapacity = 96
++
++// PublishHandoff moves demuxed units off the RTMP read goroutine.
++// Submit copies the payload and returns immediately. Run performs stream
++// forwarding, recording, and RTSP fan-out on a different goroutine.
++type PublishHandoff struct {
++	capacity int
++
++	mu       sync.Mutex
++	cond     *sync.Cond
++	queue    []queuedUnit
++	head     int
++	count    int
++	closed   bool
++	dropping bool
++	drops    uint64
++}
++
++type queuedUnit struct {
++	media    *description.Media
++	format   format.Format
++	unit     *unit.Unit
++	keyframe bool
++}
++
++// NewPublishHandoff returns a handoff with a fixed capacity.
++func NewPublishHandoff(capacity int) *PublishHandoff {
++	if capacity < 1 {
++		capacity = 1
++	}
++	h := &PublishHandoff{
++		capacity: capacity,
++		queue:    make([]queuedUnit, capacity),
++	}
++	h.cond = sync.NewCond(&h.mu)
++	return h
++}
++
++// Submit queues one unit without blocking. When the queue is full, units are
++// dropped until the next video keyframe so a decoder is not left mid-GOP.
++func (h *PublishHandoff) Submit(
++	media *description.Media,
++	forma format.Format,
++	u *unit.Unit,
++) {
++	if u == nil {
++		return
++	}
++	cloned := cloneUnit(u)
++	keyframe := unitIsKeyframe(cloned)
++	h.mu.Lock()
++	defer h.mu.Unlock()
++	if h.closed {
++		h.drops++
++		return
++	}
++	if h.dropping && !keyframe {
++		h.drops++
++		return
++	}
++	if h.count >= h.capacity {
++		h.dropping = true
++		h.drops++
++		return
++	}
++	if keyframe {
++		h.dropping = false
++	}
++	index := (h.head + h.count) % h.capacity
++	h.queue[index] = queuedUnit{media: media, format: forma, unit: cloned, keyframe: keyframe}
++	h.count++
++	h.cond.Signal()
++}
++
++// Depth returns the number of units waiting for the downstream goroutine.
++func (h *PublishHandoff) Depth() int {
++	h.mu.Lock()
++	defer h.mu.Unlock()
++	return h.count
++}
++
++// Drops returns how many units were discarded instead of queued.
++func (h *PublishHandoff) Drops() uint64 {
++	h.mu.Lock()
++	defer h.mu.Unlock()
++	return h.drops
++}
++
++// Run calls write for each queued unit until Close.
++func (h *PublishHandoff) Run(write func(media *description.Media, forma format.Format, u *unit.Unit)) {
++	for {
++		h.mu.Lock()
++		for h.count == 0 && !h.closed {
++			h.cond.Wait()
++		}
++		if h.count == 0 && h.closed {
++			h.mu.Unlock()
++			return
++		}
++		item := h.queue[h.head]
++		h.queue[h.head] = queuedUnit{}
++		h.head = (h.head + 1) % h.capacity
++		h.count--
++		h.mu.Unlock()
++		write(item.media, item.format, item.unit)
++	}
++}
++
++// Close unblocks Run after the queued units have been delivered.
++func (h *PublishHandoff) Close() {
++	h.mu.Lock()
++	h.closed = true
++	h.mu.Unlock()
++	h.cond.Broadcast()
++}
++
++func unitIsKeyframe(u *unit.Unit) bool {
++	switch payload := u.Payload.(type) {
++	case unit.PayloadH264:
++		return h264AccessUnitIsKeyframe(payload)
++	case unit.PayloadH265:
++		return h265AccessUnitIsKeyframe(payload)
++	default:
++		// Audio and other payloads are not a video GOP boundary.
++		return false
++	}
++}
++
++func h264AccessUnitIsKeyframe(au [][]byte) bool {
++	for _, nal := range au {
++		if len(nal) > 0 && nal[0]&0x1F == 5 {
++			return true
++		}
++	}
++	return false
++}
++
++func h265AccessUnitIsKeyframe(au [][]byte) bool {
++	for _, nal := range au {
++		if len(nal) == 0 {
++			continue
++		}
++		nalType := (nal[0] >> 1) & 0x3F
++		// BLA, IDR, and CRA pictures.
++		if nalType >= 16 && nalType <= 21 {
++			return true
++		}
++	}
++	return false
++}
++
++func cloneUnit(u *unit.Unit) *unit.Unit {
++	cloned := *u
++	cloned.Payload = clonePayload(u.Payload)
++	return &cloned
++}
++
++func clonePayload(payload unit.Payload) unit.Payload {
++	switch value := payload.(type) {
++	case unit.PayloadH264:
++		return unit.PayloadH264(cloneNALUnits(value))
++	case unit.PayloadH265:
++		return unit.PayloadH265(cloneNALUnits(value))
++	case unit.PayloadAV1:
++		return unit.PayloadAV1(cloneNALUnits(value))
++	case unit.PayloadAC3:
++		return unit.PayloadAC3(cloneNALUnits(value))
++	case unit.PayloadMPEG1Audio:
++		return unit.PayloadMPEG1Audio(cloneNALUnits(value))
++	case unit.PayloadMPEG4Audio:
++		return unit.PayloadMPEG4Audio(cloneNALUnits(value))
++	case unit.PayloadOpus:
++		return unit.PayloadOpus(cloneNALUnits(value))
++	case unit.PayloadG711:
++		return unit.PayloadG711(append([]byte(nil), value...))
++	case unit.PayloadKLV:
++		return unit.PayloadKLV(append([]byte(nil), value...))
++	case unit.PayloadLPCM:
++		return unit.PayloadLPCM(append([]byte(nil), value...))
++	case unit.PayloadMJPEG:
++		return unit.PayloadMJPEG(append([]byte(nil), value...))
++	case unit.PayloadMPEG1Video:
++		return unit.PayloadMPEG1Video(append([]byte(nil), value...))
++	case unit.PayloadMPEG4AudioLATM:
++		return unit.PayloadMPEG4AudioLATM(append([]byte(nil), value...))
++	case unit.PayloadMPEG4Video:
++		return unit.PayloadMPEG4Video(append([]byte(nil), value...))
++	case unit.PayloadVP8:
++		return unit.PayloadVP8(append([]byte(nil), value...))
++	case unit.PayloadVP9:
++		return unit.PayloadVP9(append([]byte(nil), value...))
++	default:
++		return payload
++	}
++}
++
++func cloneNALUnits(units [][]byte) [][]byte {
++	cloned := make([][]byte, len(units))
++	for i, nal := range units {
++		cloned[i] = append([]byte(nil), nal...)
++	}
++	return cloned
++}
+diff -ruN a/internal/protocols/rtmp/publish_handoff_test.go b/internal/protocols/rtmp/publish_handoff_test.go
+--- a/internal/protocols/rtmp/publish_handoff_test.go	1969-12-31 16:00:00
++++ b/internal/protocols/rtmp/publish_handoff_test.go	2026-11-09 08:09:34
+@@ -0,0 +1,122 @@
++package rtmp
++
++import (
++	"sync"
++	"testing"
++	"time"
++
++	"github.com/bluenviron/gortsplib/v5/pkg/description"
++	"github.com/bluenviron/gortsplib/v5/pkg/format"
++	"github.com/bluenviron/mediamtx/internal/unit"
++	"github.com/stretchr/testify/require"
++)
++
++func h264Unit(keyframe bool, marker byte) *unit.Unit {
++	nalType := byte(1)
++	if keyframe {
++		nalType = 5
++	}
++	return &unit.Unit{
++		PTS:     1,
++		Payload: unit.PayloadH264{[]byte{nalType, marker}},
++	}
++}
++
++func TestPublishHandoffDoesNotBlockWhenDownstreamIsSlow(t *testing.T) {
++	handoff := NewPublishHandoff(4)
++	started := make(chan struct{})
++	var once sync.Once
++	release := make(chan struct{})
++	go handoff.Run(func(_ *description.Media, _ format.Format, _ *unit.Unit) {
++		once.Do(func() { close(started) })
++		<-release
++	})
++
++	handoff.Submit(nil, nil, h264Unit(true, 1))
++	select {
++	case <-started:
++	case <-time.After(time.Second):
++		t.Fatal("downstream did not start")
++	}
++
++	began := time.Now()
++	for i := 0; i < 200; i++ {
++		handoff.Submit(nil, nil, h264Unit(i%20 == 0, byte(i)))
++	}
++	elapsed := time.Since(began)
++	require.Less(t, elapsed, 200*time.Millisecond)
++	require.Greater(t, handoff.Drops(), uint64(0))
++
++	close(release)
++	handoff.Close()
++}
++
++func TestPublishHandoffDropsUntilNextKeyframe(t *testing.T) {
++	handoff := NewPublishHandoff(1)
++	var mu sync.Mutex
++	var received []byte
++	started := make(chan struct{})
++	var once sync.Once
++	hold := make(chan struct{})
++	go handoff.Run(func(_ *description.Media, _ format.Format, u *unit.Unit) {
++		payload := u.Payload.(unit.PayloadH264)
++		mu.Lock()
++		received = append(received, payload[0][1])
++		mu.Unlock()
++		once.Do(func() { close(started) })
++		if payload[0][1] == 1 {
++			<-hold
++		}
++	})
++
++	handoff.Submit(nil, nil, h264Unit(true, 1))
++	<-started
++	handoff.Submit(nil, nil, h264Unit(false, 2))
++	handoff.Submit(nil, nil, h264Unit(false, 3))
++	handoff.Submit(nil, nil, h264Unit(true, 4))
++	require.GreaterOrEqual(t, handoff.Drops(), uint64(2))
++	close(hold)
++	require.Eventually(t, func() bool { return handoff.Depth() == 0 }, time.Second, 10*time.Millisecond)
++
++	handoff.Submit(nil, nil, h264Unit(false, 6))
++	handoff.Submit(nil, nil, h264Unit(true, 5))
++	require.Eventually(t, func() bool {
++		mu.Lock()
++		defer mu.Unlock()
++		for _, marker := range received {
++			if marker == 5 {
++				return true
++			}
++		}
++		return false
++	}, time.Second, 10*time.Millisecond)
++	mu.Lock()
++	for _, marker := range received {
++		require.NotEqual(t, byte(3), marker)
++		require.NotEqual(t, byte(4), marker)
++		require.NotEqual(t, byte(6), marker)
++	}
++	mu.Unlock()
++	handoff.Close()
++}
++
++func TestPublishHandoffCopiesPayloadBeforeReuse(t *testing.T) {
++	handoff := NewPublishHandoff(2)
++	got := make(chan []byte, 1)
++	go handoff.Run(func(_ *description.Media, _ format.Format, u *unit.Unit) {
++		payload := u.Payload.(unit.PayloadH264)
++		got <- append([]byte(nil), payload[0]...)
++	})
++
++	source := []byte{5, 9, 9}
++	handoff.Submit(nil, nil, &unit.Unit{Payload: unit.PayloadH264{source}})
++	source[1] = 1
++
++	select {
++	case copied := <-got:
++		require.Equal(t, []byte{5, 9, 9}, copied)
++	case <-time.After(time.Second):
++		t.Fatal("unit was not delivered")
++	}
++	handoff.Close()
++}
+diff -ruN a/internal/protocols/rtmp/to_stream.go b/internal/protocols/rtmp/to_stream.go
+--- a/internal/protocols/rtmp/to_stream.go	2026-11-09 08:09:34
++++ b/internal/protocols/rtmp/to_stream.go	2026-11-09 08:09:34
+@@ -31,12 +31,33 @@
+ 	return string([]byte{byte(c >> 24), byte(c >> 16), byte(c >> 8), byte(c)})
+ }
+ 
++// emitUnit records that a media unit was demuxed, then either queues it for
++// the downstream goroutine or writes it directly when no handoff is in use.
++func emitUnit(
++	handoff *PublishHandoff,
++	subStream **stream.SubStream,
++	medi *description.Media,
++	forma format.Format,
++	onData func(),
++	u *unit.Unit,
++) {
++	if onData != nil {
++		onData()
++	}
++	if handoff != nil {
++		handoff.Submit(medi, forma, u)
++		return
++	}
++	(*subStream).WriteUnit(medi, forma, u)
++}
++
+ // ToStream maps a RTMP stream to a MediaMTX stream.
+ func ToStream(
+ 	r *gortmplib.Reader,
+ 	subStream **stream.SubStream,
+ 	onData func(),
+ 	videoOnly bool,
++	handoff *PublishHandoff,
+ ) ([]*description.Media, error) {
+ 	var medias []*description.Media
+ 
+@@ -53,10 +74,7 @@
+ 			medias = append(medias, medi)
+ 
+ 			r.OnDataAV1(track, func(pts time.Duration, tu [][]byte) {
+-				if onData != nil {
+-					onData()
+-				}
+-				(*subStream).WriteUnit(medi, forma, &unit.Unit{
++				emitUnit(handoff, subStream, medi, forma, onData, &unit.Unit{
+ 					PTS:     durationToTimestamp(pts, forma.ClockRate()),
+ 					Payload: unit.PayloadAV1(tu),
+ 				})
+@@ -73,10 +91,7 @@
+ 			medias = append(medias, medi)
+ 
+ 			r.OnDataVP9(track, func(pts time.Duration, frame []byte) {
+-				if onData != nil {
+-					onData()
+-				}
+-				(*subStream).WriteUnit(medi, forma, &unit.Unit{
++				emitUnit(handoff, subStream, medi, forma, onData, &unit.Unit{
+ 					PTS:     durationToTimestamp(pts, forma.ClockRate()),
+ 					Payload: unit.PayloadVP9(frame),
+ 				})
+@@ -96,10 +111,7 @@
+ 			medias = append(medias, medi)
+ 
+ 			r.OnDataH265(track, func(pts time.Duration, _ time.Duration, au [][]byte) {
+-				if onData != nil {
+-					onData()
+-				}
+-				(*subStream).WriteUnit(medi, forma, &unit.Unit{
++				emitUnit(handoff, subStream, medi, forma, onData, &unit.Unit{
+ 					PTS:     durationToTimestamp(pts, forma.ClockRate()),
+ 					Payload: unit.PayloadH265(au),
+ 				})
+@@ -119,10 +131,7 @@
+ 			medias = append(medias, medi)
+ 
+ 			r.OnDataH264(track, func(pts time.Duration, _ time.Duration, au [][]byte) {
+-				if onData != nil {
+-					onData()
+-				}
+-				(*subStream).WriteUnit(medi, forma, &unit.Unit{
++				emitUnit(handoff, subStream, medi, forma, onData, &unit.Unit{
+ 					PTS:     durationToTimestamp(pts, forma.ClockRate()),
+ 					Payload: unit.PayloadH264(au),
+ 				})
+@@ -144,10 +153,7 @@
+ 			medias = append(medias, medi)
+ 
+ 			r.OnDataOpus(track, func(pts time.Duration, packet []byte) {
+-				if onData != nil {
+-					onData()
+-				}
+-				(*subStream).WriteUnit(medi, forma, &unit.Unit{
++				emitUnit(handoff, subStream, medi, forma, onData, &unit.Unit{
+ 					PTS:     durationToTimestamp(pts, forma.ClockRate()),
+ 					Payload: unit.PayloadOpus{packet},
+ 				})
+@@ -172,10 +178,7 @@
+ 			medias = append(medias, medi)
+ 
+ 			r.OnDataMPEG4Audio(track, func(pts time.Duration, au []byte) {
+-				if onData != nil {
+-					onData()
+-				}
+-				(*subStream).WriteUnit(medi, forma, &unit.Unit{
++				emitUnit(handoff, subStream, medi, forma, onData, &unit.Unit{
+ 					PTS:     durationToTimestamp(pts, forma.ClockRate()),
+ 					Payload: unit.PayloadMPEG4Audio{au},
+ 				})
+@@ -194,10 +197,7 @@
+ 			medias = append(medias, medi)
+ 
+ 			r.OnDataMPEG1Audio(track, func(pts time.Duration, frame []byte) {
+-				if onData != nil {
+-					onData()
+-				}
+-				(*subStream).WriteUnit(medi, forma, &unit.Unit{
++				emitUnit(handoff, subStream, medi, forma, onData, &unit.Unit{
+ 					PTS:     durationToTimestamp(pts, forma.ClockRate()),
+ 					Payload: unit.PayloadMPEG1Audio{frame},
+ 				})
+@@ -220,10 +220,7 @@
+ 			medias = append(medias, medi)
+ 
+ 			r.OnDataAC3(track, func(pts time.Duration, frame []byte) {
+-				if onData != nil {
+-					onData()
+-				}
+-				(*subStream).WriteUnit(medi, forma, &unit.Unit{
++				emitUnit(handoff, subStream, medi, forma, onData, &unit.Unit{
+ 					PTS:     durationToTimestamp(pts, forma.ClockRate()),
+ 					Payload: unit.PayloadAC3{frame},
+ 				})
+@@ -256,10 +253,7 @@
+ 			medias = append(medias, medi)
+ 
+ 			r.OnDataG711(track, func(pts time.Duration, samples []byte) {
+-				if onData != nil {
+-					onData()
+-				}
+-				(*subStream).WriteUnit(medi, forma, &unit.Unit{
++				emitUnit(handoff, subStream, medi, forma, onData, &unit.Unit{
+ 					PTS:     durationToTimestamp(pts, forma.ClockRate()),
+ 					Payload: unit.PayloadG711(samples),
+ 				})
+@@ -283,10 +277,7 @@
+ 			medias = append(medias, medi)
+ 
+ 			r.OnDataLPCM(track, func(pts time.Duration, samples []byte) {
+-				if onData != nil {
+-					onData()
+-				}
+-				(*subStream).WriteUnit(medi, forma, &unit.Unit{
++				emitUnit(handoff, subStream, medi, forma, onData, &unit.Unit{
+ 					PTS:     durationToTimestamp(pts, forma.ClockRate()),
+ 					Payload: unit.PayloadLPCM(samples),
+ 				})
+diff -ruN a/internal/protocols/rtmp/to_stream_test.go b/internal/protocols/rtmp/to_stream_test.go
+--- a/internal/protocols/rtmp/to_stream_test.go	2026-11-09 08:09:34
++++ b/internal/protocols/rtmp/to_stream_test.go	2026-11-09 08:09:34
+@@ -10,7 +10,7 @@
+ func TestToStreamNoSupportedCodecs(t *testing.T) {
+ 	r := &gortmplib.Reader{}
+ 
+-	_, err := ToStream(r, nil, nil, false)
++	_, err := ToStream(r, nil, nil, false, nil)
+ 	require.Equal(t, errNoSupportedCodecsTo, err)
+ }
+ 
+diff -ruN a/internal/r2cingress/diag.go b/internal/r2cingress/diag.go
+--- a/internal/r2cingress/diag.go	1969-12-31 16:00:00
++++ b/internal/r2cingress/diag.go	2026-11-09 08:09:34
+@@ -0,0 +1,33 @@
++// Package r2cingress shares reader diagnostics between the RTMP read loop,
++// the recorder, and the iOS log bridge. Counters are process-wide and atomic.
++package r2cingress
++
++import "sync/atomic"
++
++// LogOverflow is the number of MediaMTX log lines dropped by the iOS bridge
++// because the Swift callback fell behind. The Android process does not use
++// that bridge, so this stays zero there.
++var LogOverflow atomic.Uint64
++
++// driftActive is set while a recorder timestamp-drift reset is outstanding.
++var driftActive atomic.Bool
++
++// NoteLogOverflow records the cumulative number of dropped log lines.
++func NoteLogOverflow(dropped uint64) {
++	LogOverflow.Store(dropped)
++}
++
++// NoteDriftReset marks a recorder drift reset as in progress.
++func NoteDriftReset() {
++	driftActive.Store(true)
++}
++
++// ClearDriftReset marks the recorder as past the drift reset.
++func ClearDriftReset() {
++	driftActive.Store(false)
++}
++
++// DriftResetInProgress reports whether a drift reset has not finished.
++func DriftResetInProgress() bool {
++	return driftActive.Load()
++}
+diff -ruN a/internal/recorder/format_fmp4_track.go b/internal/recorder/format_fmp4_track.go
+--- a/internal/recorder/format_fmp4_track.go	2026-11-09 08:09:34
++++ b/internal/recorder/format_fmp4_track.go	2026-11-09 08:09:34
+@@ -7,6 +7,7 @@
+ 	"github.com/bluenviron/mediacommon/v2/pkg/formats/fmp4"
+ 	mcodecs "github.com/bluenviron/mediacommon/v2/pkg/formats/mp4/codecs"
+ 	"github.com/bluenviron/mediamtx/internal/logger"
++	"github.com/bluenviron/mediamtx/internal/r2cingress"
+ )
+ 
+ const (
+@@ -92,6 +93,7 @@
+ 	} else {
+ 		drift := sample.ntp.Sub(t.startNTP) - (dts - t.startDTS)
+ 		if drift < -ntpDriftTolerance || drift > ntpDriftTolerance {
++			r2cingress.NoteDriftReset()
+ 			return fmt.Errorf("detected drift between recording duration and absolute time, resetting")
+ 		}
+ 	}
+diff -ruN a/internal/recorder/format_mpegts_track.go b/internal/recorder/format_mpegts_track.go
+--- a/internal/recorder/format_mpegts_track.go	2026-11-09 08:09:34
++++ b/internal/recorder/format_mpegts_track.go	2026-11-09 08:09:34
+@@ -6,6 +6,7 @@
+ 
+ 	"github.com/bluenviron/mediacommon/v2/pkg/formats/mpegts"
+ 	tscodecs "github.com/bluenviron/mediacommon/v2/pkg/formats/mpegts/codecs"
++	"github.com/bluenviron/mediamtx/internal/r2cingress"
+ )
+ 
+ type formatMPEGTSTrack struct {
+@@ -43,6 +44,7 @@
+ 	} else {
+ 		drift := ntp.Sub(t.startNTP) - (dts - t.startDTS)
+ 		if drift < -ntpDriftTolerance || drift > ntpDriftTolerance {
++			r2cingress.NoteDriftReset()
+ 			return fmt.Errorf("detected drift between recording duration and absolute time, resetting")
+ 		}
+ 	}
+diff -ruN a/internal/recorder/recorder.go b/internal/recorder/recorder.go
+--- a/internal/recorder/recorder.go	2026-11-09 08:09:34
++++ b/internal/recorder/recorder.go	2026-11-09 08:09:34
+@@ -6,6 +6,7 @@
+ 
+ 	"github.com/bluenviron/mediamtx/internal/conf"
+ 	"github.com/bluenviron/mediamtx/internal/logger"
++	"github.com/bluenviron/mediamtx/internal/r2cingress"
+ 	"github.com/bluenviron/mediamtx/internal/stream"
+ )
+ 
+@@ -70,6 +71,7 @@
+ 		parent:            r,
+ 	}
+ 	r.currentInstance.initialize()
++	r2cingress.ClearDriftReset()
+ 
+ 	go r.run()
+ }
+@@ -117,5 +119,6 @@
+ 			parent:            r,
+ 		}
+ 		r.currentInstance.initialize()
++		r2cingress.ClearDriftReset()
+ 	}
+ }
+diff -ruN a/internal/servers/rtmp/conn.go b/internal/servers/rtmp/conn.go
+--- a/internal/servers/rtmp/conn.go	2026-11-09 08:09:34
++++ b/internal/servers/rtmp/conn.go	2026-11-09 08:09:34
+@@ -14,6 +14,7 @@
+ 	"github.com/bluenviron/gortmplib"
+ 	gortmplibmessage "github.com/bluenviron/gortmplib/pkg/message"
+ 	"github.com/bluenviron/gortsplib/v5/pkg/description"
++	"github.com/bluenviron/gortsplib/v5/pkg/format"
+ 	"github.com/google/uuid"
+ 
+ 	"github.com/bluenviron/mediamtx/internal/auth"
+@@ -23,7 +24,9 @@
+ 	"github.com/bluenviron/mediamtx/internal/hooks"
+ 	"github.com/bluenviron/mediamtx/internal/logger"
+ 	"github.com/bluenviron/mediamtx/internal/protocols/rtmp"
++	"github.com/bluenviron/mediamtx/internal/r2cingress"
+ 	"github.com/bluenviron/mediamtx/internal/stream"
++	"github.com/bluenviron/mediamtx/internal/unit"
+ )
+ 
+ const (
+@@ -346,6 +349,7 @@
+ 		pathName, time.Since(readerInitStart), len(r.Tracks()), pathConf.RTMPPublishVideoOnly)
+ 
+ 	var subStream *stream.SubStream
++	handoff := rtmp.NewPublishHandoff(rtmp.PublishHandoffCapacity)
+ 
+ 	c.Log(logger.Debug, "RTMP publish: mapping tracks to stream for path '%s'", pathName)
+ 	var lastMediaUnixNano int64
+@@ -369,7 +373,7 @@
+ 			maxMediaGap = max(maxMediaGap, mediaGap)
+ 		}
+ 		previousMediaAt = mediaAt
+-	}, pathConf.RTMPPublishVideoOnly)
++	}, pathConf.RTMPPublishVideoOnly, handoff)
+ 	if err != nil {
+ 		c.Log(logger.Debug, "RTMP publish failed during track mapping for path '%s': %v", pathName, err)
+ 		return err
+@@ -410,6 +414,18 @@
+ 
+ 	defer path.RemovePublisher(defs.PathRemovePublisherReq{Author: c})
+ 
++	handoffDone := make(chan struct{})
++	go func() {
++		defer close(handoffDone)
++		handoff.Run(func(medi *description.Media, forma format.Format, u *unit.Unit) {
++			subStream.WriteUnit(medi, forma, u)
++		})
++	}()
++	defer func() {
++		handoff.Close()
++		<-handoffDone
++	}()
++
+ 	c.mutex.Lock()
+ 	c.state = defs.APIRTMPConnStatePublish
+ 	c.pathName = pathName
+@@ -539,9 +555,15 @@
+ 		defer close(inactivityDone)
+ 	}
+ 
++	// Pin the publisher read to one OS thread. Downstream forwarding, recording,
++	// and RTSP fan-out run on handoff's goroutine and cannot use this thread.
++	runtime.LockOSThread()
++	defer runtime.UnlockOSThread()
++
+ 	for {
+ 		c.nconn.SetReadDeadline(time.Now().Add(time.Duration(c.readTimeout)))
+ 		socketBefore := c.socketTiming.readTime
++		queuedBefore := socketPendingBytes(c.nconn)
+ 		readStarted := time.Now()
+ 		mediaAt = time.Time{}
+ 		mediaGap = 0
+@@ -561,17 +583,30 @@
+ 			maxBeforeMedia = max(maxBeforeMedia, beforeMedia)
+ 			maxAfterMedia = max(maxAfterMedia, afterMedia)
+ 		}
++		if readElapsed >= 200*time.Millisecond {
++			c.Log(logger.Info,
++				"RTMP read stall path=%s readMs=%d fionread=%d queueDepth=%d drops=%d logOverflow=%d driftReset=%t",
++				pathName,
++				readElapsed.Milliseconds(),
++				queuedBefore,
++				handoff.Depth(),
++				handoff.Drops(),
++				r2cingress.LogOverflow.Load(),
++				r2cingress.DriftResetInProgress(),
++			)
++		}
+ 		window := readEnded.Sub(lastTimingLog)
+ 		slow := readElapsed >= 500*time.Millisecond || mediaGap >= 500*time.Millisecond || afterMedia >= 100*time.Millisecond
+ 		if window >= 60*time.Second || (slow && window >= 5*time.Second) || err != nil {
+-			// beforeMedia includes socket wait AND RTMP parsing; afterMedia includes
+-			// synchronous stream forwarding, not asynchronous RTSP socket delivery.
+-			c.Log(logger.Info, "RTMP timing path=%s wallMs=%d windowMs=%d reads=%d mediaUnits=%d readMs=%d beforeMediaMs=%d afterMediaMs=%d mediaGapMs=%d maxReadMs=%d maxBeforeMediaMs=%d maxAfterMediaMs=%d maxMediaGapMs=%d ended=%t socketWaitMs=%d nonSocketMs=%d maxSocketWaitMs=%d maxNonSocketMs=%d socketReads=%d socketBytes=%d maxSocketReadMs=%d",
++			// beforeMedia includes socket wait AND RTMP parsing; afterMedia is only
++			// the non-blocking handoff. Recording and RTSP fan-out run elsewhere.
++			c.Log(logger.Info, "RTMP timing path=%s wallMs=%d windowMs=%d reads=%d mediaUnits=%d readMs=%d beforeMediaMs=%d afterMediaMs=%d mediaGapMs=%d maxReadMs=%d maxBeforeMediaMs=%d maxAfterMediaMs=%d maxMediaGapMs=%d ended=%t socketWaitMs=%d nonSocketMs=%d maxSocketWaitMs=%d maxNonSocketMs=%d socketReads=%d socketBytes=%d maxSocketReadMs=%d queueDepth=%d drops=%d",
+ 				pathName, readEnded.UnixMilli(), window.Milliseconds(), readCalls, mediaCount,
+ 				readElapsed.Milliseconds(), beforeMedia.Milliseconds(), afterMedia.Milliseconds(), mediaGap.Milliseconds(),
+ 				maxRead.Milliseconds(), maxBeforeMedia.Milliseconds(), maxAfterMedia.Milliseconds(), maxMediaGap.Milliseconds(), err != nil,
+ 				socketWait.Milliseconds(), nonSocket.Milliseconds(), maxSocketWait.Milliseconds(), maxNonSocket.Milliseconds(),
+-				c.socketTiming.reads, c.socketTiming.bytes, c.socketTiming.maxRead.Milliseconds())
++				c.socketTiming.reads, c.socketTiming.bytes, c.socketTiming.maxRead.Milliseconds(),
++				handoff.Depth(), handoff.Drops())
+ 			c.socketTiming.readTime, c.socketTiming.maxRead = 0, 0
+ 			c.socketTiming.reads, c.socketTiming.bytes = 0, 0
+ 			maxSocketWait, maxNonSocket = 0, 0
+--- a/internal/servers/rtmp/server_test.go	2026-11-09 08:11:32
++++ b/internal/servers/rtmp/server_test.go	2026-11-09 08:11:46
+@@ -463,3 +463,82 @@
+ 		})
+ 	}
+ }
++
++func TestServerPublishContinuesWhileDownstreamIsSlow(t *testing.T) {
++	pathManager := &test.PathManager{
++		FindPathConfImpl: func(req defs.PathFindPathConfReq) (*conf.Path, error) {
++			return &conf.Path{RTMPPublishVideoOnly: true}, nil
++		},
++		AddPublisherImpl: func(req defs.PathAddPublisherReq) (defs.Path, *stream.SubStream, error) {
++			strm := &stream.Stream{
++				Desc:              req.Desc,
++				WriteQueueSize:    512,
++				RTPMaxPayloadSize: 1450,
++				Parent:            test.NilLogger,
++			}
++			require.NoError(t, strm.Initialize())
++			subStream := &stream.SubStream{Stream: strm, UseRTPPackets: false}
++			require.NoError(t, subStream.Initialize())
++
++			reader := &stream.Reader{Parent: test.NilLogger}
++			reader.OnData(strm.Desc.Medias[0], strm.Desc.Medias[0].Formats[0], func(u *unit.Unit) error {
++				time.Sleep(40 * time.Millisecond)
++				return nil
++			})
++			strm.AddReader(reader)
++			return &dummyPath{}, subStream, nil
++		},
++	}
++
++	server := &Server{
++		Address:         "127.0.0.1:1945",
++		ReadTimeout:     conf.Duration(10 * time.Second),
++		WriteTimeout:    conf.Duration(10 * time.Second),
++		ExternalCmdPool: &externalcmd.Pool{},
++		PathManager:     pathManager,
++		Parent:          test.NilLogger,
++	}
++	require.NoError(t, server.Initialize())
++	defer server.Close()
++
++	target, err := url.Parse("rtmp://127.0.0.1:1945/slow")
++	require.NoError(t, err)
++	conn := &gortmplib.Client{URL: target, Publish: true}
++	require.NoError(t, conn.Initialize(context.Background()))
++	defer conn.Close()
++
++	writer := &gortmplib.Writer{
++		Conn: conn,
++		Tracks: []*gortmplib.Track{{
++			Codec: &codecs.H264{SPS: test.FormatH264.SPS, PPS: test.FormatH264.PPS},
++		}},
++	}
++	require.NoError(t, writer.Initialize())
++
++	payload := make([]byte, 64*1024)
++	payload[0] = 5
++	finished := make(chan error, 1)
++	go func() {
++		for i := 0; i < 24; i++ {
++			payload[1] = byte(i)
++			writeErr := writer.WriteH264(
++				writer.Tracks[0],
++				time.Duration(i)*time.Millisecond,
++				time.Duration(i)*time.Millisecond,
++				[][]byte{payload},
++			)
++			if writeErr != nil {
++				finished <- writeErr
++				return
++			}
++		}
++		finished <- nil
++	}()
++
++	select {
++	case err = <-finished:
++		require.NoError(t, err)
++	case <-time.After(2 * time.Second):
++		t.Fatal("publisher blocked while downstream was slow")
++	}
++}
+diff -ruN a/internal/servers/rtmp/socket_pending_darwin.go b/internal/servers/rtmp/socket_pending_darwin.go
+--- a/internal/servers/rtmp/socket_pending_darwin.go	1969-12-31 16:00:00
++++ b/internal/servers/rtmp/socket_pending_darwin.go	2026-11-09 08:09:34
+@@ -0,0 +1,6 @@
++//go:build darwin
++
++package rtmp
++
++// FIONREAD on Darwin: _IOR('f', 127, int).
++const fionreadRequest = 0x4004667f
+diff -ruN a/internal/servers/rtmp/socket_pending_linux.go b/internal/servers/rtmp/socket_pending_linux.go
+--- a/internal/servers/rtmp/socket_pending_linux.go	1969-12-31 16:00:00
++++ b/internal/servers/rtmp/socket_pending_linux.go	2026-11-09 08:09:34
+@@ -0,0 +1,6 @@
++//go:build linux
++
++package rtmp
++
++// FIONREAD on Linux.
++const fionreadRequest = 0x541b
+diff -ruN a/internal/servers/rtmp/socket_pending_other.go b/internal/servers/rtmp/socket_pending_other.go
+--- a/internal/servers/rtmp/socket_pending_other.go	1969-12-31 16:00:00
++++ b/internal/servers/rtmp/socket_pending_other.go	2026-11-09 08:09:34
+@@ -0,0 +1,9 @@
++//go:build !darwin && !linux
++
++package rtmp
++
++import "net"
++
++func socketPendingBytes(conn net.Conn) int {
++	return -1
++}
+diff -ruN a/internal/servers/rtmp/socket_pending_unix.go b/internal/servers/rtmp/socket_pending_unix.go
+--- a/internal/servers/rtmp/socket_pending_unix.go	1969-12-31 16:00:00
++++ b/internal/servers/rtmp/socket_pending_unix.go	2026-11-09 08:09:34
+@@ -0,0 +1,34 @@
++//go:build darwin || linux
++
++package rtmp
++
++import (
++	"net"
++	"syscall"
++	"unsafe"
++)
++
++func socketPendingBytes(conn net.Conn) int {
++	sysConn, ok := conn.(syscall.Conn)
++	if !ok {
++		return -1
++	}
++	raw, err := sysConn.SyscallConn()
++	if err != nil {
++		return -1
++	}
++	pending := -1
++	_ = raw.Control(func(fd uintptr) {
++		var waiting int
++		_, _, errno := syscall.Syscall(
++			syscall.SYS_IOCTL,
++			fd,
++			uintptr(fionreadRequest),
++			uintptr(unsafe.Pointer(&waiting)),
++		)
++		if errno == 0 {
++			pending = waiting
++		}
++	})
++	return pending
++}
+diff -ruN a/internal/staticsources/rtmp/source.go b/internal/staticsources/rtmp/source.go
+--- a/internal/staticsources/rtmp/source.go	2026-11-09 08:09:34
++++ b/internal/staticsources/rtmp/source.go	2026-11-09 08:09:34
+@@ -116,7 +116,7 @@
+ 
+ 	var subStream *stream.SubStream
+ 
+-	medias, err := rtmp.ToStream(r, &subStream, nil, false)
++	medias, err := rtmp.ToStream(r, &subStream, nil, false, nil)
+ 	if err != nil {
+ 		return err
+ 	}
