@@ -324,6 +324,20 @@ public actor RidTrackStore {
         tracksByAircraftID.removeValue(forKey: Self.canonicalAircraftID(aircraftID))
     }
 
+    /// Drops points from before the lease grant. Nothing is written for them.
+    /// A later call with the same grant leaves the remaining flight in place.
+    public func trimShadow(aircraftID: String, ownershipGrantedAt: Date) {
+        let key = Self.canonicalAircraftID(aircraftID)
+        guard let track = tracksByAircraftID[key] else { return }
+        if track.flightStartedAt >= ownershipGrantedAt { return }
+        let kept = track.points.filter { $0.receivedAt >= ownershipGrantedAt }
+        guard let first = kept.first else {
+            tracksByAircraftID.removeValue(forKey: key)
+            return
+        }
+        tracksByAircraftID[key] = track.withStart(first.receivedAt, points: kept)
+    }
+
     /// Points received before the lease was granted stay on the shadow track.
     /// The track that remains, if any, starts at or after that grant.
     public func closeShadow(aircraftID: String, ownershipGrantedAt: Date) -> ShadowSplit {

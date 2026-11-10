@@ -435,25 +435,23 @@ class WaypointTrackTest {
             confirmTeamDrone("RIDSHADOW1", "NCSSAR")
             drone.setCurrentFlightConfirmed(true)
 
-            val shadow = WaypointTrack.detachShadow(drone)
-            assertTrue(shadow != null)
-            shadow!!.prepareForArchive()
-            assertFalse(authorized(shadow))
-            assertEquals("unconfirmed", decision(shadow))
-            assertEquals(shadowAt, firstTimestamp(shadow))
-
+            val label = drone.trackLabel()
+            WaypointTrack.omitShadowPointsBeforeGrant(drone, grantedAt)
             peer.setLocalOwnership(drone.remoteId, true)
             assertTrue(drone.checkNewWaypoint(
                 39.153200, -121.132200, 102.0, grantedAt + 1_000L, grantedAt + 1_000L,
                 true, CtDroneSpec.TransportTypeEnum.BT4))
+            assertEquals(label, drone.trackLabel())
             WaypointTrack.AddWaypointForTrack(drone, 39.153200, -121.132200, 102L, grantedAt + 1_000L)
-            assertTrue(WaypointTrack.detachShadow(drone) == null)
+            WaypointTrack.omitShadowPointsBeforeGrant(drone, grantedAt + 120_000L)
             val owned = trackFor(drone)
             owned.prepareForArchive()
             assertTrue(authorized(owned))
             val ownedStart = firstTimestamp(owned)
             assertTrue(ownedStart >= grantedAt)
             assertTrue(ownedStart > shadowAt + 60_000L)
+            assertEquals(1, owned.geoJson!!.getJSONArray("features").getJSONObject(0)
+                .getJSONObject("geometry").getJSONArray("coordinates").length())
         } finally {
             R2cRuntimeRegistry.resetDefaultRuntimeForTesting()
         }

@@ -42,22 +42,16 @@ import Testing
     _ = await store.ingest(handoffObservation(aircraft: aircraft, at: shadowAt.addingTimeInterval(60), latitude: 39.7400))
     _ = await store.ingest(handoffObservation(aircraft: aircraft, at: grantedAt.addingTimeInterval(1), latitude: 39.7500))
 
-    let split = await store.closeShadow(aircraftID: aircraft, ownershipGrantedAt: grantedAt)
-    #expect(split.shadow?.points.count == 2)
-    #expect(split.shadow?.flightStartedAt == shadowAt)
-    #expect(split.shadow?.points.allSatisfy { $0.receivedAt < grantedAt } == true)
-    #expect(split.owned?.points.count == 1)
-    #expect(split.owned?.flightStartedAt == grantedAt.addingTimeInterval(1))
-    #expect(split.owned?.points.allSatisfy { $0.receivedAt >= grantedAt } == true)
-
+    await store.trimShadow(aircraftID: aircraft, ownershipGrantedAt: grantedAt)
     let kept = await store.track(aircraftID: aircraft)
+    #expect(kept?.points.count == 1)
     #expect(kept?.flightStartedAt == grantedAt.addingTimeInterval(1))
     #expect(kept?.points.contains { $0.receivedAt < grantedAt } == false)
 
-    let again = await store.closeShadow(aircraftID: aircraft, ownershipGrantedAt: grantedAt)
-    #expect(again.shadow == nil)
-    #expect(again.owned?.points.count == 1)
-    #expect(again.owned?.flightStartedAt == grantedAt.addingTimeInterval(1))
+    await store.trimShadow(aircraftID: aircraft, ownershipGrantedAt: grantedAt)
+    let again = await store.track(aircraftID: aircraft)
+    #expect(again?.points.count == 1)
+    #expect(again?.flightStartedAt == grantedAt.addingTimeInterval(1))
 }
 
 private func handoffObservation(aircraft: String, at: Date, latitude: Double = 39.7392) -> RidObservation {

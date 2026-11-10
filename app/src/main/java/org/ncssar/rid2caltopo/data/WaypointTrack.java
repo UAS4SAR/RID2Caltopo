@@ -520,11 +520,79 @@ public class WaypointTrack {
         return track;
     }
 
+    /**
+     * Drops points recorded while another tablet held the lease. The track, its label,
+     * and its local record stay; nothing is written for the dropped points.
+     */
+    static boolean omitShadowPointsBeforeGrant(@NonNull CtDroneSpec spec, long grantedAtMs) {
+        String label = spec.trackLabel();
+        if (label == null || label.isEmpty()) return false;
+        WaypointTrack track = TrackMap.get(label);
+        if (track == null) return false;
+        synchronized (track) {
+            if (!track.recordedAsShadow) return false;
+            track.dropPointsBeforeLocked(grantedAtMs);
+            track.recordedAsShadow = false;
+        }
+        WaypointTrackJournal.discardUnfinished(track.deferredPublicationId);
+        return true;
+    }
+
     /** Call before {@link #prepareForArchive()} when a takeover closes a segment this tablet owned. */
     static void markClosedAsPriorOwner(@Nullable String trackLabel) {
         if (trackLabel == null || trackLabel.isEmpty()) return;
         WaypointTrack track = TrackMap.get(trackLabel);
         if (track != null) track.closedAsPriorOwner = true;
+    }
+
+    private static long coordinateTimestamp(@Nullable JSONArray point) {
+        if (point == null || point.length() < 4) return 0L;
+        Object value = point.opt(3);
+        if (value instanceof Number) return ((Number) value).longValue();
+        if (value == null) return 0L;
+        try {
+            return Long.parseLong(String.valueOf(value));
+        } catch (NumberFormatException ignored) {
+            return 0L;
+        }
+    }
+
+    private void dropPointsBeforeLocked(long grantedAtMs) {
+        JSONArray kept = new JSONArray();
+        ArrayList<Long> keptReceived = new ArrayList<>();
+        ArrayList<Boolean> keptClock = new ArrayList<>();
+        ArrayList<String> keptSources = new ArrayList<>();
+        int removed = 0;
+        for (int i = 0; i < coordinates.length(); i++) {
+            JSONArray point = coordinates.optJSONArray(i);
+            long stamp = coordinateTimestamp(point);
+            if (point != null && stamp > 0L && stamp < grantedAtMs) {
+                removed++;
+                continue;
+            }
+            kept.put(point);
+            if (i < pointReceivedAtMs.size()) keptReceived.add(pointReceivedAtMs.get(i));
+            if (i < pointDroneClock.size()) keptClock.add(pointDroneClock.get(i));
+            if (i < pointSources.size()) keptSources.add(pointSources.get(i));
+        }
+        coordinates = kept;
+        pointReceivedAtMs.clear();
+        pointReceivedAtMs.addAll(keptReceived);
+        pointDroneClock.clear();
+        pointDroneClock.addAll(keptClock);
+        pointSources.clear();
+        pointSources.addAll(keptSources);
+        renderTail = null;
+        for (int i = 0; i < coordinates.length(); i++) {
+            JSONArray point = coordinates.optJSONArray(i);
+            if (point == null) continue;
+            long received = i < pointReceivedAtMs.size() && pointReceivedAtMs.get(i) != null
+                    ? pointReceivedAtMs.get(i) : point.optLong(3, 0L);
+            renderTail = new RenderPointNode(new TrackPoint(
+                    point.optDouble(1), point.optDouble(0), point.optDouble(2),
+                    point.optLong(3), received), renderTail);
+        }
+        WaypointCount = Math.max(0, WaypointCount - removed);
     }
 
     private void noteShadowIfAnotherTabletOwns(@NonNull CtDroneSpec spec) {

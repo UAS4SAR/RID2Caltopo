@@ -763,19 +763,11 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
             boolean hadOwnedSegment = wasOwner && !isOwner && active
                     && (liveTrackId != null || requestedLiveTrackId != null || !linePoints.isEmpty());
             if (!hadOwnedSegment || !ownedSegmentReadyToPublish()) {
-                WaypointTrack shadow = (!wasOwner && isOwner) ? WaypointTrack.detachShadow(droneSpec) : null;
-                if (shadow != null) {
-                    // Those points were another tablet's flight. Do not backfill them into ours.
-                    clearLiveTrackStateLocked();
-                    localOwner = true;
-                    CaltopoRecoveryWork.executeArchive(() -> {
-                        try {
-                            shadow.archive();
-                        } catch (Exception e) {
-                            CTError(TAG, "setLocalOwner(): shadow archive failed", e);
-                        }
-                    });
-                    return;
+                if (!wasOwner && isOwner) {
+                    long grantedAtMs = System.currentTimeMillis();
+                    if (WaypointTrack.omitShadowPointsBeforeGrant(droneSpec, grantedAtMs)) {
+                        dropQueuedPointsBefore(grantedAtMs);
+                    }
                 }
                 localOwner = isOwner;
                 if (isOwner && mapStatus == CaltopoMap.MapStatusListener.mapStatus.up) {
@@ -1767,6 +1759,15 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
             }
             CTError(TAG, "startNewTrack(): startLiveTrack() raised: " + " (" + e.getClass().getSimpleName() + ")");
         }
+    }
+
+    private void dropQueuedPointsBefore(long grantedAtMs) {
+        if (linePoints.isEmpty()) return;
+        java.util.Iterator<QueuedPoint> points = linePoints.iterator();
+        while (points.hasNext()) {
+            if (points.next().timestampMsec < grantedAtMs) points.remove();
+        }
+        queuedPointCount.set(linePoints.size());
     }
 
     private void backfillQueuedPointsFromWaypointTrackIfNeeded() {

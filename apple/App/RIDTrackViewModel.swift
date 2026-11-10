@@ -1617,12 +1617,9 @@ final class RIDTrackViewModel: ObservableObject {
                             let grantedAt = Date()
                             self.ownershipGrantedAtByAircraft[aircraftID] = grantedAt
                             self.shadowedAircraft.remove(aircraftID)
-                            let split = await self.store.closeShadow(
+                            await self.store.trimShadow(
                                 aircraftID: aircraftID, ownershipGrantedAt: grantedAt)
-                            if let shadow = split.shadow {
-                                await self.archive(shadow, retainingUnconfirmedShadow: true)
-                            }
-                            if let owned = split.owned {
+                            if let owned = await self.store.track(aircraftID: aircraftID) {
                                 self.rememberOwnedFlight(owned)
                             }
                         } else if let owned = await self.store.track(aircraftID: aircraftID) {

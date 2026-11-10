@@ -230,6 +230,19 @@ public final class WaypointTrackJournal {
         });
     }
 
+    /** Delete an unfinished journal without turning it into a flight file. */
+    public static void discardUnfinished(@NonNull String flightId) {
+        if (flightId.isEmpty()) return;
+        Writer.execute(() -> {
+            synchronized (lockFor(flightId)) {
+                File file = journalFile(flightId);
+                if (file.exists() && !file.delete()) {
+                    CTWarn(TAG, "discardUnfinished could not delete " + flightId);
+                }
+            }
+        });
+    }
+
     /** Mark the journal finished and remove it after a successful local archive. */
     public static void markFinishedAndRemove(@NonNull String flightId) {
         Writer.execute(() -> {
