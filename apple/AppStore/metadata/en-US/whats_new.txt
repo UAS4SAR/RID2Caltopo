@@ -1,2 +1,2 @@
 Latest changes:
-- Live video reading is less likely to stall while the app is busy.
+- A confirmed flight stays on the incident map after it ends.

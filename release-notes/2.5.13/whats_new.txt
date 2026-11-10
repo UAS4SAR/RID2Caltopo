@@ -1,0 +1,2 @@
+Latest changes:
+- A confirmed flight stays on the incident map after it ends.

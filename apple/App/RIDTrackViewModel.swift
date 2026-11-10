@@ -2344,7 +2344,12 @@ final class RIDTrackViewModel: ObservableObject {
         // would discard a confirmed flight as gated_unconfirmed.
         let blockedByLedger =
             (try? await publicationLedger.isDeclinedOrSuppressed(flightID: flightID)) == true
-        if !publicationDecision.allowsPublication || !publicationDecision.coordinatorAllowsPublication || publicationDecision.claimPending || blockedByLedger {
+        if FlightEndPublication.decide(
+            allowsPublication: publicationDecision.allowsPublication,
+            coordinatorAllowsPublication: publicationDecision.coordinatorAllowsPublication,
+            claimPending: publicationDecision.claimPending,
+            blockedByLedger: blockedByLedger
+        ).discardsLiveTrack {
             await caltopoPublisher.discard(remoteID: remoteID)
             return
         }

@@ -1040,7 +1040,9 @@ final class AppleTrackerCoordinator: ObservableObject {
         observedSightings[track.aircraftID] = sighting
         sendTrafficPositionIfEligible(sighting, source: "rid")
         if isFirst {
-            seedRememberedConfirmation(remoteID: track.aircraftID)
+            if seedRememberedConfirmation(remoteID: track.aircraftID) {
+                flushPendingConfirmations()
+            }
             wakeForCoordinationActivity(reason: "first sighting")
             scheduleFallbackOwnership(remoteID: track.aircraftID)
             sendFirstSightingIfNeeded(remoteID: track.aircraftID)
@@ -1078,13 +1080,28 @@ final class AppleTrackerCoordinator: ObservableObject {
         flushPendingConfirmations()
     }
 
-    private func seedRememberedConfirmation(remoteID: String) {
-        guard let identity = rememberedConfirmations[remoteID] else { return }
-        pendingConfirmations[remoteID] = identity
-        if !coordinationRequired, let event = protocolState.confirmLocally(remoteID: remoteID) {
-            publish(event)
+    /// Reopens an unacknowledged Save so it is sent again. Returns false when the
+    /// claim is already verified for this owner session, or ownership has moved
+    /// away, so a later RID fix cannot put it back into `pendingConfirmations`.
+    @discardableResult
+    private func seedRememberedConfirmation(remoteID: String) -> Bool {
+        guard let identity = rememberedConfirmations[remoteID] else { return false }
+        switch RememberedConfirmationReplay.decide(
+            alertEligible: protocolState.isLocalAlertEligible(remoteID: remoteID),
+            ownerZoneID: protocolState.ownerZoneID(remoteID: remoteID),
+            localZoneID: zoneID,
+            claimOutcome: claimOutcomes[remoteID] ?? ""
+        ) {
+        case .alreadyVerified, .ownershipLost:
+            return false
+        case .resend:
+            pendingConfirmations[remoteID] = identity
+            if !coordinationRequired, let event = protocolState.confirmLocally(remoteID: remoteID) {
+                publish(event)
+            }
+            AppleLog.info("TrackerPeer", "Replayed stored confirmation remoteId=\(remoteID)")
+            return true
         }
-        AppleLog.info("TrackerPeer", "Replayed stored confirmation remoteId=\(remoteID)")
     }
 
     /// Configuration resets transport state. Reapply only approvals that the

@@ -559,6 +559,10 @@ public struct TrackerCoordinationProtocolState: Sendable {
         ownersByRemoteID[remoteID] == localZoneID
     }
 
+    public func ownerZoneID(remoteID: String) -> String? {
+        ownersByRemoteID[remoteID]
+    }
+
     public func isConfirmedLocally(remoteID: String) -> Bool {
         locallyConfirmedRemoteIDs.contains(remoteID)
     }
