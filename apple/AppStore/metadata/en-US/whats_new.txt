@@ -1,3 +1,2 @@
 Latest changes:
-- Drone Ownership is saved on this device. Organization distribution uses System Admin configuration upload.
-- Organization members who are not config administrators can view the setting but cannot change it.
+- Live video reading is less likely to stall while the app is busy.
