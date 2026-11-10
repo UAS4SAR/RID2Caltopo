@@ -616,6 +616,9 @@ class R2CViewModelDroneConfirmationTest {
             "Claimed by Unknown RPIC on another device. Mine asks to take over that claim.",
             takeoverClaimText(" ", ""),
         )
+        assertFalse(claimConflictReopensConfirmation(true, false))
+        assertFalse(claimConflictReopensConfirmation(false, true))
+        assertTrue(claimConflictReopensConfirmation(false, false))
         val peer = mapOf("PEER" to setOf("1sar|10.0.0.2:1"))
         assertEquals(setOf("PEER"), remoteIdsRearmedByNewPublisher(emptySet(), emptyMap(), peer))
         assertTrue(remoteIdsRearmedByNewPublisher(setOf("PEER"), emptyMap(), peer).isEmpty())

@@ -79,6 +79,14 @@ public struct CurrentFlightConfirmationLifecycle: Sendable, Equatable {
 /// A peer claim stays visible inside this tablet's confirmation panel.
 /// A new video publisher on this tablet reopens that panel unless Mine or Not Mine was already chosen.
 public enum TakeoverClaimNotice {
+    /// The conflict that answers a takeover Save must not open a second panel for that aircraft.
+    public static func claimConflictReopensPanel(
+        alreadySavedThisFlight: Bool,
+        panelAlreadyShowingForThisAircraft: Bool
+    ) -> Bool {
+        !alreadySavedThisFlight && !panelAlreadyShowingForThisAircraft
+    }
+
     public static func message(callsign: String, deviceName: String) -> String {
         let pilot = callsign.trimmingCharacters(in: .whitespacesAndNewlines)
         let device = deviceName.trimmingCharacters(in: .whitespacesAndNewlines)

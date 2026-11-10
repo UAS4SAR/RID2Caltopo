@@ -50,6 +50,16 @@ internal fun ownershipRequiresStream(mode: String, incidentSelected: Boolean,
     else -> false
 }
 
+/**
+ * A claim conflict reopens the panel only when this tablet has not already saved Mine
+ * and the panel for that aircraft is not already up. The conflict that answers a
+ * takeover Save must not stack a second panel for the same drone.
+ */
+internal fun claimConflictReopensConfirmation(
+    alreadySavedThisFlight: Boolean,
+    panelAlreadyShowingForThisAircraft: Boolean
+): Boolean = !alreadySavedThisFlight && !panelAlreadyShowingForThisAircraft
+
 /** Names the peer claim inside the confirmation panel. Mine still sends that claim as the replacement. */
 internal fun takeoverClaimText(callsign: String, deviceName: String): String {
     val pilot = callsign.trim().ifEmpty { "Unknown RPIC" }
@@ -299,6 +309,16 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
         CaltopoLiveTrack.AddLocalTrackFinishedListener(this)
         R2cRuntimeRegistry.getDefaultRuntime().peerCoordinator.setClaimConflictListener { remoteId ->
             viewModelScope.launch(Dispatchers.Main.immediate) {
+                val alreadySaved = confirmedCurrentFlightRemoteIds.contains(remoteId)
+                    || CaltopoClient.IsCurrentLocallyConfirmedDrone(remoteId)
+                val showing = _pendingDroneConfirmation.value?.remoteId == remoteId
+                if (!claimConflictReopensConfirmation(alreadySaved, showing)) {
+                    CTDebug(
+                        tag,
+                        "claim conflict left the panel alone remoteId=$remoteId saved=$alreadySaved showing=$showing"
+                    )
+                    return@launch
+                }
                 CaltopoClient.GetDroneSpec(remoteId)?.let { requestDroneConfirmation(it) }
             }
         }

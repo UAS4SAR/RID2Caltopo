@@ -281,6 +281,12 @@ struct ContentView: View {
             }
             .onReceive(NotificationCenter.default.publisher(for: Notification.Name("droneClaimConflict"))) { event in
                 guard let remoteID = event.object as? String else { return }
+                let alreadySaved = droneConfirmations.isCurrentFlightConfirmed(remoteID)
+                let showing = confirmationPresentation.remoteID == remoteID
+                guard TakeoverClaimNotice.claimConflictReopensPanel(
+                    alreadySavedThisFlight: alreadySaved,
+                    panelAlreadyShowingForThisAircraft: showing
+                ) else { return }
                 pendingDroneConfirmation = DroneConfirmationRequest(id: remoteID)
             }
             .sheet(isPresented: $showWorkspaceAbout) {
@@ -812,7 +818,8 @@ struct ContentView: View {
                     peerConfirmationClearer: droneConfirmations.clearPeerConfirmation,
                     flightEndConsumer: { remoteID in
                         AppleLog.info("DroneConfirmation", "Flight end remoteId=\(remoteID) \(confirmationMediaDiagnostics)")
-                        peerCoordinator.droneLost(remoteID: remoteID)
+                        // Archive already sends drone_lost, and skips it when another tablet
+                        // took the aircraft. Sending it again here revoked that handoff.
                         droneConfirmations.endFlight(remoteID: remoteID)
                         dismissEndedDroneConfirmation(remoteID)
                     }

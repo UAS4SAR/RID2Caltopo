@@ -6530,6 +6530,12 @@ private func bluetoothServiceData(message: [UInt8], counter: UInt8) -> Data {
         == "Claimed by 1SAR7 on Ken's iPad. Mine asks to take over that claim.")
     #expect(TakeoverClaimNotice.message(callsign: " ", deviceName: "")
         == "Claimed by Unknown RPIC on another device. Mine asks to take over that claim.")
+    #expect(!TakeoverClaimNotice.claimConflictReopensPanel(
+        alreadySavedThisFlight: true, panelAlreadyShowingForThisAircraft: false))
+    #expect(!TakeoverClaimNotice.claimConflictReopensPanel(
+        alreadySavedThisFlight: false, panelAlreadyShowingForThisAircraft: true))
+    #expect(TakeoverClaimNotice.claimConflictReopensPanel(
+        alreadySavedThisFlight: false, panelAlreadyShowingForThisAircraft: false))
 }
 
 @Test func sharedIncidentOwnershipRequiresVideoWhenAnotherDeviceOrPresenceIsUnknown() {
