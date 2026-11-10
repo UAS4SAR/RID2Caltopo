@@ -82,6 +82,24 @@ public struct RidAircraftTrack: Sendable, Equatable, Identifiable {
     public fileprivate(set) var distanceMeters: Double
     public fileprivate(set) var acceptedCountBySource: [RidObservation.Source: Int]
 
+    func withStart(_ startedAt: Date, points: [RidTrackPoint]) -> RidAircraftTrack {
+        RidAircraftTrack(
+            aircraftID: aircraftID,
+            flightStartedAt: startedAt,
+            points: points,
+            lastObservation: lastObservation,
+            lastAircraftMessageAt: lastAircraftMessageAt,
+            lastSignalAt: lastSignalAt,
+            lastSignalStrengthDbm: lastSignalStrengthDbm,
+            lastSignalSource: lastSignalSource,
+            lastDirectSignalStrengthDbm: lastDirectSignalStrengthDbm,
+            lastDirectSignalSource: lastDirectSignalSource,
+            lastDroneToBridgeSignalStrengthDbm: lastDroneToBridgeSignalStrengthDbm,
+            distanceMeters: distanceMeters,
+            acceptedCountBySource: acceptedCountBySource
+        )
+    }
+
     public func isActive(at date: Date, timeout: TimeInterval = 30) -> Bool {
         date.timeIntervalSince(lastAircraftMessageAt) <= timeout
     }
@@ -101,6 +119,11 @@ public enum RidTrackIngestOutcome: Sendable, Equatable {
     case signalOnly(RidAircraftTrack, reason: RidTrackSignalOnlyReason)
     case rejectedHorizontalAccuracy(code: UInt8, track: RidAircraftTrack?)
     case rejectedInvalidObservation
+}
+
+public struct ShadowSplit: Sendable {
+    public let shadow: RidAircraftTrack?
+    public let owned: RidAircraftTrack?
 }
 
 public actor RidTrackStore {
@@ -299,6 +322,28 @@ public actor RidTrackStore {
     /// Ends the current flight immediately. The next ingest starts a new flight.
     public func take(aircraftID: String) -> RidAircraftTrack? {
         tracksByAircraftID.removeValue(forKey: Self.canonicalAircraftID(aircraftID))
+    }
+
+    /// Points received before the lease was granted stay on the shadow track.
+    /// The track that remains, if any, starts at or after that grant.
+    public func closeShadow(aircraftID: String, ownershipGrantedAt: Date) -> ShadowSplit {
+        let key = Self.canonicalAircraftID(aircraftID)
+        guard let track = tracksByAircraftID[key] else {
+            return ShadowSplit(shadow: nil, owned: nil)
+        }
+        if track.flightStartedAt >= ownershipGrantedAt {
+            return ShadowSplit(shadow: nil, owned: track)
+        }
+        let shadowPoints = track.points.filter { $0.receivedAt < ownershipGrantedAt }
+        let ownedPoints = track.points.filter { $0.receivedAt >= ownershipGrantedAt }
+        let shadow = shadowPoints.isEmpty ? nil : track.withStart(track.flightStartedAt, points: shadowPoints)
+        guard let firstOwned = ownedPoints.first else {
+            tracksByAircraftID.removeValue(forKey: key)
+            return ShadowSplit(shadow: shadow ?? track, owned: nil)
+        }
+        let owned = track.withStart(firstOwned.receivedAt, points: ownedPoints)
+        tracksByAircraftID[key] = owned
+        return ShadowSplit(shadow: shadow, owned: owned)
     }
 
     public func restoreIfAbsent(_ track: RidAircraftTrack) {

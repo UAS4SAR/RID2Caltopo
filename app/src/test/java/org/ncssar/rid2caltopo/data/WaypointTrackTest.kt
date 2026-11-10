@@ -417,6 +417,39 @@ class WaypointTrackTest {
     }
 
     @Test
+    fun shadowBeforeTakeover_staysLocalAndTheUploadStartsAtTheGrant() {
+        CaltopoClient.SetHomeOrgName("NCSSAR")
+        val zone = java.time.ZoneId.of("America/Los_Angeles")
+        val shadowAt = java.time.ZonedDateTime.of(2026, 11, 10, 11, 25, 46, 0, zone)
+            .toInstant().toEpochMilli()
+        val grantedAt = java.time.ZonedDateTime.of(2026, 11, 10, 11, 28, 50, 0, zone)
+            .toInstant().toEpochMilli()
+        val drone = activeDrone("RIDSHADOW1", "1sar7DjMtrc4td")
+        WaypointTrack.AddWaypointForTrack(drone, 39.153000, -121.132000, 100L, shadowAt)
+        WaypointTrack.AddWaypointForTrack(drone, 39.153100, -121.132100, 101L, shadowAt + 60_000L)
+        confirmTeamDrone("RIDSHADOW1", "NCSSAR")
+        drone.setCurrentFlightConfirmed(true)
+
+        val shadow = WaypointTrack.detachShadow(drone)
+        assertTrue(shadow != null)
+        shadow!!.prepareForArchive()
+        assertFalse(authorized(shadow))
+        assertEquals("unconfirmed", decision(shadow))
+        assertEquals(shadowAt, firstTimestamp(shadow))
+
+        assertTrue(drone.checkNewWaypoint(
+            39.153200, -121.132200, 102.0, grantedAt + 1_000L, grantedAt + 1_000L,
+            true, CtDroneSpec.TransportTypeEnum.BT4))
+        WaypointTrack.AddWaypointForTrack(drone, 39.153200, -121.132200, 102L, grantedAt + 1_000L)
+        val owned = trackFor(drone)
+        owned.prepareForArchive()
+        assertTrue(authorized(owned))
+        val ownedStart = firstTimestamp(owned)
+        assertTrue(ownedStart >= grantedAt)
+        assertTrue(ownedStart > shadowAt + 60_000L)
+    }
+
+    @Test
     fun prepareForArchive_doesNotAuthorizeTrackConfirmedAfterFlightEnds() {
         CaltopoClient.SetHomeOrgName("NCSSAR")
         val drone = activeDrone("RIDUNCONFIRMED1", "RIDUNCONFIRMED1")
@@ -614,6 +647,12 @@ class WaypointTrackTest {
         @Suppress("UNCHECKED_CAST")
         val map = trackMapField.get(null) as Map<String, WaypointTrack>
         return map.getValue(drone.trackLabel())
+    }
+
+    private fun firstTimestamp(track: WaypointTrack): Long {
+        val coords = track.geoJson!!.getJSONArray("features").getJSONObject(0)
+            .getJSONObject("geometry").getJSONArray("coordinates").getJSONArray(0)
+        return coords.getString(3).toLong()
     }
 
     private fun authorized(track: WaypointTrack): Boolean {

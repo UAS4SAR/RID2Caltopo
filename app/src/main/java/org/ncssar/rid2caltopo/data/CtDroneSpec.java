@@ -347,6 +347,17 @@ public class CtDroneSpec implements Comparable<CtDroneSpec>, Serializable {
         trackLabel = WaypointTrack.RenameTrackForFlightLabel(oldLabel, requested, this);
     }
 
+    /**
+     * The points already recorded belong to a flight this tablet was only shadowing.
+     * The next accepted waypoint starts the owned flight. Confirmation and the pilot stay.
+     */
+    public void beginOwnedFlightAfterShadow() {
+        trackLabel = EMPTY_STRING;
+        trackLabelAdoptedFromPeer = false;
+        startMsecTimestamp = 0;
+        hasRecordedWaypoint = false;
+    }
+
     public void setMyLiveTrack(@Nullable CaltopoLiveTrack newTrack) {
         myLiveTrack = newTrack;
     }

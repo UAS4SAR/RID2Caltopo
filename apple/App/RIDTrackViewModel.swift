@@ -1607,8 +1607,15 @@ final class RIDTrackViewModel: ObservableObject {
                 case let .ownershipChanged(remoteID, _, localOwner, alertEligible):
                     self.ownershipActivationTasks.removeValue(forKey: remoteID)?.cancel()
                     let aircraftID = RidTrackStore.canonicalAircraftID(remoteID)
-                    if localOwner, alertEligible, let current = await self.store.track(aircraftID: aircraftID) {
-                        self.rememberOwnedFlight(current)
+                    if localOwner, alertEligible {
+                        let split = await self.store.closeShadow(
+                            aircraftID: aircraftID, ownershipGrantedAt: Date())
+                        if let shadow = split.shadow {
+                            await self.archive(shadow, retainingUnconfirmedShadow: true)
+                        }
+                        if let owned = split.owned {
+                            self.rememberOwnedFlight(owned)
+                        }
                     } else if !localOwner {
                         await self.endOwnedFlightAtHandoff(aircraftID: aircraftID)
                     }
@@ -1900,7 +1907,8 @@ final class RIDTrackViewModel: ObservableObject {
     private func archive(
         _ track: RidAircraftTrack,
         publishFlightEnd: Bool = false,
-        ownedDuringFlight: Bool = false
+        ownedDuringFlight: Bool = false,
+        retainingUnconfirmedShadow: Bool = false
     ) async {
         let flightID = liveFlightID(aircraftID: track.aircraftID)
             ?? RidFlightID.make(aircraftID: track.aircraftID, startedAt: track.flightStartedAt)
@@ -1923,18 +1931,20 @@ final class RIDTrackViewModel: ObservableObject {
         let ownership = ownershipContextProvider?(track.aircraftID)
         let claimPending = ownership?.requiresHold ?? (peerCoordinator?.claimPending(remoteID: track.aircraftID) == true)
         let flightKey = RidFlightID.make(aircraftID: track.aircraftID, startedAt: track.flightStartedAt)
-        let ownedWhileFlying = ownedDuringFlight || ownedFlightMayUpload.contains(flightKey)
+        let ownedWhileFlying = !retainingUnconfirmedShadow
+            && (ownedDuringFlight || ownedFlightMayUpload.contains(flightKey))
         if ownedWhileFlying { ownedFlightMayUpload.remove(flightKey) }
-        ownedFlightIDs.remove(flightKey)
+        if !retainingUnconfirmedShadow { ownedFlightIDs.remove(flightKey) }
         // A takeover must not downgrade a segment this tablet already owned into a peer file.
         let ownedForUpload = ownedWhileFlying || archiveDecision.localOwner
         let handedOff = ownedWhileFlying && !archiveDecision.localOwner
-        let localOnly = !ownedWhileFlying && (!recordingAllowed || publicationSuppressed || alreadyDeclined)
+        let localOnly = retainingUnconfirmedShadow || (!ownedWhileFlying && (!recordingAllowed || publicationSuppressed || alreadyDeclined))
         let currentOwnerUpload = ownership.map {
             $0.mayAutoPublish && ownedForUpload && archiveDecision.allowsPublication && !alreadyDeclined
         } ?? (!claimPending && ownedForUpload && archiveDecision.allowsPublication && !alreadyDeclined)
-        let trackerUploadAuthorized = (ownedWhileFlying && !alreadyDeclined) || currentOwnerUpload
-        if let ownership {
+        let trackerUploadAuthorized = !retainingUnconfirmedShadow
+            && ((ownedWhileFlying && !alreadyDeclined) || currentOwnerUpload)
+        if let ownership, !retainingUnconfirmedShadow {
             let flightID = RidFlightID.make(aircraftID: track.aircraftID, startedAt: track.flightStartedAt)
             try? await waypointAppendJournal.noteContext(ownership, flightID: flightID)
         }

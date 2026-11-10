@@ -763,6 +763,20 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
             boolean hadOwnedSegment = wasOwner && !isOwner && active
                     && (liveTrackId != null || requestedLiveTrackId != null || !linePoints.isEmpty());
             if (!hadOwnedSegment || !ownedSegmentReadyToPublish()) {
+                WaypointTrack shadow = (!wasOwner && isOwner) ? WaypointTrack.detachShadow(droneSpec) : null;
+                if (shadow != null) {
+                    // Those points were another tablet's flight. Do not backfill them into ours.
+                    clearLiveTrackStateLocked();
+                    localOwner = true;
+                    CaltopoRecoveryWork.executeArchive(() -> {
+                        try {
+                            shadow.archive();
+                        } catch (Exception e) {
+                            CTError(TAG, "setLocalOwner(): shadow archive failed", e);
+                        }
+                    });
+                    return;
+                }
                 localOwner = isOwner;
                 if (isOwner && mapStatus == CaltopoMap.MapStatusListener.mapStatus.up) {
                     backfillQueuedPointsFromWaypointTrackIfNeeded();

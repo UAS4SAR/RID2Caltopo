@@ -163,6 +163,8 @@ public class WaypointTrack {
     private boolean archivePrepared = false;
     /** This tablet owned the segment while it flew. A later takeover must not downgrade it. */
     private boolean closedAsPriorOwner = false;
+    /** Points recorded before this tablet was granted the lease. Kept locally, never uploaded. */
+    private boolean closedAsShadow = false;
     private String archivedOwner = "";
     private String archivedFlightReadinessJson = "{}";
     private String archivedModel = "";
@@ -450,6 +452,10 @@ public class WaypointTrack {
         try {
             claim = R2cRuntimeRegistry.getDefaultRuntime().getPeerCoordinator().ownershipClaimState(archivedRemoteId);
         } catch (Exception ignored) { }
+        if (closedAsShadow) {
+            archivedFlightConfirmed = false;
+            archivedLocalOnly = false;
+        }
         boolean mine = archivedFlightConfirmed && !archivedLocalOnly;
         archivedClaimState = claim == null ? FlightOwnershipContext.NONE : claim;
         archivedTrackerClaimPending = mine && FlightOwnershipContext.isAdverseClaim(archivedClaimState);
@@ -490,6 +496,26 @@ public class WaypointTrack {
         if (!archivedOkToLog) return "declined";
         if (!archivedTrackerUploadAuthorized) return "tracker_skip";
         return "publish";
+    }
+
+    /**
+     * Ends the unconfirmed copy recorded while another tablet owned the aircraft.
+     * The returned track is no longer live. Its archive stays local and is not uploaded.
+     * The drone's next waypoint starts the owned flight.
+     */
+    @Nullable
+    static WaypointTrack detachShadow(@NonNull CtDroneSpec spec) {
+        String label = spec.trackLabel();
+        if (label == null || label.isEmpty()) return null;
+        WaypointTrack track = TrackMap.remove(label);
+        if (track == null) return null;
+        if (track.coordinates.length() == 0) {
+            TrackMap.put(label, track);
+            return null;
+        }
+        track.closedAsShadow = true;
+        spec.beginOwnedFlightAfterShadow();
+        return track;
     }
 
     /** Call before {@link #prepareForArchive()} when a takeover closes a segment this tablet owned. */
