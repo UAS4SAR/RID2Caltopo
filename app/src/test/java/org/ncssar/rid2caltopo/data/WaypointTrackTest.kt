@@ -428,30 +428,33 @@ class WaypointTrackTest {
         R2cRuntimeRegistry.setDefaultRuntimeForTesting(fixture.runtime)
         try {
             val peer = fixture.peerCoordinator as FakePeerCoordinator
-            val drone = activeDrone("RIDSHADOW1", "1sar7DjMtrc4td")
+            val drone = CtDroneSpec("RIDSHADOW1", "1sar7DjMtrc4td", "NCSSAR", "DJI Matrice 4TD", "1SAR7")
             peer.setPeerOwner(drone.remoteId, "ipad-zone")
+            assertFalse(drone.checkNewWaypoint(
+                39.153000, -121.132000, 100.0, shadowAt, shadowAt,
+                true, CtDroneSpec.TransportTypeEnum.BT4))
             WaypointTrack.AddWaypointForTrack(drone, 39.153000, -121.132000, 100L, shadowAt)
             WaypointTrack.AddWaypointForTrack(drone, 39.153100, -121.132100, 101L, shadowAt + 60_000L)
+            assertTrue(WaypointTrack.GetTrackPointsSnapshot(drone).none { it.timestampMsec >= shadowAt })
             confirmTeamDrone("RIDSHADOW1", "NCSSAR")
             drone.setCurrentFlightConfirmed(true)
 
-            val label = drone.trackLabel()
-            WaypointTrack.omitShadowPointsBeforeGrant(drone, grantedAt)
             peer.setLocalOwnership(drone.remoteId, true)
+            val ownedAt = grantedAt + 1_000L
             assertTrue(drone.checkNewWaypoint(
-                39.153200, -121.132200, 102.0, grantedAt + 1_000L, grantedAt + 1_000L,
+                39.153200, -121.132200, 102.0, ownedAt, ownedAt,
                 true, CtDroneSpec.TransportTypeEnum.BT4))
-            assertEquals(label, drone.trackLabel())
-            WaypointTrack.AddWaypointForTrack(drone, 39.153200, -121.132200, 102L, grantedAt + 1_000L)
-            WaypointTrack.omitShadowPointsBeforeGrant(drone, grantedAt + 120_000L)
+            assertTrue(drone.trackLabel().endsWith("_" + CaltopoClient.TimeDatestampString(ownedAt)))
+            WaypointTrack.AddWaypointForTrack(drone, 39.153200, -121.132200, 102L, ownedAt)
             val owned = trackFor(drone)
             owned.prepareForArchive()
             assertTrue(authorized(owned))
             val ownedStart = firstTimestamp(owned)
-            assertTrue(ownedStart >= grantedAt)
+            assertEquals(ownedAt, ownedStart)
             assertTrue(ownedStart > shadowAt + 60_000L)
-            assertEquals(1, owned.geoJson!!.getJSONArray("features").getJSONObject(0)
-                .getJSONObject("geometry").getJSONArray("coordinates").length())
+            peer.setPeerOwner(drone.remoteId, "ipad-zone")
+            WaypointTrack.AddWaypointForTrack(drone, 39.153300, -121.132300, 103L, grantedAt + 120_000L)
+            assertEquals(1, WaypointTrack.GetTrackPointsSnapshot(drone).size)
         } finally {
             R2cRuntimeRegistry.resetDefaultRuntimeForTesting()
         }

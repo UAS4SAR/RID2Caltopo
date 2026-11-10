@@ -1623,6 +1623,7 @@ final class RIDTrackViewModel: ObservableObject {
                     self.ownershipActivationTasks.removeValue(forKey: remoteID)?.cancel()
                     let aircraftID = RidTrackStore.canonicalAircraftID(remoteID)
                     if localOwner, alertEligible {
+                        await self.store.resumeOwnedRecording(aircraftID: aircraftID)
                         if self.shadowedAircraft.contains(aircraftID),
                            self.ownershipGrantedAtByAircraft[aircraftID] == nil {
                             let grantedAt = Date()
@@ -1641,6 +1642,7 @@ final class RIDTrackViewModel: ObservableObject {
                         self.shadowedAircraft.insert(aircraftID)
                         self.ownershipGrantedAtByAircraft.removeValue(forKey: aircraftID)
                         await self.endOwnedFlightAtHandoff(aircraftID: aircraftID)
+                        await self.store.suspendRecordingUntilOwned(aircraftID: aircraftID)
                     }
                     if localOwner, alertEligible,
                        self.publicationSuppressionProvider?(remoteID) != true {

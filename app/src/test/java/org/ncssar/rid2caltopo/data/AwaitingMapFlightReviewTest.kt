@@ -245,4 +245,36 @@ class AwaitingMapFlightReviewTest {
             root.deleteRecursively()
         }
     }
+
+    @Test fun discardRemovesTheFileWhenTheJournalEntryIsAlreadyGone() {
+        val zone = java.time.ZoneId.of("America/Los_Angeles")
+        val start = java.time.ZonedDateTime.of(2026, 11, 10, 12, 36, 47, 0, zone).toInstant().toEpochMilli()
+        val flight = org.json.JSONObject()
+            .put("id", "fragment-without-journal")
+            .put("remote", "1581F8HGX255S00A0FZT")
+            .put("label", "1sar7DjMtrc4td_123647Nov10")
+            .put("points", org.json.JSONArray().put(org.json.JSONArray().put(0).put(0).put(0).put(start)))
+        val day = "tracks-10Nov2026"
+        val name = AwaitingMapFlightArchive.filenames(flight, zone).first()
+        val deleted = mutableListOf<String>()
+        val result = AwaitingMapFlightDiscarder.discard(
+            flight,
+            emptyList(),
+            { true },
+            { directory, file ->
+                if (directory == day && file == name) {
+                    deleted += "$directory/$file"
+                    ArchiveFileDeletion.DELETED
+                } else ArchiveFileDeletion.NOT_FOUND
+            },
+            { false },
+            zone,
+        )
+        assertTrue(result.logSummary(flight), result.succeeded)
+        assertTrue(result.journalAbsent)
+        assertEquals(listOf("$day/$name"), result.deletedArchiveFiles)
+        assertTrue(result.logSummary(flight).contains("journal=absent"))
+        assertTrue(result.logSummary(flight).contains("removed=[$day/$name]"))
+        assertEquals(listOf("$day/$name"), deleted)
+    }
 }

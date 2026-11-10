@@ -206,3 +206,29 @@ private func clue(_ aircraftID: String, at time: TimeInterval, file: String = "f
     try Data("{}".utf8).write(to: directory.appendingPathComponent(name))
     #expect(AwaitingMapFlightArchive.fileExists(remoteID: "RID-1", startedAt: started, root: root))
 }
+
+@Test @MainActor func discardRemovesTheFileWhenTheJournalRowIsMissing() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let journal = await AwaitingMapFlightJournal.loaded(fileURL: root.appendingPathComponent("pending.json"))
+    let flight = reviewFlight()
+    let name = try #require(AwaitingMapFlightArchive.filenames(remoteID: flight.remoteID, startedAt: flight.firstTime).first)
+    var removed: [String] = []
+    let result = await AwaitingMapFlightDiscarder.discard(
+        flight: flight,
+        journal: journal,
+        clueIDs: [],
+        deleteClue: { _ in true },
+        deleteArchive: {
+            removed.append(name)
+            var deletion = AwaitingMapArchiveDeletion()
+            deletion.deleted = ["tracks-10Nov2026/\(name)"]
+            return deletion
+        }
+    )
+    #expect(result.succeeded)
+    #expect(result.journalAbsent)
+    #expect(result.logSummary(for: flight).contains("journal=absent"))
+    #expect(result.logSummary(for: flight).contains("removed=[tracks-10Nov2026/\(name)]"))
+    #expect(removed == [name])
+}

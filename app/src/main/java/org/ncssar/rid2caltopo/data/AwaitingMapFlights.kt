@@ -397,10 +397,7 @@ object AwaitingMapFlights {
             var matched = false
             synchronized(this) {
                 if (loaded) {
-                    matched = all().any {
-                        it.optString("id") == trimmed &&
-                            it.optString("decision") in listOf("review", "bound", "local")
-                    }
+                    matched = all().any { it.optString("id") == trimmed }
                     if (matched) {
                         entries = JSONArray(all().filterNot { it.optString("id") == trimmed })
                         publishChoices()
@@ -420,9 +417,7 @@ object AwaitingMapFlights {
     @Synchronized
     private fun discardBody(id: String): Boolean {
         load()
-        val matched = all().firstOrNull {
-            it.optString("id") == id && it.optString("decision") in listOf("review", "bound", "local")
-        } ?: return false
+        val matched = all().firstOrNull { it.optString("id") == id } ?: return false
         entries = JSONArray(all().filterNot { it.optString("id") == id })
         publishChoices()
         save()

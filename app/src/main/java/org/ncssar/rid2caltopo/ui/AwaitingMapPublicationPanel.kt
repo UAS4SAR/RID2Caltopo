@@ -302,15 +302,7 @@ private fun discardFlight(context: android.content.Context, flight: JSONObject, 
     val current = AwaitingMapFlights.allEntries().firstOrNull {
         it.optString("id") == id && it.optString("decision") in decisions
     }
-    if (current == null) {
-        if (id.isNotEmpty()) WaypointTrackJournal.removeNow(id)
-        return AwaitingMapFlightDiscarder.Result(
-            entryRemoved = true,
-            deletedClueIds = emptyList(),
-            deletedArchiveFiles = emptyList(),
-            failures = emptyList(),
-        )
-    }
+    val subject = current ?: flight
     val store = AndroidClueStore.shared(context)
     val archiveRoot = CaltopoClient.GetArchiveDir()
     val archive = archiveRoot?.let { root ->
@@ -325,15 +317,47 @@ private fun discardFlight(context: android.content.Context, flight: JSONObject, 
     }
     if (archive == null) CaltopoClient.CTInfo(TAG, "Discard: no archive folder available; no archive files to delete")
     val result = AwaitingMapFlightDiscarder.discard(
-        flight = current,
+        flight = subject,
         clueIds = clueIds,
         deleteClue = { store.delete(it) },
         archive = archive,
         removeEntry = { AwaitingMapFlights.discard(it) },
     )
+    val byId = deleteArchivesContainingFlightId(context, archiveRoot, id)
+    if (byId.isNotEmpty()) {
+        CaltopoClient.CTInfo(TAG, "Discard removed by flight id $id files=${byId.joinToString(",")}")
+    }
     // Always finalize the journal synchronously so cold start cannot re-promote this id.
     WaypointTrackJournal.removeNow(id)
-    return result
+    return result.copy(deletedArchiveFiles = result.deletedArchiveFiles + byId)
+}
+
+/** Deletes a flight's GeoJSON and KMZ when the derived filename does not match the file on disk. */
+private fun deleteArchivesContainingFlightId(
+    context: android.content.Context,
+    root: androidx.documentfile.provider.DocumentFile?,
+    flightId: String,
+): List<String> {
+    if (root == null || flightId.isEmpty()) return emptyList()
+    val removed = mutableListOf<String>()
+    for (day in root.listFiles() ?: emptyArray()) {
+        if (!day.isDirectory || day.name?.startsWith("tracks-") != true) continue
+        val files = day.listFiles() ?: continue
+        for (file in files) {
+            val name = file.name ?: continue
+            if (!file.isFile || !name.endsWith(".json")) continue
+            val text = runCatching {
+                context.contentResolver.openInputStream(file.uri)?.use { it.bufferedReader().readText() }
+            }.getOrNull() ?: continue
+            if (!text.contains(flightId)) continue
+            val kmzName = name.removeSuffix(".json") + ".kmz"
+            if (file.delete()) removed += "${day.name}/$name"
+            files.firstOrNull { it.name == kmzName }?.let { kmz ->
+                if (kmz.delete()) removed += "${day.name}/$kmzName"
+            }
+        }
+    }
+    return removed
 }
 
 @Composable

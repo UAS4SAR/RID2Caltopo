@@ -351,6 +351,15 @@ public class CtDroneSpec implements Comparable<CtDroneSpec>, Serializable {
      * The points already recorded belong to a flight this tablet was only shadowing.
      * The next accepted waypoint starts the owned flight. Confirmation and the pilot stay.
      */
+    /** The owned flight's label and archive time are this instant, not the shadow start. */
+    public void retitleToOwnedStart(long ownedStartMs) {
+        if (ownedStartMs <= 0L) return;
+        startMsecTimestamp = ownedStartMs;
+        if (trackLabel == null || trackLabel.isEmpty()) return;
+        updateTrackLabel();
+        if (myLiveTrack != null) myLiveTrack.renameTrack();
+    }
+
     public void beginOwnedFlightAfterShadow() {
         trackLabel = EMPTY_STRING;
         trackLabelAdoptedFromPeer = false;
@@ -867,6 +876,9 @@ public class CtDroneSpec implements Comparable<CtDroneSpec>, Serializable {
         lastTrackReceiptElapsedMs = android.os.SystemClock.elapsedRealtime();
         long acceptedWaypointTimestampMsec =
                 (timestampInMilliseconds > 0) ? timestampInMilliseconds : nowWallMsec;
+
+        // Another tablet holds the lease. Don't start a track, a file, or a shape.
+        if (WaypointTrack.anotherTabletOwns(this)) return false;
 
         // All validity checks passed — this is an accepted waypoint.
         // Activate the drone (set the trackLabel) only now, so that invalid/filtered packets

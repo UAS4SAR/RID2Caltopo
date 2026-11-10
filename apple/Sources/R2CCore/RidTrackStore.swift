@@ -129,6 +129,8 @@ public struct ShadowSplit: Sendable {
 public actor RidTrackStore {
     public private(set) var policy: RidTrackPolicy
     private var tracksByAircraftID: [String: RidAircraftTrack] = [:]
+    /// After this tablet gives up the lease, further points are not a flight until it owns again.
+    private var suspendedUntilOwned: Set<String> = []
 
     public init(policy: RidTrackPolicy = RidTrackPolicy()) {
         self.policy = policy
@@ -151,6 +153,9 @@ public actor RidTrackStore {
             return .rejectedInvalidObservation
         }
 
+        if suspendedUntilOwned.contains(aircraftID) {
+            return .rejectedInvalidObservation
+        }
         let observation = rawObservation.withAircraftID(aircraftID)
         if let code = observation.horizontalAccuracyCode,
            !(policy.minimumHorizontalAccuracyCode ... 12).contains(code) {
@@ -322,6 +327,18 @@ public actor RidTrackStore {
     /// Ends the current flight immediately. The next ingest starts a new flight.
     public func take(aircraftID: String) -> RidAircraftTrack? {
         tracksByAircraftID.removeValue(forKey: Self.canonicalAircraftID(aircraftID))
+    }
+
+    /// Stops a new local file after the lease moves to another tablet.
+    public func suspendRecordingUntilOwned(aircraftID: String) {
+        let key = Self.canonicalAircraftID(aircraftID)
+        suspendedUntilOwned.insert(key)
+        tracksByAircraftID.removeValue(forKey: key)
+    }
+
+    /// The next accepted point starts this tablet's owned flight.
+    public func resumeOwnedRecording(aircraftID: String) {
+        suspendedUntilOwned.remove(Self.canonicalAircraftID(aircraftID))
     }
 
     /// Drops points from before the lease grant. Nothing is written for them.

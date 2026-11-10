@@ -529,11 +529,16 @@ public class WaypointTrack {
         if (label == null || label.isEmpty()) return false;
         WaypointTrack track = TrackMap.get(label);
         if (track == null) return false;
+        long ownedStartMs;
         synchronized (track) {
             if (!track.recordedAsShadow) return false;
             track.dropPointsBeforeLocked(grantedAtMs);
             track.recordedAsShadow = false;
+            ownedStartMs = track.firstKeptTimestampLocked();
+            if (ownedStartMs <= 0L) ownedStartMs = grantedAtMs;
+            track.noteOwnedStartLocked(ownedStartMs);
         }
+        spec.retitleToOwnedStart(ownedStartMs);
         WaypointTrackJournal.discardUnfinished(track.deferredPublicationId);
         return true;
     }
@@ -1491,6 +1496,8 @@ public class WaypointTrack {
 
 	public synchronized void addWaypoint(double lat, double lng, long altInMeters, long timestampInMillisec,
 							long receivedAtMs, @NonNull String source, boolean droneClock) {
+		// Another tablet's flight. Don't open a file or extend a shape with these points.
+		if (anotherTabletOwns(droneSpec)) return;
 
 		JSONArray ja = new JSONArray();
 		ja.put(String.format(Locale.US, "%.6f", lng));
@@ -1520,11 +1527,34 @@ public class WaypointTrack {
         return remoteID == null || remoteID.isEmpty() ? trackLabel : remoteID;
     }
 
-    private long archiveTimestampMsec() {
+    private long firstKeptTimestampLocked() {
         JSONArray first = coordinates.optJSONArray(0);
-        long timestamp = first == null ? 0 : first.optLong(3, 0);
-        if (timestamp <= 0) timestamp = droneSpec.getStartMsecTimestamp();
-        return timestamp > 0 ? timestamp : System.currentTimeMillis();
+        return coordinateTimestamp(first);
+    }
+
+    private void noteOwnedStartLocked(long ownedStartMs) {
+        if (ownedStartMs <= 0L) return;
+        startTimeStr = new SimpleDateFormat("ddMMMyyyy-HHmmss", Locale.US).format(new Date(ownedStartMs));
+    }
+
+    /** True when a different tablet holds the lease, so this tablet must not record. */
+    static boolean anotherTabletOwns(@NonNull CtDroneSpec spec) {
+        String remoteId = spec.getRemoteId();
+        if (remoteId == null || remoteId.isEmpty()) return false;
+        try {
+            PeerCoordinator peers = R2cRuntimeRegistry.getDefaultRuntime().getPeerCoordinator();
+            return !peers.isLocalOwner(remoteId) && peers.hasActivePeerOwner(remoteId);
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    private long archiveTimestampMsec() {
+        long ownedStart = droneSpec.getStartMsecTimestamp();
+        long firstPoint = firstKeptTimestampLocked();
+        if (ownedStart > 0L && (firstPoint <= 0L || ownedStart <= firstPoint)) return ownedStart;
+        if (firstPoint > 0L) return firstPoint;
+        return System.currentTimeMillis();
     }
 
 }

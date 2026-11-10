@@ -229,6 +229,7 @@ class CaltopoLiveTrackTest {
             operations.filter { it.kind == "deleteLiveTrack" }.map { it.summary })
         assertEquals(lostBefore, peer.countEvents("onDroneLost"))
         assertFalse(drone.isActive)
+        peer.setLocalOwnership(drone.remoteId, true)
         assertTrue(drone.checkNewWaypoint(
             39.10002, -121.10002, 100.0, 60_000L, 60_000L, true, CtDroneSpec.TransportTypeEnum.BT4))
         assertTrue(drone.trackLabel().isNotEmpty())

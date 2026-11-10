@@ -298,6 +298,7 @@ public enum AwaitingMapFlightArchive {
 
 public struct AwaitingMapFlightDiscardResult: Equatable, Sendable {
     public var entryRemoved = false
+    public var journalAbsent = false
     public var deletedClueIDs: [UUID] = []
     public var archive = AwaitingMapArchiveDeletion()
     public var failures: [String] = []
@@ -307,7 +308,8 @@ public struct AwaitingMapFlightDiscardResult: Equatable, Sendable {
         "Discarded awaiting-map flight id=\(flight.id) remoteId=\(flight.remoteID) label=\(flight.label) "
             + "start=\(ISO8601DateFormatter().string(from: flight.firstTime)) entryRemoved=\(entryRemoved) "
             + "clues=\(deletedClueIDs.count)[\(deletedClueIDs.map { $0.uuidString.lowercased() }.joined(separator: ","))] "
-            + "archive=[\(archive.deleted.joined(separator: ","))]"
+            + "journal=\(journalAbsent ? "absent" : "removed") "
+            + "removed=[\(archive.deleted.joined(separator: ","))]"
             + (failures.isEmpty && archive.failures.isEmpty ? "" : " failures=[\((failures + archive.failures).joined(separator: "; "))]")
     }
 }
@@ -336,8 +338,10 @@ public enum AwaitingMapFlightDiscarder {
             if let beforeRemoveEntry {
                 try await beforeRemoveEntry(flight.id)
             }
-            result.entryRemoved = try await journal.discard(id: flight.id)
-            if !result.entryRemoved { result.failures.append("journal entry not found") }
+            let removed = try await journal.discard(id: flight.id)
+            // A missing inbox row is not a failure. The archive files are what Discard removes.
+            result.entryRemoved = removed || result.archive.failures.isEmpty
+            result.journalAbsent = !removed
         } catch {
             result.failures.append("journal: \(error.localizedDescription)")
         }
