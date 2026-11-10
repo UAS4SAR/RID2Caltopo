@@ -451,6 +451,12 @@ actor AppleCaltopoPublisher {
                     AppleLog.info("CalTopo", "Marker cleanup left an unproven marker id=\(DeviceMarkerJournal.mapIdPrefix(entry.marker))")
                     continue
                 }
+                // This map's own device marker is updated in place. Deleting it returns HTTP 400.
+                if !currentMap.isEmpty && entry.map == currentMap && !owned.isEmpty && entry.marker.lowercased() == owned {
+                    publishedMarkerOwnership = entry
+                    publishedDeviceMarkerID = entry.marker
+                    continue
+                }
                 if !markerJournal.due(entry.key) { continue }
                 // Actively publishing to this map: reuse the journaled marker id (do not invent a second feature).
                 if publishingCurrentMap && entry.map == currentMap {
@@ -494,6 +500,13 @@ actor AppleCaltopoPublisher {
             if resolved.id != target.id || resolved.featureClass != target.featureClass {
                 target = resolved
                 status = await deleteDeviceFeature(client: client, target: target, mapID: mapID, idPrefix: idPrefix, logStaleCleanup: logStaleCleanup)
+            }
+        }
+        if status == 400 {
+            let listed = await deviceMarkerListed(client: client, markerID: target.id)
+            if MarkerCleanupRetry.alreadyRemoved(httpStatus: status, listedOnMap: listed) {
+                AppleLog.info("CalTopo", "Marker cleanup already gone id=\(idPrefix) http=400")
+                return true
             }
         }
         if status == 204 || status == 200 || status == 201 || status == 202 || status == 404 {
@@ -553,6 +566,14 @@ actor AppleCaltopoPublisher {
         } else {
             AppleLog.info("CalTopo", "Removed local device marker id=\(idPrefix) http=\(http)")
         }
+    }
+
+    /// False when the map snapshot loaded and does not list this marker. A failed
+    /// snapshot keeps the journal row.
+    private func deviceMarkerListed(client: CaltopoLiveClient, markerID: String) async -> Bool {
+        guard let snapshot = try? await client.fetchMapArtifacts() else { return true }
+        let wanted = markerID.trimmingCharacters(in: .whitespacesAndNewlines)
+        return snapshot.items.contains { $0.id.caseInsensitiveCompare(wanted) == .orderedSame }
     }
 
     /// Server id and class when the journal still holds the client UUID.
@@ -1382,6 +1403,13 @@ actor AppleCaltopoPublisher {
             date: flightDate
         )
         let todayName = CaltopoTrackFolderResolver.archiveFolderName(trackFolderName: folderName)
+        if let known = CaltopoTrackFolderResolver.immediateArchiveFolderID(
+            flightFolderName: archiveName,
+            todayFolderName: todayName,
+            knownID: archiveFolderID
+        ) {
+            return known
+        }
         let knownForToday =
             CaltopoTrackFolderResolver.folderTitlesMatch(archiveName, expected: todayName)
             ? archiveFolderID

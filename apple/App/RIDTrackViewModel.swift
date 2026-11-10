@@ -306,9 +306,9 @@ final class RIDTrackViewModel: ObservableObject {
         }
     }
 
-    func decideAwaitingFlight(_ id: String, mapID: String?, teamID: String) async -> Bool {
+    func decideAwaitingFlight(_ id: String, mapID: String?, teamID: String, peerOverride: Bool = false) async -> Bool {
         do {
-            if mapID != nil, try await awaitingMapJournal.authorizeOwnershipReview(id: id) {
+            if mapID != nil, try await awaitingMapJournal.authorizeOwnershipReview(id: id, peerOverride: peerOverride) {
                 let releaseURL = Self.ownershipReleaseURL
                 try? await Task.detached(priority: .utility) {
                     try OwnershipReviewReleaseFile.allowTrackerUpload(flightID: id, fileURL: releaseURL)

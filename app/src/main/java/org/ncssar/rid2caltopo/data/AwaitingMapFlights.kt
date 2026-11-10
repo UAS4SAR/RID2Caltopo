@@ -279,7 +279,10 @@ object AwaitingMapFlights {
      * current device or from another tablet's claim. Tracker upload is released only
      * when this flight already recorded a Mine pilot and the claim was merely unverified.
      */
-    @JvmStatic @Synchronized fun authorizeOwnershipReview(id: String): Boolean {
+    @JvmStatic @Synchronized fun authorizeOwnershipReview(id: String): Boolean =
+        authorizeOwnershipReview(id, false)
+
+    @JvmStatic @Synchronized fun authorizeOwnershipReview(id: String, peerOverride: Boolean): Boolean {
         load()
         val item = all().firstOrNull {
             it.optString("id") == id && it.optString("decision") == "review" && it.optBoolean("ownershipReviewPending")
@@ -288,10 +291,12 @@ object AwaitingMapFlights {
         val pilot = item.optString("recordedPilot")
         val claim = item.optString("claim")
         val known = item.optBoolean("ownershipContextKnown")
+        if (FlightOwnershipContext.isLostToAnotherTablet(claim) && !peerOverride) return false
         item.put("ownershipReviewPending", false).put("ownershipReviewAuthorized", true)
         saveOffMainIfNeeded()
         publishChoices()
-        if (known && pilot.isNotBlank() && claim == FlightOwnershipContext.PENDING) {
+        val releasable = claim == FlightOwnershipContext.PENDING || peerOverride
+        if (known && pilot.isNotBlank() && releasable) {
             OwnershipReviewReleases.allowTrackerUpload(id)
         }
         return true

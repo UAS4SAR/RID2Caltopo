@@ -27,6 +27,13 @@ class AwaitingMapFlightsTest {
             AwaitingMapFlights.record("two", "RID-2", "Other", points, true, "map-b", "team-b", false)
             assertEquals("publish", AwaitingMapFlights.allEntries().first { it.getString("id") == "two" }.getString("decision"))
             assertFalse(AwaitingMapFlights.authorizeOwnershipReview("two"))
+            AwaitingMapFlights.record("lost", "RID-3", "Lost", points, false, "map-a", "team-a", true, "1SAR7", FlightOwnershipContext.EXPIRED, true)
+            AwaitingMapFlights.record("lost", "RID-3", "Lost", points, true, "map-a", "team-a", true, "1SAR7", FlightOwnershipContext.EXPIRED, true)
+            assertFalse(AwaitingMapFlights.authorizeOwnershipReview("lost"))
+            assertTrue(AwaitingMapFlights.allEntries().first { it.getString("id") == "lost" }.getBoolean("ownershipReviewPending"))
+            assertThrows(IllegalStateException::class.java) { AwaitingMapFlights.decide("lost", "map-a", "team-a") }
+            assertTrue(AwaitingMapFlights.authorizeOwnershipReview("lost", true))
+            assertEquals("1SAR7", AwaitingMapFlights.allEntries().first { it.getString("id") == "lost" }.optString("recordedPilot"))
             assertTrue(AwaitingMapFlights.authorizeOwnershipReview("one"))
             AwaitingMapFlights.decide("one", "map-a", "team-a")
             assertEquals("publish", AwaitingMapFlights.allEntries().first { it.getString("id") == "one" }.getString("decision"))
@@ -39,6 +46,7 @@ class AwaitingMapFlightsTest {
         FlightPublicationLedger.useFileForTesting(null)
         FlightPublicationLedger.clearForTesting()
         CaltopoInterruptedTrackJournal.setFileForTesting(null)
+        OwnershipReviewReleases.useFileForTesting(null)
     }
     private val now = 1_000_000_000L
     private fun flight(time: Long = now) = JSONObject().put("points", JSONArray().put(JSONArray().put(-121.0).put(39.0).put(10).put(time)))

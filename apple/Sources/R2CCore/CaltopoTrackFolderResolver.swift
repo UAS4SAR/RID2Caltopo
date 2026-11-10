@@ -181,6 +181,18 @@ public actor CaltopoTrackFolderResolver {
         return left.compare(right, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame
     }
 
+    /// Folder id already adopted for this flight's dated folder. Flight-end archive
+    /// uses it immediately and does not wait on another full map read.
+    public static func immediateArchiveFolderID(
+        flightFolderName: String,
+        todayFolderName: String,
+        knownID: String?
+    ) -> String? {
+        let known = knownID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !known.isEmpty, folderTitlesMatch(flightFolderName, expected: todayFolderName) else { return nil }
+        return known
+    }
+
     /// First matching folder id in a connect snapshot (trimmed, case-insensitive).
     public static func adoptedFolderID(named expectedTitle: String, in snapshot: CaltopoArtifactSnapshot) -> String? {
         let expected = normalizedTrackFolderName(expectedTitle)

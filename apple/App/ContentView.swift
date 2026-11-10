@@ -3735,11 +3735,14 @@ private struct AwaitingMapPublicationPanel: View {
                         }
                         .task { await tracks.refreshIncidentCommandLocations() }
                         .alert("Publish earlier flight?", isPresented: Binding(get: { selected != nil }, set: { if !$0 { selected = nil } })) {
-                            Button(selected?.ownershipReviewPending == true ? "Confirm and publish" : "Publish") {
+                            Button(FlightOwnershipContext.isLostToAnotherTablet(selected?.claim ?? "")
+                                   ? "Publish this flight anyway"
+                                   : (selected?.ownershipReviewPending == true ? "Confirm and publish" : "Publish")) {
                                 guard let flight = selected else { return }
                                 let map = destinationMap; let team = destinationTeam
+                                let override = FlightOwnershipContext.isLostToAnotherTablet(flight.claim ?? "")
                                 Task {
-                                    if await tracks.decideAwaitingFlight(flight.id, mapID: map, teamID: team) {
+                                    if await tracks.decideAwaitingFlight(flight.id, mapID: map, teamID: team, peerOverride: override) {
                                         await clues.bindAwaitingFlight(
                                             flight,
                                             mapID: map,
@@ -3758,13 +3761,15 @@ private struct AwaitingMapPublicationPanel: View {
                             Button("Later", role: .cancel) { selected = nil }
                         } message: {
                             Text("\(selected?.label ?? "Flight")\nTo \(destinationTitle) (\(destinationMap))\n" +
-                                 ((selected?.ownershipReviewPending == true || selected?.automaticPublicationBlocked == true)
+                                 (FlightOwnershipContext.isLostToAnotherTablet(selected?.claim ?? "")
+                                  ? "Another tablet owned this flight. Publishing will not assign an RPIC.\n"
+                                  : ((selected?.ownershipReviewPending == true || selected?.automaticPublicationBlocked == true)
                                   ? FlightOwnershipContext.reviewMessage(
                                     known: selected?.ownershipContextKnown == true,
                                     claim: selected?.claim ?? "",
                                     pilot: selected?.recordedPilot ?? "",
                                     publicationBlocked: selected?.automaticPublicationBlocked == true) + "\n"
-                                  : "") +
+                                  : "")) +
                                  "Includes the recorded track and associated clues marked for publication. Clues kept local stay local.")
                         }
                     }

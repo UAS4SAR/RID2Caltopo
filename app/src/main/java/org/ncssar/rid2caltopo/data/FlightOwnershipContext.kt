@@ -48,6 +48,10 @@ object FlightOwnershipContext {
     @JvmStatic fun isAdverseClaim(claim: String): Boolean =
         claim == PENDING || claim == REJECTED || claim == CONFLICT || claim == EXPIRED
 
+    /** Tracker gave this flight to another tablet. A plain review must not publish it. */
+    @JvmStatic fun isLostToAnotherTablet(claim: String): Boolean =
+        claim == REJECTED || claim == CONFLICT || claim == EXPIRED
+
     @JvmStatic fun legacy(): Snapshot = Snapshot(known = false)
 
     @JvmStatic fun capture(

@@ -2829,8 +2829,8 @@ public class CaltopoMap {
             String mine=GetMyUUID();
             for(DeviceMarkerJournal.Entry entry:markerJournal().entries()) {
                 if(!entry.domain.equals(domain))continue;
-                // Actively publishing to this map: reuse the journaled marker id (do not invent a second feature).
-                if(publishingCurrentMap&&entry.map.equals(currentMap)&&provenOwnDeviceMarker(entry,mine)) {
+                // This map's own device marker is updated in place. Deleting it returns HTTP 400.
+                if(currentMap!=null&&!currentMap.isEmpty()&&entry.map.equals(currentMap)&&provenOwnDeviceMarker(entry,mine)) {
                     activeMarkerKeys.add(entry.key());
                     if(ResolvedMyDeviceMarkerId==null||ResolvedMyDeviceMarkerId.isEmpty())
                         ResolvedMyDeviceMarkerId=entry.marker;

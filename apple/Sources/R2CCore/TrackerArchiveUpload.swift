@@ -44,12 +44,13 @@ public enum TrackerArchiveUploadContract {
               let metadata = properties["r2c_prop"] as? [String: Any]
         else { return .malformedArchive }
         if (metadata["local_archive_only"] as? Bool) == true { return .localArchiveOnly }
-        if (metadata["tracker_claim_pending"] as? Bool) == true {
-            let flightID = (properties["r2c_flight_id"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            if flightID.isEmpty || !releasedFlightIDs.contains(flightID) { return .claimPending }
-        }
-        // Archives written before this field existed omit it and keep prior behavior.
-        if (metadata["tracker_upload_authorized"] as? Bool) == false { return .notUploadAuthorized }
+        let flightID = (properties["r2c_flight_id"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let released = !flightID.isEmpty && releasedFlightIDs.contains(flightID)
+        if (metadata["tracker_claim_pending"] as? Bool) == true, !released { return .claimPending }
+        // An explicit review release authorizes this archive even if it was written
+        // while the claim was still unverified. A file already marked reported is
+        // not uploaded again.
+        if (metadata["tracker_upload_authorized"] as? Bool) == false, !released { return .notUploadAuthorized }
         let organization = normalize(metadata["org"] as? String)
         let trackerOrganization = normalize(configuration.organization)
         guard !organization.isEmpty, !trackerOrganization.isEmpty else { return .missingOrganization }

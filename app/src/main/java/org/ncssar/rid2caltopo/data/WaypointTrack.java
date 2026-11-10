@@ -844,18 +844,17 @@ public class WaypointTrack {
         if (r2cProp.optBoolean("local_archive_only", false)) {
             return TrackerUploadEligibility.PERMANENTLY_INELIGIBLE;
         }
-        if (r2cProp.optBoolean("tracker_claim_pending", false)) {
-            String flightId = propertiesFlightId(waypointTrack);
-            if (!OwnershipReviewReleases.allowsTrackerUpload(flightId)) {
-                return TrackerUploadEligibility.RETRY_LATER;
-            }
+        String flightId = propertiesFlightId(waypointTrack);
+        boolean released = OwnershipReviewReleases.allowsTrackerUpload(flightId);
+        if (r2cProp.optBoolean("tracker_claim_pending", false) && !released) {
+            return TrackerUploadEligibility.RETRY_LATER;
         }
         String droneOrg = NormalizeTrackerOrg(r2cProp.optString("org", ""));
         String remoteId = r2cProp.optString("rid", "");
         if (!CaltopoClient.IsTrackerUploadIdentityForConfiguredOrg(remoteId, droneOrg)) {
             return TrackerUploadEligibility.RETRY_LATER;
         }
-        if (r2cProp.has("tracker_upload_authorized")) {
+        if (r2cProp.has("tracker_upload_authorized") && !released) {
             return r2cProp.optBoolean("tracker_upload_authorized", false)
                     ? TrackerUploadEligibility.ELIGIBLE
                     : TrackerUploadEligibility.PERMANENTLY_INELIGIBLE;

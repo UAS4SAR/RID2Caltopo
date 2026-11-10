@@ -211,7 +211,9 @@ fun AwaitingMapPublicationPanel(onChooseMap: () -> Unit = {}) {
         val team = remember(flight) { if (flight.optString("map").isNotBlank()) flight.optString("team") else AwaitingMapFlights.selectedPublicationScope() }
         AlertDialog(onDismissRequest = { selected = null }, title = { Text("Publish earlier flight?") },
             text = { Text("${flight.optString("label")}\nTo $destinationName ($destination)\n" +
-                (if (flight.optBoolean("ownershipReviewPending") || flight.optBoolean("automaticPublicationBlocked"))
+                (if (org.ncssar.rid2caltopo.data.FlightOwnershipContext.isLostToAnotherTablet(flight.optString("claim")))
+                    "Another tablet owned this flight. Publishing will not assign an RPIC.\n"
+                else if (flight.optBoolean("ownershipReviewPending") || flight.optBoolean("automaticPublicationBlocked"))
                     org.ncssar.rid2caltopo.data.FlightOwnershipContext.reviewMessage(
                         flight.optBoolean("ownershipContextKnown"),
                         flight.optString("claim"),
@@ -219,13 +221,15 @@ fun AwaitingMapPublicationPanel(onChooseMap: () -> Unit = {}) {
                         flight.optBoolean("automaticPublicationBlocked")) + "\n"
                 else "") +
                 "Includes the recorded track and associated clues marked for publication. Clues kept local stay local.") },
-            confirmButton = { TextButton(onClick = {
+            confirmButton = {
+                val lost = org.ncssar.rid2caltopo.data.FlightOwnershipContext.isLostToAnotherTablet(flight.optString("claim"))
+                TextButton(onClick = {
                 selected = null
                 val held = flight.optBoolean("ownershipReviewPending")
                 val flightId = flight.getString("id")
                 scope.launch {
                     awaitingMapStorage {
-                        if (held && !AwaitingMapFlights.authorizeOwnershipReview(flightId)) {
+                        if (held && !AwaitingMapFlights.authorizeOwnershipReview(flightId, lost)) {
                             error("Ownership review was not authorized")
                         }
                         AwaitingMapFlights.decide(flightId, destination, team)
@@ -233,7 +237,11 @@ fun AwaitingMapPublicationPanel(onChooseMap: () -> Unit = {}) {
                     refreshPending()
                 }
             }, enabled = destination.isNotBlank() && team.isNotBlank() && !flight.optBoolean("automaticPublicationBlocked")) {
-                Text(if (flight.optBoolean("ownershipReviewPending")) "Confirm and publish" else "Publish")
+                Text(when {
+                    lost -> "Publish this flight anyway"
+                    flight.optBoolean("ownershipReviewPending") -> "Confirm and publish"
+                    else -> "Publish"
+                })
             } },
             dismissButton = { TextButton(onClick = {
                 selected = null

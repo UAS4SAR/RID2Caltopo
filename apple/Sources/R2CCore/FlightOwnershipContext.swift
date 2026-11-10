@@ -51,6 +51,11 @@ public struct FlightOwnershipContext: Sendable, Equatable, Codable {
         [pending, rejected, conflict, expired].contains(claim)
     }
 
+    /// Tracker gave this flight to another tablet. A plain review must not publish it.
+    public static func isLostToAnotherTablet(_ claim: String) -> Bool {
+        [rejected, conflict, expired].contains(claim)
+    }
+
     public static func capture(confirmed: Bool, ignored: Bool, localOnly: Bool, claim: String,
                                pilot: String, organization: String, model: String, mappedID: String) -> FlightOwnershipContext {
         let confirmation: String

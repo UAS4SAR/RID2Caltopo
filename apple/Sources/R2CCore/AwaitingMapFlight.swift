@@ -223,7 +223,7 @@ public actor AwaitingMapFlightJournal {
     /// Explicit operator release of one held flight. Does not invent a pilot.
     /// Returns whether tracker upload of a recorded Mine pilot may proceed.
     @discardableResult
-    public func authorizeOwnershipReview(id: String) async throws -> Bool {
+    public func authorizeOwnershipReview(id: String, peerOverride: Bool = false) async throws -> Bool {
         try await beginMutation()
         defer { endMutation() }
         var next = entries
@@ -233,10 +233,12 @@ public actor AwaitingMapFlightJournal {
         let pilot = next[index].recordedPilot ?? ""
         let claim = next[index].claim ?? ""
         let known = next[index].ownershipContextKnown == true
+        if FlightOwnershipContext.isLostToAnotherTablet(claim), !peerOverride { return false }
         next[index].ownershipReviewPending = false
         next[index].ownershipReviewAuthorized = true
         try await commit(next)
-        return known && !pilot.isEmpty && claim == FlightOwnershipContext.pending
+        let releasable = claim == FlightOwnershipContext.pending || peerOverride
+        return known && !pilot.isEmpty && releasable
     }
     public func decide(id: String, mapID: String?, teamID: String) async throws {
         try await beginMutation()
