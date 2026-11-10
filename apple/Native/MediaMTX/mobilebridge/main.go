@@ -22,6 +22,8 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"runtime"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"unsafe"
@@ -29,6 +31,38 @@ import (
 	"github.com/bluenviron/mediamtx/internal/core"
 	"github.com/bluenviron/mediamtx/internal/r2cingress"
 )
+
+// asyncpreemptoff is not a //go:debug key in Go 1.25. It is also not an atomic
+// runtime dbgvar, so os.Setenv("GODEBUG") after schedinit does not change it.
+// A C constructor setenv does not reach the c-archive either: on Darwin and
+// iOS, _rt0_arm64_ios_lib reads the envp block dyld passed in, and setenv
+// installs a new environ instead of editing that block.
+//
+// parsegodebug is the same parser schedinit uses. With a nil seen map it
+// writes non-atomic dbgvars, including asyncpreemptoff, and the preemption
+// sites read that variable on every attempt. The iOS c-archive link passes
+// -checklinkname=0 so this internal reference is allowed.
+//
+//go:linkname parsegodebug runtime.parsegodebug
+func parsegodebug(godebug string, seen map[string]bool)
+
+// runtime.debug field order in Go 1.25.6. asyncpreemptoff is the 20th int32.
+// The read is only for the startup log. The write goes through parsegodebug
+// by name, so a future field reorder cannot flip the setting itself.
+//
+//go:linkname runtimeDebug runtime.debug
+var runtimeDebug [20]int32
+
+func init() {
+	parsegodebug("asyncpreemptoff=1", nil)
+}
+
+func asyncPreemptOffLabel() string {
+	if runtime.Version() != "go1.25.6" {
+		return "unverified"
+	}
+	return strconv.Itoa(int(runtimeDebug[19]))
+}
 
 var instance struct {
 	sync.Mutex
@@ -72,6 +106,7 @@ func R2CMediaMTXStart(configPath *C.char) C.int {
 
 	instance.server = server
 	instance.logWriter = logWriter
+	fmt.Fprintf(logWriter, "Go runtime asyncpreemptoff=%s\n", asyncPreemptOffLabel())
 	go forwardLogLines(logReader)
 	return 0
 }

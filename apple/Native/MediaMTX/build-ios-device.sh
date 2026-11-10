@@ -44,6 +44,9 @@ CLANG="$(xcrun --sdk "$SDK_NAME" --find clang)"
 
 (
     cd "$STAGE_DIR"
+    # -checklinkname=0 allows mobilebridge to call runtime.parsegodebug.
+    # Go 1.25 rejects //go:debug asyncpreemptoff, and os.Setenv does not
+    # update that non-atomic runtime variable after initialization.
     SDKROOT="$SDKROOT" \
     CGO_ENABLED=1 \
     GOOS=ios \
@@ -54,6 +57,7 @@ CLANG="$(xcrun --sdk "$SDK_NAME" --find clang)"
     go build \
         -trimpath \
         -buildmode=c-archive \
+        -ldflags=-checklinkname=0 \
         -o "$OUTPUT_DIR/libmediamtx_mobile.a" \
         ./mobilebridge
 )
