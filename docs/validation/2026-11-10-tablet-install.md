@@ -2,7 +2,7 @@
 
 Version **2.5.14 (443)** from `41c9182d`. In-place only. Neither app was launched, uninstalled, or cleared.
 
-The A5 Pro update completed on the first attempt. The first iPad attempt lost its connection. A later attempt, with the iPad `available (paired)`, installed the same bundle. Neither app was launched.
+The A5 Pro update completed on the first attempt. The first iPad attempt lost its connection. A later attempt, with the iPad `available (paired)`, installed the same bundle.
 
 | Device | Evidence | Artifact SHA-256 |
 | --- | --- | --- |
