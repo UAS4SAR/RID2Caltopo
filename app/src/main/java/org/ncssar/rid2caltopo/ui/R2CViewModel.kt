@@ -50,6 +50,32 @@ internal fun ownershipRequiresStream(mode: String, incidentSelected: Boolean,
     else -> false
 }
 
+/** Names the peer claim inside the confirmation panel. Mine still sends that claim as the replacement. */
+internal fun takeoverClaimText(callsign: String, deviceName: String): String {
+    val pilot = callsign.trim().ifEmpty { "Unknown RPIC" }
+    val device = deviceName.trim().ifEmpty { "another device" }
+    return "Claimed by $pilot on $device. Mine asks to take over that claim."
+}
+
+/**
+ * A new publisher connection on this tablet reopens the automatic panel unless this tablet
+ * already chose Mine or Not Mine. The same connection, including one first seen without a
+ * publisher id, does not.
+ */
+internal fun remoteIdsRearmedByNewPublisher(
+    locallyConfirmed: Set<String>,
+    previous: Map<String, Set<String>>,
+    current: Map<String, Set<String>>,
+): Set<String> = current.mapNotNullTo(linkedSetOf()) { (remoteId, tokens) ->
+    if (remoteId in locallyConfirmed) return@mapNotNullTo null
+    val prior = previous[remoteId].orEmpty()
+    val fresh = tokens.any { token ->
+        !token.endsWith("|unknown") && token !in prior &&
+            "${token.substringBeforeLast('|')}|unknown" !in prior
+    }
+    if (fresh) remoteId else null
+}
+
 enum class ActiveScreen {
     MAIN,
     STREAMS,
@@ -231,6 +257,7 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
     /** Aircraft to bring into view inside the already-open or just-opened panel. */
     val aircraftReceptionFocusRemoteId: StateFlow<String?> = _aircraftReceptionFocusRemoteId.asStateFlow()
     private val confirmedCurrentFlightRemoteIds = linkedSetOf<String>()
+    private var confirmationVideoSessions: Map<String, Set<String>> = emptyMap()
     private val publicationGateLoggedRemoteIds = linkedSetOf<String>()
     private var pendingDroneConfirmationRequestedByOperator = false
     private var lastDroneListSignature: List<DroneSpecUiSignature>? = null
@@ -1067,16 +1094,13 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
         }
         activeRemoteIds.addAll(liveStreamConfirmationSpecs.keys)
         promptedCurrentFlightRemoteIds.retainAll(activeRemoteIds)
-        activeRemoteIds
-            .filter { CaltopoClient.IsCurrentPeerDroneConfirmed(it) }
-            .forEach { confirmedCurrentFlightRemoteIds.add(it) }
         var pendingRemoteId = _pendingDroneConfirmation.value?.remoteId
         if (
             pendingRemoteId != null &&
             pendingRemoteId in confirmedCurrentFlightRemoteIds &&
             !pendingDroneConfirmationRequestedByOperator
         ) {
-            CTDebug(tag, "Clearing pending confirmation for $pendingRemoteId: confirmed by peer")
+            CTDebug(tag, "Clearing pending confirmation for $pendingRemoteId: already confirmed for this flight")
             _pendingDroneConfirmation.value = null
             pendingDroneConfirmationRequestedByOperator = false
             pendingRemoteId = null
@@ -1183,6 +1207,14 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
             if(_drones.value.none { it.remoteId==id && it.isActive }) clearFinishedFlightConfirmationState(id,"video session ended before RID")
         }
         completedFlightConfirmationGuard.updateSessions(sessionTokens)
+        for (remoteId in remoteIdsRearmedByNewPublisher(confirmedCurrentFlightRemoteIds, confirmationVideoSessions, sessionTokens)) {
+            if (!CaltopoClient.IsSessionUnknownDrone(remoteId) &&
+                !CaltopoClient.IsCurrentLocallyConfirmedDrone(remoteId)
+            ) {
+                promptedCurrentFlightRemoteIds.remove(remoteId)
+            }
+        }
+        confirmationVideoSessions = sessionTokens
         for(spec in liveStreamConfirmationSpecs.values) if(queueConfirmationIfNeeded(spec,"unique configured live stream")) break
     }
 
@@ -1216,7 +1248,7 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
             declined ||
             drone.isLocalArchiveOnly ||
             remoteId in confirmedCurrentFlightRemoteIds ||
-            CaltopoClient.IsCurrentPeerDroneConfirmed(remoteId)
+            CaltopoClient.IsCurrentLocallyConfirmedDrone(remoteId)
         ) return false
         val publication = CurrentFlightPublicationGate.decide(
             confirmed = false,

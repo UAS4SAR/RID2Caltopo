@@ -276,6 +276,7 @@ final class AppleDroneConfirmationStore: ObservableObject {
     @Published private var peerIdentities: [String: RidAircraftIdentity] = [:]
     @Published private var peerClaims: [String: TrackerCoordinationIdentity] = [:]
     private var acceptedClaimChanges: [String: TrackerCoordinationIdentity] = [:]
+    private var seenVideoSessions: [String: Set<String>] = [:]
     @Published private var importedIdentities: [String: RidAircraftIdentity] = [:]
     @Published private(set) var preferredPilotCallsign: String
     private var confirmationLifecycle = CurrentFlightConfirmationLifecycle()
@@ -347,6 +348,15 @@ final class AppleDroneConfirmationStore: ObservableObject {
         onFlightEnded: (String) -> Void = { _ in }
     ) -> String? {
         completedFlightGuard.updateSessions(videoSessions)
+        for remoteID in TakeoverClaimNotice.remoteIDsRearmedByNewPublisher(
+            locallyConfirmed: Set(sessionIdentities.keys),
+            ignored: ignoredRemoteIDs,
+            previous: seenVideoSessions,
+            current: videoSessions
+        ) {
+            confirmationLifecycle.rearmPrompt(remoteID: remoteID)
+        }
+        seenVideoSessions = videoSessions
         var rearmedRemoteIDs: Set<String> = []
         let eligible = orderedRemoteIDs.filter { remoteID in
             completedFlightGuard.allows(remoteID: remoteID, receivedAt: aircraftReceivedAt[remoteID]) {
@@ -717,6 +727,9 @@ struct DroneConfirmationView: View {
                     }
                 }
                 if let pairingSaveError { Text(pairingSaveError).foregroundStyle(.red) }
+                if !pairingOnly, let claim = identityStore.peerClaim(for: remoteID) {
+                    Text(TakeoverClaimNotice.message(callsign: claim.ownerName, deviceName: claim.confirmedByDeviceName))
+                }
                 if let bootstrapDesignator {
                     Section(pairingOnly ? "Pair this drone" : "Add and confirm this drone") {
                         LabeledContent("Remote ID", value: remoteID)

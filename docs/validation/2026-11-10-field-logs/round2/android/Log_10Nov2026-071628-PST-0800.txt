@@ -1,0 +1,643 @@
+DEBUG[17290-main] 10Nov071627.626 PST -08:00: MainThreadStallMonitor Started main-thread stall monitor.
+  DEBUG[17290-17347] 10Nov071627.932 PST -08:00: AppConfigStore initialize(): datastore path=/data/user/0/org.ncssar.rid2caltopo/files/datastore/app_config.pb
+  DEBUG[17290-17347] 10Nov071627.933 PST -08:00: AppConfigStore readConfigBlockingFromDataStore(): exists=true size=12830
+  DEBUG[17290-17347] 10Nov071627.975 PST -08:00: AppConfigStore restoreClientState(): legacyImportComplete=true, ridMappings=29, loadedConfigFiles=6, archiveUriBlank=false
+  DEBUG[17290-17347] 10Nov071627.991 PST -08:00: CaltopoClient reloadPersistedStateInternal(): restored ClientClassState from proto store.
+  DEBUG[17290-17347] 10Nov071627.996 PST -08:00: CaltopoClient reloadPersistedStateInternal(): vers:'19', minDist:'2' ft, usePeersFlag:'true', captureVideoStreamsFlag:'true'
+newTrackDelayInSec:30, maxFlatlineToneDurationInSec:5, bridgeCheckDistanceFeet:20, alarmVolumePercent:100, alarmVolumeConfigured:false, debugLevel:Debugs, maxIdleTimeInMinutes:30, incident:Training, opPeriod:1, coordinateDisplayFormat:decimal
+predictiveHeadEnabled:false, proximityAlertSpacingFeet:100
+notamEnabled:true, notamRadiusNm:1, notamAutoRefresh:true, notamRefreshIntervalSeconds:1800, notamWarnInsideOneNm:true
+notamApiBaseUrl:'', notamTokenUrl:'', notamClientId:'', notamClientSecret:'', notamScope:'', notamLastUpdatedEpochMs:1794321980330
+landRestrictionsEnabled:true, landRestrictionsShowOnMap:true, landRestrictionsAutoRefresh:true, landRestrictionsRadiusNm:1, landRestrictionsLastUpdatedEpochMs:1794322908595
+faaConfigLabel:'', faaTokenPresent:false, faaPayloadCached:false, faaStale:false, faaLastValidatedEpochMs:0, faaLastFailureReason:''
+activeCaltopoProfileId:'home-default', caltopoProfiles:1, maTemplateConfigured:false
+archivePath: 'content://com.android.externalstorage.documents/tree/4A21-0000%3ADroneTrax', caltopoTrackFolder: 'Drone Tracks', caltopoDomainAndPort:caltopo.com,
+teamId: '###', credId: '######' credSecret: '###########', dronespecs: 29 k/v pairs:
+  rid:'1910F916JJHWLHEFGVYC', mid:'1sar10PtnscAtm2lt', org:'NCSSAR', model:'Potensic Atom LT', owner:'1sar10' trackLabel:
+  rid:'1581FBLKC263900B0TY0', mid:'1sar33DjAv360', org:'NCSSAR', model:'DJI Avata 360', owner:'' trackLabel:
+  rid:'1581F6W8W258F0022EZZ', mid:'1sar1001-01DjAvt2', org:'NCSSAR', model:'DJI Avata2', owner:'1sar1001-01' trackLabel:
+  rid:'1865F10X000000001540', mid:'1sar1002-02DjN', org:'NCSSAR', model:'DJI Neo', owner:'1sar1002-02' trackLabel:
+  rid:'1581F6Z9C256S003HCXU', mid:'1sar62Mn4Pr', org:'NCSSAR', model:'DJI Mini 4 Pro', owner:'' trackLabel:
+  rid:'1581F6Z9C24BK0036M9Q', mid:'1sar138DjMn4Pr', org:'NCSSAR', model:'DJI Mini 4 Pro', owner:'1sar138' trackLabel:
+  rid:'1748FEV2HN2925021279', mid:'1sar83AtlEv2640T', org:'NCSSAR', model:'Autel EVO 2 640 T', owner:'1sar83' trackLabel:
+  rid:'186975006977', mid:'1sar33DjN', org:'NCSSAR', model:'DJI Neo', owner:'1sar33' trackLabel:
+  rid:'1581FBLKC262T00B07G1', mid:'1sar7DjAvt360', org:'NCSSAR', model:'DJI Avata 360', owner:'1sar7' trackLabel:
+  rid:'18656A13568', mid:'1sar64DjMn2', org:'NCSSAR', model:'DJI Mini 2', owner:'1sar64' trackLabel:
+  rid:'1581F6W8B24C3002090Y', mid:'1sar1002-02DjAvt2', org:'NCSSAR', model:'DJI Avata2', owner:'1sar1002-02' trackLabel:
+  rid:'1581F6Z9C2527003BZFX', mid:'1sar1001-01DjMn4Pr', org:'NCSSAR', model:'DJI Mini 4 Pro', owner:'1sar1001-01' trackLabel:
+  rid:'1581F6Z9C24BH0036EJL', mid:'1sar7DjMn4Pr', org:'NCSSAR', model:'DJI Mini 4 Pro', owner:'1sar7' trackLabel:
+  rid:'1581F9DEC258S0295066', mid:'1sar10DjMn5Pr', org:'NCSSAR', model:'DJI Mini 5 Pro', owner:'1sar10' trackLabel:
+  rid:'187575000726', mid:'1sar50DjMn4k', org:'NCSSAR', model:'DJI Mini4K', owner:'1sar50' trackLabel:
+  rid:'1581F8HGX256G00A0JPU', mid:'1sar1002-02DjMtrc4td', org:'NCSSAR', model:'DJI Matrice 4TD', owner:'1sar1002-02' trackLabel:
+  rid:'1581F67QE239L00A00DE', mid:'1sar7DjMvc3Pr', org:'NCSSAR', model:'DJI Mavic 3 Pro', owner:'1sar7' trackLabel:
+  rid:'2003F100000000000198', mid:'1sar83DjN', org:'NCSSAR', model:'DJI Neo', owner:'1sar83' trackLabel:
+  rid:'1581F8HGX262U00A1E4M', mid:'1sar1001-01DjMtrc4td', org:'NCSSAR', model:'DJI Matrice 4TD', owner:'1sar1001-01' trackLabel:
+  rid:'1865CBM0200000188', mid:'1sar34DjN2', org:'NCSSAR', model:'DJI Neo 2', owner:'1sar34' trackLabel:
+  rid:'1581F6W8B251S00200V2', mid:'1sar7DjAvt2', org:'NCSSAR', model:'DJI Avata 2', owner:'1sar7' trackLabel:
+  rid:'1581F6Z9C2527003BZQB', mid:'1sar1002-02DjMn4Pr', org:'NCSSAR', model:'DJI Mini 4 Pro', owner:'1sar1002-02' trackLabel:
+  rid:'1748FEV3HMK924451281', mid:'1sar7AtlEvMx4n', org:'NCSSAR', model:'Autel Evo Max 4N', owner:'1sar7' trackLabel:
+  rid:'1748FEV2HN7824041047', mid:'1sar118AtlEv2v3', org:'NCSSAR', model:'Autel EVO II V3', owner:'1SAR118' trackLabel:
+  rid:'1581F6W8W25560020T3W', mid:'1sar118DjAvt2', org:'NCSSAR', model:'DJI Avata 2', owner:'1sar118' trackLabel:
+  rid:'1581F5YHX258E002U84R', mid:'1sar64DjMn3', org:'NCSSAR', model:'DJI Mini 3', owner:'1sar64' trackLabel:
+  rid:'1581F6Z9C249G0031CLB', mid:'1sar33DjMn4Pr', org:'NCSSAR', model:'DJI Mini 4 Pro', owner:'1sar33' trackLabel:
+  rid:'1581F8HGX255S00A0FZT', mid:'1sar7DjMtrc4td', org:'NCSSAR', model:'DJI Matrice 4TD', owner:'1sar7' trackLabel:
+  rid:'1865F10X000000000054', mid:'1sar1001-01DjN', org:'NCSSAR', model:'DJI Neo', owner:'1sar1001-01' trackLabel:,
+ loaded configFiles:
+  type:ct_ridmap, editor:org_config, dated: loaded at 170012Nov08  
+type:ct_credentials, editor:org_config, dated: loaded at 170012Nov08  
+type:ct_mutual_aid_credentials, editor:org_config, dated: loaded at 070938Oct19  
+type:ct_ridmap, editor:org_config, dated: loaded at 070938Oct19  
+type:ct_credentials, editor:org_config, dated: loaded at 070938Oct19  
+type:ct_mutual_aid_credentials, editor:org_config, dated: loaded at 183040Oct09
+  DEBUG[17290-17347] 10Nov071628.004 PST -08:00: CaltopoClient CTEvent(r2c_InitialState): Bundle[{r2c_mappedIds=[1910F916JJHWLHEFGVYC:1sar10PtnscAtm2lt, 1581FBLKC263900B0TY0:1sar33DjAv360, 1581F6W8W258F0022EZZ:1sar1001-01DjAvt2, 1865F10X000000001540:1sar1002-02DjN, 1581F6Z9C256S003HCXU:1sar62Mn4Pr, 1581F6Z9C24BK0036M9Q:1sar138DjMn4Pr, 1748FEV2HN2925021279:1sar83AtlEv2640T, 186975006977:1sar33DjN, 1581FBLKC262T00B07G1:1sar7DjAvt360, 18656A13568:1sar64DjMn2, 1581F6W8B24C3002090Y:1sar1002-02DjAvt2, 1581F6Z9C2527003BZFX:1sar1001-01DjMn4Pr, 1581F6Z9C24BH0036EJL:1sar7DjMn4Pr, 1581F9DEC258S0295066:1sar10DjMn5Pr, 187575000726:1sar50DjMn4k, 1581F8HGX256G00A0JPU:1sar1002-02DjMtrc4td, 1581F67QE239L00A00DE:1sar7DjMvc3Pr, 2003F100000000000198:1sar83DjN, 1581F8HGX262U00A1E4M:1sar1001-01DjMtrc4td, 1865CBM0200000188:1sar34DjN2, 1581F6W8B251S00200V2:1sar7DjAvt2, 1581F6Z9C2527003BZQB:1sar1002-02DjMn4Pr, 1748FEV3HMK924451281:1sar7AtlEvMx4n, 1748FEV2HN7824041047:1sar118AtlEv2v3, 1581F6W8W25560020T3W:1sar118DjAvt2, 1581F5YHX258E002U84R:1sar64DjMn3, 1581F6Z9C249G0031CLB:1sar33DjMn4Pr, 1581F8HGX255S00A0FZT:1sar7DjMtrc4td, 1865F10X000000000054:1sar1001-01DjN]}]
+  DEBUG[17290-17347] 10Nov071628.078 PST -08:00: R2CApplication Crashlytics startup probe initialized app=[DEFAULT] version=2.5.14
+  DEBUG[17290-17347] 10Nov071628.102 PST -08:00: Airspace Monitoring started or resumed
+  DEBUG[17290-17341] 10Nov071628.103 PST -08:00: Airspace Controlled-airspace refresh waiting for GPS location
+  DEBUG[17290-17347] 10Nov071628.107 PST -08:00: NotamREST Monitoring started or resumed
+  DEBUG[17290-17347] 10Nov071628.109 PST -08:00: LandRules Monitoring started or resumed
+  DEBUG[17290-17342] 10Nov071628.113 PST -08:00: NotamREST Fetch failed: Waiting for GPS location
+  DEBUG[17290-17347] 10Nov071628.120 PST -08:00: NetworkDiagnostics Network snapshotId=net-1 reason=startup ssid=unavailable bssidHash=unavailable ipv4=192.168.68.69 wifiRssiDbm=-50 frequencyMhz=5200 validated=true captivePortal=false metered=false
+  DEBUG[17290-17347] 10Nov071628.122 PST -08:00: NetworkDiagnostics Network routes snapshotId=net-1 network=105 default=true interface=wlan0 addresses=[fe80::dc3d:2fff:fefb:d785/64, 192.168.68.69/22] routes=[fe80::/64 -> :: wlan0 mtu 0, ::/0 -> fe80::2a87:baff:fe1c:8878 wlan0 mtu 0, 192.168.68.0/22 -> 0.0.0.0 wlan0 mtu 0, 0.0.0.0/0 -> 192.168.68.1 wlan0 mtu 0]
+  DEBUG[17290-17347] 10Nov071628.123 PST -08:00: R2CApplication onCreate().
+  DEBUG[17290-17386] 10Nov071628.124 PST -08:00: NetworkChecks Internet available; refreshing safety data and organization Tracker check-in
+  DEBUG[17290-main] 10Nov071628.127 PST -08:00: R2CActivity onCreate().
+  DEBUG[17290-17393] 10Nov071628.132 PST -08:00: R2CApplication Historical process exit #0: pid=12287 timestamp=1794323236356 reason=USER_REQUESTED(10) status=0 importance=400 pss=0 rss=452996 description='[REMOVE TASK] remove task'
+  DEBUG[17290-17393] 10Nov071628.133 PST -08:00: R2CApplication Historical process exit #1: pid=19507 timestamp=1794323236355 reason=USER_REQUESTED(10) status=0 importance=400 pss=0 rss=228284 description='[REMOVE TASK] remove task'
+  DEBUG[17290-17393] 10Nov071628.136 PST -08:00: R2CApplication Historical process exit #2: pid=19646 timestamp=1794323236345 reason=OTHER(13) status=0 importance=400 pss=0 rss=78268 description='[TOO MANY EMPTY PROCS] too many empty'
+  DEBUG[17290-17393] 10Nov071628.137 PST -08:00: R2CApplication Historical process exit #3: pid=12465 timestamp=1794320946272 reason=OTHER(13) status=0 importance=400 pss=0 rss=226120 description='[TOO MANY EMPTY PROCS] too many empty'
+  DEBUG[17290-17393] 10Nov071628.137 PST -08:00: R2CApplication Historical process exit #4: pid=6182 timestamp=1794317231818 reason=OTHER(13) status=0 importance=230 pss=0 rss=107196 description='[INVALID START] [INVALID START] killedByAm=true;No entry in mProcessNames;pendingStart=false;'
+  DEBUG[17290-17342] 10Nov071628.139 PST -08:00: NotamREST refresh(force=true) enabled=true configured=true radiusStatuteMiles=1 hasLocation=false accuracyM=NaN
+  DEBUG[17290-17342] 10Nov071628.140 PST -08:00: NotamREST Fetch failed: Waiting for GPS location
+  DEBUG[17290-main] 10Nov071628.168 PST -08:00: FfmpegProbeService FFmpeg bridge backend=ffmpeg-linked
+  DEBUG[17290-17395] 10Nov071628.204 PST -08:00: OperationalStorage state file device-marker-cleanup.json skipped bulk archive prepare
+  DEBUG[17290-main] 10Nov071628.208 PST -08:00: R2CViewModel DroneItem list update: batches=1 count=0
+  DEBUG[17290-17380] 10Nov071628.227 PST -08:00: ClueTrackDurability startup integrity orphansReindexed=0 missingPhotos=0 journalsRecovered=0 journalsRetained=0
+  DEBUG[17290-17343] 10Nov071628.265 PST -08:00: OperationalStorage state file flight-archive-journal.json skipped bulk archive prepare
+  DEBUG[17290-17391] 10Nov071628.313 PST -08:00: SplitMapPane Map cache root using archive SAF dir: content://com.android.externalstorage.documents/tree/4A21-0000%3ADroneTrax/document/4A21-0000%3ADroneTrax%2Fcache
+  DEBUG[17290-17394] 10Nov071628.332 PST -08:00: CaltopoClient GetTrackDirForTime(): found existing 'tracks-10Nov2026'
+  DEBUG[17290-17394] 10Nov071628.334 PST -08:00: CaltopoClient InitArchiveDir(): Initializing log stream...
+  DEBUG[17290-17391] 10Nov071628.352 PST -08:00: MapCacheTile #11 cache index start ns=tile_cache_v1
+  DEBUG[17290-17342] 10Nov071628.354 PST -08:00: MapCacheTile #12 cache index start ns=dem_point_v2
+  DEBUG[17290-17394] 10Nov071628.426 PST -08:00: CaltopoClient Logfile is up on <unknown> @["192.168.68.69"]
+########################################################################
+#  RID2Caltopo 2.5.14(09Nov2026:174431) running on Android OS v16(36)
+#  Writing logs to: androidx.documentfile.provider.TreeDocumentFile@747f4b4/Log_10Nov2026-071628-PST-0800.txt
+########################################################################
+
+  DEBUG[17290-17394] 10Nov071628.427 PST -08:00: R2CApplication Process started pid=17290; session log opened at process start
+  INFO 10Nov071628.479 PST -08:00: Terms TermsAcceptanceRestored version=2026-10-24.1 sha256=f8c4b55b49f5ddba2f4bce15604a66d4a0912e67eca0afe751592b9fc19b0a64 acceptedAt=2026-10-25T01:52:30.136Z scope=local-installation
+  DEBUG[17290-main] 10Nov071628.482 PST -08:00: R2CActivity checkPermission(): 'android.permission.NEARBY_WIFI_DEVICES' granted.
+  DEBUG[17290-main] 10Nov071628.483 PST -08:00: R2CActivity checkPermission(): 'android.permission.POST_NOTIFICATIONS' granted.
+  DEBUG[17290-main] 10Nov071628.483 PST -08:00: R2CActivity checkPermission(): 'android.permission.ACCESS_COARSE_LOCATION' granted.
+  DEBUG[17290-main] 10Nov071628.484 PST -08:00: R2CActivity checkPermission(): 'android.permission.ACCESS_FINE_LOCATION' granted.
+  DEBUG[17290-main] 10Nov071628.484 PST -08:00: R2CActivity checkPermission(): 'android.permission.BLUETOOTH_SCAN' granted.
+  DEBUG[17290-main] 10Nov071628.484 PST -08:00: R2CActivity checkPermission(): 'android.permission.BLUETOOTH_CONNECT' granted.
+  DEBUG[17290-main] 10Nov071628.485 PST -08:00: R2CActivity Setting MyDeviceName to:Ken T.'s Samsung SM-X350
+  DEBUG[17290-main] 10Nov071628.486 PST -08:00: R2CActivity initialize()
+  DEBUG[17290-main] 10Nov071628.486 PST -08:00: R2CActivity onCreate(): Requesting ScanningService start from activity 0x20d8d26 restarting=false running=false
+  DEBUG[17290-main] 10Nov071628.494 PST -08:00: R2CActivity onCreate(): Requesting MediaMTXService start restarting=false running=false
+  DEBUG[17290-main] 10Nov071628.505 PST -08:00: DroneAltCoord LocalTrackListener unregistered
+  DEBUG[17290-main] 10Nov071628.506 PST -08:00: StreamsViewModel retryPendingClues: skip reason=map-not-up status=down
+  DEBUG[17290-17342] 10Nov071628.619 PST -08:00: MapCacheTile #13 cache index ready ns=dem_point_v2 files=16 reason=cache elapsedMs=265
+  DEBUG[17290-17391] 10Nov071628.620 PST -08:00: MapCacheTile #14 cache index ready ns=tile_cache_v1 files=12922 reason=cache elapsedMs=267
+  DEBUG[17290-main] 10Nov071628.696 PST -08:00: ScanningService onCreate(): Starting ScanningService:0x33bc612 in pid:17290
+  DEBUG[17290-main] 10Nov071628.696 PST -08:00: ScanningService onCreate(): Context:0x3308637 DataManager:0xab901e3
+  DEBUG[17290-main] 10Nov071628.710 PST -08:00: ScanningService onStartCommand(): AppContext:0x3308637
+  DEBUG[17290-main] 10Nov071628.710 PST -08:00: ScanningService startScanning(): ScanningService 0x33bc612
+  DEBUG[17290-17391] 10Nov071628.711 PST -08:00: MapCacheTile #20 cache index start ns=icon_cache_v1
+  DEBUG[17290-main] 10Nov071628.711 PST -08:00: ScanningService Wi-Fi RID scanning remains disabled.
+  DEBUG[17290-17391] 10Nov071628.717 PST -08:00: MapCacheTile #21 cache index ready ns=icon_cache_v1 files=9 reason=cache elapsedMs=6
+  DEBUG[17290-17474] 10Nov071628.718 PST -08:00: BluetoothScanner startScan: Calling bluetoothLeScanner.startScan variant=PRODUCTION legacy1M=true periodicRestart=true
+  DEBUG[17290-main] 10Nov071628.744 PST -08:00: MediaMTXService MediaMTXService.onStartCommand()
+  DEBUG[17290-main] 10Nov071628.745 PST -08:00: MediaMTXService MediaMTX service started in pid 17290
+  DEBUG[17290-17475] 10Nov071628.746 PST -08:00: MediaMTXService Running MediaMTX START on mediamtx-native-control
+  DEBUG[17290-17475] 10Nov071628.746 PST -08:00: MediaMTXNative Loading libmediamtx_jni.so
+  DEBUG[17290-main] 10Nov071628.789 PST -08:00: StreamsViewModel Loaded 10 local clue(s) for unassigned
+  DEBUG[17290-17428] 10Nov071628.903 PST -08:00: NotamREST refresh(force=true) enabled=true configured=true radiusStatuteMiles=1 hasLocation=true accuracyM=2000.0
+  DEBUG[17290-17428] 10Nov071628.912 PST -08:00: NotamREST GET https://r2c-tracker.com/faa/notams?latitude=[redacted]&longitude=[redacted]&radius=1 responseFormat=GEOJSON
+  DEBUG[17290-17346] 10Nov071628.950 PST -08:00: CaltopoClient GetTrackDirForTime(): found existing 'tracks-10Nov2026'
+  DEBUG[17290-17398] 10Nov071629.123 PST -08:00: CaltopoSession cancelInFlightRequestsForConnectivityRestore(): cancelled OkHttp calls and evicted pool
+  DEBUG[17290-17381] 10Nov071629.188 PST -08:00: CaltopoClient ArchiveState(mutual aid template changed):
+vers:'19', minDist:'2' ft, usePeersFlag:'true', captureVideoStreamsFlag:'true'
+newTrackDelayInSec:30, maxFlatlineToneDurationInSec:5, bridgeCheckDistanceFeet:20, alarmVolumePercent:100, alarmVolumeConfigured:false, debugLevel:Debugs, maxIdleTimeInMinutes:30, incident:Training, opPeriod:1, coordinateDisplayFormat:decimal
+predictiveHeadEnabled:false, proximityAlertSpacingFeet:100
+notamEnabled:true, notamRadiusNm:1, notamAutoRefresh:true, notamRefreshIntervalSeconds:1800, notamWarnInsideOneNm:true
+notamApiBaseUrl:'', notamTokenUrl:'', notamClientId:'', notamClientSecret:'', notamScope:'', notamLastUpdatedEpochMs:1794321980330
+landRestrictionsEnabled:true, landRestrictionsShowOnMap:true, landRestrictionsAutoRefresh:true, landRestrictionsRadiusNm:1, landRestrictionsLastUpdatedEpochMs:1794322908595
+faaConfigLabel:'', faaTokenPresent:false, faaPayloadCached:false, faaStale:false, faaLastValidatedEpochMs:0, faaLastFailureReason:''
+activeCaltopoProfileId:'home-default', caltopoProfiles:1, maTemplateConfigured:false
+archivePath: 'content://com.android.externalstorage.documents/tree/4A21-0000%3ADroneTrax', caltopoTrackFolder: 'Drone Tracks', caltopoDomainAndPort:caltopo.com,
+teamId: '###', credId: '######' credSecret: '###########', dronespecs: 29 k/v pairs:
+  rid:'1910F916JJHWLHEFGVYC', mid:'1sar10PtnscAtm2lt', org:'NCSSAR', model:'Potensic Atom LT', owner:'1sar10' trackLabel:
+  rid:'1581FBLKC263900B0TY0', mid:'1sar33DjAv360', org:'NCSSAR', model:'DJI Avata 360', owner:'' trackLabel:
+  rid:'1581F6W8W258F0022EZZ', mid:'1sar1001-01DjAvt2', org:'NCSSAR', model:'DJI Avata2', owner:'1sar1001-01' trackLabel:
+  rid:'1865F10X000000001540', mid:'1sar1002-02DjN', org:'NCSSAR', model:'DJI Neo', owner:'1sar1002-02' trackLabel:
+  rid:'1581F6Z9C256S003HCXU', mid:'1sar62Mn4Pr', org:'NCSSAR', model:'DJI Mini 4 Pro', owner:'' trackLabel:
+  rid:'1581F6Z9C24BK0036M9Q', mid:'1sar138DjMn4Pr', org:'NCSSAR', model:'DJI Mini 4 Pro', owner:'1sar138' trackLabel:
+  rid:'1748FEV2HN2925021279', mid:'1sar83AtlEv2640T', org:'NCSSAR', model:'Autel EVO 2 640 T', owner:'1sar83' trackLabel:
+  rid:'186975006977', mid:'1sar33DjN', org:'NCSSAR', model:'DJI Neo', owner:'1sar33' trackLabel:
+  rid:'1581FBLKC262T00B07G1', mid:'1sar7DjAvt360', org:'NCSSAR', model:'DJI Avata 360', owner:'1sar7' trackLabel:
+  rid:'18656A13568', mid:'1sar64DjMn2', org:'NCSSAR', model:'DJI Mini 2', owner:'1sar64' trackLabel:
+  rid:'1581F6W8B24C3002090Y', mid:'1sar1002-02DjAvt2', org:'NCSSAR', model:'DJI Avata2', owner:'1sar1002-02' trackLabel:
+  rid:'1581F6Z9C2527003BZFX', mid:'1sar1001-01DjMn4Pr', org:'NCSSAR', model:'DJI Mini 4 Pro', owner:'1sar1001-01' trackLabel:
+  rid:'1581F6Z9C24BH0036EJL', mid:'1sar7DjMn4Pr', org:'NCSSAR', model:'DJI Mini 4 Pro', owner:'1sar7' trackLabel:
+  rid:'1581F9DEC258S0295066', mid:'1sar10DjMn5Pr', org:'NCSSAR', model:'DJI Mini 5 Pro', owner:'1sar10' trackLabel:
+  rid:'187575000726', mid:'1sar50DjMn4k', org:'NCSSAR', model:'DJI Mini4K', owner:'1sar50' trackLabel:
+  rid:'1581F8HGX256G00A0JPU', mid:'1sar1002-02DjMtrc4td', org:'NCSSAR', model:'DJI Matrice 4TD', owner:'1sar1002-02' trackLabel:
+  rid:'1581F67QE239L00A00DE', mid:'1sar7DjMvc3Pr', org:'NCSSAR', model:'DJI Mavic 3 Pro', owner:'1sar7' trackLabel:
+  rid:'2003F100000000000198', mid:'1sar83DjN', org:'NCSSAR', model:'DJI Neo', owner:'1sar83' trackLabel:
+  rid:'1581F8HGX262U00A1E4M', mid:'1sar1001-01DjMtrc4td', org:'NCSSAR', model:'DJI Matrice 4TD', owner:'1sar1001-01' trackLabel:
+  rid:'1865CBM0200000188', mid:'1sar34DjN2', org:'NCSSAR', model:'DJI Neo 2', owner:'1sar34' trackLabel:
+  rid:'1581F6W8B251S00200V2', mid:'1sar7DjAvt2', org:'NCSSAR', model:'DJI Avata 2', owner:'1sar7' trackLabel:
+  rid:'1581F6Z9C2527003BZQB', mid:'1sar1002-02DjMn4Pr', org:'NCSSAR', model:'DJI Mini 4 Pro', owner:'1sar1002-02' trackLabel:
+  rid:'1748FEV3HMK924451281', mid:'1sar7AtlEvMx4n', org:'NCSSAR', model:'Autel Evo Max 4N', owner:'1sar7' trackLabel:
+  rid:'1748FEV2HN7824041047', mid:'1sar118AtlEv2v3', org:'NCSSAR', model:'Autel EVO II V3', owner:'1SAR118' trackLabel:
+  rid:'1581F6W8W25560020T3W', mid:'1sar118DjAvt2', org:'NCSSAR', model:'DJI Avata 2', owner:'1sar118' trackLabel:
+  rid:'1581F5YHX258E002U84R', mid:'1sar64DjMn3', org:'NCSSAR', model:'DJI Mini 3', owner:'1sar64' trackLabel:
+  rid:'1581F6Z9C249G0031CLB', mid:'1sar33DjMn4Pr', org:'NCSSAR', model:'DJI Mini 4 Pro', owner:'1sar33' trackLabel:
+  rid:'1581F8HGX255S00A0FZT', mid:'1sar7DjMtrc4td', org:'NCSSAR', model:'DJI Matrice 4TD', owner:'1sar7' trackLabel:
+  rid:'1865F10X000000000054', mid:'1sar1001-01DjN', org:'NCSSAR', model:'DJI Neo', owner:'1sar1001-01' trackLabel:,
+ loaded configFiles:
+  type:ct_ridmap, editor:org_config, dated: loaded at 170012Nov08  
+type:ct_credentials, editor:org_config, dated: loaded at 170012Nov08  
+type:ct_mutual_aid_credentials, editor:org_config, dated: loaded at 070938Oct19  
+type:ct_ridmap, editor:org_config, dated: loaded at 070938Oct19  
+type:ct_credentials, editor:org_config, dated: loaded at 070938Oct19  
+type:ct_mutual_aid_credentials, editor:org_config, dated: loaded at 183040Oct09
+  DEBUG[17290-17381] 10Nov071629.188 PST -08:00: CaltopoClient CTEvent(r2c_ArchiveState): Bundle[{r2c_reason=mutual aid template changed}]
+  DEBUG[17290-17381] 10Nov071629.206 PST -08:00: CaltopoClient ArchiveState(incident changed):
+vers:'19', minDist:'2' ft, usePeersFlag:'true', captureVideoStreamsFlag:'true'
+newTrackDelayInSec:30, maxFlatlineToneDurationInSec:5, bridgeCheckDistanceFeet:20, alarmVolumePercent:100, alarmVolumeConfigured:false, debugLevel:Debugs, maxIdleTimeInMinutes:30, incident:Training, opPeriod:1, coordinateDisplayFormat:decimal
+predictiveHeadEnabled:false, proximityAlertSpacingFeet:100
+notamEnabled:true, notamRadiusNm:1, notamAutoRefresh:true, notamRefreshIntervalSeconds:1800, notamWarnInsideOneNm:true
+notamApiBaseUrl:'', notamTokenUrl:'', notamClientId:'', notamClientSecret:'', notamScope:'', notamLastUpdatedEpochMs:1794321980330
+landRestrictionsEnabled:true, landRestrictionsShowOnMap:true, landRestrictionsAutoRefresh:true, landRestrictionsRadiusNm:1, landRestrictionsLastUpdatedEpochMs:1794322908595
+faaConfigLabel:'', faaTokenPresent:false, faaPayloadCached:false, faaStale:false, faaLastValidatedEpochMs:0, faaLastFailureReason:''
+activeCaltopoProfileId:'home-default', caltopoProfiles:1, maTemplateConfigured:false
+archivePath: 'content://com.android.externalstorage.documents/tree/4A21-0000%3ADroneTrax', caltopoTrackFolder: 'Drone Tracks', caltopoDomainAndPort:caltopo.com,
+teamId: '###', credId: '######' credSecret: '###########', dronespecs: 29 k/v pairs:
+  rid:'1910F916JJHWLHEFGVYC', mid:'1sar10PtnscAtm2lt', org:'NCSSAR', model:'Potensic Atom LT', owner:'1sar10' trackLabel:
+  rid:'1581FBLKC263900B0TY0', mid:'1sar33DjAv360', org:'NCSSAR', model:'DJI Avata 360', owner:'' trackLabel:
+  rid:'1581F6W8W258F0022EZZ', mid:'1sar1001-01DjAvt2', org:'NCSSAR', model:'DJI Avata2', owner:'1sar1001-01' trackLabel:
+  rid:'1865F10X000000001540', mid:'1sar1002-02DjN', org:'NCSSAR', model:'DJI Neo', owner:'1sar1002-02' trackLabel:
+  rid:'1581F6Z9C256S003HCXU', mid:'1sar62Mn4Pr', org:'NCSSAR', model:'DJI Mini 4 Pro', owner:'' trackLabel:
+  rid:'1581F6Z9C24BK0036M9Q', mid:'1sar138DjMn4Pr', org:'NCSSAR', model:'DJI Mini 4 Pro', owner:'1sar138' trackLabel:
+  rid:'1748FEV2HN2925021279', mid:'1sar83AtlEv2640T', org:'NCSSAR', model:'Autel EVO 2 640 T', owner:'1sar83' trackLabel:
+  rid:'186975006977', mid:'1sar33DjN', org:'NCSSAR', model:'DJI Neo', owner:'1sar33' trackLabel:
+  rid:'1581FBLKC262T00B07G1', mid:'1sar7DjAvt360', org:'NCSSAR', model:'DJI Avata 360', owner:'1sar7' trackLabel:
+  rid:'18656A13568', mid:'1sar64DjMn2', org:'NCSSAR', model:'DJI Mini 2', owner:'1sar64' trackLabel:
+  rid:'1581F6W8B24C3002090Y', mid:'1sar1002-02DjAvt2', org:'NCSSAR', model:'DJI Avata2', owner:'1sar1002-02' trackLabel:
+  rid:'1581F6Z9C2527003BZFX', mid:'1sar1001-01DjMn4Pr', org:'NCSSAR', model:'DJI Mini 4 Pro', owner:'1sar1001-01' trackLabel:
+  rid:'1581F6Z9C24BH0036EJL', mid:'1sar7DjMn4Pr', org:'NCSSAR', model:'DJI Mini 4 Pro', owner:'1sar7' trackLabel:
+  rid:'1581F9DEC258S0295066', mid:'1sar10DjMn5Pr', org:'NCSSAR', model:'DJI Mini 5 Pro', owner:'1sar10' trackLabel:
+  rid:'187575000726', mid:'1sar50DjMn4k', org:'NCSSAR', model:'DJI Mini4K', owner:'1sar50' trackLabel:
+  rid:'1581F8HGX256G00A0JPU', mid:'1sar1002-02DjMtrc4td', org:'NCSSAR', model:'DJI Matrice 4TD', owner:'1sar1002-02' trackLabel:
+  rid:'1581F67QE239L00A00DE', mid:'1sar7DjMvc3Pr', org:'NCSSAR', model:'DJI Mavic 3 Pro', owner:'1sar7' trackLabel:
+  rid:'2003F100000000000198', mid:'1sar83DjN', org:'NCSSAR', model:'DJI Neo', owner:'1sar83' trackLabel:
+  rid:'1581F8HGX262U00A1E4M', mid:'1sar1001-01DjMtrc4td', org:'NCSSAR', model:'DJI Matrice 4TD', owner:'1sar1001-01' trackLabel:
+  rid:'1865CBM0200000188', mid:'1sar34DjN2', org:'NCSSAR', model:'DJI Neo 2', owner:'1sar34' trackLabel:
+  rid:'1581F6W8B251S00200V2', mid:'1sar7DjAvt2', org:'NCSSAR', model:'DJI Avata 2', owner:'1sar7' trackLabel:
+  rid:'1581F6Z9C2527003BZQB', mid:'1sar1002-02DjMn4Pr', org:'NCSSAR', model:'DJI Mini 4 Pro', owner:'1sar1002-02' trackLabel:
+  rid:'1748FEV3HMK924451281', mid:'1sar7AtlEvMx4n', org:'NCSSAR', model:'Autel Evo Max 4N', owner:'1sar7' trackLabel:
+  rid:'1748FEV2HN7824041047', mid:'1sar118AtlEv2v3', org:'NCSSAR', model:'Autel EVO II V3', owner:'1SAR118' trackLabel:
+  rid:'1581F6W8W25560020T3W', mid:'1sar118DjAvt2', org:'NCSSAR', model:'DJI Avata 2', owner:'1sar118' trackLabel:
+  rid:'1581F5YHX258E002U84R', mid:'1sar64DjMn3', org:'NCSSAR', model:'DJI Mini 3', owner:'1sar64' trackLabel:
+  rid:'1581F6Z9C249G0031CLB', mid:'1sar33DjMn4Pr', org:'NCSSAR', model:'DJI Mini 4 Pro', owner:'1sar33' trackLabel:
+  rid:'1581F8HGX255S00A0FZT', mid:'1sar7DjMtrc4td', org:'NCSSAR', model:'DJI Matrice 4TD', owner:'1sar7' trackLabel:
+  rid:'1865F10X000000000054', mid:'1sar1001-01DjN', org:'NCSSAR', model:'DJI Neo', owner:'1sar1001-01' trackLabel:,
+ loaded configFiles:
+  type:ct_credentials, editor:org_config, dated: loaded at 071629Nov10  
+type:ct_ridmap, editor:org_config, dated: loaded at 170012Nov08  
+type:ct_credentials, editor:org_config, dated: loaded at 170012Nov08  
+type:ct_mutual_aid_credentials, editor:org_config, dated: loaded at 070938Oct19  
+type:ct_ridmap, editor:org_config, dated: loaded at 070938Oct19  
+type:ct_credentials, editor:org_config, dated: loaded at 070938Oct19
+  DEBUG[17290-17381] 10Nov071629.206 PST -08:00: CaltopoClient CTEvent(r2c_ArchiveState): Bundle[{r2c_reason=incident changed}]
+  DEBUG[17290-17381] 10Nov071629.208 PST -08:00: CaltopoClient SetCaltopoDomainAndPort(): No change.
+  DEBUG[17290-17381] 10Nov071629.218 PST -08:00: CaltopoClient ArchiveState(Credentials loaded):
+vers:'19', minDist:'2' ft, usePeersFlag:'true', captureVideoStreamsFlag:'true'
+newTrackDelayInSec:30, maxFlatlineToneDurationInSec:5, bridgeCheckDistanceFeet:20, alarmVolumePercent:100, alarmVolumeConfigured:false, debugLevel:Debugs, maxIdleTimeInMinutes:30, incident:Training, opPeriod:1, coordinateDisplayFormat:decimal
+predictiveHeadEnabled:false, proximityAlertSpacingFeet:100
+notamEnabled:true, notamRadiusNm:1, notamAutoRefresh:true, notamRefreshIntervalSeconds:1800, notamWarnInsideOneNm:true
+notamApiBaseUrl:'', notamTokenUrl:'', notamClientId:'', notamClientSecret:'', notamScope:'', notamLastUpdatedEpochMs:1794321980330
+landRestrictionsEnabled:true, landRestrictionsShowOnMap:true, landRestrictionsAutoRefresh:true, landRestrictionsRadiusNm:1, landRestrictionsLastUpdatedEpochMs:1794322908595
+faaConfigLabel:'', faaTokenPresent:false, faaPayloadCached:false, faaStale:false, faaLastValidatedEpochMs:0, faaLastFailureReason:''
+activeCaltopoProfileId:'home-default', caltopoProfiles:1, maTemplateConfigured:false
+archivePath: 'content://com.android.externalstorage.documents/tree/4A21-0000%3ADroneTrax', caltopoTrackFolder: 'Drone Tracks', caltopoDomainAndPort:caltopo.com,
+teamId: '###', credId: '######' credSecret: '###########', dronespecs: 29 k/v pairs:
+  rid:'1910F916JJHWLHEFGVYC', mid:'1sar10PtnscAtm2lt', org:'NCSSAR', model:'Potensic Atom LT', owner:'1sar10' trackLabel:
+  rid:'1581FBLKC263900B0TY0', mid:'1sar33DjAv360', org:'NCSSAR', model:'DJI Avata 360', owner:'' trackLabel:
+  rid:'1581F6W8W258F0022EZZ', mid:'1sar1001-01DjAvt2', org:'NCSSAR', model:'DJI Avata2', owner:'1sar1001-01' trackLabel:
+  rid:'1865F10X000000001540', mid:'1sar1002-02DjN', org:'NCSSAR', model:'DJI Neo', owner:'1sar1002-02' trackLabel:
+  rid:'1581F6Z9C256S003HCXU', mid:'1sar62Mn4Pr', org:'NCSSAR', model:'DJI Mini 4 Pro', owner:'' trackLabel:
+  rid:'1581F6Z9C24BK0036M9Q', mid:'1sar138DjMn4Pr', org:'NCSSAR', model:'DJI Mini 4 Pro', owner:'1sar138' trackLabel:
+  rid:'1748FEV2HN2925021279', mid:'1sar83AtlEv2640T', org:'NCSSAR', model:'Autel EVO 2 640 T', owner:'1sar83' trackLabel:
+  rid:'186975006977', mid:'1sar33DjN', org:'NCSSAR', model:'DJI Neo', owner:'1sar33' trackLabel:
+  rid:'1581FBLKC262T00B07G1', mid:'1sar7DjAvt360', org:'NCSSAR', model:'DJI Avata 360', owner:'1sar7' trackLabel:
+  rid:'18656A13568', mid:'1sar64DjMn2', org:'NCSSAR', model:'DJI Mini 2', owner:'1sar64' trackLabel:
+  rid:'1581F6W8B24C3002090Y', mid:'1sar1002-02DjAvt2', org:'NCSSAR', model:'DJI Avata2', owner:'1sar1002-02' trackLabel:
+  rid:'1581F6Z9C2527003BZFX', mid:'1sar1001-01DjMn4Pr', org:'NCSSAR', model:'DJI Mini 4 Pro', owner:'1sar1001-01' trackLabel:
+  rid:'1581F6Z9C24BH0036EJL', mid:'1sar7DjMn4Pr', org:'NCSSAR', model:'DJI Mini 4 Pro', owner:'1sar7' trackLabel:
+  rid:'1581F9DEC258S0295066', mid:'1sar10DjMn5Pr', org:'NCSSAR', model:'DJI Mini 5 Pro', owner:'1sar10' trackLabel:
+  rid:'187575000726', mid:'1sar50DjMn4k', org:'NCSSAR', model:'DJI Mini4K', owner:'1sar50' trackLabel:
+  rid:'1581F8HGX256G00A0JPU', mid:'1sar1002-02DjMtrc4td', org:'NCSSAR', model:'DJI Matrice 4TD', owner:'1sar1002-02' trackLabel:
+  rid:'1581F67QE239L00A00DE', mid:'1sar7DjMvc3Pr', org:'NCSSAR', model:'DJI Mavic 3 Pro', owner:'1sar7' trackLabel:
+  rid:'2003F100000000000198', mid:'1sar83DjN', org:'NCSSAR', model:'DJI Neo', owner:'1sar83' trackLabel:
+  rid:'1581F8HGX262U00A1E4M', mid:'1sar1001-01DjMtrc4td', org:'NCSSAR', model:'DJI Matrice 4TD', owner:'1sar1001-01' trackLabel:
+  rid:'1865CBM0200000188', mid:'1sar34DjN2', org:'NCSSAR', model:'DJI Neo 2', owner:'1sar34' trackLabel:
+  rid:'1581F6W8B251S00200V2', mid:'1sar7DjAvt2', org:'NCSSAR', model:'DJI Avata 2', owner:'1sar7' trackLabel:
+  rid:'1581F6Z9C2527003BZQB', mid:'1sar1002-02DjMn4Pr', org:'NCSSAR', model:'DJI Mini 4 Pro', owner:'1sar1002-02' trackLabel:
+  rid:'1748FEV3HMK924451281', mid:'1sar7AtlEvMx4n', org:'NCSSAR', model:'Autel Evo Max 4N', owner:'1sar7' trackLabel:
+  rid:'1748FEV2HN7824041047', mid:'1sar118AtlEv2v3', org:'NCSSAR', model:'Autel EVO II V3', owner:'1SAR118' trackLabel:
+  rid:'1581F6W8W25560020T3W', mid:'1sar118DjAvt2', org:'NCSSAR', model:'DJI Avata 2', owner:'1sar118' trackLabel:
+  rid:'1581F5YHX258E002U84R', mid:'1sar64DjMn3', org:'NCSSAR', model:'DJI Mini 3', owner:'1sar64' trackLabel:
+  rid:'1581F6Z9C249G0031CLB', mid:'1sar33DjMn4Pr', org:'NCSSAR', model:'DJI Mini 4 Pro', owner:'1sar33' trackLabel:
+  rid:'1581F8HGX255S00A0FZT', mid:'1sar7DjMtrc4td', org:'NCSSAR', model:'DJI Matrice 4TD', owner:'1sar7' trackLabel:
+  rid:'1865F10X000000000054', mid:'1sar1001-01DjN', org:'NCSSAR', model:'DJI Neo', owner:'1sar1001-01' trackLabel:,
+ loaded configFiles:
+  type:ct_credentials, editor:org_config, dated: loaded at 071629Nov10  
+type:ct_ridmap, editor:org_config, dated: loaded at 170012Nov08  
+type:ct_credentials, editor:org_config, dated: loaded at 170012Nov08  
+type:ct_mutual_aid_credentials, editor:org_config, dated: loaded at 070938Oct19  
+type:ct_ridmap, editor:org_config, dated: loaded at 070938Oct19  
+type:ct_credentials, editor:org_config, dated: loaded at 070938Oct19
+  DEBUG[17290-17381] 10Nov071629.219 PST -08:00: CaltopoClient CTEvent(r2c_ArchiveState): Bundle[{r2c_reason=Credentials loaded}]
+  DEBUG[17290-17381] 10Nov071629.222 PST -08:00: CaltopoClient readRidmapFileContent(): setting load_type to replace
+  DEBUG[17290-17381] 10Nov071629.223 PST -08:00: CaltopoClient readRidmapFileContent(): Found existing droneSpec for spec: rid:'1581F5YHX258E002U84R', mid:'1sar64DjMn3', org:'NCSSAR', model:'DJI Mini 3', owner:'1sar64' trackLabel:
+  DEBUG[17290-17398] 10Nov071629.227 PST -08:00: OperationalStorage state file caltopo-interrupted-tracks.json skipped bulk archive prepare
+  DEBUG[17290-17381] 10Nov071629.228 PST -08:00: CaltopoClient readRidmapFileContent(): Found existing droneSpec for spec: rid:'1581F67QE239L00A00DE', mid:'1sar7DjMvc3Pr', org:'NCSSAR', model:'DJI Mavic 3 Pro', owner:'1sar7' trackLabel:
+  DEBUG[17290-17381] 10Nov071629.233 PST -08:00: CaltopoClient readRidmapFileContent(): Found existing droneSpec for spec: rid:'1581F6W8B24C3002090Y', mid:'1sar1002-02DjAvt2', org:'NCSSAR', model:'DJI Avata2', owner:'1sar1002-02' trackLabel:
+  DEBUG[17290-17381] 10Nov071629.237 PST -08:00: CaltopoClient readRidmapFileContent(): Found existing droneSpec for spec: rid:'1581F6W8B251S00200V2', mid:'1sar7DjAvt2', org:'NCSSAR', model:'DJI Avata 2', owner:'1sar7' trackLabel:
+  DEBUG[17290-17381] 10Nov071629.238 PST -08:00: CaltopoClient readRidmapFileContent(): Found existing droneSpec for spec: rid:'1581F6W8W25560020T3W', mid:'1sar118DjAvt2', org:'NCSSAR', model:'DJI Avata 2', owner:'1sar118' trackLabel:
+  DEBUG[17290-17381] 10Nov071629.240 PST -08:00: CaltopoClient readRidmapFileContent(): Found existing droneSpec for spec: rid:'1581F6W8W258F0022EZZ', mid:'1sar1001-01DjAvt2', org:'NCSSAR', model:'DJI Avata2', owner:'1sar1001-01' trackLabel:
+  DEBUG[17290-17381] 10Nov071629.246 PST -08:00: CaltopoClient readRidmapFileContent(): Found existing droneSpec for spec: rid:'1581F6Z9C249G0031CLB', mid:'1sar33DjMn4Pr', org:'NCSSAR', model:'DJI Mini 4 Pro', owner:'1sar33' trackLabel:
+  DEBUG[17290-17381] 10Nov071629.248 PST -08:00: CaltopoClient readRidmapFileContent(): Found existing droneSpec for spec: rid:'1581F6Z9C24BH0036EJL', mid:'1sar7DjMn4Pr', org:'NCSSAR', model:'DJI Mini 4 Pro', owner:'1sar7' trackLabel:
+  DEBUG[17290-17381] 10Nov071629.250 PST -08:00: CaltopoClient readRidmapFileContent(): Found existing droneSpec for spec: rid:'1581F6Z9C24BK0036M9Q', mid:'1sar138DjMn4Pr', org:'NCSSAR', model:'DJI Mini 4 Pro', owner:'1sar138' trackLabel:
+  DEBUG[17290-17381] 10Nov071629.252 PST -08:00: CaltopoClient readRidmapFileContent(): Found existing droneSpec for spec: rid:'1581F6Z9C2527003BZFX', mid:'1sar1001-01DjMn4Pr', org:'NCSSAR', model:'DJI Mini 4 Pro', owner:'1sar1001-01' trackLabel:
+  DEBUG[17290-17381] 10Nov071629.255 PST -08:00: CaltopoClient readRidmapFileContent(): Found existing droneSpec for spec: rid:'1581F6Z9C2527003BZQB', mid:'1sar1002-02DjMn4Pr', org:'NCSSAR', model:'DJI Mini 4 Pro', owner:'1sar1002-02' trackLabel:
+  DEBUG[17290-17381] 10Nov071629.256 PST -08:00: CaltopoClient readRidmapFileContent(): Found existing droneSpec for spec: rid:'1581F6Z9C256S003HCXU', mid:'1sar62Mn4Pr', org:'NCSSAR', model:'DJI Mini 4 Pro', owner:'' trackLabel:
+  DEBUG[17290-17381] 10Nov071629.258 PST -08:00: CaltopoClient readRidmapFileContent(): Found existing droneSpec for spec: rid:'1581F8HGX255S00A0FZT', mid:'1sar7DjMtrc4td', org:'NCSSAR', model:'DJI Matrice 4TD', owner:'1sar7' trackLabel:
+  DEBUG[17290-17381] 10Nov071629.259 PST -08:00: CaltopoClient readRidmapFileContent(): Found existing droneSpec for spec: rid:'1581F8HGX256G00A0JPU', mid:'1sar1002-02DjMtrc4td', org:'NCSSAR', model:'DJI Matrice 4TD', owner:'1sar1002-02' trackLabel:
+  DEBUG[17290-17381] 10Nov071629.261 PST -08:00: CaltopoClient readRidmapFileContent(): Found existing droneSpec for spec: rid:'1581F8HGX262U00A1E4M', mid:'1sar1001-01DjMtrc4td', org:'NCSSAR', model:'DJI Matrice 4TD', owner:'1sar1001-01' trackLabel:
+  DEBUG[17290-17381] 10Nov071629.262 PST -08:00: CaltopoClient readRidmapFileContent(): Found existing droneSpec for spec: rid:'1581F9DEC258S0295066', mid:'1sar10DjMn5Pr', org:'NCSSAR', model:'DJI Mini 5 Pro', owner:'1sar10' trackLabel:
+  DEBUG[17290-17381] 10Nov071629.263 PST -08:00: CaltopoClient readRidmapFileContent(): Found existing droneSpec for spec: rid:'1581FBLKC262T00B07G1', mid:'1sar7DjAvt360', org:'NCSSAR', model:'DJI Avata 360', owner:'1sar7' trackLabel:
+  DEBUG[17290-17381] 10Nov071629.265 PST -08:00: CaltopoClient readRidmapFileContent(): Found existing droneSpec for spec: rid:'1581FBLKC263900B0TY0', mid:'1sar33DjAv360', org:'NCSSAR', model:'DJI Avata 360', owner:'' trackLabel:
+  DEBUG[17290-17381] 10Nov071629.267 PST -08:00: CaltopoClient readRidmapFileContent(): Found existing droneSpec for spec: rid:'1748FEV2HN2925021279', mid:'1sar83AtlEv2640T', org:'NCSSAR', model:'Autel EVO 2 640 T', owner:'1sar83' trackLabel:
+  DEBUG[17290-17381] 10Nov071629.268 PST -08:00: CaltopoClient readRidmapFileContent(): Found existing droneSpec for spec: rid:'1748FEV2HN7824041047', mid:'1sar118AtlEv2v3', org:'NCSSAR', model:'Autel EVO II V3', owner:'1SAR118' trackLabel:
+  DEBUG[17290-17381] 10Nov071629.270 PST -08:00: CaltopoClient readRidmapFileContent(): Found existing droneSpec for spec: rid:'1748FEV3HMK924451281', mid:'1sar7AtlEvMx4n', org:'NCSSAR', model:'Autel Evo Max 4N', owner:'1sar7' trackLabel:
+  DEBUG[17290-17381] 10Nov071629.271 PST -08:00: CaltopoClient readRidmapFileContent(): Found existing droneSpec for spec: rid:'18656A13568', mid:'1sar64DjMn2', org:'NCSSAR', model:'DJI Mini 2', owner:'1sar64' trackLabel:
+  DEBUG[17290-17381] 10Nov071629.272 PST -08:00: CaltopoClient readRidmapFileContent(): Found existing droneSpec for spec: rid:'1865CBM0200000188', mid:'1sar34DjN2', org:'NCSSAR', model:'DJI Neo 2', owner:'1sar34' trackLabel:
+  DEBUG[17290-17381] 10Nov071629.275 PST -08:00: CaltopoClient readRidmapFileContent(): Found existing droneSpec for spec: rid:'1865F10X000000000054', mid:'1sar1001-01DjN', org:'NCSSAR', model:'DJI Neo', owner:'1sar1001-01' trackLabel:
+  DEBUG[17290-17381] 10Nov071629.278 PST -08:00: CaltopoClient readRidmapFileContent(): Found existing droneSpec for spec: rid:'1865F10X000000001540', mid:'1sar1002-02DjN', org:'NCSSAR', model:'DJI Neo', owner:'1sar1002-02' trackLabel:
+  DEBUG[17290-17381] 10Nov071629.278 PST -08:00: CaltopoClient readRidmapFileContent(): Found existing droneSpec for spec: rid:'186975006977', mid:'1sar33DjN', org:'NCSSAR', model:'DJI Neo', owner:'1sar33' trackLabel:
+  DEBUG[17290-17381] 10Nov071629.281 PST -08:00: CaltopoClient readRidmapFileContent(): Found existing droneSpec for spec: rid:'187575000726', mid:'1sar50DjMn4k', org:'NCSSAR', model:'DJI Mini4K', owner:'1sar50' trackLabel:
+  DEBUG[17290-17381] 10Nov071629.283 PST -08:00: CaltopoClient readRidmapFileContent(): Found existing droneSpec for spec: rid:'1910F916JJHWLHEFGVYC', mid:'1sar10PtnscAtm2lt', org:'NCSSAR', model:'Potensic Atom LT', owner:'1sar10' trackLabel:
+  DEBUG[17290-17381] 10Nov071629.284 PST -08:00: CaltopoClient readRidmapFileContent(): Found existing droneSpec for spec: rid:'2003F100000000000198', mid:'1sar83DjN', org:'NCSSAR', model:'DJI Neo', owner:'1sar83' trackLabel:
+  DEBUG[17290-17381] 10Nov071629.284 PST -08:00: CaltopoClient readRidmapFileContent(): No changes detected.
+  DEBUG[17290-17381] 10Nov071629.380 PST -08:00: CaltopoClient ArchiveState(caltopo credentials changed; origin=tracker):
+vers:'19', minDist:'2' ft, usePeersFlag:'true', captureVideoStreamsFlag:'true'
+newTrackDelayInSec:30, maxFlatlineToneDurationInSec:5, bridgeCheckDistanceFeet:20, alarmVolumePercent:100, alarmVolumeConfigured:false, debugLevel:Debugs, maxIdleTimeInMinutes:30, incident:Training, opPeriod:1, coordinateDisplayFormat:decimal
+predictiveHeadEnabled:false, proximityAlertSpacingFeet:100
+notamEnabled:true, notamRadiusNm:1, notamAutoRefresh:true, notamRefreshIntervalSeconds:1800, notamWarnInsideOneNm:true
+notamApiBaseUrl:'', notamTokenUrl:'', notamClientId:'', notamClientSecret:'', notamScope:'', notamLastUpdatedEpochMs:1794321980330
+landRestrictionsEnabled:true, landRestrictionsShowOnMap:true, landRestrictionsAutoRefresh:true, landRestrictionsRadiusNm:1, landRestrictionsLastUpdatedEpochMs:1794322908595
+faaConfigLabel:'', faaTokenPresent:false, faaPayloadCached:false, faaStale:false, faaLastValidatedEpochMs:0, faaLastFailureReason:''
+activeCaltopoProfileId:'home-default', caltopoProfiles:1, maTemplateConfigured:false
+archivePath: 'content://com.android.externalstorage.documents/tree/4A21-0000%3ADroneTrax', caltopoTrackFolder: 'Drone Tracks', caltopoDomainAndPort:caltopo.com,
+teamId: '###', credId: '######' credSecret: '###########', dronespecs: 29 k/v pairs:
+  rid:'1910F916JJHWLHEFGVYC', mid:'1sar10PtnscAtm2lt', org:'NCSSAR', model:'Potensic Atom LT', owner:'1sar10' trackLabel:
+  rid:'1581FBLKC263900B0TY0', mid:'1sar33DjAv360', org:'NCSSAR', model:'DJI Avata 360', owner:'' trackLabel:
+  rid:'1581F6W8W258F0022EZZ', mid:'1sar1001-01DjAvt2', org:'NCSSAR', model:'DJI Avata2', owner:'1sar1001-01' trackLabel:
+  rid:'1865F10X000000001540', mid:'1sar1002-02DjN', org:'NCSSAR', model:'DJI Neo', owner:'1sar1002-02' trackLabel:
+  rid:'1581F6Z9C256S003HCXU', mid:'1sar62Mn4Pr', org:'NCSSAR', model:'DJI Mini 4 Pro', owner:'' trackLabel:
+  rid:'1581F6Z9C24BK0036M9Q', mid:'1sar138DjMn4Pr', org:'NCSSAR', model:'DJI Mini 4 Pro', owner:'1sar138' trackLabel:
+  rid:'1748FEV2HN2925021279', mid:'1sar83AtlEv2640T', org:'NCSSAR', model:'Autel EVO 2 640 T', owner:'1sar83' trackLabel:
+  rid:'186975006977', mid:'1sar33DjN', org:'NCSSAR', model:'DJI Neo', owner:'1sar33' trackLabel:
+  rid:'1581FBLKC262T00B07G1', mid:'1sar7DjAvt360', org:'NCSSAR', model:'DJI Avata 360', owner:'1sar7' trackLabel:
+  rid:'18656A13568', mid:'1sar64DjMn2', org:'NCSSAR', model:'DJI Mini 2', owner:'1sar64' trackLabel:
+  rid:'1581F6W8B24C3002090Y', mid:'1sar1002-02DjAvt2', org:'NCSSAR', model:'DJI Avata2', owner:'1sar1002-02' trackLabel:
+  rid:'1581F6Z9C2527003BZFX', mid:'1sar1001-01DjMn4Pr', org:'NCSSAR', model:'DJI Mini 4 Pro', owner:'1sar1001-01' trackLabel:
+  rid:'1581F6Z9C24BH0036EJL', mid:'1sar7DjMn4Pr', org:'NCSSAR', model:'DJI Mini 4 Pro', owner:'1sar7' trackLabel:
+  rid:'1581F9DEC258S0295066', mid:'1sar10DjMn5Pr', org:'NCSSAR', model:'DJI Mini 5 Pro', owner:'1sar10' trackLabel:
+  rid:'187575000726', mid:'1sar50DjMn4k', org:'NCSSAR', model:'DJI Mini4K', owner:'1sar50' trackLabel:
+  rid:'1581F8HGX256G00A0JPU', mid:'1sar1002-02DjMtrc4td', org:'NCSSAR', model:'DJI Matrice 4TD', owner:'1sar1002-02' trackLabel:
+  rid:'1581F67QE239L00A00DE', mid:'1sar7DjMvc3Pr', org:'NCSSAR', model:'DJI Mavic 3 Pro', owner:'1sar7' trackLabel:
+  rid:'2003F100000000000198', mid:'1sar83DjN', org:'NCSSAR', model:'DJI Neo', owner:'1sar83' trackLabel:
+  rid:'1581F8HGX262U00A1E4M', mid:'1sar1001-01DjMtrc4td', org:'NCSSAR', model:'DJI Matrice 4TD', owner:'1sar1001-01' trackLabel:
+  rid:'1865CBM0200000188', mid:'1sar34DjN2', org:'NCSSAR', model:'DJI Neo 2', owner:'1sar34' trackLabel:
+  rid:'1581F6W8B251S00200V2', mid:'1sar7DjAvt2', org:'NCSSAR', model:'DJI Avata 2', owner:'1sar7' trackLabel:
+  rid:'1581F6Z9C2527003BZQB', mid:'1sar1002-02DjMn4Pr', org:'NCSSAR', model:'DJI Mini 4 Pro', owner:'1sar1002-02' trackLabel:
+  rid:'1748FEV3HMK924451281', mid:'1sar7AtlEvMx4n', org:'NCSSAR', model:'Autel Evo Max 4N', owner:'1sar7' trackLabel:
+  rid:'1748FEV2HN7824041047', mid:'1sar118AtlEv2v3', org:'NCSSAR', model:'Autel EVO II V3', owner:'1SAR118' trackLabel:
+  rid:'1581F6W8W25560020T3W', mid:'1sar118DjAvt2', org:'NCSSAR', model:'DJI Avata 2', owner:'1sar118' trackLabel:
+  rid:'1581F5YHX258E002U84R', mid:'1sar64DjMn3', org:'NCSSAR', model:'DJI Mini 3', owner:'1sar64' trackLabel:
+  rid:'1581F6Z9C249G0031CLB', mid:'1sar33DjMn4Pr', org:'NCSSAR', model:'DJI Mini 4 Pro', owner:'1sar33' trackLabel:
+  rid:'1581F8HGX255S00A0FZT', mid:'1sar7DjMtrc4td', org:'NCSSAR', model:'DJI Matrice 4TD', owner:'1sar7' trackLabel:
+  rid:'1865F10X000000000054', mid:'1sar1001-01DjN', org:'NCSSAR', model:'DJI Neo', owner:'1sar1001-01' trackLabel:,
+ loaded configFiles:
+  type:ct_ridmap, editor:org_config, dated: loaded at 071629Nov10  
+type:ct_credentials, editor:org_config, dated: loaded at 071629Nov10  
+type:ct_ridmap, editor:org_config, dated: loaded at 170012Nov08  
+type:ct_credentials, editor:org_config, dated: loaded at 170012Nov08  
+type:ct_mutual_aid_credentials, editor:org_config, dated: loaded at 070938Oct19  
+type:ct_ridmap, editor:org_config, dated: loaded at 070938Oct19
+  DEBUG[17290-17381] 10Nov071629.382 PST -08:00: CaltopoClient CTEvent(r2c_ArchiveState): Bundle[{r2c_reason=caltopo credentials changed; origin=tracker}]
+  DEBUG[17290-17542] 10Nov071629.542 PST -08:00: AppConfigStore writeConfigBlockingToDataStore(): exists=true size=12812, ridMappings=29, loadedConfigFiles=6
+  DEBUG[17290-17542] 10Nov071629.544 PST -08:00: AppConfigStore requestBackup(): signaled BackupManager after persistState
+  DEBUG[17290-17542] 10Nov071629.603 PST -08:00: AppConfigStore writeConfigBlockingToDataStore(): exists=true size=12775, ridMappings=29, loadedConfigFiles=6
+  DEBUG[17290-17542] 10Nov071629.604 PST -08:00: AppConfigStore requestBackup(): signaled BackupManager after persistState
+  DEBUG[17290-17420] 10Nov071629.679 PST -08:00: Airspace Loaded 0 FAA facility-map grid(s); controlled=0 laanc=0
+  DEBUG[17290-17411] 10Nov071629.708 PST -08:00: OperationalStorage Verified sources area=unfinished-recordings elapsedMs=180
+  DEBUG[17290-17411] 10Nov071630.374 PST -08:00: OperationalStorage Prepared area=unfinished-recordings reused=true elapsedMs=666
+  DEBUG[17290-main] 10Nov071630.516 PST -08:00: AppUpdate Google Play update check unavailable; will retry later
+  DEBUG[17290-17411] 10Nov071630.727 PST -08:00: OperationalStorage Verified sources area=recording-work elapsedMs=352
+  DEBUG[17290-17411] 10Nov071630.824 PST -08:00: OperationalStorage Prepared area=recording-work reused=true elapsedMs=97
+  DEBUG[17290-17411] 10Nov071630.843 PST -08:00: OperationalStorage Recorder state ready independently of bulk storage
+  DEBUG[17290-17475] 10Nov071631.153 PST -08:00: MediaMTXRecordingSync syncAll() completed path=null
+  DEBUG[17290-17475] 10Nov071631.154 PST -08:00: MediaMTXService /data/user/0/org.ncssar.rid2caltopo/files/etc exists=true r=true w=true x=true
+  DEBUG[17290-17475] 10Nov071631.159 PST -08:00: MediaMTXService extractAsset(): using cached /data/user/0/org.ncssar.rid2caltopo/files/etc/mediamtx
+  DEBUG[17290-17475] 10Nov071631.159 PST -08:00: MediaMTXService /data/user/0/org.ncssar.rid2caltopo/files/etc exists=true r=true w=true x=true
+  DEBUG[17290-17428] 10Nov071631.180 PST -08:00: NotamREST NOTAM query response http=200
+  DEBUG[17290-17428] 10Nov071631.319 PST -08:00: NotamREST Parsed geojson featureCount=57 status='Success' message=''
+  DEBUG[17290-17395] 10Nov071632.387 PST -08:00: OperationalStorage Verified sources area=queue-state elapsedMs=3134
+  DEBUG[17290-17395] 10Nov071632.650 PST -08:00: OperationalStorage Prepared area=queue-state reused=true elapsedMs=262
+  DEBUG[17290-17395] 10Nov071632.679 PST -08:00: OperationalStorage Operational state ready independently of bulk storage
+  DEBUG[17290-17398] 10Nov071632.698 PST -08:00: CaltopoMap recoverInterruptedTracksOnInternetRestored(): skip — map not ready
+  DEBUG[17290-17343] 10Nov071632.723 PST -08:00: OperationalStorage state file flight-kmz-rewrites.json skipped bulk archive prepare
+  DEBUG[17290-17379] 10Nov071632.736 PST -08:00: OperationalStorage Verified sources area=processing elapsedMs=56
+  DEBUG[17290-main] 10Nov071632.902 PST -08:00: R2CActivity Device owner authenticated for organization access
+  DEBUG[17290-main] 10Nov071633.033 PST -08:00: StreamsViewModel addStreamsUiConsumer(): count=1
+  DEBUG[17290-main] 10Nov071633.167 PST -08:00: R2CActivity Protected page composition mounted
+  DEBUG[17290-main] 10Nov071633.249 PST -08:00: StreamsGrid No streams to show.
+  DEBUG[17290-main] 10Nov071633.539 PST -08:00: SplitMapPane Local device marker count=1 present=true zoom=14.0 contains=false ageBucket=0
+  DEBUG[17290-main] 10Nov071633.543 PST -08:00: SplitMapPane Initial viewport: mode=single-point pointCount=1 measured=0x0 zoom=14.00
+  DEBUG[17290-main] 10Nov071633.580 PST -08:00: DroneAltCoord LocalTrackListener registered
+  DEBUG[17290-main] 10Nov071633.851 PST -08:00: StreamsPane Controls fullScreen=false cluePanel=false dialogsAllowed=true
+  DEBUG[17290-main] 10Nov071633.914 PST -08:00: SplitMapPane Mapping layers ready incident= count=0 selected=none
+  DEBUG[17290-17811] 10Nov071633.929 PST -08:00: MapCacheTile [location details redacted]
+  DEBUG[17290-17431] 10Nov071633.930 PST -08:00: MapCacheTile #60 live-priority pass done zoom=14 requests=1 attempted=1 available=1 elapsedMs=3
+  DEBUG[17290-main] 10Nov071634.017 PST -08:00: SplitMapPane Restored viewport bounds mode=Full measured=714x428 zoom=14.00 bounds=true
+  DEBUG[17290-main] 10Nov071634.034 PST -08:00: SplitMapPane Local device viewport rescue: zoom=14.00
+  DEBUG[17290-main] 10Nov071634.065 PST -08:00: SplitMapPane CacheStats icon(hit=0 miss=0 stale=0 evict=0 bytes=8316) tile(hit=0 miss=0 stale=0 evict=0 bytes=276589884) dem(hit=0 miss=1 stale=0 evict=0 bytes=864)
+  DEBUG[17290-17410] 10Nov071634.294 PST -08:00: WaypointTrack BgPollUnreportedTracks(): Finished processing archiveDir. Terminating.
+  WARN[17290-17428] 10Nov071634.913 PST -08:00: MapCacheDEM #76 dem summary reason=dem count=1 dem fetch-ex SocketTimeoutException:timeout attempt=1/4 failCount=1
+  DEBUG[17290-17379] 10Nov071634.958 PST -08:00: OperationalStorage Verified sources area=map-statistics elapsedMs=2221
+  DEBUG[17290-17379] 10Nov071635.026 PST -08:00: OperationalStorage Verified sources area=legacy-cache elapsedMs=68
+  DEBUG[17290-17379] 10Nov071635.076 PST -08:00: OperationalStorage Verified sources area=legacy-fallback elapsedMs=50
+  DEBUG[17290-17379] 10Nov071635.201 PST -08:00: OperationalStorage Verified sources area=map-archives elapsedMs=124
+  DEBUG[17290-17342] 10Nov071635.668 PST -08:00: MapCacheDEM DEM GeoTIFF catalog loaded tiles=269
+  DEBUG[17290-17502] 10Nov071636.494 PST -08:00: MapCacheDEM DEM GeoTIFF catalog loaded tiles=269
+  DEBUG[17290-main] 10Nov071636.936 PST -08:00: MainScreen CTEvent(r2c_ReleaseNotesDisplayed): null
+  DEBUG[17290-17751] 10Nov071637.303 PST -08:00: MapCacheDEM DEM GeoTIFF catalog loaded tiles=269
+  DEBUG[17290-17475] 10Nov071637.482 PST -08:00: FlightStorage Sized flights purge=false days=9 files=248 preparing=true reason=cold elapsedMs=6296
+  DEBUG[17290-17475] 10Nov071637.496 PST -08:00: MediaMTXService /data/user/0/org.ncssar.rid2caltopo/files/etc/mediamtx.yml exists=true r=true w=true x=false
+  DEBUG[17290-17475] 10Nov071637.496 PST -08:00: MediaMTXService Starting MediaMTX Server...
+  DEBUG[17290-17876] 10Nov071637.549 PST -08:00: MediaMTX child: before exec
+  DEBUG[17290-17876] 10Nov071637.598 PST -08:00: MediaMTX 2026/11/10 15:16:37 INF MediaMTX v1.16.2-dirty, android, arm64
+  DEBUG[17290-17876] 10Nov071637.600 PST -08:00: MediaMTX 2026/11/10 15:16:37 INF configuration loaded from /data/user/0/org.ncssar.rid2caltopo/files/etc/mediamtx.yml
+  DEBUG[17290-17876] 10Nov071637.601 PST -08:00: MediaMTX 2026/11/10 15:16:37 INF [metrics] listener opened on 127.0.0.1:9998
+  DEBUG[17290-17876] 10Nov071637.601 PST -08:00: MediaMTX 2026/11/10 15:16:37 INF [pprof] listener opened on 127.0.0.1:9999
+  DEBUG[17290-17876] 10Nov071637.602 PST -08:00: MediaMTX 2026/11/10 15:16:37 DEB path manager created
+  DEBUG[17290-17876] 10Nov071637.602 PST -08:00: MediaMTX 2026/11/10 15:16:37 INF [RTSP] listener opened on 127.0.0.1:8554 (TCP/RTSP)
+  DEBUG[17290-17876] 10Nov071637.603 PST -08:00: MediaMTX 2026/11/10 15:16:37 INF [RTMP] listener opened on :1935
+  DEBUG[17290-17876] 10Nov071637.603 PST -08:00: MediaMTX 2026/11/10 15:16:37 INF [HLS] listener opened on 127.0.0.1:8888
+  DEBUG[17290-17876] 10Nov071637.604 PST -08:00: MediaMTX 2026/11/10 15:16:37 INF [API] listener opened on 127.0.0.1:9997
+  DEBUG[17290-17379] 10Nov071637.932 PST -08:00: OperationalStorage Verified sources area=clues elapsedMs=2730
+  WARN[17290-17431] 10Nov071638.420 PST -08:00: MapCacheDEM #77 dem summary reason=dem count=2 dem fetch-ex SocketTimeoutException:timeout attempt=2/4 failCount=2
+  DEBUG[17290-17379] 10Nov071638.738 PST -08:00: OperationalStorage Verified sources area=support-data elapsedMs=806
+  DEBUG[17290-17379] 10Nov071638.767 PST -08:00: OperationalStorage Verified sources area=diagnostic-traces elapsedMs=29
+  DEBUG[17290-17379] 10Nov071638.806 PST -08:00: OperationalStorage Verified sources area=review-annotations elapsedMs=38
+  DEBUG[17290-17379] 10Nov071639.004 PST -08:00: OperationalStorage Prepared area=processing reused=false elapsedMs=197
+  DEBUG[17290-17379] 10Nov071639.435 PST -08:00: OperationalStorage Prepared area=map-statistics reused=true elapsedMs=430
+  DEBUG[17290-17379] 10Nov071639.521 PST -08:00: OperationalStorage Prepared area=legacy-cache reused=true elapsedMs=86
+  DEBUG[17290-17379] 10Nov071639.599 PST -08:00: OperationalStorage Prepared area=legacy-fallback reused=true elapsedMs=77
+  DEBUG[17290-17379] 10Nov071639.706 PST -08:00: OperationalStorage Prepared area=map-archives reused=true elapsedMs=107
+  WARN[17290-17431] 10Nov071642.424 PST -08:00: MapCacheDEM #78 dem summary reason=dem count=3 dem fetch-ex SocketTimeoutException:timeout attempt=3/4 failCount=3
+  DEBUG[17290-17379] 10Nov071643.586 PST -08:00: OperationalStorage Clues hydrate reconciled concurrent lane change path=application-logs/operational/clues/5c0205ba-8046-55b0-a42f-a243e30da892/clues.json
+  WARN[17290-17379] 10Nov071647.170 PST -08:00: OperationalStorage Clues durable retain kept archive conflict path=5c0205ba-8046-55b0-a42f-a243e30da892/clues.json
+  WARN[17290-17431] 10Nov071647.460 PST -08:00: MapCacheDEM #79 dem summary reason=geotiff-meta-loaded count=1 size=3612x3612 blocks=64 comp=5 pred=3 vertUnit=m(9001-default) isTiled=true
+  WARN[17290-17431] 10Nov071647.512 PST -08:00: MapCacheDEM #80 dem summary reason=geotiff-meta-loaded count=2 size=10012x10012 blocks=1600 comp=5 pred=3 vertUnit=m(9001-default) isTiled=true
+  WARN[17290-17431] 10Nov071647.540 PST -08:00: MapCacheDEM #81 dem summary reason=geotiff-meta-loaded count=3 size=10012x10012 blocks=1600 comp=5 pred=3 vertUnit=m(9001-default) isTiled=true
+  DEBUG[17290-17379] 10Nov071647.743 PST -08:00: OperationalStorage Prepared area=clues reused=merge durable=true elapsedMs=8035
+  DEBUG[17290-17379] 10Nov071648.556 PST -08:00: OperationalStorage Prepared area=support-data reused=true elapsedMs=216
+  DEBUG[17290-17379] 10Nov071648.629 PST -08:00: OperationalStorage Prepared area=diagnostic-traces reused=true elapsedMs=73
+  WARN[17290-17431] 10Nov071648.705 PST -08:00: MapCacheDEM #82 dem summary reason=geotiff-meta-loaded count=50 size=1536x1536 blocks=9 comp=5 pred=3 vertUnit=m(9001-default) isTiled=true
+  DEBUG[17290-17379] 10Nov071648.731 PST -08:00: OperationalStorage Prepared area=review-annotations reused=true elapsedMs=101
+  DEBUG[17290-17430] 10Nov071649.382 PST -08:00: TerrainPrefetch S1M preparation tiles=1 operatingRadiusM=1609.344
+  WARN[17290-17431] 10Nov071649.550 PST -08:00: MapCacheDEM #88 dem sample slow elapsedMs=2121 key=v6|3915315|-12112528|m
+  DEBUG[17290-main] 10Nov071649.941 PST -08:00: SplitMapPane CacheStats icon(hit=1 miss=0 stale=0 evict=0 bytes=8316) tile(hit=18 miss=0 stale=0 evict=0 bytes=276589884) dem(hit=0 miss=1 stale=0 evict=0 bytes=864)
+  DEBUG[17290-17379] 10Nov071650.991 PST -08:00: CaltopoClient GetTrackDirForTime(): found existing 'tracks-10Nov2026'
+  DEBUG[17290-17379] 10Nov071650.991 PST -08:00: OperationalStorage Mapping storage: already migrated
+  DEBUG[17290-main] 10Nov071651.038 PST -08:00: FfmpegProbeService Started managed auxiliary FFmpeg render for 1002-02Djmn4pr sessionId=1
+  DEBUG[17290-17958] 10Nov071651.039 PST -08:00: FfmpegProbeService Session lifecycle designator=1002-02Djmn4pr sessionId=1 event=session_started phase=null
+  DEBUG[17290-17958] 10Nov071651.040 PST -08:00: ffmpeg_bridge render startup observe begin id=1 designator=1002-02Djmn4pr observeMs=2000
+  DEBUG[17290-17958] 10Nov071651.040 PST -08:00: ffmpeg_bridge open_decoder begin id=1 designator=1002-02Djmn4pr preferLowLatency=0 render=1
+  DEBUG[17290-17958] 10Nov071651.048 PST -08:00: ffmpeg_bridge open_decoder open_input id=1 designator=1002-02Djmn4pr profile=compatibility elapsedMs=7 rc=0
+  DEBUG[17290-17958] 10Nov071651.068 PST -08:00: ffmpeg_bridge open_decoder find_stream_info id=1 designator=1002-02Djmn4pr elapsedMs=19 rc=0
+  DEBUG[17290-17958] 10Nov071651.068 PST -08:00: ffmpeg_bridge open_decoder find_best_stream id=1 designator=1002-02Djmn4pr elapsedMs=0 videoIndex=0
+  DEBUG[17290-17958] 10Nov071651.068 PST -08:00: ffmpeg_bridge local playback cadence id=1 designator=1002-02Djmn4pr fps=26.827 source=avg_frame_rate intervalMs=37
+  DEBUG[17290-17958] 10Nov071651.069 PST -08:00: ffmpeg_bridge open_decoder codec_open id=1 designator=1002-02Djmn4pr elapsedMs=0 rc=0 codec=h264
+  DEBUG[17290-17958] 10Nov071651.069 PST -08:00: FfmpegProbeService Session lifecycle designator=1002-02Djmn4pr sessionId=1 event=decoder_opened phase=null
+  DEBUG[17290-17958] 10Nov071651.069 PST -08:00: ffmpeg_bridge startup packet id=1 designator=1002-02Djmn4pr count=1 key=1 size=139710 ptsUs=0 dts=0
+  DEBUG[17290-main] 10Nov071651.089 PST -08:00: ffmpeg_bridge nativeStop begin id=1 designator=1002-02Djmn4pr
+  DEBUG[17290-17959] 10Nov071651.091 PST -08:00: ffmpeg_bridge render control id=1 designator=1002-02Djmn4pr bufferedSpanMs=0 targetLatencyMs=700 stallEstimateMs=300 provenGapMs=300 sourceIntervalMs=37 renderIntervalMs=38 desiredIntervalMs=39 stallActive=0 queueDepth=1 localFile=1
+  DEBUG[17290-17959] 10Nov071651.092 PST -08:00: ffmpeg_bridge render waiting for surface id=1 designator=1002-02Djmn4pr
+  DEBUG[17290-17958] 10Nov071651.094 PST -08:00: ffmpeg_bridge teardown begin join render_thread id=1 designator=1002-02Djmn4pr
+  DEBUG[17290-17958] 10Nov071651.094 PST -08:00: ffmpeg_bridge teardown joined render_thread id=1 designator=1002-02Djmn4pr
+  DEBUG[17290-17958] 10Nov071651.095 PST -08:00: FfmpegProbeService Session lifecycle designator=1002-02Djmn4pr sessionId=1 event=session_stopped phase=null
+  DEBUG[17290-main] 10Nov071651.096 PST -08:00: FfmpegProbeService Started managed auxiliary FFmpeg render for 1002-02Djmn4pr sessionId=2
+  DEBUG[17290-17961] 10Nov071651.099 PST -08:00: FfmpegProbeService Session lifecycle designator=1002-02Djmn4pr sessionId=2 event=session_started phase=null
+  DEBUG[17290-17961] 10Nov071651.102 PST -08:00: ffmpeg_bridge render startup observe begin id=2 designator=1002-02Djmn4pr observeMs=2000
+  DEBUG[17290-17961] 10Nov071651.103 PST -08:00: ffmpeg_bridge open_decoder begin id=2 designator=1002-02Djmn4pr preferLowLatency=0 render=1
+  DEBUG[17290-17379] 10Nov071651.113 PST -08:00: OperationalStorage Mission verify id=2e30e0b4 action=skip originals=skipped elapsedMs=6
+  DEBUG[17290-17961] 10Nov071651.117 PST -08:00: ffmpeg_bridge open_decoder open_input id=2 designator=1002-02Djmn4pr profile=compatibility elapsedMs=15 rc=0
+  DEBUG[17290-17961] 10Nov071651.139 PST -08:00: ffmpeg_bridge open_decoder find_stream_info id=2 designator=1002-02Djmn4pr elapsedMs=17 rc=0
+  DEBUG[17290-17961] 10Nov071651.141 PST -08:00: ffmpeg_bridge open_decoder find_best_stream id=2 designator=1002-02Djmn4pr elapsedMs=0 videoIndex=0
+  DEBUG[17290-17961] 10Nov071651.143 PST -08:00: ffmpeg_bridge local playback cadence id=2 designator=1002-02Djmn4pr fps=26.827 source=avg_frame_rate intervalMs=37
+  DEBUG[17290-17961] 10Nov071651.144 PST -08:00: ffmpeg_bridge open_decoder codec_open id=2 designator=1002-02Djmn4pr elapsedMs=0 rc=0 codec=h264
+  DEBUG[17290-17961] 10Nov071651.145 PST -08:00: FfmpegProbeService Session lifecycle designator=1002-02Djmn4pr sessionId=2 event=decoder_opened phase=null
+  DEBUG[17290-17961] 10Nov071651.145 PST -08:00: ffmpeg_bridge startup packet id=2 designator=1002-02Djmn4pr count=1 key=1 size=139710 ptsUs=0 dts=0
+  DEBUG[17290-17379] 10Nov071651.159 PST -08:00: OperationalStorage Mission verify incremental verified=0 skipped=1 stamps=1 elapsedMs=154
+  DEBUG[17290-17379] 10Nov071651.159 PST -08:00: OperationalStorage Verified sources area=missions elapsedMs=167
+  DEBUG[17290-main] 10Nov071651.172 PST -08:00: ffmpeg_bridge nativeStop begin id=2 designator=1002-02Djmn4pr
+  DEBUG[17290-17964] 10Nov071651.173 PST -08:00: ffmpeg_bridge render control id=2 designator=1002-02Djmn4pr bufferedSpanMs=0 targetLatencyMs=700 stallEstimateMs=300 provenGapMs=300 sourceIntervalMs=37 renderIntervalMs=38 desiredIntervalMs=39 stallActive=0 queueDepth=1 localFile=1
+  DEBUG[17290-17964] 10Nov071651.173 PST -08:00: ffmpeg_bridge render waiting for surface id=2 designator=1002-02Djmn4pr
+  DEBUG[17290-17961] 10Nov071651.175 PST -08:00: ffmpeg_bridge teardown begin join render_thread id=2 designator=1002-02Djmn4pr
+  DEBUG[17290-17961] 10Nov071651.176 PST -08:00: ffmpeg_bridge teardown joined render_thread id=2 designator=1002-02Djmn4pr
+  DEBUG[17290-17961] 10Nov071651.176 PST -08:00: FfmpegProbeService Session lifecycle designator=1002-02Djmn4pr sessionId=2 event=session_stopped phase=null
+  DEBUG[17290-main] 10Nov071651.177 PST -08:00: FfmpegProbeService Started managed auxiliary FFmpeg render for 1002-02Djmn4pr sessionId=3
+  DEBUG[17290-17965] 10Nov071651.178 PST -08:00: FfmpegProbeService Session lifecycle designator=1002-02Djmn4pr sessionId=3 event=session_started phase=null
+  DEBUG[17290-17965] 10Nov071651.178 PST -08:00: ffmpeg_bridge render startup observe begin id=3 designator=1002-02Djmn4pr observeMs=2000
+  DEBUG[17290-17965] 10Nov071651.179 PST -08:00: ffmpeg_bridge open_decoder begin id=3 designator=1002-02Djmn4pr preferLowLatency=0 render=1
+  DEBUG[17290-17965] 10Nov071651.187 PST -08:00: ffmpeg_bridge open_decoder open_input id=3 designator=1002-02Djmn4pr profile=compatibility elapsedMs=8 rc=0
+  DEBUG[17290-17379] 10Nov071651.190 PST -08:00: OperationalStorage Verified sources area=layers elapsedMs=31
+  DEBUG[17290-17965] 10Nov071651.203 PST -08:00: ffmpeg_bridge open_decoder find_stream_info id=3 designator=1002-02Djmn4pr elapsedMs=16 rc=0
+  DEBUG[17290-17965] 10Nov071651.203 PST -08:00: ffmpeg_bridge open_decoder find_best_stream id=3 designator=1002-02Djmn4pr elapsedMs=0 videoIndex=0
+  DEBUG[17290-17965] 10Nov071651.203 PST -08:00: ffmpeg_bridge local playback cadence id=3 designator=1002-02Djmn4pr fps=26.827 source=avg_frame_rate intervalMs=37
+  DEBUG[17290-17965] 10Nov071651.204 PST -08:00: ffmpeg_bridge open_decoder codec_open id=3 designator=1002-02Djmn4pr elapsedMs=0 rc=0 codec=h264
+  DEBUG[17290-17965] 10Nov071651.204 PST -08:00: FfmpegProbeService Session lifecycle designator=1002-02Djmn4pr sessionId=3 event=decoder_opened phase=null
+  DEBUG[17290-17965] 10Nov071651.204 PST -08:00: ffmpeg_bridge startup packet id=3 designator=1002-02Djmn4pr count=1 key=1 size=139710 ptsUs=0 dts=0
+  DEBUG[17290-17966] 10Nov071651.224 PST -08:00: ffmpeg_bridge render control id=3 designator=1002-02Djmn4pr bufferedSpanMs=0 targetLatencyMs=700 stallEstimateMs=300 provenGapMs=300 sourceIntervalMs=37 renderIntervalMs=38 desiredIntervalMs=39 stallActive=0 queueDepth=1 localFile=1
+  DEBUG[17290-main] 10Nov071651.224 PST -08:00: ffmpeg_bridge nativeStop begin id=3 designator=1002-02Djmn4pr
+  DEBUG[17290-17966] 10Nov071651.224 PST -08:00: ffmpeg_bridge render waiting for surface id=3 designator=1002-02Djmn4pr
+  DEBUG[17290-17965] 10Nov071651.228 PST -08:00: ffmpeg_bridge teardown begin join render_thread id=3 designator=1002-02Djmn4pr
+  DEBUG[17290-17965] 10Nov071651.228 PST -08:00: ffmpeg_bridge teardown joined render_thread id=3 designator=1002-02Djmn4pr
+  DEBUG[17290-17965] 10Nov071651.229 PST -08:00: FfmpegProbeService Session lifecycle designator=1002-02Djmn4pr sessionId=3 event=session_stopped phase=null
+  DEBUG[17290-main] 10Nov071651.230 PST -08:00: FfmpegProbeService Started managed auxiliary FFmpeg render for 1002-02Djmn4pr sessionId=4
+  DEBUG[17290-17967] 10Nov071651.231 PST -08:00: FfmpegProbeService Session lifecycle designator=1002-02Djmn4pr sessionId=4 event=session_started phase=null
+  DEBUG[17290-17967] 10Nov071651.232 PST -08:00: ffmpeg_bridge render startup observe begin id=4 designator=1002-02Djmn4pr observeMs=2000
+  DEBUG[17290-17967] 10Nov071651.233 PST -08:00: ffmpeg_bridge open_decoder begin id=4 designator=1002-02Djmn4pr preferLowLatency=0 render=1
+  DEBUG[17290-17967] 10Nov071651.243 PST -08:00: ffmpeg_bridge open_decoder open_input id=4 designator=1002-02Djmn4pr profile=compatibility elapsedMs=10 rc=0
+  DEBUG[17290-17967] 10Nov071651.259 PST -08:00: ffmpeg_bridge open_decoder find_stream_info id=4 designator=1002-02Djmn4pr elapsedMs=15 rc=0
+  DEBUG[17290-17967] 10Nov071651.259 PST -08:00: ffmpeg_bridge open_decoder find_best_stream id=4 designator=1002-02Djmn4pr elapsedMs=0 videoIndex=0
+  DEBUG[17290-17967] 10Nov071651.260 PST -08:00: ffmpeg_bridge local playback cadence id=4 designator=1002-02Djmn4pr fps=26.827 source=avg_frame_rate intervalMs=37
+  DEBUG[17290-17967] 10Nov071651.260 PST -08:00: ffmpeg_bridge open_decoder codec_open id=4 designator=1002-02Djmn4pr elapsedMs=0 rc=0 codec=h264
+  DEBUG[17290-17967] 10Nov071651.260 PST -08:00: FfmpegProbeService Session lifecycle designator=1002-02Djmn4pr sessionId=4 event=decoder_opened phase=null
+  DEBUG[17290-17967] 10Nov071651.261 PST -08:00: ffmpeg_bridge startup packet id=4 designator=1002-02Djmn4pr count=1 key=1 size=139710 ptsUs=0 dts=0
+  DEBUG[17290-17968] 10Nov071651.280 PST -08:00: ffmpeg_bridge render control id=4 designator=1002-02Djmn4pr bufferedSpanMs=0 targetLatencyMs=700 stallEstimateMs=300 provenGapMs=300 sourceIntervalMs=37 renderIntervalMs=38 desiredIntervalMs=39 stallActive=0 queueDepth=1 localFile=1
+  DEBUG[17290-main] 10Nov071651.280 PST -08:00: ffmpeg_bridge nativeStop begin id=4 designator=1002-02Djmn4pr
+  DEBUG[17290-17968] 10Nov071651.280 PST -08:00: ffmpeg_bridge render waiting for surface id=4 designator=1002-02Djmn4pr
+  DEBUG[17290-17967] 10Nov071651.284 PST -08:00: ffmpeg_bridge teardown begin join render_thread id=4 designator=1002-02Djmn4pr
+  DEBUG[17290-17967] 10Nov071651.284 PST -08:00: ffmpeg_bridge teardown joined render_thread id=4 designator=1002-02Djmn4pr
+  DEBUG[17290-17967] 10Nov071651.285 PST -08:00: FfmpegProbeService Session lifecycle designator=1002-02Djmn4pr sessionId=4 event=session_stopped phase=null
+  DEBUG[17290-main] 10Nov071651.285 PST -08:00: FfmpegProbeService Started managed auxiliary FFmpeg render for 1002-02Djmn4pr sessionId=5
+  DEBUG[17290-17969] 10Nov071651.288 PST -08:00: FfmpegProbeService Session lifecycle designator=1002-02Djmn4pr sessionId=5 event=session_started phase=null
+  DEBUG[17290-17969] 10Nov071651.289 PST -08:00: ffmpeg_bridge render startup observe begin id=5 designator=1002-02Djmn4pr observeMs=2000
+  DEBUG[17290-17969] 10Nov071651.290 PST -08:00: ffmpeg_bridge open_decoder begin id=5 designator=1002-02Djmn4pr preferLowLatency=0 render=1
+  DEBUG[17290-17969] 10Nov071651.302 PST -08:00: ffmpeg_bridge open_decoder open_input id=5 designator=1002-02Djmn4pr profile=compatibility elapsedMs=12 rc=0
+  DEBUG[17290-17969] 10Nov071651.317 PST -08:00: ffmpeg_bridge open_decoder find_stream_info id=5 designator=1002-02Djmn4pr elapsedMs=15 rc=0
+  DEBUG[17290-17969] 10Nov071651.317 PST -08:00: ffmpeg_bridge open_decoder find_best_stream id=5 designator=1002-02Djmn4pr elapsedMs=0 videoIndex=0
+  DEBUG[17290-17969] 10Nov071651.317 PST -08:00: ffmpeg_bridge local playback cadence id=5 designator=1002-02Djmn4pr fps=26.827 source=avg_frame_rate intervalMs=37
+  DEBUG[17290-17969] 10Nov071651.318 PST -08:00: ffmpeg_bridge open_decoder codec_open id=5 designator=1002-02Djmn4pr elapsedMs=0 rc=0 codec=h264
+  DEBUG[17290-17969] 10Nov071651.318 PST -08:00: FfmpegProbeService Session lifecycle designator=1002-02Djmn4pr sessionId=5 event=decoder_opened phase=null
+  DEBUG[17290-17969] 10Nov071651.318 PST -08:00: ffmpeg_bridge startup packet id=5 designator=1002-02Djmn4pr count=1 key=1 size=139710 ptsUs=0 dts=0
+  DEBUG[17290-17970] 10Nov071651.340 PST -08:00: ffmpeg_bridge render control id=5 designator=1002-02Djmn4pr bufferedSpanMs=0 targetLatencyMs=700 stallEstimateMs=300 provenGapMs=300 sourceIntervalMs=37 renderIntervalMs=38 desiredIntervalMs=39 stallActive=0 queueDepth=1 localFile=1
+  DEBUG[17290-17970] 10Nov071651.340 PST -08:00: ffmpeg_bridge render waiting for surface id=5 designator=1002-02Djmn4pr
+  DEBUG[17290-main] 10Nov071651.352 PST -08:00: ffmpeg_bridge nativeStop begin id=5 designator=1002-02Djmn4pr
+  WARN[17290-17969] 10Nov071651.353 PST -08:00: ffmpeg_bridge render queue enqueue failed id=5 designator=1002-02Djmn4pr; dropping frame
+  DEBUG[17290-17969] 10Nov071651.354 PST -08:00: ffmpeg_bridge teardown begin join render_thread id=5 designator=1002-02Djmn4pr
+  DEBUG[17290-17969] 10Nov071651.354 PST -08:00: ffmpeg_bridge teardown joined render_thread id=5 designator=1002-02Djmn4pr
+  DEBUG[17290-17969] 10Nov071651.355 PST -08:00: FfmpegProbeService Session lifecycle designator=1002-02Djmn4pr sessionId=5 event=session_stopped phase=null
+  DEBUG[17290-main] 10Nov071651.357 PST -08:00: FfmpegProbeService Started managed auxiliary FFmpeg render for 1002-02Djmn4pr sessionId=6
+  DEBUG[17290-17972] 10Nov071651.358 PST -08:00: FfmpegProbeService Session lifecycle designator=1002-02Djmn4pr sessionId=6 event=session_started phase=null
+  DEBUG[17290-17972] 10Nov071651.362 PST -08:00: ffmpeg_bridge render startup observe begin id=6 designator=1002-02Djmn4pr observeMs=2000
+  DEBUG[17290-17972] 10Nov071651.362 PST -08:00: ffmpeg_bridge open_decoder begin id=6 designator=1002-02Djmn4pr preferLowLatency=0 render=1
+  DEBUG[17290-17972] 10Nov071651.369 PST -08:00: ffmpeg_bridge open_decoder open_input id=6 designator=1002-02Djmn4pr profile=compatibility elapsedMs=7 rc=0
+  DEBUG[17290-17972] 10Nov071651.387 PST -08:00: ffmpeg_bridge open_decoder find_stream_info id=6 designator=1002-02Djmn4pr elapsedMs=17 rc=0
+  DEBUG[17290-17972] 10Nov071651.387 PST -08:00: ffmpeg_bridge open_decoder find_best_stream id=6 designator=1002-02Djmn4pr elapsedMs=0 videoIndex=0
+  DEBUG[17290-17972] 10Nov071651.388 PST -08:00: ffmpeg_bridge local playback cadence id=6 designator=1002-02Djmn4pr fps=26.827 source=avg_frame_rate intervalMs=37
+  DEBUG[17290-17972] 10Nov071651.388 PST -08:00: ffmpeg_bridge open_decoder codec_open id=6 designator=1002-02Djmn4pr elapsedMs=0 rc=0 codec=h264
+  DEBUG[17290-17972] 10Nov071651.388 PST -08:00: FfmpegProbeService Session lifecycle designator=1002-02Djmn4pr sessionId=6 event=decoder_opened phase=null
+  DEBUG[17290-17972] 10Nov071651.389 PST -08:00: ffmpeg_bridge startup packet id=6 designator=1002-02Djmn4pr count=1 key=1 size=139710 ptsUs=0 dts=0
+  DEBUG[17290-17974] 10Nov071651.406 PST -08:00: ffmpeg_bridge render control id=6 designator=1002-02Djmn4pr bufferedSpanMs=0 targetLatencyMs=700 stallEstimateMs=300 provenGapMs=300 sourceIntervalMs=37 renderIntervalMs=38 desiredIntervalMs=39 stallActive=0 queueDepth=1 localFile=1
+  DEBUG[17290-17974] 10Nov071651.407 PST -08:00: ffmpeg_bridge render waiting for surface id=6 designator=1002-02Djmn4pr
+  DEBUG[17290-main] 10Nov071651.421 PST -08:00: ffmpeg_bridge nativeStop begin id=6 designator=1002-02Djmn4pr
+  DEBUG[17290-17972] 10Nov071651.422 PST -08:00: ffmpeg_bridge teardown begin join render_thread id=6 designator=1002-02Djmn4pr
+  DEBUG[17290-17972] 10Nov071651.422 PST -08:00: ffmpeg_bridge teardown joined render_thread id=6 designator=1002-02Djmn4pr
+  DEBUG[17290-17972] 10Nov071651.422 PST -08:00: FfmpegProbeService Session lifecycle designator=1002-02Djmn4pr sessionId=6 event=session_stopped phase=null
+  DEBUG[17290-main] 10Nov071651.423 PST -08:00: FfmpegProbeService Started managed auxiliary FFmpeg render for 1002-02Djmn4pr sessionId=7
+  DEBUG[17290-17975] 10Nov071651.426 PST -08:00: FfmpegProbeService Session lifecycle designator=1002-02Djmn4pr sessionId=7 event=session_started phase=null
+  DEBUG[17290-17975] 10Nov071651.427 PST -08:00: ffmpeg_bridge render startup observe begin id=7 designator=1002-02Djmn4pr observeMs=2000
+  DEBUG[17290-17975] 10Nov071651.427 PST -08:00: ffmpeg_bridge open_decoder begin id=7 designator=1002-02Djmn4pr preferLowLatency=0 render=1
+  DEBUG[17290-17975] 10Nov071651.437 PST -08:00: ffmpeg_bridge open_decoder open_input id=7 designator=1002-02Djmn4pr profile=compatibility elapsedMs=9 rc=0
+  DEBUG[17290-17975] 10Nov071651.456 PST -08:00: ffmpeg_bridge open_decoder find_stream_info id=7 designator=1002-02Djmn4pr elapsedMs=18 rc=0
+  DEBUG[17290-17975] 10Nov071651.456 PST -08:00: ffmpeg_bridge open_decoder find_best_stream id=7 designator=1002-02Djmn4pr elapsedMs=0 videoIndex=0
+  DEBUG[17290-17975] 10Nov071651.457 PST -08:00: ffmpeg_bridge local playback cadence id=7 designator=1002-02Djmn4pr fps=26.827 source=avg_frame_rate intervalMs=37
+  DEBUG[17290-17975] 10Nov071651.457 PST -08:00: ffmpeg_bridge open_decoder codec_open id=7 designator=1002-02Djmn4pr elapsedMs=1 rc=0 codec=h264
+  DEBUG[17290-17975] 10Nov071651.458 PST -08:00: FfmpegProbeService Session lifecycle designator=1002-02Djmn4pr sessionId=7 event=decoder_opened phase=null
+  DEBUG[17290-17975] 10Nov071651.458 PST -08:00: ffmpeg_bridge startup packet id=7 designator=1002-02Djmn4pr count=1 key=1 size=139710 ptsUs=0 dts=0
+  DEBUG[17290-17976] 10Nov071651.475 PST -08:00: ffmpeg_bridge render control id=7 designator=1002-02Djmn4pr bufferedSpanMs=0 targetLatencyMs=700 stallEstimateMs=300 provenGapMs=300 sourceIntervalMs=37 renderIntervalMs=38 desiredIntervalMs=39 stallActive=0 queueDepth=1 localFile=1
+  DEBUG[17290-17976] 10Nov071651.476 PST -08:00: ffmpeg_bridge render waiting for surface id=7 designator=1002-02Djmn4pr
+  DEBUG[17290-main] 10Nov071651.476 PST -08:00: ffmpeg_bridge nativeStop begin id=7 designator=1002-02Djmn4pr
+  DEBUG[17290-17975] 10Nov071651.480 PST -08:00: ffmpeg_bridge teardown begin join render_thread id=7 designator=1002-02Djmn4pr
+  DEBUG[17290-17975] 10Nov071651.480 PST -08:00: ffmpeg_bridge teardown joined render_thread id=7 designator=1002-02Djmn4pr
+  DEBUG[17290-17975] 10Nov071651.480 PST -08:00: FfmpegProbeService Session lifecycle designator=1002-02Djmn4pr sessionId=7 event=session_stopped phase=null
+  DEBUG[17290-main] 10Nov071651.481 PST -08:00: FfmpegProbeService Started managed auxiliary FFmpeg render for 1002-02Djmn4pr sessionId=8
+  DEBUG[17290-17977] 10Nov071651.482 PST -08:00: FfmpegProbeService Session lifecycle designator=1002-02Djmn4pr sessionId=8 event=session_started phase=null
+  DEBUG[17290-17977] 10Nov071651.483 PST -08:00: ffmpeg_bridge render startup observe begin id=8 designator=1002-02Djmn4pr observeMs=2000
+  DEBUG[17290-17977] 10Nov071651.483 PST -08:00: ffmpeg_bridge open_decoder begin id=8 designator=1002-02Djmn4pr preferLowLatency=0 render=1
+  DEBUG[17290-17977] 10Nov071651.491 PST -08:00: ffmpeg_bridge open_decoder open_input id=8 designator=1002-02Djmn4pr profile=compatibility elapsedMs=7 rc=0
+  DEBUG[17290-17977] 10Nov071651.506 PST -08:00: ffmpeg_bridge open_decoder find_stream_info id=8 designator=1002-02Djmn4pr elapsedMs=15 rc=0
+  DEBUG[17290-17977] 10Nov071651.506 PST -08:00: ffmpeg_bridge open_decoder find_best_stream id=8 designator=1002-02Djmn4pr elapsedMs=0 videoIndex=0
+  DEBUG[17290-17977] 10Nov071651.506 PST -08:00: ffmpeg_bridge local playback cadence id=8 designator=1002-02Djmn4pr fps=26.827 source=avg_frame_rate intervalMs=37
+  DEBUG[17290-17977] 10Nov071651.507 PST -08:00: ffmpeg_bridge open_decoder codec_open id=8 designator=1002-02Djmn4pr elapsedMs=0 rc=0 codec=h264
+  DEBUG[17290-17977] 10Nov071651.507 PST -08:00: FfmpegProbeService Session lifecycle designator=1002-02Djmn4pr sessionId=8 event=decoder_opened phase=null
+  DEBUG[17290-17977] 10Nov071651.507 PST -08:00: ffmpeg_bridge startup packet id=8 designator=1002-02Djmn4pr count=1 key=1 size=139710 ptsUs=0 dts=0
+  DEBUG[17290-17979] 10Nov071651.530 PST -08:00: ffmpeg_bridge render control id=8 designator=1002-02Djmn4pr bufferedSpanMs=0 targetLatencyMs=700 stallEstimateMs=300 provenGapMs=300 sourceIntervalMs=37 renderIntervalMs=38 desiredIntervalMs=39 stallActive=0 queueDepth=1 localFile=1
+  DEBUG[17290-main] 10Nov071651.530 PST -08:00: ffmpeg_bridge nativeStop begin id=8 designator=1002-02Djmn4pr
+  DEBUG[17290-17979] 10Nov071651.530 PST -08:00: ffmpeg_bridge render waiting for surface id=8 designator=1002-02Djmn4pr
+  DEBUG[17290-17977] 10Nov071651.531 PST -08:00: ffmpeg_bridge teardown begin join render_thread id=8 designator=1002-02Djmn4pr
+  DEBUG[17290-17977] 10Nov071651.532 PST -08:00: ffmpeg_bridge teardown joined render_thread id=8 designator=1002-02Djmn4pr
+  DEBUG[17290-17977] 10Nov071651.532 PST -08:00: FfmpegProbeService Session lifecycle designator=1002-02Djmn4pr sessionId=8 event=session_stopped phase=null
+  DEBUG[17290-17429] 10Nov071651.915 PST -08:00: LandRules Loaded 0 protected-land area(s); sourceErrors=0
+  DEBUG[17290-17542] 10Nov071651.940 PST -08:00: AppConfigStore writeConfigBlockingToDataStore(): exists=true size=12775, ridMappings=29, loadedConfigFiles=6
+  DEBUG[17290-17542] 10Nov071651.942 PST -08:00: AppConfigStore requestBackup(): signaled BackupManager after persistState
+  DEBUG[17290-17431] 10Nov071652.911 PST -08:00: NotamREST NOTAM full summary total=57 neutral=0 normal=44 caution=13 danger=0
+  DEBUG[17290-17431] 10Nov071652.913 PST -08:00: NotamREST Fetched 57 nearby NOTAMs mode=full
+  DEBUG[17290-17411] 10Nov071659.822 PST -08:00: FlightStorage Sized flights purge=true days=9 files=248 preparing=false reason=stale elapsedMs=10985
+  DEBUG[17290-17430] 10Nov071711.738 PST -08:00: TerrainPrefetch Terrain preparation complete=true
+  WARN[17290-17430] 10Nov071712.382 PST -08:00: MapCacheDEM #145 dem summary reason=geotiff-meta-loaded count=100 size=1536x1536 blocks=9 comp=5 pred=3 vertUnit=m(9001-default) isTiled=true
+  DEBUG[17290-17502] 10Nov071714.661 PST -08:00: MapCacheDEM DEM GeoTIFF catalog loaded tiles=269
+  DEBUG[17290-17430] 10Nov071716.151 PST -08:00: MapCacheDEM DEM GeoTIFF catalog loaded tiles=269
+  DEBUG[17290-main] 10Nov071726.406 PST -08:00: ScanningService onDestroy(): ScanningService 0x33bc612
+  DEBUG[17290-17877] 10Nov071726.410 PST -08:00: MediaMTXService MediaMTX exited pid=17875 status=15 signaled=15
+  DEBUG[17290-main] 10Nov071726.414 PST -08:00: ScanningService stopScanning(): ScanningService 0x33bc612
+  DEBUG[17290-17475] 10Nov071726.474 PST -08:00: MediaMTXRecordingSync syncAll() completed path=null
+  DEBUG[17290-main] 10Nov071726.820 PST -08:00: DroneAltCoord LocalTrackListener unregistered
+  DEBUG[17290-main] 10Nov071726.840 PST -08:00: StreamsViewModel removeStreamsUiConsumer(): count=0
+  DEBUG[17290-main] 10Nov071726.846 PST -08:00: R2CActivity Protected page composition disposed
+  DEBUG[17290-main] 10Nov071726.875 PST -08:00: R2CActivity onDestroy() shutting down streaming service...
+  DEBUG[17290-main] 10Nov071726.876 PST -08:00: R2CActivity onDestroy() shutting down scanning service...
+  DEBUG[17290-main] 10Nov071726.876 PST -08:00: ScanningService requestStop(): ScanningService already stopped; ignoring stop request.
+  DEBUG[17290-main] 10Nov071726.885 PST -08:00: R2CActivity onDestroy() archiving tracks...
+  DEBUG[17290-18166] 10Nov071726.910 PST -08:00: CaltopoClient ArchiveState(shutdown):
+vers:'19', minDist:'2' ft, usePeersFlag:'true', captureVideoStreamsFlag:'true'
+newTrackDelayInSec:30, maxFlatlineToneDurationInSec:5, bridgeCheckDistanceFeet:20, alarmVolumePercent:100, alarmVolumeConfigured:false, debugLevel:Debugs, maxIdleTimeInMinutes:30, incident:Training, opPeriod:1, coordinateDisplayFormat:decimal
+predictiveHeadEnabled:false, proximityAlertSpacingFeet:100
+notamEnabled:true, notamRadiusNm:1, notamAutoRefresh:true, notamRefreshIntervalSeconds:1800, notamWarnInsideOneNm:true
+notamApiBaseUrl:'', notamTokenUrl:'', notamClientId:'', notamClientSecret:'', notamScope:'', notamLastUpdatedEpochMs:1794323788908
+landRestrictionsEnabled:true, landRestrictionsShowOnMap:true, landRestrictionsAutoRefresh:true, landRestrictionsRadiusNm:1, landRestrictionsLastUpdatedEpochMs:1794323811355
+faaConfigLabel:'', faaTokenPresent:false, faaPayloadCached:false, faaStale:false, faaLastValidatedEpochMs:0, faaLastFailureReason:''
+activeCaltopoProfileId:'home-default', caltopoProfiles:1, maTemplateConfigured:false
+archivePath: 'content://com.android.externalstorage.documents/tree/4A21-0000%3ADroneTrax', caltopoTrackFolder: 'Drone Tracks', caltopoDomainAndPort:caltopo.com,
+teamId: '###', credId: '######' credSecret: '###########', dronespecs: 29 k/v pairs:
+  rid:'1910F916JJHWLHEFGVYC', mid:'1sar10PtnscAtm2lt', org:'NCSSAR', model:'Potensic Atom LT', owner:'1sar10' trackLabel:
+  rid:'1581FBLKC263900B0TY0', mid:'1sar33DjAv360', org:'NCSSAR', model:'DJI Avata 360', owner:'' trackLabel:
+  rid:'1581F6W8W258F0022EZZ', mid:'1sar1001-01DjAvt2', org:'NCSSAR', model:'DJI Avata2', owner:'1sar1001-01' trackLabel:
+  rid:'1865F10X000000001540', mid:'1sar1002-02DjN', org:'NCSSAR', model:'DJI Neo', owner:'1sar1002-02' trackLabel:
+  rid:'1581F6Z9C256S003HCXU', mid:'1sar62Mn4Pr', org:'NCSSAR', model:'DJI Mini 4 Pro', owner:'' trackLabel:
+  rid:'1581F6Z9C24BK0036M9Q', mid:'1sar138DjMn4Pr', org:'NCSSAR', model:'DJI Mini 4 Pro', owner:'1sar138' trackLabel:
+  rid:'1748FEV2HN2925021279', mid:'1sar83AtlEv2640T', org:'NCSSAR', model:'Autel EVO 2 640 T', owner:'1sar83' trackLabel:
+  rid:'186975006977', mid:'1sar33DjN', org:'NCSSAR', model:'DJI Neo', owner:'1sar33' trackLabel:
+  rid:'1581FBLKC262T00B07G1', mid:'1sar7DjAvt360', org:'NCSSAR', model:'DJI Avata 360', owner:'1sar7' trackLabel:
+  rid:'18656A13568', mid:'1sar64DjMn2', org:'NCSSAR', model:'DJI Mini 2', owner:'1sar64' trackLabel:
+  rid:'1581F6W8B24C3002090Y', mid:'1sar1002-02DjAvt2', org:'NCSSAR', model:'DJI Avata2', owner:'1sar1002-02' trackLabel:
+  rid:'1581F6Z9C2527003BZFX', mid:'1sar1001-01DjMn4Pr', org:'NCSSAR', model:'DJI Mini 4 Pro', owner:'1sar1001-01' trackLabel:
+  rid:'1581F6Z9C24BH0036EJL', mid:'1sar7DjMn4Pr', org:'NCSSAR', model:'DJI Mini 4 Pro', owner:'1sar7' trackLabel:
+  rid:'1581F9DEC258S0295066', mid:'1sar10DjMn5Pr', org:'NCSSAR', model:'DJI Mini 5 Pro', owner:'1sar10' trackLabel:
+  rid:'187575000726', mid:'1sar50DjMn4k', org:'NCSSAR', model:'DJI Mini4K', owner:'1sar50' trackLabel:
+  rid:'1581F8HGX256G00A0JPU', mid:'1sar1002-02DjMtrc4td', org:'NCSSAR', model:'DJI Matrice 4TD', owner:'1sar1002-02' trackLabel:
+  rid:'1581F67QE239L00A00DE', mid:'1sar7DjMvc3Pr', org:'NCSSAR', model:'DJI Mavic 3 Pro', owner:'1sar7' trackLabel:
+  rid:'2003F100000000000198', mid:'1sar83DjN', org:'NCSSAR', model:'DJI Neo', owner:'1sar83' trackLabel:
+  rid:'1581F8HGX262U00A1E4M', mid:'1sar1001-01DjMtrc4td', org:'NCSSAR', model:'DJI Matrice 4TD', owner:'1sar1001-01' trackLabel:
+  rid:'1865CBM0200000188', mid:'1sar34DjN2', org:'NCSSAR', model:'DJI Neo 2', owner:'1sar34' trackLabel:
+  rid:'1581F6W8B251S00200V2', mid:'1sar7DjAvt2', org:'NCSSAR', model:'DJI Avata 2', owner:'1sar7' trackLabel:
+  rid:'1581F6Z9C2527003BZQB', mid:'1sar1002-02DjMn4Pr', org:'NCSSAR', model:'DJI Mini 4 Pro', owner:'1sar1002-02' trackLabel:
+  rid:'1748FEV3HMK924451281', mid:'1sar7AtlEvMx4n', org:'NCSSAR', model:'Autel Evo Max 4N', owner:'1sar7' trackLabel:
+  rid:'1748FEV2HN7824041047', mid:'1sar118AtlEv2v3', org:'NCSSAR', model:'Autel EVO II V3', owner:'1SAR118' trackLabel:
+  rid:'1581F6W8W25560020T3W', mid:'1sar118DjAvt2', org:'NCSSAR', model:'DJI Avata 2', owner:'1sar118' trackLabel:
+  rid:'1581F5YHX258E002U84R', mid:'1sar64DjMn3', org:'NCSSAR', model:'DJI Mini 3', owner:'1sar64' trackLabel:
+  rid:'1581F6Z9C249G0031CLB', mid:'1sar33DjMn4Pr', org:'NCSSAR', model:'DJI Mini 4 Pro', owner:'1sar33' trackLabel:
+  rid:'1581F8HGX255S00A0FZT', mid:'1sar7DjMtrc4td', org:'NCSSAR', model:'DJI Matrice 4TD', owner:'1sar7' trackLabel:
+  rid:'1865F10X000000000054', mid:'1sar1001-01DjN', org:'NCSSAR', model:'DJI Neo', owner:'1sar1001-01' trackLabel:,
+ loaded configFiles:
+  type:ct_ridmap, editor:org_config, dated: loaded at 071629Nov10  
+type:ct_credentials, editor:org_config, dated: loaded at 071629Nov10  
+type:ct_ridmap, editor:org_config, dated: loaded at 170012Nov08  
+type:ct_credentials, editor:org_config, dated: loaded at 170012Nov08  
+type:ct_mutual_aid_credentials, editor:org_config, dated: loaded at 070938Oct19  
+type:ct_ridmap, editor:org_config, dated: loaded at 070938Oct19
+  DEBUG[17290-18166] 10Nov071726.911 PST -08:00: CaltopoClient CTEvent(r2c_ArchiveState): Bundle[{r2c_reason=shutdown}]
+  DEBUG[17290-18166] 10Nov071726.912 PST -08:00: WaypointTrack ArchiveTracks(): no waypoints recorded
+  DEBUG[17290-18166] 10Nov071726.915 PST -08:00: CaltopoClient Shutdown(): UiUpdatePoll suspended.
+  

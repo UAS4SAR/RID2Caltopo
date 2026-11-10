@@ -6510,6 +6510,25 @@ private func bluetoothServiceData(message: [UInt8], counter: UInt8) -> Data {
     #expect(allDetected.candidateRemoteID == "DRONE1")
 }
 
+@Test func newVideoPublisherRearmsTakeoverUnlessThisTabletAlreadyChose() {
+    let video = ["DRONE": Set(["1sar7djmn4pr|192.168.68.63:39014"])]
+    #expect(TakeoverClaimNotice.remoteIDsRearmedByNewPublisher(
+        locallyConfirmed: [], ignored: [], previous: [:], current: video) == ["DRONE"])
+    #expect(TakeoverClaimNotice.remoteIDsRearmedByNewPublisher(
+        locallyConfirmed: ["DRONE"], ignored: [], previous: [:], current: video).isEmpty)
+    #expect(TakeoverClaimNotice.remoteIDsRearmedByNewPublisher(
+        locallyConfirmed: [], ignored: ["DRONE"], previous: [:], current: video).isEmpty)
+    #expect(TakeoverClaimNotice.remoteIDsRearmedByNewPublisher(
+        locallyConfirmed: [], ignored: [], previous: video, current: video).isEmpty)
+    #expect(TakeoverClaimNotice.remoteIDsRearmedByNewPublisher(
+        locallyConfirmed: [], ignored: [], previous: [:],
+        current: ["DRONE": Set(["1sar7djmn4pr|unknown"])]).isEmpty)
+    #expect(TakeoverClaimNotice.message(callsign: "1SAR7", deviceName: "Ken's iPad")
+        == "Claimed by 1SAR7 on Ken's iPad. Mine asks to take over that claim.")
+    #expect(TakeoverClaimNotice.message(callsign: " ", deviceName: "")
+        == "Claimed by Unknown RPIC on another device. Mine asks to take over that claim.")
+}
+
 @Test func sharedIncidentOwnershipRequiresVideoWhenAnotherDeviceOrPresenceIsUnknown() {
     #expect(!CurrentFlightConfirmationLifecycle.requiresStream(mode: "all_detected", incidentSelected: true, peerPresenceKnown: false, otherDeviceOnline: true))
     #expect(CurrentFlightConfirmationLifecycle.requiresStream(mode: "streaming_device", incidentSelected: false, peerPresenceKnown: true, otherDeviceOnline: false))

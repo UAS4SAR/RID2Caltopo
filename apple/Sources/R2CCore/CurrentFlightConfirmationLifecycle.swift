@@ -75,3 +75,30 @@ public struct CurrentFlightConfirmationLifecycle: Sendable, Equatable {
         promptedRemoteIDs.removeAll()
     }
 }
+
+/// A peer claim stays visible inside this tablet's confirmation panel.
+/// A new video publisher on this tablet reopens that panel unless Mine or Not Mine was already chosen.
+public enum TakeoverClaimNotice {
+    public static func message(callsign: String, deviceName: String) -> String {
+        let pilot = callsign.trimmingCharacters(in: .whitespacesAndNewlines)
+        let device = deviceName.trimmingCharacters(in: .whitespacesAndNewlines)
+        return "Claimed by \(pilot.isEmpty ? "Unknown RPIC" : pilot) on \(device.isEmpty ? "another device" : device). Mine asks to take over that claim."
+    }
+
+    public static func remoteIDsRearmedByNewPublisher(
+        locallyConfirmed: Set<String>,
+        ignored: Set<String>,
+        previous: [String: Set<String>],
+        current: [String: Set<String>]
+    ) -> Set<String> {
+        Set(current.compactMap { remoteID, tokens in
+            guard !locallyConfirmed.contains(remoteID), !ignored.contains(remoteID) else { return nil }
+            let prior = previous[remoteID] ?? []
+            let fresh = tokens.contains { token in
+                !token.hasSuffix("|unknown") && !prior.contains(token) &&
+                    !prior.contains(String(token.prefix(upTo: token.lastIndex(of: "|") ?? token.endIndex)) + "|unknown")
+            }
+            return fresh ? remoteID : nil
+        })
+    }
+}

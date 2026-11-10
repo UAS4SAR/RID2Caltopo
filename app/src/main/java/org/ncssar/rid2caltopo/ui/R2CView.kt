@@ -533,6 +533,14 @@ fun DroneSpecConfirmationDialog(
                     Text(if (state.pairingOnly) "Save this mapping for future streams, or pair for this session only. Flight confirmation and publishing are separate." else "Save a local RID-map entry and confirm this flight for publishing to the selected map. Check the suggested model and enter the pilot callsign. Without a selected map, publication waits for map selection.")
                     Text("Pair video only leaves track publishing off.")
                 }
+                if (!state.pairingOnly) {
+                    val claim = try {
+                        R2cRuntimeRegistry.getDefaultRuntime().peerCoordinator.claimForRemoteId(state.remoteId)
+                    } catch (_: Exception) {
+                        null
+                    }
+                    claim?.let { Text(takeoverClaimText(it.callsign, it.deviceName)) }
+                }
                 if (!state.warning.isNullOrBlank()) {
                     Text(
                         text = state.warning,

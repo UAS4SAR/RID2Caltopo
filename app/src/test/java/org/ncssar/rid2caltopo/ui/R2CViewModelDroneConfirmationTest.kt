@@ -43,11 +43,8 @@ class R2CViewModelDroneConfirmationTest {
     }
 
     @Test fun streamingOwnershipAllowsManualClaimForTelemetryAndPromptsWhenVideoArrives() {
-        val mode = org.ncssar.rid2caltopo.data.OrgConfigManager::class.java
-            .getDeclaredField("ownershipMode").apply { isAccessible = true }
-        val previous = mode.get(null)
+        org.ncssar.rid2caltopo.data.OrgConfigManager.setDroneOwnershipForTesting("streaming_device")
         try {
-            mode.set(null, "streaming_device")
             val drone = activeDrone("TELEMETRYONLY", waypointTimestampMsec = 1234L)
                 .apply { setMappedId("mini4pro") }
             val manual = R2CViewModel(SimpleTimer())
@@ -62,7 +59,9 @@ class R2CViewModelDroneConfirmationTest {
             automatic.onLiveStreamDesignatorsChanged(setOf(drone.mappedId), listOf(drone))
             assertEquals(drone.remoteId, automatic.pendingDroneConfirmation.value?.remoteId)
         } finally {
-            mode.set(null, previous)
+            org.ncssar.rid2caltopo.data.OrgConfigManager.setDroneOwnershipForTesting(
+                org.ncssar.rid2caltopo.data.DroneOwnershipPolicy.ALL)
+            org.ncssar.rid2caltopo.data.OrgConfigManager.setDroneOwnershipForTesting(null)
         }
     }
 
@@ -333,7 +332,7 @@ class R2CViewModelDroneConfirmationTest {
     }
 
     @Test
-    fun trackerConfirmedRemoteIdDoesNotReopenDuringCurrentActiveLifecycle() {
+    fun peerClaimLeavesTheOpenPanelAvailableForTakeover() {
         val remoteId = "DRONEPEER"
         val drone = activeDrone(remoteId, waypointTimestampMsec = 1234L)
         val viewModel = R2CViewModel(SimpleTimer())
@@ -349,11 +348,12 @@ class R2CViewModelDroneConfirmationTest {
         )
         viewModel.onDroneSpecsChanged(listOf(drone))
 
-        assertNull(viewModel.pendingDroneConfirmation.value)
+        assertEquals(remoteId, viewModel.pendingDroneConfirmation.value?.remoteId)
+        assertFalse(CaltopoClient.IsCurrentLocallyConfirmedDrone(remoteId))
     }
 
     @Test
-    fun trackerConfirmationReplayBeforeLocalSightingSuppressesCurrentPanel() {
+    fun trackerConfirmationBeforeLocalSightingStillOffersTakeover() {
         val remoteId = "DRONELATE"
         CaltopoClient.ApplyPeerDroneSpecConfirmation(
             remoteId,
@@ -367,7 +367,8 @@ class R2CViewModelDroneConfirmationTest {
 
         viewModel.onDroneSpecsChanged(listOf(activeDrone(remoteId, waypointTimestampMsec = 3456L)))
 
-        assertNull(viewModel.pendingDroneConfirmation.value)
+        assertEquals(remoteId, viewModel.pendingDroneConfirmation.value?.remoteId)
+        assertFalse(CaltopoClient.IsCurrentLocallyConfirmedDrone(remoteId))
     }
 
     @Test
@@ -398,7 +399,7 @@ class R2CViewModelDroneConfirmationTest {
     }
 
     @Test
-    fun trackerConfirmationRemainsSuppressedAfterBriefTrackerLifecycleGap() {
+    fun peerClaimDoesNotKeepThePanelClosedAfterTheAircraftReturns() {
         val remoteId = "DRONEREUSE"
         val drone = activeDrone(remoteId, waypointTimestampMsec = 5678L)
 
@@ -415,13 +416,13 @@ class R2CViewModelDroneConfirmationTest {
         )
         viewModel.onDroneSpecsChanged(listOf(drone))
 
-        assertNull(viewModel.pendingDroneConfirmation.value)
+        assertEquals(remoteId, viewModel.pendingDroneConfirmation.value?.remoteId)
 
         CaltopoClient.ClearCurrentPeerDroneConfirmation(remoteId)
         viewModel.onDroneSpecsChanged(emptyList())
         viewModel.onDroneSpecsChanged(listOf(drone))
 
-        assertNull(viewModel.pendingDroneConfirmation.value)
+        assertEquals(remoteId, viewModel.pendingDroneConfirmation.value?.remoteId)
     }
 
     @Test
@@ -541,7 +542,7 @@ class R2CViewModelDroneConfirmationTest {
     }
 
     @Test
-    fun peerConfirmedFirstRidSightingDoesNotOpenConfirmationPanel() {
+    fun peerClaimOffersConfirmationAndANewVideoPublisherOffersItAgain() {
         val remoteId = "DRONEFIRSTSEENPEER"
         CaltopoClient.ApplyPeerDroneSpecConfirmation(
             remoteId,
@@ -550,11 +551,56 @@ class R2CViewModelDroneConfirmationTest {
             "1SAR8",
             "1SAR8m3"
         )
-
+        val drone = activeDrone(remoteId, waypointTimestampMsec = 1234L).apply { setMappedId("1sar8m3") }
         val viewModel = R2CViewModel(SimpleTimer())
         viewModel.onDroneConfirmationCandidate(CtDroneSpec(remoteId))
+        assertEquals(remoteId, viewModel.pendingDroneConfirmation.value?.remoteId)
+        assertFalse(CaltopoClient.IsCurrentLocallyConfirmedDrone(remoteId))
 
+        viewModel.dismissConfirmationForInspection()
+        viewModel.onDroneSpecsChanged(listOf(drone))
         assertNull(viewModel.pendingDroneConfirmation.value)
+
+        viewModel.onLiveStreamDesignatorsChanged(
+            setOf(drone.mappedId),
+            listOf(drone),
+            mapOf(drone.mappedId to "192.168.68.63:39014"),
+        )
+        assertEquals(remoteId, viewModel.pendingDroneConfirmation.value?.remoteId)
+    }
+
+    @Test
+    fun localMineIsNotRearmedWhenVideoMoves() {
+        val remoteId = "DRONEMINEVIDEO"
+        val drone = activeDrone(remoteId, waypointTimestampMsec = 1234L).apply { setMappedId("1sar7m4") }
+        val viewModel = R2CViewModel(SimpleTimer())
+        viewModel.onDroneSpecsChanged(listOf(drone))
+        viewModel.updatePendingDroneConfirmation("NCSSAR", "1SAR7", "DJI Mini 4 Pro")
+        viewModel.savePendingDroneConfirmation()
+        assertNull(viewModel.pendingDroneConfirmation.value)
+        viewModel.onLiveStreamDesignatorsChanged(
+            setOf(drone.mappedId),
+            listOf(drone),
+            mapOf(drone.mappedId to "192.168.68.63:39014"),
+        )
+        assertNull(viewModel.pendingDroneConfirmation.value)
+    }
+
+    @Test
+    fun takeoverClaimNamesTheExistingClaim() {
+        assertEquals(
+            "Claimed by 1SAR7 on Ken's iPad. Mine asks to take over that claim.",
+            takeoverClaimText("1SAR7", "Ken's iPad"),
+        )
+        assertEquals(
+            "Claimed by Unknown RPIC on another device. Mine asks to take over that claim.",
+            takeoverClaimText(" ", ""),
+        )
+        val peer = mapOf("PEER" to setOf("1sar|10.0.0.2:1"))
+        assertEquals(setOf("PEER"), remoteIdsRearmedByNewPublisher(emptySet(), emptyMap(), peer))
+        assertTrue(remoteIdsRearmedByNewPublisher(setOf("PEER"), emptyMap(), peer).isEmpty())
+        assertTrue(remoteIdsRearmedByNewPublisher(emptySet(), peer, peer).isEmpty())
+        assertTrue(remoteIdsRearmedByNewPublisher(emptySet(), emptyMap(), mapOf("PEER" to setOf("1sar|unknown"))).isEmpty())
     }
 
     @Test
