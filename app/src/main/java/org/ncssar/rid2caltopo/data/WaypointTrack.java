@@ -167,6 +167,8 @@ public class WaypointTrack {
     private boolean closedAsShadow = false;
     /** At least one point was stored while another tablet held the owner lease. */
     private boolean recordedAsShadow = false;
+    /** Points before this stay in memory for the map and clues, and are left out of the file. */
+    private long ownedFromMs = 0L;
     private String archivedOwner = "";
     private String archivedFlightReadinessJson = "{}";
     private String archivedModel = "";
@@ -531,11 +533,10 @@ public class WaypointTrack {
         if (track == null) return false;
         long ownedStartMs;
         synchronized (track) {
-            if (!track.recordedAsShadow) return false;
-            track.dropPointsBeforeLocked(grantedAtMs);
+            if (!track.recordedAsShadow && track.ownedFromMs > 0L) return false;
             track.recordedAsShadow = false;
-            ownedStartMs = track.firstKeptTimestampLocked();
-            if (ownedStartMs <= 0L) ownedStartMs = grantedAtMs;
+            ownedStartMs = grantedAtMs;
+            track.ownedFromMs = grantedAtMs;
             track.noteOwnedStartLocked(ownedStartMs);
         }
         spec.retitleToOwnedStart(ownedStartMs);
@@ -733,14 +734,14 @@ public class WaypointTrack {
             joProp.put("title", trackLabel);
             joProp.put("start_time", startTimeStr);
             joProp.put("r2c_prop", r2cProp);
-            // Compact receive-time / drone-clock encoding (see FlightArchivePointTiming).
-            FlightArchivePointTiming.write(joProp, pointReceivedAtMs, pointDroneClock, coordinates.length());
             joProp.put("r2c_flight_id", deferredPublicationId);
             jo.put("properties", joProp);
 
             JSONObject joGeometry = new JSONObject();
             joGeometry.put("type", "LineString");
-            joGeometry.put("coordinates", coordinates);
+            JSONArray archivedCoordinates = coordinatesForArchive();
+            FlightArchivePointTiming.write(joProp, pointReceivedAtMs, pointDroneClock, archivedCoordinates.length());
+            joGeometry.put("coordinates", archivedCoordinates);
             jo.put("geometry", joGeometry);
 
             JSONArray jaFeatures = new JSONArray();
@@ -1347,7 +1348,12 @@ public class WaypointTrack {
 
     public void archive() {
         prepareForArchive();
-        long numCoords = coordinates.length();
+        if (!keepsArchiveFile()) {
+            CTDebug(TAG, "archive(): shadow points kept in memory only " + archivedRemoteId);
+            WaypointTrackJournal.discardUnfinished(deferredPublicationId);
+            return;
+        }
+        long numCoords = coordinatesForArchive().length();
         if (numCoords <= 0) {
             CTDebug(TAG, "archive(): no waypoints.");
             retireUnpublishedJournal(FlightPublicationLedger.Disposition.SUPPRESSED);
@@ -1496,9 +1502,6 @@ public class WaypointTrack {
 
 	public synchronized void addWaypoint(double lat, double lng, long altInMeters, long timestampInMillisec,
 							long receivedAtMs, @NonNull String source, boolean droneClock) {
-		// Another tablet's flight. Don't open a file or extend a shape with these points.
-		if (anotherTabletOwns(droneSpec)) return;
-
 		JSONArray ja = new JSONArray();
 		ja.put(String.format(Locale.US, "%.6f", lng));
 		ja.put(String.format(Locale.US, "%.6f", lat));
@@ -1525,6 +1528,27 @@ public class WaypointTrack {
     private String archiveAircraftID() {
         String remoteID = archivePrepared ? archivedRemoteId : droneSpec.getRemoteId();
         return remoteID == null || remoteID.isEmpty() ? trackLabel : remoteID;
+    }
+
+    boolean keepsArchiveFile() {
+        return ownedFromMs > 0L || closedAsPriorOwner || !recordedAsShadow;
+    }
+
+    private JSONArray coordinatesForArchive() {
+        if (ownedFromMs <= 0L) return coordinates;
+        JSONArray kept = new JSONArray();
+        for (int i = 0; i < coordinates.length(); i++) {
+            JSONArray point = coordinates.optJSONArray(i);
+            long stamp = coordinateTimestamp(point);
+            if (point != null && (stamp <= 0L || stamp >= ownedFromMs)) kept.put(point);
+        }
+        return kept;
+    }
+
+    static long ownedFromMs(@NonNull CtDroneSpec spec) {
+        String label = spec.trackLabel();
+        WaypointTrack track = label == null ? null : TrackMap.get(label);
+        return track == null ? 0L : track.ownedFromMs;
     }
 
     private long firstKeptTimestampLocked() {

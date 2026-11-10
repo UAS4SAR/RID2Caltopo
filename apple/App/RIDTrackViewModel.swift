@@ -1623,7 +1623,7 @@ final class RIDTrackViewModel: ObservableObject {
                     self.ownershipActivationTasks.removeValue(forKey: remoteID)?.cancel()
                     let aircraftID = RidTrackStore.canonicalAircraftID(remoteID)
                     if localOwner, alertEligible {
-                        await self.store.resumeOwnedRecording(aircraftID: aircraftID)
+                        await self.store.markOwned(aircraftID: aircraftID, at: Date())
                         if self.shadowedAircraft.contains(aircraftID),
                            self.ownershipGrantedAtByAircraft[aircraftID] == nil {
                             let grantedAt = Date()
@@ -1642,7 +1642,7 @@ final class RIDTrackViewModel: ObservableObject {
                         self.shadowedAircraft.insert(aircraftID)
                         self.ownershipGrantedAtByAircraft.removeValue(forKey: aircraftID)
                         await self.endOwnedFlightAtHandoff(aircraftID: aircraftID)
-                        await self.store.suspendRecordingUntilOwned(aircraftID: aircraftID)
+                        await self.store.clearOwned(aircraftID: aircraftID)
                     }
                     if localOwner, alertEligible,
                        self.publicationSuppressionProvider?(remoteID) != true {
@@ -1935,6 +1935,14 @@ final class RIDTrackViewModel: ObservableObject {
         ownedDuringFlight: Bool = false,
         retainingUnconfirmedShadow: Bool = false
     ) async {
+        let original = track
+        let flightKeyForOwnership = RidFlightID.make(aircraftID: original.aircraftID, startedAt: original.flightStartedAt)
+        let wasOwned = ownedDuringFlight || ownedFlightMayUpload.contains(flightKeyForOwnership)
+        guard let track = await store.recordForArchive(original, ownedDuringFlight: wasOwned && !retainingUnconfirmedShadow) else {
+            let shadowID = RidFlightID.make(aircraftID: original.aircraftID, startedAt: original.flightStartedAt)
+            try? await waypointAppendJournal.markFinishedAndRemove(flightID: shadowID)
+            return
+        }
         let flightID = liveFlightID(aircraftID: track.aircraftID)
             ?? RidFlightID.make(aircraftID: track.aircraftID, startedAt: track.flightStartedAt)
         let snapshotID = RidFlightID.make(aircraftID: track.aircraftID, startedAt: track.flightStartedAt)

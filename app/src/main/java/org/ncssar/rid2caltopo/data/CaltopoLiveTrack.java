@@ -1777,7 +1777,9 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
         if (snapshot.size() <= linePoints.size()) return;
 
         linePoints.clear();
+        long ownedFromMs = WaypointTrack.ownedFromMs(droneSpec);
         for (WaypointTrack.TrackPoint point : snapshot) {
+            if (ownedFromMs > 0L && point.timestampMsec < ownedFromMs) continue;
             linePoints.add(new QueuedPoint(
                     point.lat,
                     point.lng,

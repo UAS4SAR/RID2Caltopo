@@ -877,9 +877,6 @@ public class CtDroneSpec implements Comparable<CtDroneSpec>, Serializable {
         long acceptedWaypointTimestampMsec =
                 (timestampInMilliseconds > 0) ? timestampInMilliseconds : nowWallMsec;
 
-        // Another tablet holds the lease. Don't start a track, a file, or a shape.
-        if (WaypointTrack.anotherTabletOwns(this)) return false;
-
         // All validity checks passed — this is an accepted waypoint.
         // Activate the drone (set the trackLabel) only now, so that invalid/filtered packets
         // (lat=0, spurious coordinates, implausible speed) cannot ghost-activate it

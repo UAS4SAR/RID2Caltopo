@@ -131,6 +131,8 @@ public actor RidTrackStore {
     private var tracksByAircraftID: [String: RidAircraftTrack] = [:]
     /// After this tablet gives up the lease, further points are not a flight until it owns again.
     private var suspendedUntilOwned: Set<String> = []
+    /// When set, the archived file starts at this time. The live track keeps earlier points.
+    private var ownedFromByAircraft: [String: Date] = [:]
 
     public init(policy: RidTrackPolicy = RidTrackPolicy()) {
         self.policy = policy
@@ -153,9 +155,6 @@ public actor RidTrackStore {
             return .rejectedInvalidObservation
         }
 
-        if suspendedUntilOwned.contains(aircraftID) {
-            return .rejectedInvalidObservation
-        }
         let observation = rawObservation.withAircraftID(aircraftID)
         if let code = observation.horizontalAccuracyCode,
            !(policy.minimumHorizontalAccuracyCode ... 12).contains(code) {
@@ -327,6 +326,27 @@ public actor RidTrackStore {
     /// Ends the current flight immediately. The next ingest starts a new flight.
     public func take(aircraftID: String) -> RidAircraftTrack? {
         tracksByAircraftID.removeValue(forKey: Self.canonicalAircraftID(aircraftID))
+    }
+
+    /// Points before this stay on the live track. The archived file starts here.
+    public func markOwned(aircraftID: String, at grantedAt: Date) {
+        ownedFromByAircraft[Self.canonicalAircraftID(aircraftID)] = grantedAt
+    }
+
+    /// Further points stay in memory for the map and clues, and are not a new file.
+    public func clearOwned(aircraftID: String) {
+        ownedFromByAircraft.removeValue(forKey: Self.canonicalAircraftID(aircraftID))
+    }
+
+    /// The owned slice for a file. Nil when this tablet never held the lease for these points.
+    public func recordForArchive(_ track: RidAircraftTrack, ownedDuringFlight: Bool) -> RidAircraftTrack? {
+        let key = Self.canonicalAircraftID(track.aircraftID)
+        guard let grant = ownedFromByAircraft[key] else {
+            return ownedDuringFlight ? track : nil
+        }
+        let kept = track.points.filter { $0.receivedAt >= grant }
+        guard let first = kept.first else { return nil }
+        return track.withStart(first.receivedAt, points: kept)
     }
 
     /// Stops a new local file after the lease moves to another tablet.
