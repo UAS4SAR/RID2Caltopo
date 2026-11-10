@@ -292,6 +292,22 @@ public actor RidTrackStore {
         tracksByAircraftID.removeAll()
     }
 
+    public func track(aircraftID: String) -> RidAircraftTrack? {
+        tracksByAircraftID[Self.canonicalAircraftID(aircraftID)]
+    }
+
+    /// Ends the current flight immediately. The next ingest starts a new flight.
+    public func take(aircraftID: String) -> RidAircraftTrack? {
+        tracksByAircraftID.removeValue(forKey: Self.canonicalAircraftID(aircraftID))
+    }
+
+    public func restoreIfAbsent(_ track: RidAircraftTrack) {
+        let key = Self.canonicalAircraftID(track.aircraftID)
+        if tracksByAircraftID[key] == nil {
+            tracksByAircraftID[key] = track
+        }
+    }
+
     public static func canonicalAircraftID(_ value: String) -> String {
         value.uppercased().filter { $0.isASCII && ($0.isLetter || $0.isNumber) }
     }

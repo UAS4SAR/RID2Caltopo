@@ -238,7 +238,11 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
     private final java.util.concurrent.atomic.AtomicReference<OwnershipRequest> ownershipRequest =
             new java.util.concurrent.atomic.AtomicReference<>();
 
+    /** Set only while closing a segment this tablet still owned, after the request already flipped. */
+    private boolean publishingOwnedHandoff;
+
     private boolean ownsPublication() {
+        if (publishingOwnedHandoff && localOwner) return true;
         OwnershipRequest requested = ownershipRequest.get();
         return localOwner && (requested == null || requested.owner);
     }
@@ -746,15 +750,57 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
         CaltopoRecoveryWork.offMainStart(() -> setLocalOwnerOnWorker(request));
     }
 
-    private synchronized void setLocalOwnerOnWorker(OwnershipRequest request) {
-        if (shuttingDown || ownershipRequest.get() != request) return;
-        boolean isOwner = request.owner;
-        CTDebug(TAG, String.format(Locale.US,
-                "setLocalOwner(%s): %s → %s", droneSpec.trackLabel(), localOwner, isOwner));
-        localOwner = isOwner;
-        if (isOwner && mapStatus == CaltopoMap.MapStatusListener.mapStatus.up) {
-            backfillQueuedPointsFromWaypointTrackIfNeeded();
-            ensureLiveTrackStarted();
+    private void setLocalOwnerOnWorker(OwnershipRequest request) {
+        final ArchiveWork handoff;
+        final String destinationMap;
+        final String destinationFolder;
+        synchronized (this) {
+            if (shuttingDown || ownershipRequest.get() != request) return;
+            boolean isOwner = request.owner;
+            boolean wasOwner = localOwner;
+            CTDebug(TAG, String.format(Locale.US,
+                    "setLocalOwner(%s): %s → %s", droneSpec.trackLabel(), wasOwner, isOwner));
+            boolean hadOwnedSegment = wasOwner && !isOwner && active
+                    && (liveTrackId != null || requestedLiveTrackId != null || !linePoints.isEmpty());
+            if (!hadOwnedSegment || !ownedSegmentReadyToPublish()) {
+                localOwner = isOwner;
+                if (isOwner && mapStatus == CaltopoMap.MapStatusListener.mapStatus.up) {
+                    backfillQueuedPointsFromWaypointTrackIfNeeded();
+                    ensureLiveTrackStarted();
+                }
+                return;
+            }
+            // Close while this tablet still owns the publication, then drop ownership.
+            // The idle timeout must not later delete the live track or mark the file local_only.
+            destinationMap = CaltopoMap.GetMapId();
+            destinationFolder = CaltopoMap.resolveArchiveFolderIdForFlight(trackObservedStartedAtMs);
+            WaypointTrack.markClosedAsPriorOwner(segmentTrackLabel);
+            publishingOwnedHandoff = true;
+            try {
+                handoff = prepareArchiveLocked(destinationMap);
+            } finally {
+                publishingOwnedHandoff = false;
+            }
+        }
+        // Shape POST and the local file stay off the owner-assignment thread.
+        CaltopoRecoveryWork.executeArchive(() -> {
+            try {
+                applyArchiveWork(handoff, 0L, destinationMap, destinationFolder);
+            } catch (Exception e) {
+                CTError(TAG, "setLocalOwner(): owned-segment handoff failed", e);
+            }
+            NotifyLocalTrackFinished(droneSpec, "ownership handed to another tablet");
+        });
+    }
+
+    /** Verified Mine only. An unverified Mine stays on the ownership-hold path. */
+    private boolean ownedSegmentReadyToPublish() {
+        if (droneSpec.isLocalArchiveOnly() || !droneSpec.isCurrentFlightConfirmed()) return false;
+        try {
+            String claim = runtime.getPeerCoordinator().ownershipClaimState(myRemoteId);
+            return !FlightOwnershipContext.isAdverseClaim(claim == null ? "" : claim);
+        } catch (Exception ignored) {
+            return true;
         }
     }
 

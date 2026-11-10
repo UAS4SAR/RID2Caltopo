@@ -161,6 +161,8 @@ public class WaypointTrack {
     private final long startedAtMs;
     private final String deferredPublicationId;
     private boolean archivePrepared = false;
+    /** This tablet owned the segment while it flew. A later takeover must not downgrade it. */
+    private boolean closedAsPriorOwner = false;
     private String archivedOwner = "";
     private String archivedFlightReadinessJson = "{}";
     private String archivedModel = "";
@@ -451,9 +453,12 @@ public class WaypointTrack {
         boolean mine = archivedFlightConfirmed && !archivedLocalOnly;
         archivedClaimState = claim == null ? FlightOwnershipContext.NONE : claim;
         archivedTrackerClaimPending = mine && FlightOwnershipContext.isAdverseClaim(archivedClaimState);
+        // Ownership of a finished segment is who owned it while it flew. A takeover that
+        // lands before the idle timeout must not turn that segment into local_only.
+        boolean ownedWhileFlying = closedAsPriorOwner || isLocalFlightOwnerForUpload(archivedRemoteId);
         archivedTrackerUploadAuthorized = mine &&
                 !archivedTrackerClaimPending &&
-                isLocalFlightOwnerForUpload(archivedRemoteId) &&
+                ownedWhileFlying &&
                 CaltopoClient.IsKnownTeamDroneForTrackerUpload(
                         archivedRemoteId, archivedOrg);
         noteOwnershipContext();
@@ -485,6 +490,13 @@ public class WaypointTrack {
         if (!archivedOkToLog) return "declined";
         if (!archivedTrackerUploadAuthorized) return "tracker_skip";
         return "publish";
+    }
+
+    /** Call before {@link #prepareForArchive()} when a takeover closes a segment this tablet owned. */
+    static void markClosedAsPriorOwner(@Nullable String trackLabel) {
+        if (trackLabel == null || trackLabel.isEmpty()) return;
+        WaypointTrack track = TrackMap.get(trackLabel);
+        if (track != null) track.closedAsPriorOwner = true;
     }
 
     private static boolean isLocalFlightOwnerForUpload(@NonNull String remoteId) {

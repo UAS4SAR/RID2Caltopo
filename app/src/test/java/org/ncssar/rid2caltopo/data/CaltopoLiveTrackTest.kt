@@ -206,6 +206,35 @@ class CaltopoLiveTrackTest {
         setOperationIsDone(id != null)
     }
 
+    @Test fun takeoverBeforeIdleTimeout_archivesTheOwnedSegmentAsItsOwnShape() {
+        val drone = CtDroneSpec("RID-HANDOFF")
+        setDroneTrackLabel(drone, "RID-HANDOFF_094931Nov10")
+        drone.setCurrentFlightConfirmed(true)
+        val track = CaltopoLiveTrack(drone, 39.1, -121.1, 500.0, 1_000L)
+        track.mapStatusUpdate(CaltopoMap.MapStatusListener.mapStatus.up, null, null)
+        track.setLocalOwner(true)
+        drainRecovery()
+        val peer = fixture.peerCoordinator as FakePeerCoordinator
+        val lostBefore = peer.countEvents("onDroneLost")
+        peer.setPeerOwner(drone.remoteId, "ipad-zone")
+
+        track.setLocalOwner(false)
+        drainRecovery()
+
+        val operations = fixture.calTopoSessionGateway.snapshotOperations()
+        val shapeId = operations.first { it.kind == "editObject" && it.summary.startsWith("Shape:") }
+            .summary.removePrefix("Shape:")
+        // The live-track feature is removed only after that same id is saved as a Shape.
+        assertEquals(operations.toString(), listOf(shapeId),
+            operations.filter { it.kind == "deleteLiveTrack" }.map { it.summary })
+        assertEquals(lostBefore, peer.countEvents("onDroneLost"))
+        assertFalse(drone.isActive)
+        assertTrue(drone.checkNewWaypoint(
+            39.10002, -121.10002, 100.0, 60_000L, 60_000L, true, CtDroneSpec.TransportTypeEnum.BT4))
+        assertTrue(drone.trackLabel().isNotEmpty())
+        assertFalse(drone.trackLabel() == "RID-HANDOFF_094931Nov10")
+    }
+
     @Test fun delayedOwnershipGrantCannotUndoALaterRevocation() {
         val track = startingTrack()
         val request = CaltopoLiveTrack::class.java.getDeclaredField("ownershipRequest").apply { isAccessible = true }

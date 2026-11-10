@@ -391,6 +391,32 @@ class WaypointTrackTest {
     }
 
     @Test
+    fun takeoverWithinEndTimeout_publishesTheFlightThisTabletOwned() {
+        CaltopoClient.SetHomeOrgName("NCSSAR")
+        val fixture = TestR2cRuntimeFactory.create("owned-handoff")
+        R2cRuntimeRegistry.setDefaultRuntimeForTesting(fixture.runtime)
+        try {
+            val peer = fixture.peerCoordinator as FakePeerCoordinator
+            val owned = confirmedTeamDrone("RIDOWNEDHANDOFF")
+            val bystander = confirmedTeamDrone("RIDNEVEROWNED1")
+            peer.setPeerOwner(owned.remoteId, "ipad-zone")
+            peer.setPeerOwner(bystander.remoteId, "ipad-zone")
+            WaypointTrack.markClosedAsPriorOwner(owned.trackLabel())
+
+            val ownedTrack = trackFor(owned)
+            val bystanderTrack = trackFor(bystander)
+            ownedTrack.prepareForArchive()
+            bystanderTrack.prepareForArchive()
+
+            assertTrue(authorized(ownedTrack))
+            assertEquals("publish", decision(ownedTrack))
+            assertFalse(authorized(bystanderTrack))
+        } finally {
+            R2cRuntimeRegistry.resetDefaultRuntimeForTesting()
+        }
+    }
+
+    @Test
     fun prepareForArchive_doesNotAuthorizeTrackConfirmedAfterFlightEnds() {
         CaltopoClient.SetHomeOrgName("NCSSAR")
         val drone = activeDrone("RIDUNCONFIRMED1", "RIDUNCONFIRMED1")
@@ -574,6 +600,34 @@ class WaypointTrackTest {
             )
         )
         return drone
+    }
+
+    private fun confirmedTeamDrone(remoteId: String): CtDroneSpec {
+        val drone = activeDrone(remoteId, remoteId)
+        confirmTeamDrone(remoteId, "NCSSAR")
+        drone.setCurrentFlightConfirmed(true)
+        WaypointTrack.AddWaypointForTrack(drone, 39.153000, -121.132000, 100L, 1_000L)
+        return drone
+    }
+
+    private fun trackFor(drone: CtDroneSpec): WaypointTrack {
+        @Suppress("UNCHECKED_CAST")
+        val map = trackMapField.get(null) as Map<String, WaypointTrack>
+        return map.getValue(drone.trackLabel())
+    }
+
+    private fun authorized(track: WaypointTrack): Boolean {
+        val geoJson = track.geoJson!!
+        return geoJson.getJSONArray("features").getJSONObject(0)
+            .getJSONObject("properties").getJSONObject("r2c_prop")
+            .getBoolean("tracker_upload_authorized")
+    }
+
+    private fun decision(track: WaypointTrack): String {
+        val method = WaypointTrack::class.java.getDeclaredMethod("publishDecisionLabel").apply {
+            isAccessible = true
+        }
+        return method.invoke(track) as String
     }
 
     private fun confirmTeamDrone(remoteId: String, org: String) {

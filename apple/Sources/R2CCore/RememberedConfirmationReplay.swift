@@ -26,8 +26,9 @@ public enum RememberedConfirmationReplay: Equatable, Sendable {
 }
 
 /// Flight-end live-track choice. A verified Mine archives the shape and uploads it.
-/// An unverified Mine, or ownership that was lost, still discards the live track
-/// and leaves the flight pending.
+/// A segment this tablet owned while it flew still archives after another tablet
+/// takes the aircraft. An unverified Mine, or a flight this tablet never owned,
+/// discards the live track and leaves the local record unpublished.
 public enum FlightEndPublication: Equatable, Sendable {
     case archiveShapeAndUpload
     case hold
@@ -36,12 +37,16 @@ public enum FlightEndPublication: Equatable, Sendable {
         allowsPublication: Bool,
         coordinatorAllowsPublication: Bool,
         claimPending: Bool,
-        blockedByLedger: Bool
+        blockedByLedger: Bool,
+        ownedDuringFlight: Bool = false
     ) -> FlightEndPublication {
-        if !allowsPublication || !coordinatorAllowsPublication || claimPending || blockedByLedger {
+        if !allowsPublication || claimPending || blockedByLedger {
             return .hold
         }
-        return .archiveShapeAndUpload
+        if ownedDuringFlight || coordinatorAllowsPublication {
+            return .archiveShapeAndUpload
+        }
+        return .hold
     }
 
     public var discardsLiveTrack: Bool { self == .hold }

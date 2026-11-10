@@ -137,6 +137,37 @@ private struct ConfirmationSession {
     #expect(session.flightEnd("RID") == .archiveShapeAndUpload)
 }
 
+@Test func priorOwnerStillArchivesAfterAnotherTabletTakesTheAircraft() {
+    let published = FlightEndPublication.decide(
+        allowsPublication: true,
+        coordinatorAllowsPublication: false,
+        claimPending: false,
+        blockedByLedger: false,
+        ownedDuringFlight: true
+    )
+    #expect(published == .archiveShapeAndUpload)
+    #expect(!published.discardsLiveTrack)
+
+    let neverOwned = FlightEndPublication.decide(
+        allowsPublication: true,
+        coordinatorAllowsPublication: false,
+        claimPending: false,
+        blockedByLedger: false,
+        ownedDuringFlight: false
+    )
+    #expect(neverOwned == .hold)
+    #expect(neverOwned.discardsLiveTrack)
+
+    let unverified = FlightEndPublication.decide(
+        allowsPublication: true,
+        coordinatorAllowsPublication: false,
+        claimPending: true,
+        blockedByLedger: false,
+        ownedDuringFlight: false
+    )
+    #expect(unverified == .hold)
+}
+
 @Test func expiredLeaseIsNotReplayed() throws {
     var session = ConfirmationSession()
     session.confirmAndSend("RID")

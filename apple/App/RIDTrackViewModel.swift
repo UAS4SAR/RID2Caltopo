@@ -451,6 +451,10 @@ final class RIDTrackViewModel: ObservableObject {
     private var peerConfirmationConsumer: ((TrackerCoordinationIdentity) -> Void)?
     private var peerConfirmationClearer: ((String) -> Void)?
     private var flightEndConsumer: ((String) -> Void)?
+    /// Flight ids this tablet owned while they were flying. A later takeover still publishes them.
+    private var ownedFlightIDs: Set<String> = []
+    /// Verified Mine segments. Unverified Mine stays on the hold path and is not in this set.
+    private var ownedFlightMayUpload: Set<String> = []
     private var peerTrafficLatestSampleAtByAircraftID: [String: Date] = [:]
     private var pairedVideoActivityProvider: (() -> [String: Date])?
     private var validatedSEIPositionProvider:
@@ -515,7 +519,8 @@ final class RIDTrackViewModel: ObservableObject {
                         track: track, identity: self.identityProvider?(track.aircraftID))
                     // Snapshot publish gate before archive's flightEndConsumer clears DCP.
                     let publicationDecision = self.publicationDecision(for: track.aircraftID)
-                    await self.archive(track, publishFlightEnd: true)
+                    let ownedDuringFlight = self.flightWasOwned(track)
+                    await self.archive(track, publishFlightEnd: true, ownedDuringFlight: ownedDuringFlight)
                     self.pendingPublication.removeValue(forKey: track.aircraftID)
                     self.lastSEIPublicationAtByAircraftID.removeValue(
                         forKey: track.aircraftID
@@ -523,7 +528,8 @@ final class RIDTrackViewModel: ObservableObject {
                     await self.finishPublication(
                         track: track,
                         recording: recording,
-                        publicationDecision: publicationDecision
+                        publicationDecision: publicationDecision,
+                        ownedDuringFlight: ownedDuringFlight
                     )
                     self.terrainTasks.removeValue(forKey: track.aircraftID)?.cancel()
                     self.terrainRequestKeyByAircraftID.removeValue(forKey: track.aircraftID)
@@ -689,6 +695,10 @@ final class RIDTrackViewModel: ObservableObject {
             }
             if let code = observation.horizontalAccuracyCode {
                 lastHorizontalAccuracyCodeByAircraftID[track.aircraftID] = code
+            }
+            if peerCoordinator?.isLocalOwner(remoteID: track.aircraftID) == true,
+               peerCoordinator?.isLocalAlertEligible(remoteID: track.aircraftID) == true {
+                rememberOwnedFlight(track)
             }
             recordAwaitingFlight(track)
             appendWaypointJournal(track: track, observation: observation)
@@ -1596,6 +1606,12 @@ final class RIDTrackViewModel: ObservableObject {
                 switch event {
                 case let .ownershipChanged(remoteID, _, localOwner, alertEligible):
                     self.ownershipActivationTasks.removeValue(forKey: remoteID)?.cancel()
+                    let aircraftID = RidTrackStore.canonicalAircraftID(remoteID)
+                    if localOwner, alertEligible, let current = await self.store.track(aircraftID: aircraftID) {
+                        self.rememberOwnedFlight(current)
+                    } else if !localOwner {
+                        await self.endOwnedFlightAtHandoff(aircraftID: aircraftID)
+                    }
                     if localOwner, alertEligible,
                        self.publicationSuppressionProvider?(remoteID) != true {
                         // Start as soon as ownership is granted while the map is already up;
@@ -1784,13 +1800,60 @@ final class RIDTrackViewModel: ObservableObject {
             let recording = CaltopoRecordingAssociation(
                 track: track, identity: identityProvider?(track.aircraftID))
             let publicationDecision = publicationDecision(for: track.aircraftID)
-            await archive(track)
+            let ownedDuringFlight = flightWasOwned(track)
+            await archive(track, ownedDuringFlight: ownedDuringFlight)
             await finishPublication(
                 track: track,
                 recording: recording,
-                publicationDecision: publicationDecision
+                publicationDecision: publicationDecision,
+                ownedDuringFlight: ownedDuringFlight
             )
         }
+    }
+
+    /// A verified Mine is remembered for this flight start. A later takeover still publishes it.
+    private func rememberOwnedFlight(_ track: RidAircraftTrack) {
+        let flightID = RidFlightID.make(aircraftID: track.aircraftID, startedAt: track.flightStartedAt)
+        ownedFlightIDs.insert(flightID)
+        let suppressed = publicationSuppressionProvider?(track.aircraftID) == true
+        let recordingAllowed = flightRecordingAllowed?(track.aircraftID) != false
+        let ownership = ownershipContextProvider?(track.aircraftID)
+        let claimPending = ownership?.requiresHold
+            ?? (peerCoordinator?.claimPending(remoteID: track.aircraftID) == true)
+        if !suppressed && recordingAllowed && !claimPending {
+            ownedFlightMayUpload.insert(flightID)
+        }
+    }
+
+    private func flightWasOwned(_ track: RidAircraftTrack) -> Bool {
+        let flightID = RidFlightID.make(aircraftID: track.aircraftID, startedAt: track.flightStartedAt)
+        return ownedFlightMayUpload.contains(flightID)
+    }
+
+    /// Ends the flight this tablet owned at the handoff, before the idle timeout.
+    /// The next ingest starts a new flight and does not keep these points.
+    private func endOwnedFlightAtHandoff(aircraftID: String) async {
+        guard let current = await store.track(aircraftID: aircraftID) else { return }
+        let flightID = RidFlightID.make(aircraftID: current.aircraftID, startedAt: current.flightStartedAt)
+        guard ownedFlightMayUpload.contains(flightID) else { return }
+        guard let track = await store.take(aircraftID: aircraftID) else { return }
+        let takenID = RidFlightID.make(aircraftID: track.aircraftID, startedAt: track.flightStartedAt)
+        guard takenID == flightID else {
+            await store.restoreIfAbsent(track)
+            return
+        }
+        let recording = CaltopoRecordingAssociation(
+            track: track, identity: identityProvider?(track.aircraftID))
+        let publicationDecision = publicationDecision(for: track.aircraftID)
+        await archive(track, publishFlightEnd: true, ownedDuringFlight: true)
+        pendingPublication.removeValue(forKey: track.aircraftID)
+        lastSEIPublicationAtByAircraftID.removeValue(forKey: track.aircraftID)
+        await finishPublication(
+            track: track,
+            recording: recording,
+            publicationDecision: publicationDecision,
+            ownedDuringFlight: true
+        )
     }
 
     /// Captured before flight-end observers clear confirmation / Don't Publish state.
@@ -1834,7 +1897,11 @@ final class RIDTrackViewModel: ObservableObject {
         return message
     }
 
-    private func archive(_ track: RidAircraftTrack, publishFlightEnd: Bool = false) async {
+    private func archive(
+        _ track: RidAircraftTrack,
+        publishFlightEnd: Bool = false,
+        ownedDuringFlight: Bool = false
+    ) async {
         let flightID = liveFlightID(aircraftID: track.aircraftID)
             ?? RidFlightID.make(aircraftID: track.aircraftID, startedAt: track.flightStartedAt)
         let snapshotID = RidFlightID.make(aircraftID: track.aircraftID, startedAt: track.flightStartedAt)
@@ -1853,13 +1920,20 @@ final class RIDTrackViewModel: ObservableObject {
         let archiveDecision = publicationDecision(for: track.aircraftID)
         let alreadyDeclined =
             (try? await publicationLedger.isDeclinedOrSuppressed(flightID: flightID)) == true
-        let localOnly = !recordingAllowed || publicationSuppressed || alreadyDeclined
-        // Only the local flight owner may upload this archive to the tracker.
         let ownership = ownershipContextProvider?(track.aircraftID)
         let claimPending = ownership?.requiresHold ?? (peerCoordinator?.claimPending(remoteID: track.aircraftID) == true)
-        let trackerUploadAuthorized = ownership.map {
-            $0.mayAutoPublish && archiveDecision.localOwner && archiveDecision.allowsPublication && !alreadyDeclined
-        } ?? (!claimPending && archiveDecision.localOwner && archiveDecision.allowsPublication && !alreadyDeclined)
+        let flightKey = RidFlightID.make(aircraftID: track.aircraftID, startedAt: track.flightStartedAt)
+        let ownedWhileFlying = ownedDuringFlight || ownedFlightMayUpload.contains(flightKey)
+        if ownedWhileFlying { ownedFlightMayUpload.remove(flightKey) }
+        ownedFlightIDs.remove(flightKey)
+        // A takeover must not downgrade a segment this tablet already owned into a peer file.
+        let ownedForUpload = ownedWhileFlying || archiveDecision.localOwner
+        let handedOff = ownedWhileFlying && !archiveDecision.localOwner
+        let localOnly = !ownedWhileFlying && (!recordingAllowed || publicationSuppressed || alreadyDeclined)
+        let currentOwnerUpload = ownership.map {
+            $0.mayAutoPublish && ownedForUpload && archiveDecision.allowsPublication && !alreadyDeclined
+        } ?? (!claimPending && ownedForUpload && archiveDecision.allowsPublication && !alreadyDeclined)
+        let trackerUploadAuthorized = (ownedWhileFlying && !alreadyDeclined) || currentOwnerUpload
         if let ownership {
             let flightID = RidFlightID.make(aircraftID: track.aircraftID, startedAt: track.flightStartedAt)
             try? await waypointAppendJournal.noteContext(ownership, flightID: flightID)
@@ -1871,7 +1945,7 @@ final class RIDTrackViewModel: ObservableObject {
             try? await publicationLedger.remember(flightID: flightID, disposition: disposition)
             try? await waypointAppendJournal.markFinishedAndRemove(flightID: flightID)
             if publishFlightEnd {
-                peerCoordinator?.droneLost(remoteID: track.aircraftID)
+                if !handedOff { peerCoordinator?.droneLost(remoteID: track.aircraftID) }
                 flightEndConsumer?(track.aircraftID)
                 tracks.removeAll { $0.aircraftID == track.aircraftID }
             }
@@ -1916,7 +1990,7 @@ final class RIDTrackViewModel: ObservableObject {
                 id: flightID, remoteID: track.aircraftID, times: track.points.map(\.bindingTime))
             let clues = await clueStore?.archiveClues(flight: flightCandidate, otherFlights: otherFlights) ?? []
             if publishFlightEnd {
-                peerCoordinator?.droneLost(remoteID: track.aircraftID)
+                if !handedOff { peerCoordinator?.droneLost(remoteID: track.aircraftID) }
                 flightEndConsumer?(track.aircraftID)
                 tracks.removeAll { $0.aircraftID == track.aircraftID }
             }
@@ -1966,7 +2040,8 @@ final class RIDTrackViewModel: ObservableObject {
         if publishFlightEnd {
             // Capture the completed flight's identity/readiness above before observers
             // clear its confirmation. Network archive retries must not delay that reset.
-            peerCoordinator?.droneLost(remoteID: track.aircraftID)
+            // A handoff must not send drone_lost: the other tablet now holds the lease.
+            if !handedOff { peerCoordinator?.droneLost(remoteID: track.aircraftID) }
             flightEndConsumer?(track.aircraftID)
             tracks.removeAll { $0.aircraftID == track.aircraftID }
             AppleLog.info("DroneConfirmation", "Published flight end before archive upload remoteId=\(track.aircraftID)")
@@ -2337,7 +2412,8 @@ final class RIDTrackViewModel: ObservableObject {
     private func finishPublication(
         track: RidAircraftTrack,
         recording: CaltopoRecordingAssociation,
-        publicationDecision: FlightPublicationDecision
+        publicationDecision: FlightPublicationDecision,
+        ownedDuringFlight: Bool = false
     ) async {
         let remoteID = track.aircraftID
         ownershipActivationTasks.removeValue(forKey: remoteID)?.cancel()
@@ -2350,10 +2426,11 @@ final class RIDTrackViewModel: ObservableObject {
         let blockedByLedger =
             (try? await publicationLedger.isDeclinedOrSuppressed(flightID: flightID)) == true
         if FlightEndPublication.decide(
-            allowsPublication: publicationDecision.allowsPublication,
+            allowsPublication: publicationDecision.allowsPublication || ownedDuringFlight,
             coordinatorAllowsPublication: publicationDecision.coordinatorAllowsPublication,
-            claimPending: publicationDecision.claimPending,
-            blockedByLedger: blockedByLedger
+            claimPending: publicationDecision.claimPending && !ownedDuringFlight,
+            blockedByLedger: blockedByLedger,
+            ownedDuringFlight: ownedDuringFlight
         ).discardsLiveTrack {
             await caltopoPublisher.discard(remoteID: remoteID)
             return
