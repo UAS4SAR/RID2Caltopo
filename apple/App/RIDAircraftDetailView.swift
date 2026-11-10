@@ -274,7 +274,7 @@ private enum AircraftMappingBackupWriter {
 final class AppleDroneConfirmationStore: ObservableObject {
     @Published private var sessionIdentities: [String: RidAircraftIdentity] = [:]
     @Published private var peerIdentities: [String: RidAircraftIdentity] = [:]
-    @Published private var peerClaims: [String: TrackerCoordinationIdentity] = [:]
+    @Published private var leases = ForeignLeaseBook()
     private var acceptedClaimChanges: [String: TrackerCoordinationIdentity] = [:]
     private var seenVideoSessions: [String: Set<String>] = [:]
     @Published private var importedIdentities: [String: RidAircraftIdentity] = [:]
@@ -315,7 +315,7 @@ final class AppleDroneConfirmationStore: ObservableObject {
             peerConfirmed: peerIdentities[remoteID] != nil)
     }
 
-    func peerClaim(for remoteID: String) -> TrackerCoordinationIdentity? { peerClaims[remoteID] }
+    func peerClaim(for remoteID: String) -> TrackerCoordinationIdentity? { leases.claim(for: remoteID) }
     func acceptClaimChange(_ claim: TrackerCoordinationIdentity) { acceptedClaimChanges[claim.remoteID] = claim }
     func takeAcceptedClaim(remoteID: String) -> TrackerCoordinationIdentity? { acceptedClaimChanges.removeValue(forKey: remoteID) }
 
@@ -348,7 +348,7 @@ final class AppleDroneConfirmationStore: ObservableObject {
         onFlightEnded: (String) -> Void = { _ in }
     ) -> String? {
         completedFlightGuard.updateSessions(videoSessions)
-        let foreignClaims = Set(peerClaims.keys)
+        let foreignClaims = leases.remoteIDs
         for remoteID in TakeoverClaimNotice.remoteIDsRearmedByNewPublisher(
             locallyConfirmed: Set(sessionIdentities.keys),
             ignored: ignoredRemoteIDs,
@@ -367,7 +367,7 @@ final class AppleDroneConfirmationStore: ObservableObject {
             }
         }
         // A peer claim is not this tablet's Mine. A new video publisher can offer takeover.
-        let confirmedRemoteIDs = Set(sessionIdentities.keys).subtracting(peerClaims.keys)
+        let confirmedRemoteIDs = Set(sessionIdentities.keys).subtracting(leases.remoteIDs)
         let reconciliation = confirmationLifecycle.reconcile(
             orderedRemoteIDs: eligible,
             confirmedRemoteIDs: confirmedRemoteIDs,
@@ -419,7 +419,7 @@ final class AppleDroneConfirmationStore: ObservableObject {
         confirmationLifecycle.endFlight(remoteID: remoteID)
         sessionIdentities.removeValue(forKey: remoteID)
         peerIdentities.removeValue(forKey: remoteID)
-        peerClaims.removeValue(forKey: remoteID)
+        leases.endFlight(remoteID: remoteID)
         acceptedClaimChanges.removeValue(forKey: remoteID)
         publicationGateLogged.remove(remoteID)
         AppleLog.info("DroneConfirmation", "Cleared confirmation at telemetry track end remoteId=\(remoteID)")
@@ -610,17 +610,12 @@ final class AppleDroneConfirmationStore: ObservableObject {
         // Peer authority is map-scoped. Local pilot/readiness and confirmation belong
         // to the physical flight and are cleared only by endFlight/reconciliation.
         peerIdentities.removeAll()
-        peerClaims.removeAll()
+        leases.removeAll()
         acceptedClaimChanges.removeAll()
     }
 
     func noteForeignOwner(remoteID: String, zoneID: String) {
-        let zone = zoneID.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !zone.isEmpty else { return }
-        if peerClaims[remoteID]?.confirmedByGuid == zone { return }
-        peerClaims[remoteID] = TrackerCoordinationIdentity(
-            remoteID: remoteID, mappedID: "", organization: "", model: "", ownerName: "",
-            confirmedByGuid: zone)
+        leases.noteZone(remoteID: remoteID, zoneID: zoneID)
     }
 
     func applyPeerConfirmation(_ identity: TrackerCoordinationIdentity) {
@@ -637,12 +632,12 @@ final class AppleDroneConfirmationStore: ObservableObject {
             mappedIDOverride: identity.mappedID,
             peerConfirmed: true
         )
-        peerClaims[identity.remoteID] = identity
+        leases.noteConfirmation(identity)
     }
 
     func clearPeerConfirmation(remoteID: String) {
         peerIdentities.removeValue(forKey: remoteID)
-        peerClaims.removeValue(forKey: remoteID)
+        leases.clear(remoteID: remoteID)
     }
 
     func resetPersistedState() {
@@ -651,7 +646,7 @@ final class AppleDroneConfirmationStore: ObservableObject {
         editableImportedMappings.removeAll()
         sessionIdentities.removeAll()
         peerIdentities.removeAll()
-        peerClaims.removeAll()
+        leases.removeAll()
         acceptedClaimChanges.removeAll()
         confirmationLifecycle.reset()
         completedFlightGuard = CompletedFlightConfirmationGuard()

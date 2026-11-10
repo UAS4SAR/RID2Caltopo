@@ -1621,6 +1621,34 @@ class TrackerPeerCoordinatorTest {
     }
 
     @Test
+    fun round9VideoReturnsAndSaveNamesTheA5Lease() {
+        val ipad = "f6cbd6d2-ea23-45cd-b4ef-a559822c31ad"
+        val a5 = "833a8140-2a8b-3b23-8876-c3af62524ef0"
+        val remoteId = "1581F8HGX255S00A0FZT"
+        coordinator.start("4J0LF02", ipad, "iPad", null)
+        transport.receive(
+            JSONObject()
+                .put("type", "owner_assigned")
+                .put("remoteId", remoteId)
+                .put("ownerGuid", a5)
+                .put("leaseSeq", 9)
+                .toString()
+        )
+        transport.sentMessages.clear()
+        coordinator.onDroneLost(remoteId)
+
+        val claim = coordinator.claimForRemoteId(remoteId)
+        assertNotNull(claim)
+        assertEquals(a5, claim!!.guid)
+        assertTrue(transport.sentMessages.none { JSONObject(it).optString("type") == "drone_lost" })
+
+        coordinator.onDroneConfirmed(remoteId, "NCSSAR", "DJI Matrice 4TD", "1SAR7", "1sar7DjMtrc4td", claim)
+        val replacement = transport.sentMessages.map { JSONObject(it) }
+            .last { it.optString("type") == "drone_confirmed" && it.optString("remoteId") == remoteId }
+        assertEquals(a5, replacement.optString("replaceConfirmedBy"))
+    }
+
+    @Test
     fun missedHelloAck_forcesReconnectDeterministically() {
         transport.autoOpen = false
 

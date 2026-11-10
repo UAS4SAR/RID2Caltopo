@@ -3248,7 +3248,11 @@ final class AppleTrackerCoordinator: ObservableObject {
             guard let data = try? TrackerCoordinationWire.droneConfirmed(client: client, identity: identity,
                 replacing: pendingClaimReplacements[remoteID]) else { continue }
             send(data)
-            AppleLog.info("TrackerPeer", "Sent pending drone confirmation remoteId=\(remoteID)")
+            let named = pendingClaimReplacements[remoteID]?.confirmedByGuid
+            AppleLog.info(
+                "TrackerPeer",
+                "Sent pending drone confirmation remoteId=\(remoteID) replaceConfirmedBy=\(named?.isEmpty == false ? named! : "none")"
+            )
         }
     }
 

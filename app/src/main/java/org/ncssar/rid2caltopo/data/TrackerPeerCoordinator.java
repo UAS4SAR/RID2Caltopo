@@ -698,16 +698,24 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
 
     @Override
     public void onDroneLost(@NonNull String remoteId) {
-        peerClaims.remove(remoteId);
         PendingDrone pending = pendingDrones.remove(remoteId);
-        boolean localArchiveOnly = pending != null && pending.droneSpec.isLocalArchiveOnly();
         if (pending != null) {
             pending.fallbackTimer.stop();
             pending.ownershipActivationTimer.stop();
             pending.liveTrack.setLocalOwner(false);
         }
-        ownerByRemoteId.remove(remoteId);
-        leaseSeqByRemoteId.remove(remoteId);
+        String ownerGuid = ownerByRemoteId.get(remoteId);
+        boolean peerHoldsLease = ownerGuid != null && !ownerGuid.isEmpty()
+                && (myGuid == null || !ownerGuid.equals(myGuid));
+        if (peerHoldsLease) {
+            CTInfo(TAG, String.format(Locale.US,
+                    "onDroneLost(%s): another tablet holds the lease; claim kept ownerGuid='%s'",
+                    remoteId, ownerGuid));
+        } else {
+            peerClaims.remove(remoteId);
+            ownerByRemoteId.remove(remoteId);
+            leaseSeqByRemoteId.remove(remoteId);
+        }
         locallyConfirmedRemoteIds.remove(remoteId);
         pendingConfirmationsByRemoteId.remove(remoteId);
         confirmationSentAtByRemoteId.remove(remoteId);
@@ -717,6 +725,10 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
         trafficSendIntervalByKey.keySet().removeIf(key -> key.endsWith("|" + remoteId));
         lastTrafficSentLogByKey.keySet().removeIf(key -> key.endsWith("|" + remoteId));
         PeerTrafficAltitudeNormalizer.clear(remoteId);
+        if (peerHoldsLease) {
+            scheduleIdleParkIfEligible();
+            return;
+        }
         wakeForCoordinationActivity("drone_lost");
         JSONObject jo = new JSONObject();
         try {

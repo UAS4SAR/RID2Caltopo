@@ -6510,6 +6510,29 @@ private func bluetoothServiceData(message: [UInt8], counter: UInt8) -> Data {
     #expect(allDetected.candidateRemoteID == "DRONE1")
 }
 
+@Test func round9SaveAfterVideoReturnsNamesTheA5Lease() throws {
+    let aircraft = "1581F8HGX255S00A0FZT"
+    let a5 = "833a8140-2a8b-3b23-8876-c3af62524ef0"
+    var book = ForeignLeaseBook()
+    book.noteZone(remoteID: aircraft, zoneID: a5)
+    book.endFlight(remoteID: aircraft)
+    #expect(book.claim(for: aircraft)?.confirmedByGuid == a5)
+    let publisher = "1sar7djmtrc4td|192.168.68.58:52674"
+    #expect(TakeoverClaimNotice.remoteIDsRearmedByNewPublisher(
+        locallyConfirmed: [], ignored: [], previous: [:],
+        current: [aircraft: [publisher]], foreignClaims: book.remoteIDs) == [aircraft])
+    let client = TrackerCoordinationClient(
+        mapID: "4J0LF02", zoneID: "f6cbd6d2-ea23-45cd-b4ef-a559822c31ad",
+        name: "iPad", appVersion: "2.5.8", appVersionCode: 444)
+    let save = TrackerCoordinationIdentity(
+        remoteID: aircraft, mappedID: "1sar7DjMtrc4td", organization: "NCSSAR",
+        model: "DJI Matrice 4TD", ownerName: "1SAR7")
+    let wire = try jsonObject(TrackerCoordinationWire.droneConfirmed(
+        client: client, identity: save, replacing: book.claim(for: aircraft)))
+    #expect(wire["replaceConfirmedBy"] as? String == a5)
+    #expect((wire["replaceConfirmedAtMs"] as? NSNumber)?.int64Value == 0)
+}
+
 @Test func newVideoPublisherRearmsTakeoverUnlessThisTabletAlreadyChose() {
     let video = ["DRONE": Set(["1sar7djmn4pr|192.168.68.63:39014"])]
     #expect(TakeoverClaimNotice.remoteIDsRearmedByNewPublisher(

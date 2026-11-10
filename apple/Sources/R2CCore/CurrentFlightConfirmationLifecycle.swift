@@ -112,3 +112,43 @@ public enum TakeoverClaimNotice {
         })
     }
 }
+
+/// The lease another tablet holds. Ending this tablet's flight does not erase it.
+public struct ForeignLeaseBook: Sendable, Equatable {
+    public private(set) var claims: [String: TrackerCoordinationIdentity] = [:]
+
+    public init() {}
+
+    public mutating func noteZone(remoteID: String, zoneID: String) {
+        let zone = zoneID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !remoteID.isEmpty, !zone.isEmpty else { return }
+        if claims[remoteID]?.confirmedByGuid == zone { return }
+        claims[remoteID] = TrackerCoordinationIdentity(
+            remoteID: remoteID, mappedID: "", organization: "", model: "", ownerName: "",
+            confirmedByGuid: zone)
+    }
+
+    public mutating func noteConfirmation(_ identity: TrackerCoordinationIdentity) {
+        guard !identity.remoteID.isEmpty else { return }
+        claims[identity.remoteID] = identity
+    }
+
+    /// This flight is over on this tablet. The other zone's lease stays so the next Save can name it.
+    public mutating func endFlight(remoteID: String) {
+        _ = remoteID
+    }
+
+    public mutating func clear(remoteID: String) {
+        claims.removeValue(forKey: remoteID)
+    }
+
+    public mutating func removeAll() {
+        claims.removeAll()
+    }
+
+    public func claim(for remoteID: String) -> TrackerCoordinationIdentity? {
+        claims[remoteID]
+    }
+
+    public var remoteIDs: Set<String> { Set(claims.keys) }
+}

@@ -94,9 +94,37 @@ import Testing
     #expect((archived?.points.last?.receivedAt ?? .distantFuture) < (third?.flightStartedAt ?? .distantPast))
 }
 
-private func handoffObservation(aircraft: String, at: Date, latitude: Double = 39.7392) -> RidObservation {
+/// 14:46:54 on 250792fe. A valid position was logged invalid_observation because the other tablet held the lease.
+@Test func leaseHeldByAnotherTabletStillAcceptsAValidPosition() async {
+    let store = RidTrackStore(policy: .init(activeTimeout: 30))
+    let aircraft = "1581F8HGX255S00A0FZT"
+    let at = Date(timeIntervalSince1970: 1_794_350_814)
+    let first = await store.ingest(handoffObservation(aircraft: aircraft, at: at, latitude: 39.7410))
+    guard case .accepted = first else {
+        Issue.record("first point")
+        return
+    }
+    await store.markOwned(aircraftID: aircraft, at: at)
+    await store.clearOwned(aircraftID: aircraft)
+    let video = await store.ingest(handoffObservation(
+        aircraft: aircraft, at: at.addingTimeInterval(10), latitude: 39.7412, source: .djiVideo))
+    let radio = await store.ingest(handoffObservation(
+        aircraft: aircraft, at: at.addingTimeInterval(20), latitude: 39.7414, source: .bluetoothLegacy))
+    guard case .accepted = video, case .accepted = radio else {
+        Issue.record("valid positions were rejected")
+        return
+    }
+    let live = await store.track(aircraftID: aircraft)
+    #expect(live?.points.contains { $0.latitude == 39.7412 } == true)
+    #expect(live?.points.contains { $0.latitude == 39.7414 } == true)
+    #expect(await store.recordForArchive(live!, ownedDuringFlight: false) == nil)
+}
+
+private func handoffObservation(
+    aircraft: String, at: Date, latitude: Double = 39.7392, source: RidObservation.Source = .djiVideo
+) -> RidObservation {
     RidObservation(
-        source: .djiVideo,
+        source: source,
         aircraftId: aircraft,
         receivedAt: at,
         latitude: latitude,
