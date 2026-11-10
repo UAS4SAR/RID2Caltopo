@@ -570,6 +570,26 @@ class R2CViewModelDroneConfirmationTest {
     }
 
     @Test
+    fun foreignClaimLetsTheNextVideoOfferTakeoverAfterLocalMine() {
+        val remoteId = "DRONETAKEOVERAGAIN"
+        val drone = activeDrone(remoteId, waypointTimestampMsec = 1234L).apply { setMappedId("1sar7m4td") }
+        val viewModel = R2CViewModel(SimpleTimer())
+        viewModel.onDroneSpecsChanged(listOf(drone))
+        viewModel.updatePendingDroneConfirmation("NCSSAR", "1SAR7", "DJI Matrice 4TD")
+        viewModel.savePendingDroneConfirmation()
+        assertNull(viewModel.pendingDroneConfirmation.value)
+        CaltopoClient.ApplyPeerDroneSpecConfirmation(remoteId, "NCSSAR", "DJI Matrice 4TD", "1SAR7", "1sar7m4td")
+        viewModel.peerClaimRemoteIdsForTesting = setOf(remoteId)
+        viewModel.onLiveStreamDesignatorsChanged(
+            setOf(drone.mappedId),
+            listOf(drone),
+            mapOf(drone.mappedId to "192.168.68.58:56496"),
+        )
+        assertEquals(remoteId, viewModel.pendingDroneConfirmation.value?.remoteId)
+        assertFalse(CaltopoClient.IsCurrentLocallyConfirmedDrone(remoteId))
+    }
+
+    @Test
     fun localMineIsNotRearmedWhenVideoMoves() {
         val remoteId = "DRONEMINEVIDEO"
         val drone = activeDrone(remoteId, waypointTimestampMsec = 1234L).apply { setMappedId("1sar7m4") }
@@ -599,6 +619,7 @@ class R2CViewModelDroneConfirmationTest {
         val peer = mapOf("PEER" to setOf("1sar|10.0.0.2:1"))
         assertEquals(setOf("PEER"), remoteIdsRearmedByNewPublisher(emptySet(), emptyMap(), peer))
         assertTrue(remoteIdsRearmedByNewPublisher(setOf("PEER"), emptyMap(), peer).isEmpty())
+        assertEquals(setOf("PEER"), remoteIdsRearmedByNewPublisher(setOf("PEER"), emptyMap(), peer, setOf("PEER")))
         assertTrue(remoteIdsRearmedByNewPublisher(emptySet(), peer, peer).isEmpty())
         assertTrue(remoteIdsRearmedByNewPublisher(emptySet(), emptyMap(), mapOf("PEER" to setOf("1sar|unknown"))).isEmpty())
     }

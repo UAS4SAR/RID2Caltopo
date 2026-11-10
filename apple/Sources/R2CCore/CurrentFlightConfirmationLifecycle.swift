@@ -89,10 +89,12 @@ public enum TakeoverClaimNotice {
         locallyConfirmed: Set<String>,
         ignored: Set<String>,
         previous: [String: Set<String>],
-        current: [String: Set<String>]
+        current: [String: Set<String>],
+        foreignClaims: Set<String> = []
     ) -> Set<String> {
         Set(current.compactMap { remoteID, tokens in
-            guard !locallyConfirmed.contains(remoteID), !ignored.contains(remoteID) else { return nil }
+            let blockedByLocalMine = locallyConfirmed.contains(remoteID) && !foreignClaims.contains(remoteID)
+            guard !blockedByLocalMine, !ignored.contains(remoteID) else { return nil }
             let prior = previous[remoteID] ?? []
             let fresh = tokens.contains { token in
                 !token.hasSuffix("|unknown") && !prior.contains(token) &&

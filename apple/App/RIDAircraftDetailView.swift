@@ -348,11 +348,13 @@ final class AppleDroneConfirmationStore: ObservableObject {
         onFlightEnded: (String) -> Void = { _ in }
     ) -> String? {
         completedFlightGuard.updateSessions(videoSessions)
+        let foreignClaims = Set(peerClaims.keys)
         for remoteID in TakeoverClaimNotice.remoteIDsRearmedByNewPublisher(
             locallyConfirmed: Set(sessionIdentities.keys),
             ignored: ignoredRemoteIDs,
             previous: seenVideoSessions,
-            current: videoSessions
+            current: videoSessions,
+            foreignClaims: foreignClaims
         ) {
             confirmationLifecycle.rearmPrompt(remoteID: remoteID)
         }
@@ -364,7 +366,8 @@ final class AppleDroneConfirmationStore: ObservableObject {
                 AppleLog.info("DroneConfirmation", "\($0) \(mediaDiagnostics)")
             }
         }
-        let confirmedRemoteIDs = Set(sessionIdentities.keys)
+        // A peer claim is not this tablet's Mine. A new video publisher can offer takeover.
+        let confirmedRemoteIDs = Set(sessionIdentities.keys).subtracting(peerClaims.keys)
         let reconciliation = confirmationLifecycle.reconcile(
             orderedRemoteIDs: eligible,
             confirmedRemoteIDs: confirmedRemoteIDs,

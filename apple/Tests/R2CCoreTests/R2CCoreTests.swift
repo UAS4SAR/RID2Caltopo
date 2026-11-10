@@ -6517,6 +6517,9 @@ private func bluetoothServiceData(message: [UInt8], counter: UInt8) -> Data {
     #expect(TakeoverClaimNotice.remoteIDsRearmedByNewPublisher(
         locallyConfirmed: ["DRONE"], ignored: [], previous: [:], current: video).isEmpty)
     #expect(TakeoverClaimNotice.remoteIDsRearmedByNewPublisher(
+        locallyConfirmed: ["DRONE"], ignored: [], previous: [:], current: video,
+        foreignClaims: ["DRONE"]) == ["DRONE"])
+    #expect(TakeoverClaimNotice.remoteIDsRearmedByNewPublisher(
         locallyConfirmed: [], ignored: ["DRONE"], previous: [:], current: video).isEmpty)
     #expect(TakeoverClaimNotice.remoteIDsRearmedByNewPublisher(
         locallyConfirmed: [], ignored: [], previous: video, current: video).isEmpty)
