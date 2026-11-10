@@ -455,6 +455,10 @@ final class RIDTrackViewModel: ObservableObject {
     private var ownedFlightIDs: Set<String> = []
     /// Verified Mine segments. Unverified Mine stays on the hold path and is not in this set.
     private var ownedFlightMayUpload: Set<String> = []
+    /// Aircraft whose current points were recorded while another tablet held the lease.
+    private var shadowedAircraft: Set<String> = []
+    /// The grant time for the ownership we already split. A later event must not split again.
+    private var ownershipGrantedAtByAircraft: [String: Date] = [:]
     private var peerTrafficLatestSampleAtByAircraftID: [String: Date] = [:]
     private var pairedVideoActivityProvider: (() -> [String: Date])?
     private var validatedSEIPositionProvider:
@@ -1608,15 +1612,25 @@ final class RIDTrackViewModel: ObservableObject {
                     self.ownershipActivationTasks.removeValue(forKey: remoteID)?.cancel()
                     let aircraftID = RidTrackStore.canonicalAircraftID(remoteID)
                     if localOwner, alertEligible {
-                        let split = await self.store.closeShadow(
-                            aircraftID: aircraftID, ownershipGrantedAt: Date())
-                        if let shadow = split.shadow {
-                            await self.archive(shadow, retainingUnconfirmedShadow: true)
-                        }
-                        if let owned = split.owned {
+                        if self.shadowedAircraft.contains(aircraftID),
+                           self.ownershipGrantedAtByAircraft[aircraftID] == nil {
+                            let grantedAt = Date()
+                            self.ownershipGrantedAtByAircraft[aircraftID] = grantedAt
+                            self.shadowedAircraft.remove(aircraftID)
+                            let split = await self.store.closeShadow(
+                                aircraftID: aircraftID, ownershipGrantedAt: grantedAt)
+                            if let shadow = split.shadow {
+                                await self.archive(shadow, retainingUnconfirmedShadow: true)
+                            }
+                            if let owned = split.owned {
+                                self.rememberOwnedFlight(owned)
+                            }
+                        } else if let owned = await self.store.track(aircraftID: aircraftID) {
                             self.rememberOwnedFlight(owned)
                         }
                     } else if !localOwner {
+                        self.shadowedAircraft.insert(aircraftID)
+                        self.ownershipGrantedAtByAircraft.removeValue(forKey: aircraftID)
                         await self.endOwnedFlightAtHandoff(aircraftID: aircraftID)
                     }
                     if localOwner, alertEligible,

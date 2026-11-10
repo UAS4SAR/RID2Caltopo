@@ -53,6 +53,11 @@ import Testing
     let kept = await store.track(aircraftID: aircraft)
     #expect(kept?.flightStartedAt == grantedAt.addingTimeInterval(1))
     #expect(kept?.points.contains { $0.receivedAt < grantedAt } == false)
+
+    let again = await store.closeShadow(aircraftID: aircraft, ownershipGrantedAt: grantedAt)
+    #expect(again.shadow == nil)
+    #expect(again.owned?.points.count == 1)
+    #expect(again.owned?.flightStartedAt == grantedAt.addingTimeInterval(1))
 }
 
 private func handoffObservation(aircraft: String, at: Date, latitude: Double = 39.7392) -> RidObservation {

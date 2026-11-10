@@ -165,6 +165,8 @@ public class WaypointTrack {
     private boolean closedAsPriorOwner = false;
     /** Points recorded before this tablet was granted the lease. Kept locally, never uploaded. */
     private boolean closedAsShadow = false;
+    /** At least one point was stored while another tablet held the owner lease. */
+    private boolean recordedAsShadow = false;
     private String archivedOwner = "";
     private String archivedFlightReadinessJson = "{}";
     private String archivedModel = "";
@@ -509,7 +511,7 @@ public class WaypointTrack {
         if (label == null || label.isEmpty()) return null;
         WaypointTrack track = TrackMap.remove(label);
         if (track == null) return null;
-        if (track.coordinates.length() == 0) {
+        if (track.coordinates.length() == 0 || !track.recordedAsShadow) {
             TrackMap.put(label, track);
             return null;
         }
@@ -523,6 +525,17 @@ public class WaypointTrack {
         if (trackLabel == null || trackLabel.isEmpty()) return;
         WaypointTrack track = TrackMap.get(trackLabel);
         if (track != null) track.closedAsPriorOwner = true;
+    }
+
+    private void noteShadowIfAnotherTabletOwns(@NonNull CtDroneSpec spec) {
+        String remoteId = spec.getRemoteId();
+        if (remoteId == null || remoteId.isEmpty()) return;
+        try {
+            PeerCoordinator peers = R2cRuntimeRegistry.getDefaultRuntime().getPeerCoordinator();
+            if (!peers.isLocalOwner(remoteId) && peers.hasActivePeerOwner(remoteId)) {
+                recordedAsShadow = true;
+            }
+        } catch (Exception ignored) { }
     }
 
     private static boolean isLocalFlightOwnerForUpload(@NonNull String remoteId) {
@@ -1418,6 +1431,7 @@ public class WaypointTrack {
 		ja.put(String.format(Locale.US, "%d", timestampInMillisec));
 		coordinates.put(ja);
 		pointReceivedAtMs.add(receivedAtMs);
+		noteShadowIfAnotherTabletOwns(droneSpec);
 		pointDroneClock.add(droneClock);
 		pointSources.add(source);
         renderTail = new RenderPointNode(new TrackPoint(lat, lng, altInMeters,
