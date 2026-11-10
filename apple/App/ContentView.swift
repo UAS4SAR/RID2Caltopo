@@ -815,6 +815,7 @@ struct ContentView: View {
                     peerCoordinator,
                     identityProvider: droneConfirmations.identity,
                     peerConfirmationConsumer: droneConfirmations.applyPeerConfirmation,
+                    foreignOwnerConsumer: droneConfirmations.noteForeignOwner,
                     peerConfirmationClearer: droneConfirmations.clearPeerConfirmation,
                     flightEndConsumer: { remoteID in
                         AppleLog.info("DroneConfirmation", "Flight end remoteId=\(remoteID) \(confirmationMediaDiagnostics)")

@@ -175,6 +175,14 @@ final class RIDTrackViewModel: ObservableObject {
                         try await waypointAppendJournal.acknowledgeRecovered(flightID: flight.id)
                         continue
                     }
+                    if flight.startedAtMs > 0,
+                       await archiveStore.archiveAlreadySaved(
+                        remoteID: flight.remoteID,
+                        startedAt: Date(timeIntervalSince1970: Double(flight.startedAtMs) / 1_000)
+                       ) {
+                        try await waypointAppendJournal.acknowledgeRecovered(flightID: flight.id)
+                        continue
+                    }
                     if let prior = existingEntries.last(where: { $0.id == flight.id }), prior.finished {
                         if TrackArchiveConfirmation.isConfirmed(
                             decision: prior.decision,
@@ -449,6 +457,7 @@ final class RIDTrackViewModel: ObservableObject {
     private var ownershipContextProvider: ((String) -> FlightOwnershipContext)?
     private var flightRecordingAllowed: ((String) -> Bool)?
     private var peerConfirmationConsumer: ((TrackerCoordinationIdentity) -> Void)?
+    private var foreignOwnerConsumer: ((String, String) -> Void)?
     private var peerConfirmationClearer: ((String) -> Void)?
     private var flightEndConsumer: ((String) -> Void)?
     /// Flight ids this tablet owned while they were flying. A later takeover still publishes them.
@@ -1591,6 +1600,7 @@ final class RIDTrackViewModel: ObservableObject {
         _ coordinator: AppleTrackerCoordinator,
         identityProvider: @escaping (String) -> RidAircraftIdentity?,
         peerConfirmationConsumer: @escaping (TrackerCoordinationIdentity) -> Void,
+        foreignOwnerConsumer: @escaping (String, String) -> Void = { _, _ in },
         peerConfirmationClearer: @escaping (String) -> Void,
         flightEndConsumer: @escaping (String) -> Void
     ) {
@@ -1598,6 +1608,7 @@ final class RIDTrackViewModel: ObservableObject {
         updateCaltopoThumbnailRefreshTargets()
         self.identityProvider = identityProvider
         self.peerConfirmationConsumer = peerConfirmationConsumer
+        self.foreignOwnerConsumer = foreignOwnerConsumer
         self.peerConfirmationClearer = peerConfirmationClearer
         self.flightEndConsumer = flightEndConsumer
         coordinator.setManagedVideoThumbnailUpdatedHandler { [weak self] droneDesignator in
@@ -1608,7 +1619,7 @@ final class RIDTrackViewModel: ObservableObject {
             for await event in coordinator.events {
                 guard !Task.isCancelled, let self else { return }
                 switch event {
-                case let .ownershipChanged(remoteID, _, localOwner, alertEligible):
+                case let .ownershipChanged(remoteID, ownerZoneID, localOwner, alertEligible):
                     self.ownershipActivationTasks.removeValue(forKey: remoteID)?.cancel()
                     let aircraftID = RidTrackStore.canonicalAircraftID(remoteID)
                     if localOwner, alertEligible {
@@ -1626,6 +1637,7 @@ final class RIDTrackViewModel: ObservableObject {
                             self.rememberOwnedFlight(owned)
                         }
                     } else if !localOwner {
+                        self.foreignOwnerConsumer?(remoteID, ownerZoneID)
                         self.shadowedAircraft.insert(aircraftID)
                         self.ownershipGrantedAtByAircraft.removeValue(forKey: aircraftID)
                         await self.endOwnedFlightAtHandoff(aircraftID: aircraftID)

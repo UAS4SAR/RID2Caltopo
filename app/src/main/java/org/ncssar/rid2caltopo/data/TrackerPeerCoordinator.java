@@ -2449,6 +2449,16 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
             return;
         }
         ownerByRemoteId.put(remoteId, ownerGuid);
+        if (myGuid != null && myGuid.equals(ownerGuid)) {
+            peerClaims.remove(remoteId);
+        } else {
+            DroneClaim existing = peerClaims.get(remoteId);
+            // owner_assigned is enough to name the lease on the next Save. A later
+            // drone_confirmed fills in the callsign and time; don't wipe those.
+            if (existing == null || !ownerGuid.equals(existing.guid)) {
+                peerClaims.put(remoteId, new DroneClaim(remoteId, ownerGuid, "", "", 0L));
+            }
+        }
         if (leaseSeq >= 0) {
             leaseSeqByRemoteId.put(remoteId, leaseSeq);
         }

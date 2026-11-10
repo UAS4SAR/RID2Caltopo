@@ -256,6 +256,23 @@ public enum AwaitingMapFlightArchive {
         return names
     }
 
+    /// True when this flight's GeoJSON is already in its day folder.
+    public static func fileExists(
+        remoteID: String, startedAt: Date, root: URL, timeZone: TimeZone = .current,
+        fileManager: FileManager = .default
+    ) -> Bool {
+        let names = filenames(remoteID: remoteID, startedAt: startedAt, timeZone: timeZone)
+        for day in candidateDayNames(firstTime: startedAt, lastTime: startedAt) {
+            let directory = root.appendingPathComponent(day, isDirectory: true)
+            for name in names where name.hasSuffix(".json") {
+                let file = directory.appendingPathComponent(name)
+                guard file.deletingLastPathComponent().standardizedFileURL == directory.standardizedFileURL else { continue }
+                if fileManager.fileExists(atPath: file.path) { return true }
+            }
+        }
+        return false
+    }
+
     /// Deletes only this flight's exact archive files under `root`. Returns "day/file" paths.
     public static func deleteFiles(for flight: AwaitingMapFlight, root: URL, timeZone: TimeZone = .current,
                                    fileManager: FileManager = .default) -> AwaitingMapArchiveDeletion {

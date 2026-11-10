@@ -380,7 +380,7 @@ final class AppleDroneConfirmationStore: ObservableObject {
             completedFlightGuard.end(remoteID: remoteID, at: Date()) { AppleLog.info("DroneConfirmation", "\($0) \(mediaDiagnostics)") }
             sessionIdentities.removeValue(forKey: remoteID)
             peerIdentities.removeValue(forKey: remoteID)
-            peerClaims.removeValue(forKey: remoteID)
+            // Another tablet may still hold the lease. The next Save has to name it.
             acceptedClaimChanges.removeValue(forKey: remoteID)
             publicationGateLogged.remove(remoteID)
         }
@@ -612,6 +612,15 @@ final class AppleDroneConfirmationStore: ObservableObject {
         peerIdentities.removeAll()
         peerClaims.removeAll()
         acceptedClaimChanges.removeAll()
+    }
+
+    func noteForeignOwner(remoteID: String, zoneID: String) {
+        let zone = zoneID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !zone.isEmpty else { return }
+        if peerClaims[remoteID]?.confirmedByGuid == zone { return }
+        peerClaims[remoteID] = TrackerCoordinationIdentity(
+            remoteID: remoteID, mappedID: "", organization: "", model: "", ownerName: "",
+            confirmedByGuid: zone)
     }
 
     func applyPeerConfirmation(_ identity: TrackerCoordinationIdentity) {

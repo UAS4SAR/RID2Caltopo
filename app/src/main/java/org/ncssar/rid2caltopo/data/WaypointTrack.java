@@ -1410,7 +1410,7 @@ public class WaypointTrack {
                 CTError(TAG, "archive(): unable to write " + fileName);
                 return;
             }
-            WaypointTrackJournal.markFinishedAndRemove(deferredPublicationId);
+            WaypointTrackJournal.removeNow(deferredPublicationId);
             if (archivedLocalOnly) {
                 FlightPublicationLedger.remember(
                         deferredPublicationId, FlightPublicationLedger.Disposition.LOCAL_ARCHIVED);

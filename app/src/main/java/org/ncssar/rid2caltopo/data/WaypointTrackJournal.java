@@ -323,6 +323,13 @@ public final class WaypointTrackJournal {
                         deleteJournalFile(file, "already-finished");
                         continue;
                     }
+                    if (DocumentFileCompat.archiveAlreadyPresent(recovered)) {
+                        CTDebug(TAG, String.format(Locale.US,
+                                "recoverUnfinished(): retiring %s; local archive already exists",
+                                recovered.id));
+                        deleteJournalFile(file, "archive-already-present");
+                        continue;
+                    }
                     if (shouldRetireWithoutPromotion(recovered)) {
                         CTDebug(TAG, String.format(Locale.US,
                                 "recoverUnfinished(): retiring %s without awaiting-map promotion",
@@ -406,6 +413,29 @@ public final class WaypointTrackJournal {
 
     /** Small helper keeps SAF/DocumentFile imports out of the hot journal path. */
     private static final class DocumentFileCompat {
+        static boolean archiveAlreadyPresent(@NonNull RecoveredFlight recovered) {
+            try {
+                return archiveFile(recovered) != null;
+            } catch (Exception ignored) {
+                return false;
+            }
+        }
+
+        @Nullable
+        private static androidx.documentfile.provider.DocumentFile archiveFile(
+                @NonNull RecoveredFlight recovered) {
+            long stamp = recovered.firstTimestampMs > 0
+                    ? recovered.firstTimestampMs
+                    : (recovered.startedAtMs > 0 ? recovered.startedAtMs : 0L);
+            if (stamp <= 0L) return null;
+            androidx.documentfile.provider.DocumentFile dayDir =
+                    CaltopoClient.GetTrackDirForTime(stamp);
+            if (dayDir == null) return null;
+            String fileName = OperatorArchiveFilename.track(
+                    recovered.remote.isEmpty() ? recovered.label : recovered.remote, stamp);
+            return dayDir.findFile(fileName);
+        }
+
         static void writeRecoveredGeoJson(@NonNull RecoveredFlight recovered, boolean localOnly)
                 throws Exception {
             long stamp = recovered.firstTimestampMs > 0
@@ -445,7 +475,7 @@ public final class WaypointTrackJournal {
                     recovered.remote.isEmpty() ? recovered.label : recovered.remote,
                     stamp);
             // Skip rewrite when this flight's archive already exists in its day folder.
-            if (dayDir.findFile(fileName) != null) {
+            if (archiveFile(recovered) != null) {
                 CTDebug(TAG, "writeRecoveredGeoJson(): archive already present for " + fileName);
                 return;
             }

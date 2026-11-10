@@ -421,6 +421,11 @@ actor AppleTrackArchiveStore {
         return failed
     }
 
+    func archiveAlreadySaved(remoteID: String, startedAt: Date) -> Bool {
+        guard let rootURL else { return false }
+        return AwaitingMapFlightArchive.fileExists(remoteID: remoteID, startedAt: startedAt, root: rootURL)
+    }
+
     /// Deletes only the GeoJSON and clue KMZ written for this flight.
     func deleteFlightArchive(_ flight: AwaitingMapFlight) -> AwaitingMapArchiveDeletion {
         guard let rootURL else { return AwaitingMapArchiveDeletion(failures: ["archive folder unavailable"]) }

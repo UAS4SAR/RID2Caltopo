@@ -1525,6 +1525,46 @@ class TrackerPeerCoordinatorTest {
     }
 
     @Test
+    fun ownerAssignmentNamesTheLeaseWhenTheConfirmationDetailsNeverArrived() {
+        coordinator.start("MAP1", "zone-alpha", "Alpha", null)
+        transport.receive(
+            JSONObject()
+                .put("type", "owner_assigned")
+                .put("remoteId", "DRONE1")
+                .put("ownerGuid", "zone-bravo")
+                .put("leaseSeq", 3)
+                .toString()
+        )
+        val claim = coordinator.claimForRemoteId("DRONE1")
+        assertNotNull(claim)
+        assertEquals("zone-bravo", claim!!.guid)
+
+        transport.receive(
+            JSONObject()
+                .put("type", "drone_confirmed")
+                .put("remoteId", "DRONE1")
+                .put("confirmedByGuid", "zone-bravo")
+                .put("ownerName", "1SAR7")
+                .put("confirmedAtMs", 1_700_000_000_000L)
+                .put("org", "NCSSAR")
+                .put("model", "Matrice")
+                .put("mappedId", "1sar7")
+                .toString()
+        )
+        transport.receive(
+            JSONObject()
+                .put("type", "owner_assigned")
+                .put("remoteId", "DRONE1")
+                .put("ownerGuid", "zone-bravo")
+                .put("leaseSeq", 4)
+                .toString()
+        )
+        val detailed = coordinator.claimForRemoteId("DRONE1")
+        assertEquals("1SAR7", detailed!!.callsign)
+        assertEquals(1_700_000_000_000L, detailed.confirmedAtMs)
+    }
+
+    @Test
     fun peerClaimIsNamedOnReplacement_andClearedWhenThatOwnerExpires() {
         coordinator.start("MAP1", "zone-alpha", "Alpha", null)
         transport.receive(
