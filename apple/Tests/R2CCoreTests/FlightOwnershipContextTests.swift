@@ -86,4 +86,27 @@ import Testing
         #expect(released.recordedPilot == nil)
         #expect((await journal.entries).first { $0.id == "other" }?.decision == "publish")
     }
+
+    @Test func peerConfirmationIsNotThisTabletsMine() {
+        #expect(!FlightOwnershipContext.countsAsLocalMine(sessionConfirmed: false, peerConfirmed: true))
+        #expect(FlightOwnershipContext.countsAsLocalMine(sessionConfirmed: true, peerConfirmed: true))
+        let peer = FlightOwnershipContext.capture(
+            confirmed: false, ignored: false, localOnly: false, claim: FlightOwnershipContext.expired,
+            pilot: "1SAR7", organization: "NCSSAR", model: "Mini", mappedID: "mid")
+        #expect(!peer.requiresHold)
+        #expect(peer.recordedPilot.isEmpty)
+    }
+
+    @Test func finishedFlightClaimDoesNotApplyToTheNextFlight() {
+        #expect(FlightOwnershipContext.claimApplies(storedFlightStartedAtMs: 1_000, flightStartedAtMs: 1_500))
+        #expect(!FlightOwnershipContext.claimApplies(storedFlightStartedAtMs: 1_000, flightStartedAtMs: 20_000))
+        #expect(!FlightOwnershipContext.claimApplies(storedFlightStartedAtMs: 0, flightStartedAtMs: 20_000))
+    }
+
+    @Test func archivedShapeIsNotReusedOrRewritten() {
+        #expect(!ArchivedShapePolicy.mayAdoptLiveTrack(trackID: "shape-1", archivedShapeIDs: ["shape-1"]))
+        #expect(ArchivedShapePolicy.mayAdoptLiveTrack(trackID: "live-2", archivedShapeIDs: ["shape-1"]))
+        #expect(!ArchivedShapePolicy.mayModifyShape(shapeID: "shape-1", createdByThisFlight: false))
+        #expect(ArchivedShapePolicy.mayModifyShape(shapeID: "shape-2", createdByThisFlight: true))
+    }
 }

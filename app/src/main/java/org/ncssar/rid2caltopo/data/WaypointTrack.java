@@ -189,6 +189,10 @@ public class WaypointTrack {
         this.opPeriod = CaltopoClient.GetOpPeriod();
         this.mapId = CaltopoMap.GetMapId();
 		CTDebug(TAG, String.format("AddWaypointForTrack(%s): Starting new track.", trackLabel));
+        try {
+            R2cRuntimeRegistry.getDefaultRuntime().getPeerCoordinator()
+                    .noteFlightStart(remoteId == null ? "" : remoteId, startedAtMs);
+        } catch (Exception ignored) { }
         WaypointTrackJournal.ensureOpen(
                 deferredPublicationId,
                 remoteId == null ? "" : remoteId,
@@ -437,8 +441,8 @@ public class WaypointTrack {
         archivedMappedId = droneSpec.getMappedId();
         archivedLocalOnly = droneSpec.isLocalArchiveOnly();
         archivedOkToLog = droneSpec.okToLog();
-        archivedFlightConfirmed = droneSpec.isCurrentFlightConfirmed() ||
-                CaltopoClient.IsCurrentPeerDroneConfirmed(archivedRemoteId);
+        archivedFlightConfirmed = droneSpec.isCurrentFlightConfirmed()
+                || CaltopoClient.IsCurrentLocallyConfirmedDrone(archivedRemoteId);
         archivedDistanceInFeet = droneSpec.getDistanceInFeet();
         String claim = FlightOwnershipContext.NONE;
         try {

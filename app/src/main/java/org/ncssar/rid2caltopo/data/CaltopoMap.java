@@ -223,6 +223,8 @@ public class CaltopoMap {
             new Hashtable<>();
     /** LiveTrack ids minted by this device's zone for this process. */
     private static final HashSet<String> LocallyCreatedLiveTrackIds = new HashSet<>();
+    /** Shape ids already on the map. They are not reused or edited by a later flight. */
+    private static final java.util.Set<String> ArchivedShapeIds = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
     static final class AdoptableLiveTrack {
         @NonNull final String trackId;
@@ -780,11 +782,21 @@ public class CaltopoMap {
         return trackId != null && !trackId.isEmpty() && LocallyCreatedLiveTrackIds.contains(trackId);
     }
 
+    public static void noteArchivedShape(@Nullable String trackId) {
+        if (trackId == null || trackId.isEmpty()) return;
+        ArchivedShapeIds.add(trackId);
+        AdoptableLiveTracksByDeviceId.entrySet().removeIf(entry -> trackId.equals(entry.getValue().trackId));
+    }
+
+    public static boolean isArchivedShape(@Nullable String trackId) {
+        return trackId != null && !trackId.isEmpty() && ArchivedShapeIds.contains(trackId);
+    }
+
     public static void rememberAdoptableLiveTrack(@NonNull String trackId,
                                                   @NonNull String title,
                                                   @NonNull String deviceId,
                                                   @NonNull String creatorZoneId) {
-        if (trackId.isEmpty() || deviceId.isEmpty()) return;
+        if (trackId.isEmpty() || deviceId.isEmpty() || isArchivedShape(trackId)) return;
         if (LiveTracksById.containsKey(trackId)) return;
         AdoptableLiveTracksByDeviceId.put(deviceId, new AdoptableLiveTrack(
                 trackId, title, deviceId, creatorZoneId));
@@ -793,7 +805,9 @@ public class CaltopoMap {
     @Nullable
     public static AdoptableLiveTrack takeAdoptableLiveTrack(@NonNull String deviceId) {
         if (deviceId.isEmpty()) return null;
-        return AdoptableLiveTracksByDeviceId.remove(deviceId);
+        AdoptableLiveTrack adopted = AdoptableLiveTracksByDeviceId.remove(deviceId);
+        if (adopted != null && isArchivedShape(adopted.trackId)) return null;
+        return adopted;
     }
 
     @Nullable
@@ -2283,6 +2297,11 @@ public class CaltopoMap {
                 if (onComplete != null) onComplete.accept(false);
                 return;
             }
+            if (isArchivedShape(trackId) && !wasLocallyCreatedLiveTrack(trackId)) {
+                CTWarn(TAG, "archiveFeature(): refusing to overwrite archived shape id=" + trackId);
+                if (onComplete != null) onComplete.accept(false);
+                return;
+            }
             JSONObject prop = feature.optJSONObject("properties");
             if (null == prop) {
                 prop = new JSONObject();
@@ -2701,6 +2720,7 @@ public class CaltopoMap {
         if (properties != null) {
             featureClass = properties.optString("class");
         }
+        if ("Shape".equals(featureClass)) noteArchivedShape(featureId);
         CTDebug(TAG, String.format(Locale.US,
                 "notifyArtifactFeature(): source=%s id=%s class=%s cached=%d listeners=%d",
                 source, featureId, featureClass, artifactCount, listeners.size()));

@@ -366,6 +366,9 @@ public final class DefaultPeerCoordinator implements PeerCoordinator {
     @Override @NonNull public String ownershipClaimState(@NonNull String remoteId) {
         return activeCoordinator.ownershipClaimState(remoteId);
     }
+    @Override public void noteFlightStart(@NonNull String remoteId, long startedAtMs) {
+        activeCoordinator.noteFlightStart(remoteId, startedAtMs);
+    }
 
     @Override
     @NonNull

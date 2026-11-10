@@ -231,12 +231,14 @@ final class RIDTrackViewModel: ObservableObject {
         let label = identityProvider?(track.aircraftID)?.displayLabel ?? track.aircraftID
         let mapID = publicationMapID
         let teamID = publicationTeamID
+        let startedAtMs = Int64((track.flightStartedAt.timeIntervalSince1970 * 1_000).rounded())
+        peerCoordinator?.noteFlightStart(remoteID: track.aircraftID, startedAtMs: startedAtMs)
         Task(priority: .utility) {
             do {
                 try await waypointAppendJournal.ensureOpen(
                     flightID: flightID, remoteID: track.aircraftID, label: label,
                     mapID: mapID, teamID: teamID,
-                    startedAtMs: Int64((track.flightStartedAt.timeIntervalSince1970 * 1_000).rounded()))
+                    startedAtMs: startedAtMs)
                 if let context = ownershipContextProvider?(track.aircraftID) {
                     await noteOwnershipContextIfChanged(context, flightID: flightID)
                 }
@@ -256,6 +258,9 @@ final class RIDTrackViewModel: ObservableObject {
         let points = track.points, fallbackSource = track.lastObservation.source, aircraftID = track.aircraftID
         let label = labelOverride ?? identityProvider?(track.aircraftID)?.displayLabel ?? track.aircraftID
         let mapID = publicationMapID, teamID = publicationTeamID
+        peerCoordinator?.noteFlightStart(
+            remoteID: track.aircraftID,
+            startedAtMs: Int64((track.flightStartedAt.timeIntervalSince1970 * 1_000).rounded()))
         let ownership = ownershipContextProvider?(track.aircraftID)
         let ownershipReviewPending = ownership?.requiresHold ?? (peerCoordinator?.claimPending(remoteID: track.aircraftID) == true)
         let previous = awaitingFlightWrites[track.aircraftID]

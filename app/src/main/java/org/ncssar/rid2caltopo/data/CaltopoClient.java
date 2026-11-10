@@ -2967,7 +2967,7 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
         if (RejectNonCanonicalRemoteId("ApplyPeerDroneSpecConfirmation()", remoteId)) return;
         SessionConfirmedDroneRemoteIds.add(remoteId);
         CurrentPeerConfirmedDroneRemoteIds.add(remoteId);
-        // Peer confirmation must not look like a local Save for ownership replay.
+        // Peer confirmation must not look like a local Save, and must not make this tablet the Mine.
         CurrentLocallyConfirmedDroneRemoteIds.remove(remoteId);
 
         String trimmedOrg = org.trim();
@@ -2990,8 +2990,8 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
             if (!trimmedOwner.isEmpty()) activeDs.setOwner(trimmedOwner);
             if (!trimmedMappedId.isEmpty()) activeDs.setMappedId(trimmedMappedId);
         }
-        activeDs.setCurrentFlightConfirmed(true);
-        activeDs.setLocalArchiveOnly(false);
+        activeDs.notePeerIdentity();
+        // Publication stays with a local Save.
 
         UpdateDroneSpecs();
     }

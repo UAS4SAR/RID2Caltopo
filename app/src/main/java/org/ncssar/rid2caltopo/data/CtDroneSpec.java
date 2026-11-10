@@ -205,6 +205,8 @@ public class CtDroneSpec implements Comparable<CtDroneSpec>, Serializable {
     private boolean okToLog;
     private transient boolean localArchiveOnly;
     private transient boolean currentFlightConfirmed;
+    /** Peer confirmation may name the aircraft. It is not this tablet's Mine. */
+    private transient boolean peerIdentityKnown;
     private volatile transient boolean outOfRange;
     @Nullable private transient Boolean airborne = Boolean.FALSE;
 
@@ -354,6 +356,7 @@ public class CtDroneSpec implements Comparable<CtDroneSpec>, Serializable {
 
     public boolean okToLog() {return okToLog;}
     public boolean isCurrentFlightConfirmed() { return currentFlightConfirmed; }
+    public void notePeerIdentity() { peerIdentityKnown = true; }
     public void setCurrentFlightConfirmed(boolean confirmed) {
         boolean wasConfirmed = currentFlightConfirmed;
         currentFlightConfirmed = confirmed;
@@ -1295,7 +1298,7 @@ public class CtDroneSpec implements Comparable<CtDroneSpec>, Serializable {
     /** Operator-visible aircraft label; mappedId remains the stable stream routing key. */
     public String getDisplayLabel() {
         String designator = mappedId != null && !mappedId.trim().isEmpty() ? mappedId.trim() : remoteId;
-        return currentFlightConfirmed ? FlightDisplayLabel(designator, owner) : designator;
+        return (currentFlightConfirmed || peerIdentityKnown) ? FlightDisplayLabel(designator, owner) : designator;
     }
 
     @NonNull

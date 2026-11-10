@@ -797,9 +797,23 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
 
     /** Adverse claim results that outlive the in-memory pending confirmation. */
     private final ConcurrentHashMap<String, String> claimOutcomes = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, Long> claimOutcomeFlightStartedAtMs = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, Long> flightStartedAtMs = new ConcurrentHashMap<>();
+
+    @Override public void noteFlightStart(@NonNull String remoteId, long startedAtMs) {
+        if (remoteId.isEmpty() || startedAtMs <= 0L) return;
+        flightStartedAtMs.put(remoteId, startedAtMs);
+        Long tagged = claimOutcomeFlightStartedAtMs.get(remoteId);
+        if (claimOutcomes.containsKey(remoteId)
+                && !FlightOwnershipContext.claimApplies(tagged == null ? 0L : tagged, startedAtMs)) {
+            claimOutcomes.remove(remoteId);
+            claimOutcomeFlightStartedAtMs.remove(remoteId);
+            WaypointTrack.NoteOwnershipContextForRemote(remoteId);
+        }
+    }
 
     @Override @NonNull public String ownershipClaimState(@NonNull String remoteId) {
-        String outcome = claimOutcomes.get(remoteId);
+        String outcome = applicableClaim(remoteId);
         if (isClaimPending(remoteId)) {
             if ("rejected".equals(outcome) || "conflict".equals(outcome) || "expired".equals(outcome)) return outcome;
             return "pending";
@@ -809,10 +823,25 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
         return "none";
     }
 
+    @Nullable private String applicableClaim(@NonNull String remoteId) {
+        String outcome = claimOutcomes.get(remoteId);
+        if (outcome == null) return null;
+        Long current = flightStartedAtMs.get(remoteId);
+        if (current == null) return outcome;
+        Long tagged = claimOutcomeFlightStartedAtMs.get(remoteId);
+        if (!FlightOwnershipContext.claimApplies(tagged == null ? 0L : tagged, current)) return null;
+        return outcome;
+    }
+
     private void rememberClaimOutcome(@NonNull String remoteId, @NonNull String outcome) {
         if (remoteId.isEmpty()) return;
-        if ("verified".equals(outcome)) claimOutcomes.remove(remoteId);
-        else claimOutcomes.put(remoteId, outcome);
+        if ("verified".equals(outcome)) {
+            claimOutcomes.remove(remoteId);
+            claimOutcomeFlightStartedAtMs.remove(remoteId);
+        } else {
+            claimOutcomes.put(remoteId, outcome);
+            claimOutcomeFlightStartedAtMs.put(remoteId, flightStartedAtMs.getOrDefault(remoteId, 0L));
+        }
         WaypointTrack.NoteOwnershipContextForRemote(remoteId);
     }
 

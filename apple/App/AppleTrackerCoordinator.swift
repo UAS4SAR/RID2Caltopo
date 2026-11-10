@@ -1217,14 +1217,30 @@ final class AppleTrackerCoordinator: ObservableObject {
     }
 
     private var claimOutcomes: [String: String] = [:]
+    private var claimOutcomeFlightStartedAtMs: [String: Int64] = [:]
+    private var flightStartedAtMs: [String: Int64] = [:]
     private var claimedRemoteIDs: Set<String> = []
+
+    /// A new flight start drops a claim that belonged to an earlier flight of this aircraft.
+    func noteFlightStart(remoteID: String, startedAtMs: Int64) {
+        let id = remoteID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !id.isEmpty, startedAtMs > 0 else { return }
+        flightStartedAtMs[id] = startedAtMs
+        let tagged = claimOutcomeFlightStartedAtMs[id] ?? 0
+        if claimOutcomes[id] != nil,
+           !FlightOwnershipContext.claimApplies(storedFlightStartedAtMs: tagged, flightStartedAtMs: startedAtMs) {
+            claimOutcomes.removeValue(forKey: id)
+            claimOutcomeFlightStartedAtMs.removeValue(forKey: id)
+            ownershipContextChanged?(id)
+        }
+    }
 
     func claimPending(remoteID: String) -> Bool {
         coordinationRequired && pendingConfirmations[remoteID] != nil
     }
 
     func ownershipClaimState(remoteID: String) -> String {
-        let outcome = claimOutcomes[remoteID]
+        let outcome = applicableClaimOutcome(remoteID)
         if claimPending(remoteID: remoteID) {
             if let outcome, ["rejected", "conflict", "expired"].contains(outcome) { return outcome }
             return FlightOwnershipContext.pending
@@ -1234,11 +1250,24 @@ final class AppleTrackerCoordinator: ObservableObject {
         return FlightOwnershipContext.none
     }
 
+    private func applicableClaimOutcome(_ remoteID: String) -> String? {
+        guard let outcome = claimOutcomes[remoteID] else { return nil }
+        let tagged = claimOutcomeFlightStartedAtMs[remoteID] ?? 0
+        guard let current = flightStartedAtMs[remoteID] else { return outcome }
+        guard FlightOwnershipContext.claimApplies(storedFlightStartedAtMs: tagged, flightStartedAtMs: current) else { return nil }
+        return outcome
+    }
+
     private func rememberClaimOutcome(remoteID: String, _ outcome: String) {
         let trimmed = remoteID.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        if outcome == FlightOwnershipContext.verified { claimOutcomes.removeValue(forKey: trimmed) }
-        else { claimOutcomes[trimmed] = outcome }
+        if outcome == FlightOwnershipContext.verified {
+            claimOutcomes.removeValue(forKey: trimmed)
+            claimOutcomeFlightStartedAtMs.removeValue(forKey: trimmed)
+        } else {
+            claimOutcomes[trimmed] = outcome
+            claimOutcomeFlightStartedAtMs[trimmed] = flightStartedAtMs[trimmed] ?? 0
+        }
         ownershipContextChanged?(trimmed)
     }
 

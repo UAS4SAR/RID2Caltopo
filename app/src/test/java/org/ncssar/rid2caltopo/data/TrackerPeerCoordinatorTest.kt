@@ -1435,6 +1435,32 @@ class TrackerPeerCoordinatorTest {
     }
 
     @Test
+    fun peerConfirmationDoesNotMakeThisTabletTheMine() {
+        CaltopoClient.ApplyPeerDroneSpecConfirmation(
+            "DRONEPEERMINE", "NCSSAR", "DJI Mini 4 Pro", "1SAR7", "1sar7DjMn4Pr"
+        )
+        val drone = CaltopoClient.GetDroneSpec("DRONEPEERMINE")!!
+        assertFalse(drone.isCurrentFlightConfirmed)
+        assertTrue(CaltopoClient.IsCurrentPeerDroneConfirmed("DRONEPEERMINE"))
+        assertFalse(CaltopoClient.IsCurrentLocallyConfirmedDrone("DRONEPEERMINE"))
+    }
+
+    @Test
+    fun nextFlightDropsThePreviousExpiredClaim() {
+        coordinator.start("MAP1", "zone-alpha", "Alpha", null)
+        val drone = CtDroneSpec("DRONE1")
+        val track = FakeLiveTrack("DRONE1")
+        coordinator.onLiveTrackCreated(track, drone, 50.0, 1234L)
+        coordinator.noteFlightStart("DRONE1", 1_000L)
+        confirmLocalDrone()
+        coordinator.handleOwnerAssignedForTesting("DRONE1", "zone-alpha", 4L)
+        coordinator.handleOwnerExpiredForTesting("DRONE1")
+        assertEquals("expired", coordinator.ownershipClaimState("DRONE1"))
+        coordinator.noteFlightStart("DRONE1", 60_000L)
+        assertEquals("none", coordinator.ownershipClaimState("DRONE1"))
+    }
+
+    @Test
     fun ownerExpired_clearsLocalOwnership() {
         coordinator.start("MAP1", "zone-alpha", "Alpha", null)
         val drone = CtDroneSpec("DRONE1")

@@ -309,7 +309,9 @@ final class AppleDroneConfirmationStore: ObservableObject {
     }
 
     func isCurrentFlightConfirmed(_ remoteID: String) -> Bool {
-        sessionIdentities[remoteID] != nil || peerIdentities[remoteID] != nil
+        FlightOwnershipContext.countsAsLocalMine(
+            sessionConfirmed: sessionIdentities[remoteID] != nil,
+            peerConfirmed: peerIdentities[remoteID] != nil)
     }
 
     func peerClaim(for remoteID: String) -> TrackerCoordinationIdentity? { peerClaims[remoteID] }
@@ -352,7 +354,7 @@ final class AppleDroneConfirmationStore: ObservableObject {
                 AppleLog.info("DroneConfirmation", "\($0) \(mediaDiagnostics)")
             }
         }
-        let confirmedRemoteIDs = Set(sessionIdentities.keys).union(peerIdentities.keys)
+        let confirmedRemoteIDs = Set(sessionIdentities.keys)
         let reconciliation = confirmationLifecycle.reconcile(
             orderedRemoteIDs: eligible,
             confirmedRemoteIDs: confirmedRemoteIDs,
@@ -386,7 +388,7 @@ final class AppleDroneConfirmationStore: ObservableObject {
             for remoteID in rearmedRemoteIDs where confirmedRemoteIDs.contains(remoteID) {
                 AppleLog.info(
                     "DroneConfirmation",
-                    "Panel path=rearm_already_confirmed remoteId=\(remoteID) publication=\(CurrentFlightPublicationGate.decide(confirmed: true, ignored: false).logLabel)"
+                    "Panel path=rearm_already_confirmed remoteId=\(remoteID) publication=\(CurrentFlightPublicationGate.decide(confirmed: isCurrentFlightConfirmed(remoteID), ignored: false).logLabel)"
                 )
             }
             return nil

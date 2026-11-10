@@ -2,6 +2,7 @@ package org.ncssar.rid2caltopo.data
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -29,6 +30,18 @@ class LiveTrackOwnershipContractTest {
         assertTrue(shouldArchiveDuplicate(createdByThisZone = true, peerLeaseActive = false))
         // Orphan with no peer lease → archive as stale.
         assertTrue(shouldArchiveDuplicate(createdByThisZone = false, peerLeaseActive = false))
+    }
+
+    @Test
+    fun archivedShapeIsNotAdoptable() {
+        val device = CaltopoSession.liveTrackDeviceId("DRONESHAPE", "connect-key")
+        CaltopoMap.noteArchivedShape("already-shape")
+        CaltopoMap.rememberAdoptableLiveTrack("already-shape", "old-title", device, "zone-bravo")
+        assertFalse(CaltopoMap.isArchivedShape("still-live"))
+        assertNull(CaltopoMap.peekAdoptableLiveTrack(device))
+        CaltopoMap.rememberAdoptableLiveTrack("still-live", "live-title", device, "zone-bravo")
+        CaltopoMap.noteArchivedShape("still-live")
+        assertNull(CaltopoMap.takeAdoptableLiveTrack(device))
     }
 
     @Test

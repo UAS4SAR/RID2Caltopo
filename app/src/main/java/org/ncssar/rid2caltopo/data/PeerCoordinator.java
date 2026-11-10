@@ -102,6 +102,8 @@ public interface PeerCoordinator {
      */
     @NonNull
     default String ownershipClaimState(@NonNull String remoteId) { return "none"; }
+    /** A new flight start drops a claim outcome that belonged to an earlier flight. */
+    default void noteFlightStart(@NonNull String remoteId, long startedAtMs) {}
     /** True when a peer (not this device) currently holds the flight owner lease. */
     default boolean hasActivePeerOwner(@NonNull String remoteId) {
         return false;

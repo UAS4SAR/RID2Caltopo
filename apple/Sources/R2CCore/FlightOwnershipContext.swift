@@ -51,6 +51,20 @@ public struct FlightOwnershipContext: Sendable, Equatable, Codable {
         [pending, rejected, conflict, expired].contains(claim)
     }
 
+    /// A stored claim belongs to one flight start. A later flight of the same aircraft does not inherit it.
+    public static let claimFlightSkewMs: Int64 = 1_000
+
+    public static func claimApplies(storedFlightStartedAtMs: Int64, flightStartedAtMs: Int64) -> Bool {
+        storedFlightStartedAtMs > 0 && flightStartedAtMs > 0
+            && abs(storedFlightStartedAtMs - flightStartedAtMs) <= claimFlightSkewMs
+    }
+
+    /// Another tablet's confirmation is not this tablet's Mine.
+    public static func countsAsLocalMine(sessionConfirmed: Bool, peerConfirmed: Bool) -> Bool {
+        _ = peerConfirmed
+        return sessionConfirmed
+    }
+
     /// Tracker gave this flight to another tablet. A plain review must not publish it.
     public static func isLostToAnotherTablet(_ claim: String) -> Bool {
         [rejected, conflict, expired].contains(claim)
@@ -114,6 +128,19 @@ public struct FlightOwnershipContext: Sendable, Equatable, Codable {
             model: row["model"] as? String ?? "",
             mappedID: row["mappedId"] as? String ?? "",
             localOnly: row["localOnly"] as? Bool ?? false)
+    }
+}
+
+/// An archived Shape is immutable. A later flight mints a new id and does not edit the old one.
+public enum ArchivedShapePolicy {
+    public static func mayAdoptLiveTrack(trackID: String, archivedShapeIDs: Set<String>) -> Bool {
+        let id = trackID.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !id.isEmpty && !archivedShapeIDs.contains(id)
+    }
+
+    /// A recording link may be added only to the shape this flight just created.
+    public static func mayModifyShape(shapeID: String, createdByThisFlight: Bool) -> Bool {
+        !shapeID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && createdByThisFlight
     }
 }
 

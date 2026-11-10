@@ -640,7 +640,7 @@ actor AppleCaltopoPublisher {
 
     /// Seeds the stable RidFlightID and confirmed team label before the first point or finish.
     func seedLiveTrackIdentity(remoteID: String, liveTrackID: String, label: String) async {
-        guard !liveTrackID.isEmpty else { return }
+        guard ArchivedShapePolicy.mayAdoptLiveTrack(trackID: liveTrackID, archivedShapeIDs: archivedShapeIDs) else { return }
         if requestedLiveTrackIDs[remoteID] == nil {
             requestedLiveTrackIDs[remoteID] = liveTrackID
         }
@@ -695,9 +695,19 @@ actor AppleCaltopoPublisher {
         return false
     }
 
+    private var archivedShapeIDs: Set<String> {
+        Set(recentArchivedTracks.map(\.liveTrackID))
+    }
+
     private func stableLiveTrackID(remoteID: String, from observations: [RidObservation], fallback: Date) -> String {
-        if let existing = requestedLiveTrackIDs[remoteID] { return existing }
-        if let existing = liveTrackIDs[remoteID] { return existing }
+        if let existing = requestedLiveTrackIDs[remoteID],
+           ArchivedShapePolicy.mayAdoptLiveTrack(trackID: existing, archivedShapeIDs: archivedShapeIDs) {
+            return existing
+        }
+        if let existing = liveTrackIDs[remoteID],
+           ArchivedShapePolicy.mayAdoptLiveTrack(trackID: existing, archivedShapeIDs: archivedShapeIDs) {
+            return existing
+        }
         let started = observations.first?.receivedAt ?? fallback
         return RidFlightID.make(aircraftID: remoteID, startedAt: started)
     }
@@ -1115,6 +1125,7 @@ actor AppleCaltopoPublisher {
         // 1. Shape already archived by this process.
         if let known = recentArchivedTracks.last(where: {
             matches(id: $0.remoteID, label: $0.label) && overlaps($0.observations)
+                && ArchivedShapePolicy.mayModifyShape(shapeID: $0.liveTrackID, createdByThisFlight: true)
         }) {
             if known.hasVideoLink { return true }
             guard known.configurationGeneration == generation, let client else { return false }

@@ -526,6 +526,7 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
             JSONObject properties = feature.optJSONObject("properties");
             if (properties == null || !"Shape".equals(properties.optString("class"))) continue;
             if (feature.optString("id", "").isEmpty()) continue;
+            if (CaltopoMap.isArchivedShape(feature.optString("id", ""))) continue;
             String prefix = properties.optString("title", "").split("_", 2)[0].trim()
                     .toLowerCase(Locale.ROOT);
             if (!wanted.contains(prefix)) continue;

@@ -48,6 +48,13 @@ object FlightOwnershipContext {
     @JvmStatic fun isAdverseClaim(claim: String): Boolean =
         claim == PENDING || claim == REJECTED || claim == CONFLICT || claim == EXPIRED
 
+    const val CLAIM_FLIGHT_SKEW_MS = 1_000L
+
+    /** A stored claim belongs to one flight start. A later flight of the same aircraft does not inherit it. */
+    @JvmStatic fun claimApplies(storedFlightStartedAtMs: Long, flightStartedAtMs: Long): Boolean =
+        storedFlightStartedAtMs > 0L && flightStartedAtMs > 0L
+            && kotlin.math.abs(storedFlightStartedAtMs - flightStartedAtMs) <= CLAIM_FLIGHT_SKEW_MS
+
     /** Tracker gave this flight to another tablet. A plain review must not publish it. */
     @JvmStatic fun isLostToAnotherTablet(claim: String): Boolean =
         claim == REJECTED || claim == CONFLICT || claim == EXPIRED
