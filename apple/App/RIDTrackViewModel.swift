@@ -247,7 +247,7 @@ final class RIDTrackViewModel: ObservableObject {
             ]
         }
         let times = points.compactMap { Int64($0[3]) }
-        guard !times.isEmpty, let root = archiveStore.flightStorageRoot else { return false }
+        guard !times.isEmpty, let root = await archiveStore.flightStorageRoot else { return false }
         let around = flight.observations.first?.droneTimestamp ?? flight.observations.first?.receivedAt ?? Date()
         let remoteID = flight.remoteID
         let decision = await Task.detached(priority: .utility) {
@@ -1676,7 +1676,7 @@ final class RIDTrackViewModel: ObservableObject {
                             if let owned = await self.store.track(aircraftID: aircraftID) {
                                 self.rememberOwnedFlight(owned)
                                 if let before, before.flightStartedAt < owned.flightStartedAt,
-                                   let directory = self.archiveStore.flightDayDirectory(for: before.flightStartedAt) {
+                                   let directory = await self.archiveStore.flightDayDirectory(for: before.flightStartedAt) {
                                     let aircraft = before.aircraftID
                                     let shadow = before.flightStartedAt
                                     let grant = owned.flightStartedAt
