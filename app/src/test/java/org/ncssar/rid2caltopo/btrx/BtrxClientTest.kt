@@ -126,6 +126,36 @@ class BtrxClientTest {
     }
 
     @Test
+    fun framesBeforeConfigCompleteAreBacklog() {
+        val metas = mutableListOf<BtrxClient.RadioMeta>()
+        val c = BtrxClient(send = { sent += it }, log = logger, random = Random(2), listener = object : BtrxClient.Listener {
+            override fun onFrame(frame: P.Frame, meta: BtrxClient.RadioMeta) { metas += meta }
+        })
+        c.start()
+        val want = sentMessages().single()
+        val configId = MeshtasticSerial.ProtoReader(want).let { r -> r.tag(); r.varint() }
+        val detect = P.fromHex(BtrxProtocolTest.EXAMPLES.getValue("DETECT"))
+        c.onBytes(MeshtasticSerial.frame(ProtoWriter().bytesField(3, ProtoWriter().varint(1, deskNode).bytes()).bytes()))
+        repeat(2) { c.onBytes(MeshtasticSerial.frame(btrxPacket(starboard, detect))) }
+        c.onBytes(MeshtasticSerial.frame(ProtoWriter().varint(7, configId).bytes()))
+        c.onBytes(MeshtasticSerial.frame(btrxPacket(starboard, detect)))
+        assertEquals(listOf(true, true, false), metas.map { it.backlog })
+        assertEquals(2, c.backlogCount("DETECT"))
+        assertEquals(1, c.frameCount("DETECT"))
+        assertTrue(infos.count { it.startsWith("rx backlog from=!4c8c125b") } == 2)
+        assertTrue(c.summary(), c.summary().contains("frames: DETECT=1 backlog: DETECT=2"))
+    }
+
+    @Test
+    fun deskPairFromTheDeskPodItselfIsDecoded() {
+        handshake()
+        val deskPair = P.fromHex(BtrxProtocolTest.EXAMPLES.getValue("DESK_PAIR"))
+        feed(MeshtasticSerialTest.fromRadioPacket(deskNode, deskNode, 0, 0f, 256, deskPair))
+        assertEquals(1, client.frameCount("DESK_PAIR"))
+        assertTrue(infos.any { it.contains("DESK_PAIR seq=37") && it.contains("open=1 source=button seconds=60") })
+    }
+
+    @Test
     fun badCrcIsLoggedAndCountedNotDecoded() {
         handshake()
         val bad = P.fromHex(BtrxProtocolTest.EXAMPLES.getValue("HEALTH"))

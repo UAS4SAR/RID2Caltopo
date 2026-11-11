@@ -10,7 +10,7 @@ import java.io.ByteArrayOutputStream
  *   ToRadio   1 packet (MeshPacket), 3 want_config_id (uint32), 7 heartbeat (Heartbeat)
  *   FromRadio 2 packet, 3 my_info (MyNodeInfo: 1 my_node_num), 7 config_complete_id
  *   MeshPacket 1 from (fixed32), 2 to (fixed32), 3 channel, 4 decoded (Data), 6 id (fixed32),
- *              8 rx_snr (float), 9 hop_limit, 10 want_ack (bool), 12 rx_rssi (int32)
+ *              8 rx_snr (float), 9 hop_limit (R2C sends 0), 10 want_ack (bool), 12 rx_rssi (int32)
  *   Data       1 portnum (enum), 2 payload (bytes)
  *
  * Stream framing: 0x94 0xC3, 2-byte big-endian length, protobuf.
@@ -39,14 +39,16 @@ object MeshtasticSerial {
 
     fun toRadioHeartbeat(): ByteArray = ProtoWriter().bytesField(7, ByteArray(0)).bytes()
 
-    fun toRadioPacket(to: Long, packetId: Long, portnum: Int, payload: ByteArray, channel: Int = 0, hopLimit: Int = 3): ByteArray {
+    fun toRadioPacket(to: Long, packetId: Long, portnum: Int, payload: ByteArray, channel: Int = 0, hopLimit: Int = 0): ByteArray {
         val data = ProtoWriter().varint(1, portnum.toLong()).bytesField(2, payload).bytes()
         val packet = ProtoWriter()
             .fixed32(2, to)
             .apply { if (channel != 0) varint(3, channel.toLong()) }
             .bytesField(4, data)
             .fixed32(6, packetId)
-            .varint(9, hopLimit.toLong())
+            // hop_limit 0 (the default, not written) for everything R2C sends: the Desk Pod is
+            // in direct range of the Drone Pod and there is no mesh to relay through (btrx firmware 481b6fb).
+            .apply { if (hopLimit != 0) varint(9, hopLimit.toLong()) }
             .bytes() // want_ack false is the default and is not written.
         return ProtoWriter().bytesField(1, packet).bytes()
     }

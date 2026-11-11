@@ -29,8 +29,18 @@ class BtrxClient(
         fun warn(message: String)
     }
 
-    /** Arrival details from the Desk Pod for one btrx frame. */
-    class RadioMeta(val fromNode: Long, val toNode: Long, val rxRssi: Int, val rxSnr: Float, val arrivalMs: Long)
+    /**
+     * Arrival details from the Desk Pod for one btrx frame.
+     *
+     * [backlog] is true for frames delivered before config_complete_id: the Desk Pod
+     * replays what it queued while R2C was away, with no marker of its own, so these
+     * are old and display-only. Clue code must refuse them. Age of live frames will
+     * come from seq plus the TIME_PING clock offset (M4), not from arrival time.
+     */
+    class RadioMeta(
+        val fromNode: Long, val toNode: Long, val rxRssi: Int, val rxSnr: Float, val arrivalMs: Long,
+        val backlog: Boolean,
+    )
 
     interface Listener {
         /** The handshake finished; [localNode] is the Desk Pod's node number. */
@@ -41,6 +51,12 @@ class BtrxClient(
         fun onFrame(frame: P.Frame, meta: RadioMeta) {}
         /** A board sent a frame version this app does not understand (pilot alert in M2). */
         fun onVersionRefused(fromNode: Long, version: Int) {}
+
+        // M3 pairing hook (not built yet): DESK_PAIR arrives on port 256 with from = to = the
+        // Desk Pod node; PAIR_REQ / PAIR_ACK come from the starboard board.
+        // TODO(btrx M3): PAIR_CONFIRM should assign a non-zero pod_id (for example the low
+        //  32 bits of a hash of dev_a) so later frames say which Drone Pod sent them.
+        //  Frames sent before pairing carry pod_id 0. Only pod_id 0 has been tried on the boards.
     }
 
     enum class State { IDLE, CONFIGURING, READY, CLOSED }
@@ -63,6 +79,7 @@ class BtrxClient(
         log.info("serial: skipped $skipped byte(s) of non-API output")
     }
     private val frameCounts = sortedMapOf<String, Int>()
+    private val backlogCounts = sortedMapOf<String, Int>()
     private val rejectCounts = sortedMapOf<String, Int>()
     private val refusedNodes = mutableSetOf<Long>()
     private var otherPorts = 0
@@ -125,13 +142,19 @@ class BtrxClient(
     @Synchronized
     fun summary(): String {
         val frames = if (frameCounts.isEmpty()) "none" else frameCounts.entries.joinToString(" ") { "${it.key}=${it.value}" }
+        val backlog = if (backlogCounts.isEmpty()) "" else " backlog: " + backlogCounts.entries.joinToString(" ") { "${it.key}=${it.value}" }
         val rejects = if (rejectCounts.isEmpty()) "" else " rejected: " + rejectCounts.entries.joinToString(" ") { "${it.key}=${it.value}" }
         val other = if (otherPorts == 0) "" else " other-port packets=$otherPorts"
-        return "frames: $frames$rejects$other"
+        return "frames: $frames$backlog$rejects$other"
     }
 
+    /** Live frames of one type (delivered after config_complete_id). */
     @Synchronized
     fun frameCount(typeName: String): Int = frameCounts[typeName] ?: 0
+
+    /** Backlog frames of one type (delivered before config_complete_id; old, display-only). */
+    @Synchronized
+    fun backlogCount(typeName: String): Int = backlogCounts[typeName] ?: 0
 
     private fun onProto(proto: ByteArray) {
         val msg = try {
@@ -166,8 +189,10 @@ class BtrxClient(
             otherPorts++
             return
         }
-        val meta = RadioMeta(packet.from, packet.to, packet.rxRssi, packet.rxSnr, System.currentTimeMillis())
-        val radio = "from=${nodeName(packet.from)} rssi=${packet.rxRssi} snr=${"%.1f".format(packet.rxSnr)}"
+        val backlog = state != State.READY
+        val meta = RadioMeta(packet.from, packet.to, packet.rxRssi, packet.rxSnr, System.currentTimeMillis(), backlog)
+        val radio = (if (backlog) "backlog " else "") +
+            "from=${nodeName(packet.from)} rssi=${packet.rxRssi} snr=${"%.1f".format(packet.rxSnr)}"
         if (packet.from in refusedNodes) {
             count(rejectCounts, "refused-node")
             return
@@ -188,7 +213,7 @@ class BtrxClient(
             }
             return
         }
-        count(frameCounts, frame.typeName)
+        count(if (backlog) backlogCounts else frameCounts, frame.typeName)
         log.info("rx $radio ${BtrxFrameLog.format(frame)}")
         if (frame.type == P.ROLE_REPORT && packet.from == localNode) {
             try {

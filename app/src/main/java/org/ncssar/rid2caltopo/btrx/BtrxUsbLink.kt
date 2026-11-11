@@ -68,20 +68,40 @@ class BtrxUsbLink(
         manager.start()
         log.info("USB open: ${describe(device)}")
         client.start()
-        timers.schedule({ checkRole() }, ROLE_TIMEOUT_S, TimeUnit.SECONDS)
+        later(ROLE_TIMEOUT_S) { checkRole(retry = true, configWaits = 0) }
         timers.scheduleWithFixedDelay({ client.sendHeartbeat() }, HEARTBEAT_S, HEARTBEAT_S, TimeUnit.SECONDS)
         timers.scheduleWithFixedDelay({ log.info("summary: ${client.summary()}") }, SUMMARY_S, SUMMARY_S, TimeUnit.SECONDS)
     }
 
-    private fun checkRole() {
+    /**
+     * The self-addressed ROLE_REPORT reaching USB is untested on the boards, so a
+     * missing reply is logged and never blocks the link: frames keep being decoded.
+     */
+    private fun checkRole(retry: Boolean, configWaits: Int) {
         if (closed) return
         when {
-            client.state != BtrxClient.State.READY ->
-                log.warn("no Meshtastic config_complete after ${ROLE_TIMEOUT_S}s; is r2c_sim or another program holding the board?")
-            client.localRole == null -> {
+            client.state != BtrxClient.State.READY -> {
+                val waited = (configWaits + 1) * ROLE_TIMEOUT_S
+                log.warn("no Meshtastic config_complete after ${waited}s; is r2c_sim or another program holding the board?")
+                if (configWaits + 1 < MAX_CONFIG_WAITS) later(ROLE_TIMEOUT_S) { checkRole(retry, configWaits + 1) }
+            }
+            client.localRole != null -> Unit
+            retry -> {
                 log.warn("no ROLE_REPORT from the Desk Pod after ${ROLE_TIMEOUT_S}s; asking again")
                 client.sendRoleGet()
+                later(ROLE_TIMEOUT_S) { checkRole(retry = false, configWaits = configWaits) }
             }
+            else -> log.warn("no ROLE_REPORT from Desk Pod after a retry; Desk Pod role and build not confirmed. " +
+                "Keeping the link open and decoding frames.")
+        }
+    }
+
+    private fun later(seconds: Long, task: () -> Unit) {
+        if (closed) return
+        try {
+            timers.schedule(Runnable { task() }, seconds, TimeUnit.SECONDS)
+        } catch (_: java.util.concurrent.RejectedExecutionException) {
+            // Closed meanwhile.
         }
     }
 
@@ -102,6 +122,7 @@ class BtrxUsbLink(
     companion object {
         const val BAUD = 115200
         const val ROLE_TIMEOUT_S = 10L
+        const val MAX_CONFIG_WAITS = 6
         const val HEARTBEAT_S = 300L
         const val SUMMARY_S = 60L
 

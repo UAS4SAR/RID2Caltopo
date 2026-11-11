@@ -190,8 +190,13 @@ class BtrxProtocolTest {
         assertEquals(356522L - 850, d.windowEndMs - r.ageMs)
         assertEquals(0x004C, r.companyId)
         assertEquals(3, r.rxMask)
+        // mfg is decoded raw: the bytes after the company ID, exactly as on the wire.
+        // This 5.3 example is wrong upstream (mfg_len=4, mfg 4c 00 10 05 repeats the
+        // company ID; a real Apple record is mfg_len=2, mfg 10 05) and is being
+        // regenerated in UAS4SAR/btrx PR #15. Keep asserting the raw decode of the
+        // frame as given; update the vector when the brief is corrected.
         assertEquals(4, r.mfgLen)
-        assertEquals(4, r.mfg.size)
+        assertEquals("4c001005", P.hex(r.mfg))
         assertEquals(0, r.uuid16)
         assertFalse(r.isRemoteId)
     }

@@ -30,8 +30,18 @@ class MeshtasticSerialTest {
         val frame = BtrxProtocol.roleGetFrame(1)
         val out = MeshtasticSerial.toRadioPacket(to = 0xA1B2C3D4L, packetId = 0x01020304L, portnum = 256, payload = frame)
         val data = "08800212" + "0d" + hex(frame)                // portnum=256, payload (13 bytes)
-        val packet = "15d4c3b2a1" + "22" + "%02x".format(data.length / 2) + data + "3504030201" + "4803"
+        // hop_limit 0 (proto3 default) is not written; R2C always sends hop_limit 0.
+        val packet = "15d4c3b2a1" + "22" + "%02x".format(data.length / 2) + data + "3504030201"
         assertEquals("0a" + "%02x".format(packet.length / 2) + packet, hex(out))
+    }
+
+    @Test
+    fun hopLimitIsZeroUnlessAskedOtherwise() {
+        val frame = BtrxProtocol.roleGetFrame(1)
+        val zero = MeshtasticSerial.toRadioPacket(to = 1, packetId = 2, portnum = 256, payload = frame)
+        val three = MeshtasticSerial.toRadioPacket(to = 1, packetId = 2, portnum = 256, payload = frame, hopLimit = 3)
+        assertEquals(hex(zero).length + 4, hex(three).length)
+        assertTrue(hex(three).endsWith("4803"))
     }
 
     @Test

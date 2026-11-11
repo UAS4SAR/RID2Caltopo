@@ -49,9 +49,20 @@ the Mac mini. Leave the starboard and port boards powered.
    - `rx from=!xxxxxxxx ... ROLE_REPORT ... role=3(desk-pod) ... build_hash=0x0100`
    - `Desk Pod confirmed: role=3 build_hash=0x0100 (supported)`
 4. Right after connecting, a burst of older DETECT/HEALTH frames the Desk
-   Pod queued may appear. That is expected (brief section 4.2).
+   Pod queued may appear, tagged `backlog`. That is expected (brief section 4.2).
 
 Pass: `ROLE_GET` returns `role=3`.
+
+**Check this explicitly.** A ROLE_REPORT addressed to the Desk Pod itself
+reaching USB has not been tested on hardware yet. If no ROLE_REPORT arrives,
+the app asks again after 10 s and, 10 s later, logs
+`no ROLE_REPORT from Desk Pod after a retry; ... Keeping the link open and decoding frames.`
+The link stays open and the listen test below still applies. Record which of
+the two happened, and report a missing ROLE_REPORT to the btrx firmware side.
+
+Frames the Desk Pod had queued are delivered before the handshake finishes.
+They are logged as `rx backlog from=...` and counted separately in the
+summary (`backlog: DETECT=...`); they are old and display-only.
 
 ## 4. 120 s listen
 
@@ -59,7 +70,8 @@ Pass: `ROLE_GET` returns `role=3`.
    for 120 s. The app writes `summary: frames: ...` to the log every 60 s.
 2. Expect about **40 DETECT** and **2 HEALTH** from the starboard node in
    120 s (one DETECT at most every 3 s, HEALTH every 60 s), matching the
-   r2c_sim run from step 1. Exclude the connect-time backlog when counting.
+   r2c_sim run from step 1. Count only live frames: the summary lists the
+   connect-time backlog separately.
 3. Each line reads like
    `rx from=!<starboard> rssi=-40 snr=9.5 DETECT seq=... pod=00000000 flags=none  window_end_ms=... n=...`.
    Bluetooth addresses show only their last 4 characters (`[..5566 ...]`).
