@@ -656,6 +656,39 @@ actor AppleCaltopoPublisher {
         }
     }
 
+    /// Point count of this flight's interrupted record, if that exact live-track id is on disk.
+    func interruptedObservationCount(liveTrackID: String) async -> Int? {
+        guard let entry = await interruptedJournal.entry(liveTrackID: liveTrackID) else { return nil }
+        return entry.points.count
+    }
+
+    /// Replace points on this flight's interrupted record only. Does not create a record
+    /// and does not modify any other live-track id. Clues are not touched.
+    func replaceInterruptedPoints(liveTrackID: String, observations: [RidObservation]) async -> Bool {
+        guard let existing = await interruptedJournal.entry(liveTrackID: liveTrackID),
+              existing.liveTrackID == liveTrackID,
+              !observations.isEmpty
+        else { return false }
+        let replacement = CaltopoInterruptedPublication(
+            mapID: existing.mapID,
+            remoteID: existing.remoteID,
+            liveTrackID: existing.liveTrackID,
+            label: existing.label,
+            description: existing.description,
+            observations: observations
+        )
+        do {
+            try await interruptedJournal.upsert(replacement)
+        } catch {
+            AppleLog.warning("CalTopo", "Could not expand interrupted flight \(liveTrackID): \(error.localizedDescription)")
+            return false
+        }
+        if let index = pendingInterruptedRecoveries.firstIndex(where: { $0.liveTrackID == liveTrackID }) {
+            pendingInterruptedRecoveries[index] = replacement
+        }
+        return true
+    }
+
     func queueDeferredArchive(_ entry: CaltopoInterruptedPublication) async throws {
         guard configuredConfiguration?.mapID == entry.mapID else { return }
         // Live / finishing / already-archived ownership wins over a deferred Shape upload.
@@ -1369,9 +1402,12 @@ actor AppleCaltopoPublisher {
         for entry in batch {
             guard generation == configurationGeneration else { break }
             guard !ownsOrArchivedFlight(entry) else { continue }
+            // Re-read so a journal expansion that landed after configure is the one we post.
+            let current = await interruptedJournal.entry(liveTrackID: entry.liveTrackID) ?? entry
+            guard current.liveTrackID == entry.liveTrackID else { continue }
             do {
                 let flightDate = CaltopoTrackFolderResolver.flightArchiveDate(
-                    observations: entry.observations
+                    observations: current.observations
                 )
                 let archiveFolderID = try await resolveArchiveFolderID(for: flightDate)
                 guard !archiveFolderID.isEmpty else {
@@ -1386,19 +1422,19 @@ actor AppleCaltopoPublisher {
                     date: flightDate
                 )
                 try await client.archiveLiveTrack(
-                    liveTrackID: entry.liveTrackID,
-                    label: entry.label,
-                    observations: entry.observations,
+                    liveTrackID: current.liveTrackID,
+                    label: current.label,
+                    observations: current.observations,
                     folderID: archiveFolderID,
-                    description: entry.description
+                    description: current.description
                 )
-                try await interruptedJournal.remove(liveTrackID: entry.liveTrackID)
-                completed.insert(entry.liveTrackID)
+                try await interruptedJournal.remove(liveTrackID: current.liveTrackID)
+                completed.insert(current.liveTrackID)
                 rememberArchivedTrack(AppleArchivedCaltopoTrack(
-                    liveTrackID: entry.liveTrackID, label: entry.label,
-                    observations: entry.observations, folderID: archiveFolderID,
+                    liveTrackID: current.liveTrackID, label: current.label,
+                    observations: current.observations, folderID: archiveFolderID,
                     folderTitle: archiveFolderTitle, configurationGeneration: generation,
-                    description: entry.description, remoteID: entry.remoteID))
+                    description: current.description, remoteID: current.remoteID))
                 AppleLog.info(
                     "CalTopo",
                     "CalTopo track archived id=\(entry.liveTrackID) folder=\(archiveFolderTitle)"
@@ -1410,7 +1446,7 @@ actor AppleCaltopoPublisher {
                 ))
                 AppleLog.info(
                     "CalTopo",
-                    "Recovered interrupted LiveTrack remoteId=\(entry.remoteID) liveTrackId=\(entry.liveTrackID) points=\(entry.points.count)"
+                    "Recovered interrupted LiveTrack remoteId=\(current.remoteID) liveTrackId=\(current.liveTrackID) points=\(current.points.count)"
                 )
             } catch {
                 // Keep this entry pending for the next independent retry.

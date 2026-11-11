@@ -181,6 +181,10 @@ final class RIDTrackViewModel: ObservableObject {
                         remoteID: flight.remoteID,
                         startedAt: Date(timeIntervalSince1970: Double(flight.startedAtMs) / 1_000)
                        ) {
+                        // The file is already durable. Expand this flight's shape snapshot
+                        // from the journal, then retire the journal. Do not write a second file.
+                        _ = await caltopoPublisher.replaceInterruptedPoints(
+                            liveTrackID: flight.id, observations: flight.observations)
                         try await waypointAppendJournal.acknowledgeRecovered(flightID: flight.id)
                         continue
                     }
@@ -198,6 +202,46 @@ final class RIDTrackViewModel: ObservableObject {
                         continue
                     }
                     let ownership = flight.ownership
+                    let open = existingEntries.last(where: { $0.id == flight.id && !$0.finished })
+                    let interruptedCount = await caltopoPublisher.interruptedObservationCount(liveTrackID: flight.id)
+                    let startedOnMap = open?.publicationStarted == true || interruptedCount != nil
+                    if let decision = RestartFlightRecovery.decide(
+                        liveTrackID: flight.id,
+                        journalPointCount: flight.observations.count,
+                        interruptedPointCount: interruptedCount ?? 0,
+                        existingShapeIDs: [],
+                        ownership: ownership,
+                        startedOnMap: startedOnMap
+                    ) {
+                        let startedAt = flight.startedAtMs > 0
+                            ? Date(timeIntervalSince1970: Double(flight.startedAtMs) / 1_000)
+                            : (flight.observations.first?.droneTimestamp ?? flight.observations.first?.receivedAt ?? Date())
+                        do {
+                            _ = try await archiveStore.archiveRecoveredFlight(
+                                remoteID: flight.remoteID,
+                                flightID: flight.id,
+                                label: flight.label,
+                                startedAt: startedAt,
+                                observations: flight.observations,
+                                metadata: RidTrackArchiveMetadata(
+                                    mappedID: ownership.mappedID,
+                                    owner: decision.pilot,
+                                    model: ownership.model,
+                                    organization: ownership.organization,
+                                    mapID: flight.mapID,
+                                    localArchiveOnly: !decision.uploadOnce,
+                                    flightID: flight.id,
+                                    trackerUploadAuthorized: decision.uploadOnce,
+                                    trackerClaimPending: decision.heldForReview
+                                )
+                            )
+                        } catch {
+                            archiveStatus = "Kept recovered journal \(flight.label); flight file was not written"
+                            continue
+                        }
+                        _ = await caltopoPublisher.replaceInterruptedPoints(
+                            liveTrackID: flight.id, observations: flight.observations)
+                    }
                     try await awaitingMapJournal.record(
                         remoteID: flight.remoteID,
                         label: flight.label,

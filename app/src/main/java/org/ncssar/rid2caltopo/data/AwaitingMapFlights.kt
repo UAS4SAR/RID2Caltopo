@@ -262,6 +262,12 @@ object AwaitingMapFlights {
         return entry.optString("map") to entry.optString("team")
     }
     @Synchronized fun hasEntry(id: String): Boolean { load(); return all().any { it.optString("id") == id } }
+    /** True when this flight's live track had already started before the process died. */
+    @JvmStatic @Synchronized fun publicationAlreadyStarted(id: String): Boolean {
+        if (id.isEmpty()) return false
+        load()
+        return all().any { it.optString("id") == id && it.optBoolean("publicationStarted") }
+    }
     @Synchronized fun pending(): List<JSONObject> {
         load()
         return all().filter {

@@ -128,6 +128,38 @@ actor AppleTrackArchiveStore {
         return AppleTrackArchiveOutcome(url: destination, trackerResult: result)
     }
 
+    /// Writes a recovered flight file once, then uploads it once when the journal authorized it.
+    /// A file already on disk is not rewritten. `process` skips a file that was already reported.
+    func archiveRecoveredFlight(
+        remoteID: String,
+        flightID: String,
+        label: String,
+        startedAt: Date,
+        observations: [RidObservation],
+        metadata: RidTrackArchiveMetadata
+    ) async throws -> AppleTrackArchiveOutcome {
+        guard let rootURL else { throw ArchiveError.documentsDirectoryUnavailable }
+        guard !observations.isEmpty else { throw ArchiveError.documentsDirectoryUnavailable }
+        let day = AppleFlightStorage.dayName(startedAt)
+        let directory = rootURL.appendingPathComponent(day, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let fileName = AwaitingMapFlightArchive.filenames(remoteID: remoteID, startedAt: startedAt).first { $0.hasSuffix(".json") }
+            ?? RidTrackGeoJSON.suggestedFilenameBase(aircraftID: remoteID, startDate: startedAt) + ".json"
+        let destination = directory.appendingPathComponent(fileName)
+        if !FileManager.default.fileExists(atPath: destination.path) {
+            let data = try RidTrackGeoJSON.encodeRecovered(
+                remoteID: remoteID,
+                observations: observations,
+                title: label,
+                metadata: metadata
+            )
+            try safeWrite(data, to: destination)
+        }
+        let stored = try Data(contentsOf: destination)
+        let result = await process(data: stored, file: destination)
+        return AppleTrackArchiveOutcome(url: destination, trackerResult: result)
+    }
+
     // MARK: Crash-safe writes and KMZ rewrites
 
     private lazy var rewriteQueue: FlightArchiveRewriteQueue? = {

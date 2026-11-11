@@ -129,6 +129,59 @@ public enum RidTrackGeoJSON {
         )
     }
 
+    /// Flight file for a journal recovered after the process died. Uses every observation
+    /// and only the pilot stored on that journal.
+    public static func encodeRecovered(
+        remoteID: String,
+        observations: [RidObservation],
+        title: String,
+        metadata: RidTrackArchiveMetadata
+    ) throws -> Data {
+        let startDate = observations.first?.droneTimestamp ?? observations.first?.receivedAt ?? Date()
+        let coordinates: [[String]] = observations.map { observation in
+            let stamped = observation.droneTimestamp ?? observation.receivedAt
+            return [
+                String(format: "%.6f", locale: Locale(identifier: "en_US_POSIX"), observation.longitude),
+                String(format: "%.6f", locale: Locale(identifier: "en_US_POSIX"), observation.latitude),
+                String(format: "%.0f", locale: Locale(identifier: "en_US_POSIX"), observation.altitudeMeters ?? -1_000),
+                String(Int64((stamped.timeIntervalSince1970 * 1_000).rounded())),
+            ]
+        }
+        let receivedMilliseconds: [Int64?] = observations.map {
+            Int64(($0.receivedAt.timeIntervalSince1970 * 1_000).rounded())
+        }
+        let droneClock = observations.map { $0.droneTimestamp != nil }
+        var properties: [String: Any] = [
+            "title": title,
+            "start_time": formattedStartTime(startDate),
+            "r2c_prop": [
+                "owner": metadata.owner,
+                "model": metadata.model,
+                "org": metadata.organization,
+                "rid": remoteID,
+                "mid": metadata.mappedID,
+                "local_archive_only": metadata.localArchiveOnly,
+                "tracker_upload_authorized": metadata.trackerUploadAuthorized,
+                "tracker_claim_pending": metadata.trackerClaimPending,
+                "map_id": metadata.mapID,
+            ] as [String: Any],
+        ]
+        FlightArchivePointTiming.write(into: &properties, receivedAtMs: receivedMilliseconds, droneClock: droneClock)
+        if !metadata.flightID.isEmpty { properties["r2c_flight_id"] = metadata.flightID }
+        let feature: [String: Any] = [
+            "type": "Feature",
+            "properties": properties,
+            "geometry": [
+                "type": "LineString",
+                "coordinates": coordinates,
+            ],
+        ]
+        return try JSONSerialization.data(
+            withJSONObject: ["type": "FeatureCollection", "features": [feature]],
+            options: [.prettyPrinted, .sortedKeys]
+        )
+    }
+
     /// Points, title and aircraft of an archived track, for KMZ rebuilds and late clue binding.
     public struct ArchiveContents: Sendable, Equatable {
         public let title: String
