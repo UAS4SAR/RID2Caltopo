@@ -281,7 +281,8 @@ struct ContentView: View {
             }
             .onReceive(NotificationCenter.default.publisher(for: Notification.Name("droneClaimConflict"))) { event in
                 guard let remoteID = event.object as? String else { return }
-                let alreadySaved = droneConfirmations.isCurrentFlightConfirmed(remoteID)
+                let alreadySaved = droneConfirmations.saveProtectsPanel(remoteID)
+                    || droneConfirmations.isCurrentFlightConfirmed(remoteID)
                 let showing = confirmationPresentation.remoteID == remoteID
                 guard TakeoverClaimNotice.claimConflictReopensPanel(
                     alreadySavedThisFlight: alreadySaved,
@@ -2649,6 +2650,7 @@ struct ContentView: View {
                 showTerms: $showTerms, showConfirmExit: $showConfirmExit).equatable()),
             onAbout: { showWorkspaceAbout = true },
             onDroneAction: { remoteID in
+                if droneConfirmations.saveProtectsPanel(remoteID) { return }
                 if droneConfirmations.isUnassociated(remoteID) { addRidMapRemoteID = remoteID }
                 else { pendingDroneConfirmation = DroneConfirmationRequest(id: remoteID) }
             },

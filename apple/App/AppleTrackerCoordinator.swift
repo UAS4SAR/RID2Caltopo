@@ -1053,9 +1053,24 @@ final class AppleTrackerCoordinator: ObservableObject {
 
     func confirm(_ identity: RidAircraftIdentity, replacing: TrackerCoordinationIdentity? = nil) {
         let trackerIdentity = Self.trackerIdentity(identity)
+        let holder = SaveConfirmationSend.holder(
+            explicit: replacing,
+            ownerZoneID: protocolState.ownerZoneID(remoteID: identity.remoteID),
+            localZoneID: zoneID,
+            remoteID: identity.remoteID)
+        if let pending = pendingConfirmations[identity.remoteID],
+           pending.ownerName == trackerIdentity.ownerName,
+           pending.mappedID == trackerIdentity.mappedID,
+           pending.organization == trackerIdentity.organization,
+           pending.model == trackerIdentity.model {
+            if pendingClaimReplacements[identity.remoteID] == nil, let holder {
+                pendingClaimReplacements[identity.remoteID] = holder
+            }
+            return
+        }
         rememberedConfirmations[identity.remoteID] = trackerIdentity
         pendingConfirmations[identity.remoteID] = trackerIdentity
-        pendingClaimReplacements[identity.remoteID] = replacing
+        pendingClaimReplacements[identity.remoteID] = holder
         claimedRemoteIDs.insert(identity.remoteID)
         ownershipContextChanged?(identity.remoteID)
         if !coordinationRequired, let event = protocolState.confirmLocally(remoteID: identity.remoteID) {

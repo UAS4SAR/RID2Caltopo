@@ -78,8 +78,31 @@ public struct CurrentFlightConfirmationLifecycle: Sendable, Equatable {
 
 /// A peer claim stays visible inside this tablet's confirmation panel.
 /// A new video publisher on this tablet reopens that panel unless Mine or Not Mine was already chosen.
+/// One Save produces one confirmation. The holder is named before that send.
+public enum SaveConfirmationSend {
+    public static func holder(
+        explicit: TrackerCoordinationIdentity?,
+        ownerZoneID: String?,
+        localZoneID: String,
+        remoteID: String
+    ) -> TrackerCoordinationIdentity? {
+        if let explicit {
+            let guid = explicit.confirmedByGuid.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !guid.isEmpty, guid != localZoneID { return explicit }
+        }
+        let owner = ownerZoneID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !owner.isEmpty, owner != localZoneID else { return nil }
+        return TrackerCoordinationIdentity(
+            remoteID: remoteID, mappedID: "", organization: "", model: "", ownerName: "",
+            confirmedByGuid: owner)
+    }
+}
+
 public enum TakeoverClaimNotice {
     /// The conflict that answers a takeover Save must not open a second panel for that aircraft.
+    /// A Save stays marked until this flight ends. The previous owner's echo is not a reason to open another panel.
+    public static func mayOpenPanel(saveProtected: Bool) -> Bool { !saveProtected }
+
     public static func claimConflictReopensPanel(
         alreadySavedThisFlight: Bool,
         panelAlreadyShowingForThisAircraft: Bool
@@ -98,9 +121,11 @@ public enum TakeoverClaimNotice {
         ignored: Set<String>,
         previous: [String: Set<String>],
         current: [String: Set<String>],
-        foreignClaims: Set<String> = []
+        foreignClaims: Set<String> = [],
+        saveAwaitingGrant: Set<String> = []
     ) -> Set<String> {
         Set(current.compactMap { remoteID, tokens in
+            if saveAwaitingGrant.contains(remoteID) { return nil }
             let blockedByLocalMine = locallyConfirmed.contains(remoteID) && !foreignClaims.contains(remoteID)
             guard !blockedByLocalMine, !ignored.contains(remoteID) else { return nil }
             let prior = previous[remoteID] ?? []

@@ -348,13 +348,15 @@ final class AppleDroneConfirmationStore: ObservableObject {
         onFlightEnded: (String) -> Void = { _ in }
     ) -> String? {
         completedFlightGuard.updateSessions(videoSessions)
-        let foreignClaims = leases.remoteIDs
+        releaseSaveAwaitingGrantForNewVideo(videoSessions)
+        let foreignClaims = leases.remoteIDs.subtracting(saveAwaitingGrantRemoteIDs)
         for remoteID in TakeoverClaimNotice.remoteIDsRearmedByNewPublisher(
             locallyConfirmed: Set(sessionIdentities.keys),
             ignored: ignoredRemoteIDs,
             previous: seenVideoSessions,
             current: videoSessions,
-            foreignClaims: foreignClaims
+            foreignClaims: foreignClaims,
+            saveAwaitingGrant: saveAwaitingGrantRemoteIDs
         ) {
             confirmationLifecycle.rearmPrompt(remoteID: remoteID)
         }
@@ -367,7 +369,8 @@ final class AppleDroneConfirmationStore: ObservableObject {
             }
         }
         // A peer claim is not this tablet's Mine. A new video publisher can offer takeover.
-        let confirmedRemoteIDs = Set(sessionIdentities.keys).subtracting(leases.remoteIDs)
+        let confirmedRemoteIDs = Set(sessionIdentities.keys).union(saveAwaitingGrantRemoteIDs)
+            .subtracting(leases.remoteIDs.subtracting(saveAwaitingGrantRemoteIDs))
         let reconciliation = confirmationLifecycle.reconcile(
             orderedRemoteIDs: eligible,
             confirmedRemoteIDs: confirmedRemoteIDs,
@@ -380,6 +383,8 @@ final class AppleDroneConfirmationStore: ObservableObject {
             completedFlightGuard.end(remoteID: remoteID, at: Date()) { AppleLog.info("DroneConfirmation", "\($0) \(mediaDiagnostics)") }
             sessionIdentities.removeValue(forKey: remoteID)
             peerIdentities.removeValue(forKey: remoteID)
+            saveAwaitingGrantRemoteIDs.remove(remoteID)
+            saveAwaitingGrantSessions.removeValue(forKey: remoteID)
             // Another tablet may still hold the lease. The next Save has to name it.
             acceptedClaimChanges.removeValue(forKey: remoteID)
             publicationGateLogged.remove(remoteID)
@@ -419,6 +424,8 @@ final class AppleDroneConfirmationStore: ObservableObject {
         confirmationLifecycle.endFlight(remoteID: remoteID)
         sessionIdentities.removeValue(forKey: remoteID)
         peerIdentities.removeValue(forKey: remoteID)
+        saveAwaitingGrantRemoteIDs.remove(remoteID)
+        saveAwaitingGrantSessions.removeValue(forKey: remoteID)
         leases.endFlight(remoteID: remoteID)
         acceptedClaimChanges.removeValue(forKey: remoteID)
         publicationGateLogged.remove(remoteID)
@@ -536,10 +543,30 @@ final class AppleDroneConfirmationStore: ObservableObject {
         return !Task.isCancelled && mappingRevision == revision + 1
     }
 
+    private var saveAwaitingGrantRemoteIDs: Set<String> = []
+    private var saveAwaitingGrantSessions: [String: Set<String>] = [:]
+
+    func saveProtectsPanel(_ remoteID: String) -> Bool { saveAwaitingGrantRemoteIDs.contains(remoteID) }
+
+    private func releaseSaveAwaitingGrantForNewVideo(_ videoSessions: [String: Set<String>]) {
+        for remoteID in Array(saveAwaitingGrantRemoteIDs) {
+            let prior = saveAwaitingGrantSessions[remoteID] ?? []
+            let fresh = (videoSessions[remoteID] ?? []).contains { token in
+                !token.hasSuffix("|unknown") && !prior.contains(token)
+            }
+            if fresh {
+                saveAwaitingGrantRemoteIDs.remove(remoteID)
+                saveAwaitingGrantSessions.removeValue(forKey: remoteID)
+            }
+        }
+    }
+
     func confirm(_ identity: RidAircraftIdentity, recordUnresolvedPilot: Bool = false) {
         // Recording incomplete evidence never establishes pilot qualification.
         guard identity.isComplete || (recordUnresolvedPilot && !identity.remoteID.isEmpty) else { return }
         ignoredRemoteIDs.remove(identity.remoteID)
+        saveAwaitingGrantRemoteIDs.insert(identity.remoteID)
+        saveAwaitingGrantSessions[identity.remoteID] = seenVideoSessions[identity.remoteID] ?? []
         sessionIdentities[identity.remoteID] = identity
         publicationGateLogged.remove(identity.remoteID)
         AppleLog.info(

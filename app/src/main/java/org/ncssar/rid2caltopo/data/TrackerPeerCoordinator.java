@@ -777,9 +777,27 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
             jo.put("org", org);
             jo.put("model", model);
             jo.put("ownerName", owner);
-            if (replacing != null) {
-                jo.put("replaceConfirmedBy", replacing.guid);
-                jo.put("replaceConfirmedAtMs", replacing.confirmedAtMs);
+            DroneClaim holder = replacing;
+            if (holder == null || holder.guid == null || holder.guid.isEmpty()
+                    || (myGuid != null && holder.guid.equals(myGuid))) {
+                DroneClaim known = peerClaims.get(remoteId);
+                holder = known != null && known.guid != null && !known.guid.isEmpty()
+                        && (myGuid == null || !known.guid.equals(myGuid)) ? known : null;
+            }
+            if (holder != null) {
+                jo.put("replaceConfirmedBy", holder.guid);
+                jo.put("replaceConfirmedAtMs", holder.confirmedAtMs);
+            }
+            JSONObject pending = pendingConfirmationsByRemoteId.get(remoteId);
+            if (pending != null && sameConfirmation(pending, jo)) {
+                // One Save, one confirmation. A replay must not send a second one,
+                // and must not replace a named holder with an empty one.
+                if (!pending.has("replaceConfirmedBy") && jo.has("replaceConfirmedBy")
+                        && !confirmationSentAtByRemoteId.containsKey(remoteId)) {
+                    pendingConfirmationsByRemoteId.put(remoteId, jo);
+                    flushPendingConfirmations();
+                }
+                return;
             }
             pendingConfirmationsByRemoteId.put(remoteId, jo);
             confirmationSentAtByRemoteId.remove(remoteId);
@@ -2705,6 +2723,13 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
                     jo.optLong("leaseSeq", -1L),
                     jo.optLong("leaseExpireTs", 0L));
         }
+    }
+
+    private static boolean sameConfirmation(JSONObject pending, JSONObject next) {
+        for (String field : new String[] {"remoteId", "mappedId", "org", "model", "ownerName"}) {
+            if (!pending.optString(field).equals(next.optString(field))) return false;
+        }
+        return true;
     }
 
     private static boolean confirmationMatches(JSONObject pending, JSONObject received) {

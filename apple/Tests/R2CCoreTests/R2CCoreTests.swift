@@ -6543,6 +6543,18 @@ private func bluetoothServiceData(message: [UInt8], counter: UInt8) -> Data {
         locallyConfirmed: ["DRONE"], ignored: [], previous: [:], current: video,
         foreignClaims: ["DRONE"]) == ["DRONE"])
     #expect(TakeoverClaimNotice.remoteIDsRearmedByNewPublisher(
+        locallyConfirmed: ["DRONE"], ignored: [], previous: [:], current: video,
+        foreignClaims: ["DRONE"], saveAwaitingGrant: ["DRONE"]).isEmpty)
+    #expect(!TakeoverClaimNotice.mayOpenPanel(saveProtected: true))
+    let ipad = "f6cbd6d2-ea23-45cd-b4ef-a559822c31ad"
+    let named = SaveConfirmationSend.holder(
+        explicit: nil, ownerZoneID: ipad, localZoneID: "833a8140-2a8b-3b23-8876-c3af62524ef0",
+        remoteID: "1581F8HGX255S00A0FZT")
+    #expect(named?.confirmedByGuid == ipad)
+    #expect(SaveConfirmationSend.holder(
+        explicit: nil, ownerZoneID: nil, localZoneID: "833a8140-2a8b-3b23-8876-c3af62524ef0",
+        remoteID: "1581F8HGX255S00A0FZT") == nil)
+    #expect(TakeoverClaimNotice.remoteIDsRearmedByNewPublisher(
         locallyConfirmed: [], ignored: ["DRONE"], previous: [:], current: video).isEmpty)
     #expect(TakeoverClaimNotice.remoteIDsRearmedByNewPublisher(
         locallyConfirmed: [], ignored: [], previous: video, current: video).isEmpty)

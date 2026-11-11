@@ -1654,6 +1654,36 @@ class TrackerPeerCoordinatorTest {
     }
 
     @Test
+    fun round12TakeoverSendsOneConfirmationNamingTheIpad() {
+        val ipad = "f6cbd6d2-ea23-45cd-b4ef-a559822c31ad"
+        val a5 = "833a8140-2a8b-3b23-8876-c3af62524ef0"
+        val remoteId = "1581F8HGX255S00A0FZT"
+        coordinator.start("4J0LF02", a5, "A5 Pro", null)
+        transport.receive(
+            JSONObject()
+                .put("type", "drone_confirmed")
+                .put("remoteId", remoteId)
+                .put("confirmedByGuid", ipad)
+                .put("ownerName", "1SAR7")
+                .put("confirmedAtMs", 1_794_361_766_000L)
+                .put("org", "NCSSAR")
+                .put("model", "DJI Matrice 4TD")
+                .put("mappedId", "1sar7DjMtrc4td")
+                .toString()
+        )
+        transport.sentMessages.clear()
+        val claim = coordinator.claimForRemoteId(remoteId)
+        assertNotNull(claim)
+        coordinator.onDroneConfirmed(remoteId, "NCSSAR", "DJI Matrice 4TD", "1sar7", "1sar7DjMtrc4td", claim)
+        coordinator.onDroneConfirmed(remoteId, "NCSSAR", "DJI Matrice 4TD", "1sar7", "1sar7DjMtrc4td")
+        coordinator.onDroneConfirmed(remoteId, "NCSSAR", "DJI Matrice 4TD", "1sar7", "1sar7DjMtrc4td")
+        val sent = transport.sentMessages.map { JSONObject(it) }
+            .filter { it.optString("type") == "drone_confirmed" && it.optString("remoteId") == remoteId }
+        assertEquals(1, sent.size)
+        assertEquals(ipad, sent.single().optString("replaceConfirmedBy"))
+    }
+
+    @Test
     fun saveLogNamesNoZoneWhenTheLeaseIsFree() {
         val confirmation = org.json.JSONObject().put("type", "drone_confirmed").put("remoteId", "RID")
         assertEquals(

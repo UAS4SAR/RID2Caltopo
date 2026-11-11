@@ -619,6 +619,42 @@ class R2CViewModelDroneConfirmationTest {
         assertFalse(claimConflictReopensConfirmation(true, false))
         assertFalse(claimConflictReopensConfirmation(false, true))
         assertTrue(claimConflictReopensConfirmation(false, false))
+    }
+
+    @Test
+    fun round12SaveStaysClosedWhenThePreviousOwnerEchoes() {
+        val drone = activeDrone("1581F8HGX255S00A0FZT", waypointTimestampMsec = 1_794_361_900_000L).apply {
+            setMappedId("1sar7DjMtrc4td")
+            setOrg("NCSSAR")
+            setOwner("1sar7")
+            setModel("DJI Matrice 4TD")
+        }
+        val viewModel = R2CViewModel(SimpleTimer())
+        viewModel.onLiveStreamDesignatorsChanged(
+            setOf(drone.mappedId), listOf(drone), mapOf(drone.mappedId to "192.168.68.56:33826"))
+        viewModel.requestDroneConfirmation(drone)
+        viewModel.updatePendingDroneConfirmation(
+            organization = "NCSSAR",
+            pilotCallsign = "1sar7",
+            droneDescription = "DJI Matrice 4TD"
+        )
+        viewModel.savePendingDroneConfirmation()
+        assertNull(viewModel.pendingDroneConfirmation.value)
+
+        viewModel.peerClaimRemoteIdsForTesting = setOf(drone.remoteId)
+        viewModel.onDroneSpecsChanged(listOf(drone))
+        viewModel.requestDroneConfirmation(drone)
+        viewModel.onLiveStreamDesignatorsChanged(
+            setOf(drone.mappedId), listOf(drone), mapOf(drone.mappedId to "192.168.68.56:33826"))
+
+        assertNull(viewModel.pendingDroneConfirmation.value)
+        assertTrue(remoteIdsRearmedByNewPublisher(
+            locallyConfirmed = setOf(drone.remoteId),
+            previous = emptyMap(),
+            current = mapOf(drone.remoteId to setOf("1sar7djmtrc4td|192.168.68.56:99999")),
+            foreignClaims = setOf(drone.remoteId),
+            saveAwaitingGrant = setOf(drone.remoteId)
+        ).isEmpty())
         val peer = mapOf("PEER" to setOf("1sar|10.0.0.2:1"))
         assertEquals(setOf("PEER"), remoteIdsRearmedByNewPublisher(emptySet(), emptyMap(), peer))
         assertTrue(remoteIdsRearmedByNewPublisher(setOf("PEER"), emptyMap(), peer).isEmpty())
