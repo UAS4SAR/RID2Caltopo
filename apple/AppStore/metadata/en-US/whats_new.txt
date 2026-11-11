@@ -12,5 +12,5 @@ Latest changes:
 - Reviewing an earlier flight sends it to the tracker as well as the map, once.
 - A flight another device owned is not included in Confirm and publish. That flight can be published on its own, and doing so does not assign a pilot.
 - Another device's confirmation is not treated as yours. A finished flight's ownership result does not apply to the next flight of the same aircraft.
-- This device's map marker is updated in place. A marker still in use is not removed, and a marker that is already gone is left alone.
+- This device's map marker is updated in place. A marker still in use is not removed, and it is removed when the app exits. A marker that is already gone is left alone.
 - Live drone video is received on its own, apart from recording, map updates, and sharing with other viewers, so the live view no longer lags. If the picture falls behind, it skips ahead to the next clear frame instead of building delay.

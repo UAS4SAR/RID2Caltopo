@@ -373,6 +373,23 @@ class CaltopoMapTest {
         assertEquals(listOf(domain+"/"+map+"/marker-guid-test"),journal.entries().map{it.key()})
     }
 
+    @Test fun appExitDeletesOwnMarkerThatBackgroundCleanupKeeps() {
+        val journal=CaltopoMap::class.java.getDeclaredField("markerJournal").apply{isAccessible=true}.get(null) as DeviceMarkerJournal
+        val domain=CaltopoClient.GetCaltopoDomainAndPort()
+        val map=CaltopoMap.GetMapId()
+        journal.arm(domain,map,"marker-guid-test","marker-guid-test")
+        val retry=CaltopoMap::class.java.getDeclaredMethod("retryMarkerCleanup").apply{isAccessible=true}
+        retry.invoke(null)
+        drainMarkers()
+        assertEquals(0,fixture.calTopoSessionGateway.countOperations("deleteMarker"))
+        assertEquals(listOf(domain+"/"+map+"/marker-guid-test"),journal.entries().map{it.key()})
+        // CaltopoClient.Shutdown starts here. The in-use skip applies only to retry cleanup.
+        CaltopoMap.BeginShutdownMarkerCleanup()
+        drainMarkers()
+        val deletes=fixture.calTopoSessionGateway.snapshotOperations().filter{it.kind=="deleteMarker"}
+        assertEquals(listOf("marker-guid-test"),deletes.map{it.summary})
+    }
+
     private fun successfulMapResponse() = CaltopoOp(null).apply {
         responseJson = JSONObject().put("state", JSONObject().put("features", JSONArray()))
         setOperationIsDone(true)
