@@ -1184,6 +1184,12 @@
       "component": "Apple app LGPL 2.1 section 6(c) written offer",
       "sha256": "fa6f85f1e456a5d7c6f1053b84be656556fa505fa7bda6e4af5c2ee840489067",
       "origin": "UAS4SAR source/relink materials offer, public GitHub downloads with email fallback"
+    },
+    {
+      "component": "usb-serial-for-android 3.11.0",
+      "file": "usb-serial-for-android-MIT.txt",
+      "sha256": "6f467d3d79c5d31734881fb83e082e84512bde05d3f7893e0e8373fd0d2b5d2c",
+      "origin": "Maven com.github.mik3y:usb-serial-for-android:3.11.0 (JitPack); upstream tag 3.11.0 LICENSE.txt"
     }
   ]
 }

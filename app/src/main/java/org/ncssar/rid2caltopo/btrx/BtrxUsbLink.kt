@@ -1,0 +1,111 @@
+package org.ncssar.rid2caltopo.btrx
+
+import android.hardware.usb.UsbDevice
+import android.hardware.usb.UsbManager
+import com.hoho.android.usbserial.driver.CdcAcmSerialDriver
+import com.hoho.android.usbserial.driver.UsbSerialPort
+import com.hoho.android.usbserial.util.SerialInputOutputManager
+import java.io.IOException
+import java.util.concurrent.Executors
+import java.util.concurrent.ScheduledExecutorService
+import java.util.concurrent.TimeUnit
+
+/**
+ * USB CDC-ACM link to one Desk Pod (usb-serial-for-android, MIT). Reads and
+ * writes run on the library's own I/O threads; timers run on a private
+ * scheduler. Nothing here runs on, or waits for, the main thread.
+ */
+class BtrxUsbLink(
+    private val usbManager: UsbManager,
+    val device: UsbDevice,
+    private val log: BtrxClient.Logger,
+    private val onClosed: (BtrxUsbLink, String) -> Unit,
+) {
+    private var port: UsbSerialPort? = null
+    private var io: SerialInputOutputManager? = null
+    private val timers: ScheduledExecutorService = Executors.newSingleThreadScheduledExecutor { r ->
+        Thread(r, "btrx-link").apply { isDaemon = true }
+    }
+    @Volatile private var closed = false
+
+    val client = BtrxClient(
+        send = { bytes -> io?.writeAsync(bytes) ?: log.warn("write dropped: link not open") },
+        log = log,
+        listener = object : BtrxClient.Listener {
+            override fun onLocalRoleReport(report: BtrxProtocol.RoleReport) {
+                if (report.role != BtrxProtocol.ROLE_DESK_POD) {
+                    // All three boards share VID/PID; only the Desk Pod may be used.
+                    timers.execute { close("not a Desk Pod (role=${report.role})") }
+                }
+            }
+        },
+    )
+
+    /** Opens the port and starts the handshake. Call on a worker thread. */
+    @Throws(IOException::class)
+    fun open() {
+        val connection = usbManager.openDevice(device) ?: throw IOException("openDevice returned null (no permission?)")
+        val driver = CdcAcmSerialDriver(device)
+        val p = driver.ports.firstOrNull() ?: run { connection.close(); throw IOException("no CDC-ACM port") }
+        try {
+            p.open(connection)
+            p.setParameters(BAUD, 8, UsbSerialPort.STOPBITS_1, UsbSerialPort.PARITY_NONE)
+            // Assert DTR/RTS like pyserial does for r2c_sim; the board's USB serial waits for DTR.
+            runCatching { p.dtr = true }
+            runCatching { p.rts = true }
+        } catch (e: IOException) {
+            runCatching { p.close() }
+            throw e
+        }
+        port = p
+        val manager = SerialInputOutputManager(p, object : SerialInputOutputManager.Listener {
+            override fun onNewData(data: ByteArray) = client.onBytes(data)
+            override fun onRunError(e: Exception) {
+                if (!closed) timers.execute { close("serial error: ${e.message}") }
+            }
+        })
+        io = manager
+        manager.start()
+        log.info("USB open: ${describe(device)}")
+        client.start()
+        timers.schedule({ checkRole() }, ROLE_TIMEOUT_S, TimeUnit.SECONDS)
+        timers.scheduleWithFixedDelay({ client.sendHeartbeat() }, HEARTBEAT_S, HEARTBEAT_S, TimeUnit.SECONDS)
+        timers.scheduleWithFixedDelay({ log.info("summary: ${client.summary()}") }, SUMMARY_S, SUMMARY_S, TimeUnit.SECONDS)
+    }
+
+    private fun checkRole() {
+        if (closed) return
+        when {
+            client.state != BtrxClient.State.READY ->
+                log.warn("no Meshtastic config_complete after ${ROLE_TIMEOUT_S}s; is r2c_sim or another program holding the board?")
+            client.localRole == null -> {
+                log.warn("no ROLE_REPORT from the Desk Pod after ${ROLE_TIMEOUT_S}s; asking again")
+                client.sendRoleGet()
+            }
+        }
+    }
+
+    @Synchronized
+    fun close(reason: String) {
+        if (closed) return
+        closed = true
+        log.info("USB close ($reason); ${client.summary()}")
+        client.close()
+        runCatching { io?.stop() }
+        runCatching { port?.close() }
+        io = null
+        port = null
+        timers.shutdownNow()
+        onClosed(this, reason)
+    }
+
+    companion object {
+        const val BAUD = 115200
+        const val ROLE_TIMEOUT_S = 10L
+        const val HEARTBEAT_S = 300L
+        const val SUMMARY_S = 60L
+
+        fun describe(d: UsbDevice): String =
+            "%s %04x:%04x %s".format(d.deviceName, d.vendorId, d.productId, d.productName ?: "")
+    }
+}

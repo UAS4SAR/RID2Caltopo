@@ -63,9 +63,9 @@ its own platform build/distribution requirements.
 ## Android and Java dependencies
 
 The Gradle build resolves libraries from AndroidX, Google and Firebase,
-Square, Eclipse Paho, Bouncy Castle, osmdroid, NGA, ZXing, and other transitive
-dependencies. These libraries retain their own licenses and notices. The
-authoritative dependency set for a particular build is the resolved Gradle
+Square, Eclipse Paho, Bouncy Castle, osmdroid, NGA, ZXing,
+usb-serial-for-android, and other transitive dependencies. These libraries
+retain their own licenses and notices. The authoritative dependency set for a particular build is the resolved Gradle
 dependency graph, not this human-maintained summary.
 
 Notable source projects include:
@@ -77,6 +77,7 @@ Notable source projects include:
 - Bouncy Castle: <https://www.bouncycastle.org/>
 - osmdroid: <https://github.com/osmdroid/osmdroid>
 - ZXing: <https://github.com/zxing/zxing>
+- usb-serial-for-android (MIT): <https://github.com/mik3y/usb-serial-for-android>
 
 ## LiteRT and EfficientDet Lite0
 

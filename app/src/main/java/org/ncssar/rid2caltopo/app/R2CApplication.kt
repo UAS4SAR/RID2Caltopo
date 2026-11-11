@@ -57,6 +57,8 @@ class R2CApplication : Application() {
 
     private fun initializeOnWorker() {
         preloadStartupPreferences()
+        // Inactive unless a btrx Desk Pod is attached by USB.
+        org.ncssar.rid2caltopo.btrx.BtrxManager.install(this)
         org.ncssar.rid2caltopo.data.OrgConfigManager.restoreDroneOwnership(this)
         org.ncssar.rid2caltopo.video.anomaly.AnomalyPrefs.clearLegacySettings(this)
         AppConfigStore.initialize(this)
