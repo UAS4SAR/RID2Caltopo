@@ -346,27 +346,31 @@ class CaltopoMapTest {
         } finally {release.countDown();drainMarkers()}
     }
 
-    @Test fun publicationWaitsForInflightCleanupAndCoalescesToLatestLocation() {
+    @Test fun ownMarkerOnCurrentMapIsKeptAndEachLocationPublishes() {
         val journal=CaltopoMap::class.java.getDeclaredField("markerJournal").apply{isAccessible=true}.get(null) as DeviceMarkerJournal
-        journal.arm(CaltopoClient.GetCaltopoDomainAndPort(),CaltopoMap.GetMapId(),"marker-guid-test")
-        // Stale cleanup runs while not publishing; once publishing, the same-map journal row is reused.
+        val domain=CaltopoClient.GetCaltopoDomainAndPort()
+        val map=CaltopoMap.GetMapId()
+        // setUp's MyUUID is this marker, so the row is this tablet's own marker on the current map.
+        journal.arm(domain,map,"marker-guid-test")
+        // Cleanup must not DELETE that marker. CalTopo rejects the delete with HTTP 400; the marker is updated in place.
         CaltopoMap::class.java.getDeclaredField("DeviceMarkerAllowed").apply { isAccessible = true }
             .setBoolean(null, false)
         fixture.calTopoSessionGateway.holdMarkerDeletes=true
         CaltopoMap::class.java.getDeclaredMethod("retryMarkerCleanup").apply{isAccessible=true}.invoke(null)
         drainMarkers()
-        assertEquals(1,fixture.calTopoSessionGateway.markerDeleteCallbacks.size)
+        assertEquals(0,fixture.calTopoSessionGateway.markerDeleteCallbacks.size)
+        assertEquals(0,fixture.calTopoSessionGateway.countOperations("deleteMarker"))
+        assertEquals(listOf(domain+"/"+map+"/marker-guid-test"),journal.entries().map{it.key()})
         CaltopoMap::class.java.getDeclaredField("DeviceMarkerAllowed").apply { isAccessible = true }
             .setBoolean(null, true)
         CaltopoMap.MyLocation=Location("test")
         mapStatusField.set(null,CaltopoMap.MapStatusListener.mapStatus.up)
+        // Nothing is in flight for this marker, so publication is not deferred and each location is sent.
+        // A delete of this same key would hold the callbacks and collapse the three publishes to one.
         repeat(3){invokeMarkerPublish(Location("test"))}
         drainMarkers()
-        assertEquals(0,fixture.calTopoSessionGateway.countOperations("addMarker"))
-        fixture.calTopoSessionGateway.markerDeleteCallbacks.removeAt(0).accept(CaltopoOp(null).apply{setOperationIsDone(true)})
-        drainMarkers()
-        assertEquals(1,fixture.calTopoSessionGateway.countOperations("addMarker"))
-        assertEquals(1,journal.entries().size)
+        assertEquals(3,fixture.calTopoSessionGateway.countOperations("addMarker"))
+        assertEquals(listOf(domain+"/"+map+"/marker-guid-test"),journal.entries().map{it.key()})
     }
 
     private fun successfulMapResponse() = CaltopoOp(null).apply {
