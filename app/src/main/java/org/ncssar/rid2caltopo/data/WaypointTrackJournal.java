@@ -54,6 +54,8 @@ public final class WaypointTrackJournal {
     @Nullable private static volatile Runnable recoverBetweenRecordStepsHook;
     /** Fault injection: runs after successful open+finish (+ best-effort local write), before delete. */
     @Nullable private static volatile Runnable recoverBeforeDeleteHook;
+    /** Tests supply saved flights so recovery does not need the archive directory. */
+    @Nullable private static volatile RecoveredFlightDedup.Lookup savedFlightLookupForTesting;
 
     private WaypointTrackJournal() { }
 
@@ -70,6 +72,11 @@ public final class WaypointTrackJournal {
     @VisibleForTesting
     static void setRecoverBeforeDeleteHook(@Nullable Runnable hook) {
         recoverBeforeDeleteHook = hook;
+    }
+
+    @VisibleForTesting
+    static void setSavedFlightLookupForTesting(@Nullable RecoveredFlightDedup.Lookup lookup) {
+        savedFlightLookupForTesting = lookup;
     }
 
     @VisibleForTesting
@@ -323,6 +330,7 @@ public final class WaypointTrackJournal {
                         deleteJournalFile(file, "already-finished");
                         continue;
                     }
+                    if (recoverAgainstSavedFlight(recovered, file)) continue;
                     if (DocumentFileCompat.archiveAlreadyPresent(recovered)) {
                         CTDebug(TAG, String.format(Locale.US,
                                 "recoverUnfinished(): retiring %s; local archive already exists",
@@ -384,6 +392,79 @@ public final class WaypointTrackJournal {
                 context.getKnown() ? context.getClaim() : "",
                 context.getKnown(),
                 block);
+    }
+
+    /**
+     * True when this journal is the same flight as a file already saved under any name.
+     * A match never writes a second file. The journal stays if the saved file cannot be shown
+     * to hold every journal point.
+     */
+    private static boolean recoverAgainstSavedFlight(
+            @NonNull RecoveredFlight recovered, @NonNull File journal) {
+        long[] times = pointTimes(recovered.points);
+        if (times.length == 0) return false;
+        RecoveredFlightDedup.Lookup lookup = savedFlightLookupForTesting;
+        final RecoveredFlightDedup.Decision decision;
+        try {
+            java.util.List<RecoveredFlightDedup.SavedFlight> saved = lookup != null
+                    ? lookup.flights()
+                    : FlightArchiveStore.savedFlightsNear(times[0]);
+            decision = RecoveredFlightDedup.decide(recovered.remote, times, saved);
+        } catch (Exception error) {
+            CTWarn(TAG, "recoverUnfinished(): saved-flight scan failed; journal kept on the existing path "
+                    + journal.getName(), error);
+            return false;
+        }
+        if (decision.getKind() == RecoveredFlightDedup.Kind.WRITE_NEW) return false;
+        if (decision.getKind() == RecoveredFlightDedup.Kind.RETIRE) {
+            CTDebug(TAG, String.format(Locale.US,
+                    "recoverUnfinished(): retiring %s; %s already holds these points",
+                    recovered.id, decision.getFileName()));
+            deleteJournalFile(journal, "saved-flight-holds-points");
+            return true;
+        }
+        final boolean merged;
+        try {
+            merged = lookup != null
+                    ? lookup.mergeInto(decision.getDayDirectory(), decision.getFileName(), recovered.points)
+                    : FlightArchiveStore.mergeJournalPoints(
+                            decision.getDayDirectory(), decision.getFileName(), recovered.points, times);
+        } catch (Exception error) {
+            CTWarn(TAG, "recoverUnfinished(): kept " + journal.getName()
+                    + "; merge into " + decision.getFileName() + " failed", error);
+            return true;
+        }
+        if (merged) {
+            CTDebug(TAG, String.format(Locale.US,
+                    "recoverUnfinished(): merged %s into %s", recovered.id, decision.getFileName()));
+            deleteJournalFile(journal, "merged-into-saved-flight");
+        } else {
+            CTWarn(TAG, String.format(Locale.US,
+                    "recoverUnfinished(): kept %s; %s does not yet hold every journal point",
+                    journal.getName(), decision.getFileName()));
+        }
+        return true;
+    }
+
+    @NonNull
+    private static long[] pointTimes(@NonNull JSONArray points) {
+        java.util.ArrayList<Long> times = new java.util.ArrayList<>();
+        for (int i = 0; i < points.length(); i++) {
+            JSONArray point = points.optJSONArray(i);
+            if (point == null || point.length() < 4) continue;
+            long time = point.optLong(3, 0L);
+            if (time <= 0L) {
+                try {
+                    time = Long.parseLong(point.optString(3));
+                } catch (NumberFormatException ignored) {
+                    time = 0L;
+                }
+            }
+            if (time > 0L) times.add(time);
+        }
+        long[] out = new long[times.size()];
+        for (int i = 0; i < times.size(); i++) out[i] = times.get(i);
+        return out;
     }
 
     private static boolean shouldRetireWithoutPromotion(@NonNull RecoveredFlight recovered) {

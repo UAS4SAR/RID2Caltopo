@@ -142,6 +142,8 @@ public class WaypointTrack {
 	private String startTimeStr;
     private DocumentFile dataFilepath;
     private String fileName;
+    /** Shadow-start name, moved to [fileName] once the lease is granted. */
+    private String supersededArchiveName;
     // Aligned with coordinates: app receive time (diagnostic only), drone-clock flag and source.
     private final List<Long> pointReceivedAtMs = new ArrayList<>();
     // Published append-only render history: worker snapshots never lock the
@@ -532,16 +534,46 @@ public class WaypointTrack {
         WaypointTrack track = TrackMap.get(label);
         if (track == null) return false;
         long ownedStartMs;
+        String aircraft;
+        long shadowMs;
         synchronized (track) {
             if (!track.recordedAsShadow && track.ownedFromMs > 0L) return false;
             track.recordedAsShadow = false;
             ownedStartMs = grantedAtMs;
+            shadowMs = track.firstCoordinateTimestampLocked();
+            aircraft = track.archiveAircraftID();
             track.ownedFromMs = grantedAtMs;
             track.noteOwnedStartLocked(ownedStartMs);
+            track.fileName = OperatorArchiveFilename.track(aircraft, ownedStartMs);
+            if (shadowMs > 0L && shadowMs != ownedStartMs) {
+                track.supersededArchiveName = OperatorArchiveFilename.track(aircraft, shadowMs);
+            }
         }
         spec.retitleToOwnedStart(ownedStartMs);
         WaypointTrackJournal.discardUnfinished(track.deferredPublicationId);
         return true;
+    }
+
+    /** Disk rename for a file created before the grant. Call off the live-track lock and off Main. */
+    static void renameArchiveToGrant(@NonNull CtDroneSpec spec) {
+        String label = spec.trackLabel();
+        WaypointTrack track = label == null ? null : TrackMap.get(label);
+        if (track == null) return;
+        final String from;
+        final String to;
+        final long grantMs;
+        synchronized (track) {
+            from = track.supersededArchiveName;
+            to = track.fileName;
+            grantMs = track.ownedFromMs;
+        }
+        if (from == null || to == null || from.equals(to) || grantMs <= 0L) return;
+        try {
+            androidx.documentfile.provider.DocumentFile dir = CaltopoClient.GetTrackDirForTime(grantMs);
+            if (dir != null) FlightArchiveStore.renameFlightIfPresent(dir, from, to);
+        } catch (Exception error) {
+            CTWarn(TAG, "renameArchiveToGrant(): left " + from + " in place", error);
+        }
     }
 
     /** Call before {@link #prepareForArchive()} when a takeover closes a segment this tablet owned. */
@@ -1427,6 +1459,10 @@ public class WaypointTrack {
                         deferredPublicationId, FlightPublicationLedger.Disposition.LOCAL_ARCHIVED);
             }
             dataFilepath = todaysArchiveDir.findFile(fileName);
+            if (supersededArchiveName != null && !supersededArchiveName.equals(fileName)) {
+                FlightArchiveStore.retireStaleArchiveName(
+                        todaysArchiveDir, supersededArchiveName, fileName, ownedFromMs);
+            }
             CTDebug(TAG, String.format(Locale.US, "archive(): wrote %d coordinates to %s", numCoords, fileName));
             CTDebug(TAG, String.format(Locale.US, "archive(%s): publish decision=%s",
                     fileName, publishDecisionLabel()));
@@ -1552,8 +1588,18 @@ public class WaypointTrack {
     }
 
     private long firstKeptTimestampLocked() {
+        return firstCoordinateTimestampLocked();
+    }
+
+    private long firstCoordinateTimestampLocked() {
         JSONArray first = coordinates.optJSONArray(0);
         return coordinateTimestamp(first);
+    }
+
+    /** Name used when this flight is written. The grant name once this tablet holds the lease. */
+    String archiveFileName() {
+        if (fileName != null) return fileName;
+        return OperatorArchiveFilename.track(archiveAircraftID(), archiveTimestampMsec());
     }
 
     private void noteOwnedStartLocked(long ownedStartMs) {
@@ -1574,8 +1620,9 @@ public class WaypointTrack {
     }
 
     private long archiveTimestampMsec() {
-        long ownedStart = droneSpec.getStartMsecTimestamp();
+        if (ownedFromMs > 0L) return ownedFromMs;
         long firstPoint = firstKeptTimestampLocked();
+        long ownedStart = droneSpec.getStartMsecTimestamp();
         if (ownedStart > 0L && (firstPoint <= 0L || ownedStart <= firstPoint)) return ownedStart;
         if (firstPoint > 0L) return firstPoint;
         return System.currentTimeMillis();

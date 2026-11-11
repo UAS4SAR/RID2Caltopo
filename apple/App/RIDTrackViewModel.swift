@@ -171,6 +171,7 @@ final class RIDTrackViewModel: ObservableObject {
             let existingEntries = await awaitingMapJournal.entries
             for flight in recovered {
                 do {
+                    if await self.retireJournalWhenSavedFlightCovers(flight) { continue }
                     if try await publicationLedger.blocksAwaitingMapPromotion(flightID: flight.id) {
                         try await waypointAppendJournal.acknowledgeRecovered(flightID: flight.id)
                         continue
@@ -231,6 +232,46 @@ final class RIDTrackViewModel: ObservableObject {
             }
         } catch {
             archiveStatus = "Could not recover unfinished tracks: \(error.localizedDescription)"
+        }
+    }
+
+    /// True when a saved flight already covers this journal, so recovery must not write a second file.
+    private func retireJournalWhenSavedFlightCovers(_ flight: WaypointTrackAppendJournal.RecoveredFlight) async -> Bool {
+        let points: [[String]] = flight.observations.map { observation in
+            let time = Int64(((observation.droneTimestamp ?? observation.receivedAt).timeIntervalSince1970 * 1_000).rounded())
+            return [
+                String(format: "%.6f", locale: Locale(identifier: "en_US_POSIX"), observation.longitude),
+                String(format: "%.6f", locale: Locale(identifier: "en_US_POSIX"), observation.latitude),
+                String(format: "%.0f", locale: Locale(identifier: "en_US_POSIX"), observation.altitudeMeters ?? -1_000),
+                String(time),
+            ]
+        }
+        let times = points.compactMap { Int64($0[3]) }
+        guard !times.isEmpty, let root = archiveStore.flightStorageRoot else { return false }
+        let around = flight.observations.first?.droneTimestamp ?? flight.observations.first?.receivedAt ?? Date()
+        let remoteID = flight.remoteID
+        let decision = await Task.detached(priority: .utility) {
+            let saved = SavedFlightIndex.flights(in: root, around: around)
+            return RecoveredJournalDedup.decide(remoteID: remoteID, journalTimesMs: times, saved: saved)
+        }.value
+        switch decision {
+        case .writeNew:
+            return false
+        case .retire:
+            try? await waypointAppendJournal.acknowledgeRecovered(flightID: flight.id)
+            return true
+        case let .merge(day, name, _):
+            let merged = await Task.detached(priority: .utility) {
+                SavedFlightIndex.merge(
+                    root: root, dayDirectory: day, fileName: name,
+                    journalPoints: points, journalTimesMs: times)
+            }.value
+            if merged {
+                try? await waypointAppendJournal.acknowledgeRecovered(flightID: flight.id)
+            } else {
+                archiveStatus = "Kept recovered journal \(flight.label); the saved flight does not yet hold every point"
+            }
+            return true
         }
     }
 
@@ -1627,12 +1668,24 @@ final class RIDTrackViewModel: ObservableObject {
                         if self.shadowedAircraft.contains(aircraftID),
                            self.ownershipGrantedAtByAircraft[aircraftID] == nil {
                             let grantedAt = Date()
+                            let before = await self.store.track(aircraftID: aircraftID)
                             self.ownershipGrantedAtByAircraft[aircraftID] = grantedAt
                             self.shadowedAircraft.remove(aircraftID)
                             await self.store.trimShadow(
                                 aircraftID: aircraftID, ownershipGrantedAt: grantedAt)
                             if let owned = await self.store.track(aircraftID: aircraftID) {
                                 self.rememberOwnedFlight(owned)
+                                if let before, before.flightStartedAt < owned.flightStartedAt,
+                                   let directory = self.archiveStore.flightDayDirectory(for: before.flightStartedAt) {
+                                    let aircraft = before.aircraftID
+                                    let shadow = before.flightStartedAt
+                                    let grant = owned.flightStartedAt
+                                    await Task.detached(priority: .utility) {
+                                        OwnedFlightFileName.adopt(
+                                            directory: directory, aircraftID: aircraft,
+                                            shadowStart: shadow, grant: grant, timeZone: .current)
+                                    }.value
+                                }
                             }
                         } else if let owned = await self.store.track(aircraftID: aircraftID) {
                             self.rememberOwnedFlight(owned)

@@ -2,6 +2,7 @@ package org.ncssar.rid2caltopo.data
 
 import android.content.Context
 import androidx.documentfile.provider.DocumentFile
+import org.json.JSONArray
 import org.ncssar.rid2caltopo.app.R2CApplication
 import org.ncssar.rid2caltopo.video.AndroidClueRecord
 import org.ncssar.rid2caltopo.video.AndroidClueStore
@@ -140,6 +141,97 @@ object FlightArchiveStore {
 
     private fun dayFolder(day: String): DocumentFile? =
         CaltopoClient.GetArchiveDir()?.findFile(day)?.takeIf { it.isDirectory }
+
+    /** Saved flights near [timeMs], including ones whose file name is not the journal's first point. */
+    @JvmStatic
+    fun savedFlightsNear(timeMs: Long): List<RecoveredFlightDedup.SavedFlight> =
+        archivesAround(daysAround(timeMs)).map { (_, entry) ->
+            RecoveredFlightDedup.SavedFlight(
+                entry.contents.remoteId,
+                entry.dayDirectory,
+                entry.fileName,
+                entry.contents.points.map { it.timeMs }.toLongArray(),
+            )
+        }
+
+    /**
+     * Adds journal coordinates that the saved file does not already hold.
+     * Returns true only when a following read shows every journal time in that same file.
+     */
+    @JvmStatic
+    fun mergeJournalPoints(day: String, fileName: String, journalPoints: JSONArray, journalTimes: LongArray): Boolean {
+        val dir = dayFolder(day) ?: return false
+        val bytes = read(dir, fileName) ?: return false
+        val merged = RecoveredFlightDedup.mergeGeoJson(bytes, journalPoints) ?: return false
+        if (!merged.contentEquals(bytes) &&
+            !writeFile(dir, fileName, GEOJSON_MIME, merged)
+        ) {
+            return false
+        }
+        val after = read(dir, fileName) ?: return false
+        val have = FlightArchiveRebuild.decode(after)?.points?.map { it.timeMs }?.toSet() ?: return false
+        return journalTimes.all { it <= 0L || it in have }
+    }
+
+    /** Moves a shadow-named flight onto the grant name. Does not overwrite a file that is already there. */
+    @JvmStatic
+    fun renameFlightIfPresent(dir: DocumentFile, fromGeoJson: String, toGeoJson: String) {
+        if (fromGeoJson == toGeoJson) return
+        renameOne(dir, fromGeoJson, toGeoJson)
+        renameOne(dir, FlightArchiveRebuild.kmzName(fromGeoJson), FlightArchiveRebuild.kmzName(toGeoJson))
+    }
+
+    /**
+     * After the grant-named file holds every point from [grantMs] onward, removes the shadow-named
+     * copy. Points before the grant stay out of the grant file. The grant file is never deleted.
+     */
+    @JvmStatic
+    fun retireStaleArchiveName(dir: DocumentFile, staleGeoJson: String, grantGeoJson: String, grantMs: Long) {
+        if (staleGeoJson == grantGeoJson) return
+        val grant = dir.findFile(grantGeoJson)?.takeIf { it.isFile && it.length() > 0L } ?: return
+        val staleFile = dir.findFile(staleGeoJson)?.takeIf { it.isFile }
+        val staleBytes = staleFile?.let { read(dir, staleGeoJson) }
+        if (staleFile != null && staleBytes == null) return
+        if (staleBytes != null) {
+            val stale = FlightArchiveRebuild.decode(staleBytes) ?: return
+            run {
+                val grantTimes = FlightArchiveRebuild.decode(read(dir, grantGeoJson) ?: return)
+                    ?.points?.map { it.timeMs }?.toSet() ?: return
+                val missing = JSONArray()
+                for (point in stale.points) {
+                    if (point.timeMs >= grantMs && point.timeMs !in grantTimes) {
+                        missing.put(JSONArray()
+                            .put(String.format(java.util.Locale.US, "%.6f", point.longitude))
+                            .put(String.format(java.util.Locale.US, "%.6f", point.latitude))
+                            .put(String.format(java.util.Locale.US, "%.0f", point.altitudeMeters ?: -1000.0))
+                            .put(point.timeMs.toString()))
+                    }
+                }
+                if (missing.length() > 0) {
+                    val current = read(dir, grantGeoJson) ?: return
+                    val merged = RecoveredFlightDedup.mergeGeoJson(current, missing) ?: return
+                    if (!writeFile(dir, grantGeoJson, GEOJSON_MIME, merged)) return
+                    val have = FlightArchiveRebuild.decode(read(dir, grantGeoJson) ?: return)
+                        ?.points?.map { it.timeMs }?.toSet() ?: return
+                    if ((0 until missing.length()).any { missing.getJSONArray(it).optString(3).toLongOrNull() !in have }) {
+                        return
+                    }
+                }
+            }
+        }
+        if (grant.length() <= 0L) return
+        dir.findFile(staleGeoJson)?.takeIf { it.isFile }?.delete()
+        dir.findFile(FlightArchiveRebuild.kmzName(staleGeoJson))?.takeIf { it.isFile }?.delete()
+        CaltopoClient.CTDebug(TAG, "retireStaleArchiveName(): $staleGeoJson -> $grantGeoJson")
+    }
+
+    private fun renameOne(dir: DocumentFile, from: String, to: String) {
+        if (dir.findFile(to)?.isFile == true) return
+        val source = dir.findFile(from)?.takeIf { it.isFile } ?: return
+        if (!source.renameTo(to) || dir.findFile(to)?.isFile != true) {
+            CaltopoClient.CTWarn(TAG, "rename $from -> $to failed; the source file was left in place")
+        }
+    }
 
     /** Archived flights in [days], keyed by their flight id (r2c_flight_id) or "day/file". */
     private fun archivesAround(days: List<String>): Map<String, ArchiveEntry> {

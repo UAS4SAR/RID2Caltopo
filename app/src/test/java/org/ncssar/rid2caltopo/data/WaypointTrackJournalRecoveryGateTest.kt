@@ -36,6 +36,7 @@ class WaypointTrackJournalRecoveryGateTest {
     fun tearDown() {
         WaypointTrackJournal.setRecoverBetweenRecordStepsHook(null)
         WaypointTrackJournal.setRecoverBeforeDeleteHook(null)
+        WaypointTrackJournal.setSavedFlightLookupForTesting(null)
         WaypointTrackJournal.setRootForTesting(null)
         AwaitingMapFlights.useFileForTesting(null)
         FlightPublicationLedger.useFileForTesting(null)

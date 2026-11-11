@@ -1684,6 +1684,15 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
         }
     }
 
+    /** The Save line. Names the lease holder's zone when this confirmation replaces one. */
+    static String sentConfirmationLog(@NonNull JSONObject confirmation) {
+        String named = confirmation.optString("replaceConfirmedBy", "");
+        return String.format(Locale.US,
+                "Sent pending drone confirmation remoteId=%s replaceConfirmedBy=%s",
+                confirmation.optString("remoteId"),
+                named.isEmpty() ? "none" : named);
+    }
+
     private void flushPendingConfirmations() {
         TrackerCoordinationTransport activeTransport = transport;
         if (activeTransport == null || !activeTransport.isConnected()) {
@@ -1699,9 +1708,7 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
             Long lastSent = confirmationSentAtByRemoteId.get(entry.getKey());
             if (lastSent != null && now - lastSent < 5_000L) continue;
             if (sendJson(entry.getValue())) {
-                CTDebug(TAG, String.format(Locale.US,
-                        "flushPendingConfirmations(): sent remoteId=%s",
-                        entry.getKey()));
+                CTDebug(TAG, sentConfirmationLog(entry.getValue()));
                 // Socket acceptance is not a server acknowledgement. Keep the Save
                 // until its own echo arrives, and replay it on a new transport.
                 if (pendingConfirmationsByRemoteId.get(entry.getKey()) == entry.getValue()) {

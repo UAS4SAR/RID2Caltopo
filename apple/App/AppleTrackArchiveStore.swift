@@ -421,6 +421,13 @@ actor AppleTrackArchiveStore {
         return failed
     }
 
+    var flightStorageRoot: URL? { rootURL }
+
+    func flightDayDirectory(for date: Date) -> URL? {
+        guard let rootURL else { return nil }
+        return rootURL.appendingPathComponent(dayDirectoryName(for: date), isDirectory: true)
+    }
+
     func archiveAlreadySaved(remoteID: String, startedAt: Date) -> Bool {
         guard let rootURL else { return false }
         return AwaitingMapFlightArchive.fileExists(remoteID: remoteID, startedAt: startedAt, root: rootURL)

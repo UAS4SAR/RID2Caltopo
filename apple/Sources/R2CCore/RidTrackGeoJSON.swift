@@ -193,9 +193,11 @@ public enum RidTrackGeoJSON {
 
     public static func suggestedFilename(
         for track: RidAircraftTrack,
+        ownershipGrantedAt grant: Date? = nil,
         timeZone: TimeZone = .current
     ) -> String {
-        let startDate = track.points.first?.receivedAt ?? track.lastObservation.receivedAt
+        let first = track.points.first?.receivedAt ?? track.lastObservation.receivedAt
+        let startDate = OwnedFlightFileName.stamp(grant: grant, firstStored: first)
         return suggestedFilenameBase(aircraftID: track.aircraftID, startDate: startDate, timeZone: timeZone) + ".json"
     }
 

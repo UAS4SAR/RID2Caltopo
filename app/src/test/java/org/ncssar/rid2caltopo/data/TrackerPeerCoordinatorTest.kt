@@ -1647,6 +1647,19 @@ class TrackerPeerCoordinatorTest {
         val replacement = transport.sentMessages.map { JSONObject(it) }
             .last { it.optString("type") == "drone_confirmed" && it.optString("remoteId") == remoteId }
         assertEquals(a5, replacement.optString("replaceConfirmedBy"))
+        assertEquals(
+            "Sent pending drone confirmation remoteId=$remoteId replaceConfirmedBy=$a5",
+            TrackerPeerCoordinator.sentConfirmationLog(replacement),
+        )
+    }
+
+    @Test
+    fun saveLogNamesNoZoneWhenTheLeaseIsFree() {
+        val confirmation = org.json.JSONObject().put("type", "drone_confirmed").put("remoteId", "RID")
+        assertEquals(
+            "Sent pending drone confirmation remoteId=RID replaceConfirmedBy=none",
+            TrackerPeerCoordinator.sentConfirmationLog(confirmation),
+        )
     }
 
     @Test

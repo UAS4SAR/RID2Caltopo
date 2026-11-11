@@ -754,6 +754,7 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
         final ArchiveWork handoff;
         final String destinationMap;
         final String destinationFolder;
+        final boolean renameGrantFile;
         synchronized (this) {
             if (shuttingDown || ownershipRequest.get() != request) return;
             boolean isOwner = request.owner;
@@ -763,10 +764,12 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
             boolean hadOwnedSegment = wasOwner && !isOwner && active
                     && (liveTrackId != null || requestedLiveTrackId != null || !linePoints.isEmpty());
             if (!hadOwnedSegment || !ownedSegmentReadyToPublish()) {
+                boolean granted = false;
                 if (!wasOwner && isOwner) {
                     long grantedAtMs = System.currentTimeMillis();
                     if (WaypointTrack.omitShadowPointsBeforeGrant(droneSpec, grantedAtMs)) {
                         dropQueuedPointsBefore(grantedAtMs);
+                        granted = true;
                     }
                 }
                 localOwner = isOwner;
@@ -774,20 +777,28 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
                     backfillQueuedPointsFromWaypointTrackIfNeeded();
                     ensureLiveTrackStarted();
                 }
-                return;
-            }
-            // Close while this tablet still owns the publication, then drop ownership.
-            // The idle timeout must not later delete the live track or mark the file local_only.
-            destinationMap = CaltopoMap.GetMapId();
-            destinationFolder = CaltopoMap.resolveArchiveFolderIdForFlight(trackObservedStartedAtMs);
-            WaypointTrack.markClosedAsPriorOwner(segmentTrackLabel);
-            publishingOwnedHandoff = true;
-            try {
-                handoff = prepareArchiveLocked(destinationMap);
-            } finally {
-                publishingOwnedHandoff = false;
+                renameGrantFile = granted;
+                handoff = null;
+                destinationMap = null;
+                destinationFolder = null;
+            } else {
+                // Close while this tablet still owns the publication, then drop ownership.
+                // The idle timeout must not later delete the live track or mark the file local_only.
+                destinationMap = CaltopoMap.GetMapId();
+                destinationFolder = CaltopoMap.resolveArchiveFolderIdForFlight(trackObservedStartedAtMs);
+                WaypointTrack.markClosedAsPriorOwner(segmentTrackLabel);
+                publishingOwnedHandoff = true;
+                try {
+                    handoff = prepareArchiveLocked(destinationMap);
+                } finally {
+                    publishingOwnedHandoff = false;
+                }
+                renameGrantFile = false;
             }
         }
+        // The archive rename is disk work. It stays outside the live-track lock.
+        if (renameGrantFile) WaypointTrack.renameArchiveToGrant(droneSpec);
+        if (handoff == null) return;
         // Shape POST and the local file stay off the owner-assignment thread.
         CaltopoRecoveryWork.executeArchive(() -> {
             try {

@@ -454,6 +454,8 @@ class WaypointTrackTest {
             assertTrue(authorized(owned))
             val ownedStart = firstTimestamp(owned)
             assertEquals(ownedAt, ownedStart)
+            assertEquals(OperatorArchiveFilename.track(drone.remoteId, grantedAt), owned.archiveFileName())
+            assertFalse(owned.archiveFileName() == OperatorArchiveFilename.track(drone.remoteId, shadowAt))
             assertTrue(ownedStart > shadowAt + 60_000L)
             assertEquals(1, owned.geoJson!!.getJSONArray("features").getJSONObject(0)
                 .getJSONObject("geometry").getJSONArray("coordinates").length())
