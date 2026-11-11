@@ -1,0 +1,7 @@
+########################################################################
+# RID2Caltopo 2.5.8 (444) running on iPadOS 27.0.1 (iPad13,4)
+# Writing logs to: /var/mobile/Containers/Data/Application/2E505062-6AAA-45C7-8BFC-5642A68BD124/Documents/RID2Caltopo/FlightStorage/2026-11-11/Log_11Nov2026-085100-PST-0800.txt
+########################################################################
+2026-11-11T08:51:00.475 PST -08:00 [INFO][480-12547] [BackupProtection] Private storage excluded; operational Library data remains backup-eligible
+2026-11-11T08:51:00.490 PST -08:00 [INFO][480-main] [App] Process launched pid=480 state=background options=[] log=Log_11Nov2026-085100-PST-0800.txt
+2026-11-11T08:51:00.495 PST -08:00 [INFO][480-15363] [MappingStorage] Mapping storage: already migrated
