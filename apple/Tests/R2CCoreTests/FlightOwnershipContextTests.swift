@@ -104,9 +104,29 @@ import Testing
     }
 
     @Test func archivedShapeIsNotReusedOrRewritten() {
-        #expect(!ArchivedShapePolicy.mayAdoptLiveTrack(trackID: "shape-1", archivedShapeIDs: ["shape-1"]))
-        #expect(ArchivedShapePolicy.mayAdoptLiveTrack(trackID: "live-2", archivedShapeIDs: ["shape-1"]))
+        #expect(!ArchivedShapePolicy.mayAdoptLiveTrack(trackID: "shape-1", archivedShapeIDs: ["shape-1"], createdByThisTablet: true))
+        #expect(!ArchivedShapePolicy.mayAdoptLiveTrack(trackID: "live-2", archivedShapeIDs: ["shape-1"]))
+        #expect(ArchivedShapePolicy.mayAdoptLiveTrack(trackID: "live-2", archivedShapeIDs: ["shape-1"], createdByThisTablet: true))
         #expect(!ArchivedShapePolicy.mayModifyShape(shapeID: "shape-1", createdByThisFlight: false))
         #expect(ArchivedShapePolicy.mayModifyShape(shapeID: "shape-2", createdByThisFlight: true))
+    }
+
+    @Test func round10TakeoverMintsANewShapeAndDoesNotReuseThePreviousOwners() {
+        let ipad = "dca603b1-20bc-5a24-8ebf-7f6c4198760a"
+        var archived: Set<String> = [ipad]
+        let a5 = ArchivedShapePolicy.archiveIdentity(
+            currentID: ipad, createdByThisTablet: false, archivedShapeIDs: archived, minted: "a5-shape")
+        #expect(a5.id == "a5-shape")
+        #expect(a5.stopPreviousLiveTrack == false)
+        archived.insert(a5.id)
+        let third = ArchivedShapePolicy.archiveIdentity(
+            currentID: a5.id, createdByThisTablet: false, archivedShapeIDs: archived, minted: "ipad-third")
+        #expect(third.id == "ipad-third")
+        #expect(third.stopPreviousLiveTrack == false)
+        let own = ArchivedShapePolicy.archiveIdentity(
+            currentID: "ipad-own", createdByThisTablet: true, archivedShapeIDs: archived, minted: "unused")
+        #expect(own.id == "ipad-own")
+        #expect(own.stopPreviousLiveTrack == true)
+        #expect(Set([ipad, a5.id, third.id]).count == 3)
     }
 }

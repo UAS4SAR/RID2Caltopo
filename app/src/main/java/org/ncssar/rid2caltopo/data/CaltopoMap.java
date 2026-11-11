@@ -804,10 +804,10 @@ public class CaltopoMap {
 
     @Nullable
     public static AdoptableLiveTrack takeAdoptableLiveTrack(@NonNull String deviceId) {
+        // A peer LiveTrack belongs to that tablet's flight. A granted lease mints its own id.
         if (deviceId.isEmpty()) return null;
-        AdoptableLiveTrack adopted = AdoptableLiveTracksByDeviceId.remove(deviceId);
-        if (adopted != null && isArchivedShape(adopted.trackId)) return null;
-        return adopted;
+        AdoptableLiveTracksByDeviceId.remove(deviceId);
+        return null;
     }
 
     @Nullable
@@ -872,9 +872,8 @@ public class CaltopoMap {
         boolean peerLeaseActive = !remoteId.isEmpty() && peers.hasActivePeerOwner(remoteId);
         // Archive only own-zone duplicates, or orphans with no active peer owner lease.
         if (!createdByThisZone) {
-            rememberAdoptableLiveTrack(trackId, title, featureDeviceId, creatorZoneId);
+            // Another tablet's LiveTrack is not ours to adopt or append to.
             if (peerLeaseActive) return false;
-            // No active peer lease: orphan stale duplicate may be archived below.
         }
 
         if (!DuplicateLiveTrackArchivePending.add(trackId)) return true;
@@ -1321,11 +1320,6 @@ public class CaltopoMap {
                 } else if (archiveDuplicateLiveTrackIfNeeded(feature, prop, classString, idString, title)) {
                     CTDebug(TAG, "parseMapUpdate(): duplicate liveTrack matched local publisher - archiving");
                 } else {
-                    String deviceId = prop.optString("deviceId", "");
-                    if (!deviceId.isEmpty()) {
-                        rememberAdoptableLiveTrack(
-                                idString, title, deviceId, prop.optString("r2cZoneId", ""));
-                    }
                     CTDebug(TAG, "parseMapUpdate(): liveTrack is not one of ours - ignoring");
                     ignoreCount++;
                 }
@@ -2297,11 +2291,22 @@ public class CaltopoMap {
                 if (onComplete != null) onComplete.accept(false);
                 return;
             }
-            if (isArchivedShape(trackId) && !wasLocallyCreatedLiveTrack(trackId)) {
-                CTWarn(TAG, "archiveFeature(): refusing to overwrite archived shape id=" + trackId);
-                if (onComplete != null) onComplete.accept(false);
-                return;
+            boolean createdHere = wasLocallyCreatedLiveTrack(trackId);
+            String archiveId = OwnedFlightLiveTrack.shapeIdForArchive(
+                    trackId, createdHere, isArchivedShape(trackId), java.util.UUID.randomUUID().toString());
+            final String featureClassForArchive;
+            if (!archiveId.equals(trackId)) {
+                CTWarn(TAG, String.format(Locale.US,
+                        "archiveFeature(): live-track id %s belongs to another flight; minting shape %s",
+                        trackId, archiveId));
+                feature.put("id", archiveId);
+                noteLocallyCreatedLiveTrackId(archiveId);
+                trackId = archiveId;
+                featureClassForArchive = "Shape";
+            } else {
+                featureClassForArchive = featureClass;
             }
+            final String archivedTrackId = trackId;
             JSONObject prop = feature.optJSONObject("properties");
             if (null == prop) {
                 prop = new JSONObject();
@@ -2317,25 +2322,25 @@ public class CaltopoMap {
             prop.put("class", "Shape");  // convert from LiveTrack to shape.
             AtomicReference<CaltopoOp> deleteOp = new AtomicReference<>();
             CaltopoOp op = runtime.getCalTopoSessionGateway()
-                    .editObjectOnMap(destinationMapId, "Shape", trackId, feature, archiveOp -> {
-                        onArchiveFeatureEditFinished(trackId, archiveOp);
+                    .editObjectOnMap(destinationMapId, "Shape", archivedTrackId, feature, archiveOp -> {
+                        onArchiveFeatureEditFinished(archivedTrackId, archiveOp);
                         if (!archiveOp.success()) {
                             if (onComplete != null) onComplete.accept(false);
                             return;
                         }
-                        if (!featureClass.equals("LiveTrack")) {
-                            if (destinationMapId.equals(GetMapId())) refreshArtifactsAfterArchiveFinished(trackId, true);
+                        if (!featureClassForArchive.equals("LiveTrack")) {
+                            if (destinationMapId.equals(GetMapId())) refreshArtifactsAfterArchiveFinished(archivedTrackId, true);
                             if (onComplete != null) onComplete.accept(true);
                             return;
                         }
-                        CTInfo(TAG, String.format(Locale.US, "archiveFeature(): Stopping liveTrack %s....", trackId));
+                        CTInfo(TAG, String.format(Locale.US, "archiveFeature(): Stopping liveTrack %s....", archivedTrackId));
                         deleteOp.set(runtime.getCalTopoSessionGateway()
-                                .deleteLiveTrackOnMap(destinationMapId, trackId, finishedDeleteOp -> {
+                                .deleteLiveTrackOnMap(destinationMapId, archivedTrackId, finishedDeleteOp -> {
                                     CTInfo(TAG, String.format(Locale.US,
                                             "archiveFeature(): delete liveTrackId=%s success=%s responseCode=%d",
-                                            trackId, finishedDeleteOp.success(), finishedDeleteOp.responseCode));
+                                            archivedTrackId, finishedDeleteOp.success(), finishedDeleteOp.responseCode));
                                     if (destinationMapId.equals(GetMapId())) refreshArtifactsAfterArchiveFinished(
-                                            trackId, finishedDeleteOp.success());
+                                            archivedTrackId, finishedDeleteOp.success());
                                     if (onComplete != null) onComplete.accept(finishedDeleteOp.success());
                                 }));
                     });

@@ -921,17 +921,18 @@ class TrackerPeerCoordinatorTest {
         )
         val drone = CaltopoClient.GetDroneSpec("DRONEADOPT1")!!
         assertEquals("1sar7DjMtrc4td_170601Nov03", drone.trackLabel())
+        val device = CaltopoSession.liveTrackDeviceId("DRONEADOPT1", CaltopoClient.GetConnectKey())
         CaltopoMap.rememberAdoptableLiveTrack(
             "peer-live-track-id",
             "1sar7DjMtrc4td_170601Nov03",
-            CaltopoSession.liveTrackDeviceId("DRONEADOPT1", CaltopoClient.GetConnectKey()),
+            device,
             "zone-bravo"
         )
-        val adopted = CaltopoMap.takeAdoptableLiveTrack(
-            CaltopoSession.liveTrackDeviceId("DRONEADOPT1", CaltopoClient.GetConnectKey())
+        assertNull(CaltopoMap.takeAdoptableLiveTrack(device))
+        assertEquals(
+            "a5-shape",
+            OwnedFlightLiveTrack.shapeIdForArchive("peer-live-track-id", false, true, "a5-shape")
         )
-        assertEquals("peer-live-track-id", adopted?.trackId)
-        assertEquals("1sar7DjMtrc4td_170601Nov03", adopted?.title)
     }
 
     @Test

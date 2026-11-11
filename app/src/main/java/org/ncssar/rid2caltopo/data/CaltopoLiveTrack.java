@@ -1678,25 +1678,7 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
         String currentMap = CaltopoMap.GetMapId();
         if (currentMap == null || currentMap.isEmpty() || !currentMap.equals(mapId)) return null;
         if (requestedLiveTrackId == null) {
-            CaltopoMap.AdoptableLiveTrack adoptable = CaltopoMap.takeAdoptableLiveTrack(
-                    effectiveFleetDeviceId());
-            if (adoptable != null && !adoptable.trackId.isEmpty()) {
-                // Ownership handoff: continue the peer's existing LiveTrack id/label.
-                requestedLiveTrackId = adoptable.trackId;
-                liveTrackId = adoptable.trackId;
-                if (!adoptable.title.isEmpty()) {
-                    segmentTrackLabel = adoptable.title;
-                    droneSpec.adoptSharedTrackLabel(adoptable.title);
-                }
-                publicationMapId = mapId;
-                startInFlight = false;
-                active = true;
-                CaltopoMap.AddLiveTrack(liveTrackId, this);
-                CTInfo(TAG, String.format(Locale.US,
-                        "claimLiveTrackStart(%s): adopted peer liveTrack id=%s label=%s",
-                        effectiveFleetDeviceId(), liveTrackId, segmentTrackLabel));
-                return null;
-            }
+            // A granted lease starts a new LiveTrack. The previous owner's id stays theirs.
             requestedLiveTrackId = resolveStableLiveTrackIdLocked(deferredId);
             publicationMapId = mapId;
         }

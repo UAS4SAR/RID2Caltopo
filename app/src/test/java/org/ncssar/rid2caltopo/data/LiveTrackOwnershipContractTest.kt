@@ -45,6 +45,22 @@ class LiveTrackOwnershipContractTest {
     }
 
     @Test
+    fun round10TakeoverMintsANewShapeAndDoesNotReuseThePreviousOwners() {
+        val ipadShape = "dca603b1-20bc-5a24-8ebf-7f6c4198760a"
+        val device = CaltopoSession.liveTrackDeviceId("1581F8HGX255S00A0FZT", "connect-key")
+        CaltopoMap.noteArchivedShape(ipadShape)
+        CaltopoMap.rememberAdoptableLiveTrack(ipadShape, "1sar7DjMtrc4td_170805Nov10", device, "f6cbd6d2")
+        assertNull(CaltopoMap.takeAdoptableLiveTrack(device))
+        assertFalse(OwnedFlightLiveTrack.mayAttach(ipadShape, false, true))
+        val a5 = OwnedFlightLiveTrack.shapeIdForArchive(ipadShape, false, true, "a5-shape")
+        assertEquals("a5-shape", a5)
+        val third = OwnedFlightLiveTrack.shapeIdForArchive(a5, false, true, "ipad-third")
+        assertEquals("ipad-third", third)
+        assertEquals(ipadShape, OwnedFlightLiveTrack.shapeIdForArchive(ipadShape, true, false, "unused"))
+        assertFalse(a5 == ipadShape || third == ipadShape || a5 == third)
+    }
+
+    @Test
     fun descriptionAlreadyLinked_detectsShortVideoPath() {
         assertTrue(CaltopoArchiveDescription.alreadyContainsVideoLink(
             "https://r2c-tracker.com/v/8fiw1A"))

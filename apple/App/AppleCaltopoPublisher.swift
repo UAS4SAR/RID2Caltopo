@@ -33,6 +33,7 @@ actor AppleCaltopoPublisher {
     private nonisolated let continuation: AsyncStream<AppleCaltopoPublisherEvent>.Continuation
     private var client: CaltopoLiveClient?
     private var liveTrackIDs: [String: String] = [:]
+    private var createdLiveTrackIDs: Set<String> = []
     private var requestedLiveTrackIDs: [String: String] = [:]
     private var nextStartAttemptAt: [String: Date] = [:]
     private var labels: [String: String] = [:]
@@ -640,7 +641,9 @@ actor AppleCaltopoPublisher {
 
     /// Seeds the stable RidFlightID and confirmed team label before the first point or finish.
     func seedLiveTrackIdentity(remoteID: String, liveTrackID: String, label: String) async {
-        guard ArchivedShapePolicy.mayAdoptLiveTrack(trackID: liveTrackID, archivedShapeIDs: archivedShapeIDs) else { return }
+        guard ArchivedShapePolicy.mayAdoptLiveTrack(
+            trackID: liveTrackID, archivedShapeIDs: archivedShapeIDs, createdByThisTablet: true
+        ) else { return }
         if requestedLiveTrackIDs[remoteID] == nil {
             requestedLiveTrackIDs[remoteID] = liveTrackID
         }
@@ -701,11 +704,13 @@ actor AppleCaltopoPublisher {
 
     private func stableLiveTrackID(remoteID: String, from observations: [RidObservation], fallback: Date) -> String {
         if let existing = requestedLiveTrackIDs[remoteID],
-           ArchivedShapePolicy.mayAdoptLiveTrack(trackID: existing, archivedShapeIDs: archivedShapeIDs) {
+           ArchivedShapePolicy.mayAdoptLiveTrack(
+            trackID: existing, archivedShapeIDs: archivedShapeIDs, createdByThisTablet: true) {
             return existing
         }
         if let existing = liveTrackIDs[remoteID],
-           ArchivedShapePolicy.mayAdoptLiveTrack(trackID: existing, archivedShapeIDs: archivedShapeIDs) {
+           ArchivedShapePolicy.mayAdoptLiveTrack(
+            trackID: existing, archivedShapeIDs: archivedShapeIDs, createdByThisTablet: true) {
             return existing
         }
         let started = observations.first?.receivedAt ?? fallback
@@ -813,6 +818,7 @@ actor AppleCaltopoPublisher {
                       !finishingRemoteIDs.contains(remoteID) else { return }
                 startTasks.removeValue(forKey: remoteID)
                 liveTrackIDs[remoteID] = liveTrackID
+                createdLiveTrackIDs.insert(liveTrackID)
                 await persistInterruptedPublication(remoteID: remoteID, force: true)
                 continuation.yield(.trackStarted(remoteID))
             }
@@ -1028,20 +1034,36 @@ actor AppleCaltopoPublisher {
                 )
                 return nil
             }
+            let createdHere = createdLiveTrackIDs.contains(id)
+            let decision = ArchivedShapePolicy.archiveIdentity(
+                currentID: id,
+                createdByThisTablet: createdHere,
+                archivedShapeIDs: archivedShapeIDs,
+                minted: UUID().uuidString.lowercased()
+            )
+            if decision.id != id {
+                AppleLog.warning(
+                    "CalTopo",
+                    "live-track id \(id) belongs to another flight; minting shape \(decision.id)"
+                )
+            }
             try await client.archiveLiveTrack(
-                liveTrackID: id, label: label, observations: saved,
-                folderID: archiveFolderID, description: description)
+                liveTrackID: decision.id, label: label, observations: saved,
+                folderID: archiveFolderID, description: description,
+                stopAfterArchive: decision.id == id && decision.stopPreviousLiveTrack)
             try await interruptedJournal.remove(liveTrackID: id)
             pendingInterruptedRecoveries.removeAll { $0.liveTrackID == id }
+            let savedID = decision.id
+            createdLiveTrackIDs.insert(savedID)
             AppleLog.info(
                 "CalTopo",
-                "CalTopo track archived id=\(id) folder=\(archiveFolderTitle)"
+                "CalTopo track archived id=\(savedID) folder=\(archiveFolderTitle)"
             )
             continuation.yield(.trackArchived(
-                liveTrackID: id, remoteID: remoteID, folderTitle: archiveFolderTitle))
+                liveTrackID: savedID, remoteID: remoteID, folderTitle: archiveFolderTitle))
             continuation.yield(.trackStopped(remoteID))
             let archived = AppleArchivedCaltopoTrack(
-                liveTrackID: id, label: label, observations: saved, folderID: archiveFolderID,
+                liveTrackID: savedID, label: label, observations: saved, folderID: archiveFolderID,
                 folderTitle: archiveFolderTitle, configurationGeneration: generation,
                 description: description, remoteID: remoteID)
             rememberArchivedTrack(archived)

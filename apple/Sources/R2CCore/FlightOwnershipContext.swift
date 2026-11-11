@@ -133,9 +133,29 @@ public struct FlightOwnershipContext: Sendable, Equatable, Codable {
 
 /// An archived Shape is immutable. A later flight mints a new id and does not edit the old one.
 public enum ArchivedShapePolicy {
-    public static func mayAdoptLiveTrack(trackID: String, archivedShapeIDs: Set<String>) -> Bool {
+    /// Only an id this tablet created, and that is not already a shape, may keep receiving points.
+    public static func mayAdoptLiveTrack(
+        trackID: String,
+        archivedShapeIDs: Set<String>,
+        createdByThisTablet: Bool = false
+    ) -> Bool {
         let id = trackID.trimmingCharacters(in: .whitespacesAndNewlines)
-        return !id.isEmpty && !archivedShapeIDs.contains(id)
+        return !id.isEmpty && createdByThisTablet && !archivedShapeIDs.contains(id)
+    }
+
+    /// Save this flight under a new id when the current one belongs to another flight or is already a shape.
+    /// `stopPreviousLiveTrack` is false when the previous id must be left untouched.
+    public static func archiveIdentity(
+        currentID: String,
+        createdByThisTablet: Bool,
+        archivedShapeIDs: Set<String>,
+        minted: String
+    ) -> (id: String, stopPreviousLiveTrack: Bool) {
+        let id = currentID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let archived = archivedShapeIDs.contains(id)
+        if createdByThisTablet && !archived { return (id, true) }
+        if createdByThisTablet && archived { return (id, false) }
+        return (minted, false)
     }
 
     /// A recording link may be added only to the shape this flight just created.

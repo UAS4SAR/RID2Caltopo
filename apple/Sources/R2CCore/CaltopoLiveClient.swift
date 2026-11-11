@@ -469,10 +469,11 @@ public actor CaltopoLiveClient {
         observations: [RidObservation],
         folderID: String,
         description: String = "",
+        stopAfterArchive: Bool = true,
         now: Date = Date()
     ) async throws {
         guard !observations.isEmpty else {
-            try await stopLiveTrack(liveTrackID: liveTrackID, now: now)
+            if stopAfterArchive { try await stopLiveTrack(liveTrackID: liveTrackID, now: now) }
             return
         }
         _ = try await perform(makeArchiveLiveTrackRequest(
@@ -483,7 +484,9 @@ public actor CaltopoLiveClient {
             description: description,
             now: now
         ), lane: archiveLane)
-        try await stopLiveTrack(liveTrackID: liveTrackID, now: now)
+        if stopAfterArchive {
+            try await stopLiveTrack(liveTrackID: liveTrackID, now: now)
+        }
     }
 
     public func updateArchivedTrack(
