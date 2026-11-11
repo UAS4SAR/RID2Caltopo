@@ -12,6 +12,19 @@ Project-only engineering record; do not package in the app, copy into store meta
 
 ## Cumulative release history
 
+### 2.6.0 (445) — btrx receiver, milestone 1 (November 11, 2026)
+
+- Planned difference, owner decision (btrx brief section 15, decision 1):
+  version 1 of the btrx Desk Pod link is Android only. An iPad cannot open a
+  generic USB serial device; Apple follows once the Desk Pod has a Bluetooth
+  link (btrx firmware work, not scheduled).
+- Android: USB CDC-ACM link to the Desk Pod (usb-serial-for-android), the
+  Meshtastic serial handshake on app port 256, every btrx frame decoded into the
+  app log, and ROLE_GET to the Desk Pod. No UI. Host unit tests cover the brief's
+  example frames, CRC and version refusal. Board test plan:
+  `docs/btrx/M1-bench-test.md` (not yet run).
+- Apple: no change. No public release-note claim beyond groundwork.
+
 ### In progress — full storage consolidation after 423 (October 25, 2026)
 
 This work is incomplete and must not be installed on the populated tablets yet.
