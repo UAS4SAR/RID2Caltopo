@@ -212,8 +212,6 @@ public class ScanningService extends Service {
         stopForegroundSafely();
         lifecycleHandler.removeCallbacks(incidentMapBackgroundDisconnect);
         lifecycleHandler.removeCallbacks(trackerSilenceDisconnect);
-        // Service destroy is process-session teardown; release the shared location client here.
-        DeviceLocationMonitor.stop();
         if (scanning) {
             stopScanning();
         }
@@ -293,9 +291,6 @@ public class ScanningService extends Service {
                 CaltopoMap.EndIncidentDisplayInactive();
             } else {
                 CaltopoMap.BeginIncidentDisplayInactive();
-                // Keep the existing long-lived client; do not create/unbind a second
-                // FusedLocationProviderClient on every display transition.
-                DeviceLocationMonitor.ensureStarted(getApplicationContext());
                 lifecycleHandler.postDelayed(
                         trackerSilenceDisconnect,
                         TRACKER_SILENCE_RECHECK_MS);
@@ -320,7 +315,6 @@ public class ScanningService extends Service {
             stopSelf();
             return START_NOT_STICKY;
         }
-        DeviceLocationMonitor.ensureStarted(getApplicationContext());
         startScanning();
         return START_STICKY;
     }
@@ -415,6 +409,8 @@ public class ScanningService extends Service {
 
     private boolean startForegroundSafely(Notification notification) {
         try {
+            // Wi-Fi beacon scan results require fine location permission. Keep
+            // the existing service type until background reception is qualified.
             int serviceTypes = ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE;
             if (ContextCompat.checkSelfPermission(this, android.Manifest.permission.ACCESS_FINE_LOCATION)
                     == PackageManager.PERMISSION_GRANTED) {

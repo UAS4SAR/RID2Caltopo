@@ -20,8 +20,11 @@ provides the fuller account of data use, recipients, retention, and deletion.
 
 - Bluetooth and compatible external-network Remote ID observations are decoded
   to display nearby aircraft and create local track archives.
-- Location permission places the operator relative to aircraft on the map and
-  supports configured tracker coordination. Operating-system settings control
+- Approximate device location, updated while an app screen is visible, places the
+  operator relative to aircraft on the map and supports configured tracker
+  coordination. Android also requires precise location permission for Wi-Fi
+  beacon scanning, even though the app requests approximate device location.
+  Operating-system settings control
   access to this device's location. Withdrawing location permission stops the
   app's use of the device's current and cached operator location. It does not
   delete information already shared with a service.

@@ -43,6 +43,7 @@ class R2CApplication : Application() {
             android.webkit.WebView.setWebContentsDebuggingEnabled(false)
             return
         }
+        DeviceLocationMonitor.install(this)
         instance = this;
         if (BuildConfig.DEBUG) {
             // Keep stack traces for regressions in UI callbacks, including SDK
