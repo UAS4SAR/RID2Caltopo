@@ -1,13 +1,16 @@
 Latest changes:
-- Drone ownership options and aircraft inspection are available for testing.
+- Drone ownership options and aircraft inspection are available.
 - Flight track labels show the pilot's callsign.
 - Drone Ownership is edited on this device, like the aircraft list, and only by someone allowed to edit aircraft.
 - Mine no longer shows a second notice that the aircraft was already claimed. If another device still holds it, that claim is named in the request to take over.
+- One confirmation is offered for each flight. A later echo of a confirmation you already saved does not open another.
 - A flight you mark Mine stays on this device until ownership is confirmed. If that confirmation is missing when the flight ends, the flight waits for your review, with the pilot you entered.
-- A confirmed flight is saved to the incident map when the flight ends.
+- A confirmed flight is saved to the incident map when the flight ends, under a new track for that flight.
+- Taking over an aircraft saves the flight you already owned, then starts a new track. The other flight's saved track is left as it is.
+- The saved file and track title use the time you took over.
+- If the app restarts during a flight that had already started on the map, the whole track is saved and the existing map track is updated. It is not deleted.
 - Reviewing an earlier flight sends it to the tracker as well as the map, once.
 - A flight another device owned is not included in Confirm and publish. That flight can be published on its own, and doing so does not assign a pilot.
 - Another device's confirmation is not treated as yours. A finished flight's ownership result does not apply to the next flight of the same aircraft.
-- Each finished flight is saved as its own map track. An earlier saved track is not renamed, overwritten, or given a later flight's video.
 - This device's map marker is updated in place. A marker still in use is not removed, and a marker that is already gone is left alone.
 - Live drone video is received on its own, apart from recording, map updates, and sharing with other viewers, so the live view no longer lags. If the picture falls behind, it skips ahead to the next clear frame instead of building delay.
