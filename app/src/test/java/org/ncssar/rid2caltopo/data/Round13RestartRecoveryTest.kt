@@ -45,6 +45,7 @@ class Round13RestartRecoveryTest {
     @After
     fun tearDown() {
         WaypointTrackJournal.setRecoveredArchiveWriterForTesting(null)
+        WaypointTrackJournal.setSavedFlightLookupForTesting(null)
         WaypointTrackJournal.setRootForTesting(null)
         AwaitingMapFlights.useFileForTesting(null)
         FlightPublicationLedger.useFileForTesting(null)
@@ -86,6 +87,7 @@ class Round13RestartRecoveryTest {
         assertEquals("Shape:$flightId", edits[0].summary)
         assertEquals(65, edits[0].payload!!.getJSONObject("geometry").getJSONArray("coordinates").length())
         assertTrue(fixture.calTopoSessionGateway.snapshotOperations().none { it.summary.contains(otherShape) })
+        assertEquals(0, fixture.calTopoSessionGateway.countOperations("deleteLiveTrack"))
         assertEquals(0, CaltopoInterruptedTrackJournal.entriesForTesting().length())
 
         WaypointTrackJournal.recoverUnfinished()
@@ -129,6 +131,133 @@ class Round13RestartRecoveryTest {
         assertTrue(awaiting.getBoolean("ownershipReviewPending"))
         assertEquals("1SAR7", awaiting.getString("recordedPilot"))
     }
+
+    /**
+     * The iPad's awaiting-map and interrupted files were not kept. Those two records
+     * are rebuilt from the committed journal: 61 points in the awaiting row, 62 in
+     * the interrupted snapshot. Every coordinate comes from that file.
+     */
+    @Test
+    fun round13IPadFilesReplayWrites65PointsOnceAndKeepsTheShapeAndClue() {
+        val source = round13Journal()
+        val journal = File(root, "$flightId.ndjson")
+        source.copyTo(journal)
+        val parsed = WaypointTrackJournal.readJournal(journal)
+        assertEquals(65, parsed!!.points.length())
+        assertEquals("1SAR7", parsed.context.recordedPilot)
+        assertEquals(flightId, parsed.id)
+        assertEquals(-121.132794, parsed.points.getJSONArray(0).getDouble(0), 0.0000005)
+
+        val awaitingPoints = JSONArray()
+        for (index in 0 until 61) awaitingPoints.put(JSONArray(parsed.points.getJSONArray(index).toString()))
+        awaitingFile.writeText(JSONArray().put(JSONObject()
+            .put("id", flightId)
+            .put("remote", remote)
+            .put("label", "1sar7DjMtrc4td")
+            .put("points", awaitingPoints)
+            .put("finished", false)
+            .put("decision", "bound")
+            .put("map", "4J0LF02")
+            .put("team", "personal:BCL66J")
+            .put("publicationStarted", true)
+            .put("recordedPilot", "1SAR7")
+            .put("claim", "verified")
+            .put("ownershipContextKnown", true)
+        ).toString())
+        val interrupted = JSONArray()
+        for (index in 0 until 62) interrupted.put(JSONArray(parsed.points.getJSONArray(index).toString()))
+        assertTrue(CaltopoInterruptedTrackJournal.save(
+            "4J0LF02", remote, flightId, "1sar7DjMtrc4td_082754Nov11", "", interrupted, parsed.startedAtMs,
+        ))
+        WaypointTrackJournal.setSavedFlightLookupForTesting(object : RecoveredFlightDedup.Lookup {
+            override fun flights() = emptyList<RecoveredFlightDedup.SavedFlight>()
+            override fun mergeInto(dayDirectory: String, fileName: String, journalPoints: JSONArray) = false
+        })
+
+        assertTrue(AwaitingMapFlights.publicationAlreadyStarted(flightId))
+        assertTrue(AwaitingMapFlights.allEntries().single().getBoolean("finished"))
+        assertTrue(AwaitingMapFlights.allEntries().single().getBoolean("publicationStarted"))
+
+        val flightFile = File(root, "082754.json")
+        var uploads = 0
+        WaypointTrackJournal.setRecoveredArchiveWriterForTesting { flight, localOnly ->
+            assertEquals(65, flight.points.length())
+            assertEquals("1SAR7", flight.context.recordedPilot)
+            assertEquals(flightId, flight.id)
+            assertFalse(localOnly)
+            assertTrue(flight.context.mayAutoPublish)
+            val payload = JSONObject()
+                .put("type", "FeatureCollection")
+                .put("features", JSONArray().put(JSONObject()
+                    .put("type", "Feature")
+                    .put("properties", JSONObject().put("title", flight.label).put("owner", flight.context.recordedPilot))
+                    .put("geometry", JSONObject().put("type", "LineString").put("coordinates", flight.points))))
+                .toString()
+            java.io.FileOutputStream(flightFile).use { out ->
+                out.write(payload.toByteArray())
+                out.fd.sync()
+            }
+            val count = JSONObject(flightFile.readText())
+                .getJSONArray("features").getJSONObject(0)
+                .getJSONObject("geometry").getJSONArray("coordinates").length()
+            if (count != 65) return@setRecoveredArchiveWriterForTesting false
+            uploads += 1
+            true
+        }
+
+        WaypointTrackJournal.recoverUnfinished()
+
+        assertEquals(1, uploads)
+        assertFalse(journal.exists())
+        assertTrue(source.isFile)
+        assertEquals("kept", clueFile.readText())
+        assertEquals(65, JSONObject(flightFile.readText())
+            .getJSONArray("features").getJSONObject(0)
+            .getJSONObject("geometry").getJSONArray("coordinates").length())
+        assertFalse(flightFile.readText().contains("drone_confirmed"))
+
+        val shapeCoords = JSONArray()
+        for (index in 0 until 62) shapeCoords.put(JSONArray(parsed.points.getJSONArray(index).toString()))
+        val fixture = TestR2cRuntimeFactory.create("round13-replay")
+        CaltopoInterruptedTrackJournal.recover(
+            "4J0LF02",
+            fixture.runtime,
+            listOf(shape(flightId, shapeCoords), shape(otherShape, 198)),
+        ) { "archive-folder" }
+
+        val operations = fixture.calTopoSessionGateway.snapshotOperations()
+        val edits = operations.filter { it.kind == "editObject" }
+        assertEquals(1, edits.size)
+        assertEquals("Shape:$flightId", edits[0].summary)
+        assertEquals(65, edits[0].payload!!.getJSONObject("geometry").getJSONArray("coordinates").length())
+        assertEquals(0, operations.count { it.kind == "deleteLiveTrack" })
+        assertTrue(operations.none { it.summary.contains(otherShape) || it.summary.contains("drone_confirmed") })
+        assertEquals(0, CaltopoInterruptedTrackJournal.entriesForTesting().length())
+        assertEquals("kept", clueFile.readText())
+
+        WaypointTrackJournal.recoverUnfinished()
+        CaltopoInterruptedTrackJournal.recover("4J0LF02", fixture.runtime, emptyList()) { "archive-folder" }
+        assertEquals(1, uploads)
+        assertEquals(1, fixture.calTopoSessionGateway.snapshotOperations().count { it.kind == "editObject" })
+        assertEquals(0, fixture.calTopoSessionGateway.snapshotOperations().count { it.kind == "deleteLiveTrack" })
+        assertEquals("kept", clueFile.readText())
+    }
+
+    private fun round13Journal(): File {
+        var dir: File? = File(System.getProperty("user.dir") ?: ".").absoluteFile
+        while (dir != null) {
+            val candidate = File(dir, "docs/validation/2026-11-11-field-logs/round13/ipad/$flightId.ndjson")
+            if (candidate.isFile) return candidate
+            dir = dir.parentFile
+        }
+        throw AssertionError("round13 journal not found from ${System.getProperty("user.dir")}")
+    }
+
+    private fun shape(id: String, coordinates: JSONArray): JSONObject =
+        JSONObject()
+            .put("id", id)
+            .put("properties", JSONObject().put("class", "Shape"))
+            .put("geometry", JSONObject().put("type", "LineString").put("coordinates", coordinates))
 
     private fun plantJournal(verified: Boolean) {
         WaypointTrackJournal.ensureOpen(flightId, remote, "1sar7DjMtrc4td", "4J0LF02", "personal:BCL66J", 1_794_414_474_042L)

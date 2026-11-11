@@ -168,43 +168,18 @@ final class RIDTrackViewModel: ObservableObject {
     private func recoverWaypointAppendJournalsLocked() async {
         do {
             let recovered = try await waypointAppendJournal.recoverUnfinished()
-            let existingEntries = await awaitingMapJournal.entries
+            // Disk rows, read before ready() rewrites every row to finished.
+            // A finished flag is not proof the flight file was written.
+            let storedEntries = (try? await awaitingMapJournal.storedEntries()) ?? []
             for flight in recovered {
                 do {
                     if await self.retireJournalWhenSavedFlightCovers(flight) { continue }
-                    if try await publicationLedger.blocksAwaitingMapPromotion(flightID: flight.id) {
-                        try await waypointAppendJournal.acknowledgeRecovered(flightID: flight.id)
-                        continue
-                    }
-                    if flight.startedAtMs > 0,
-                       await archiveStore.archiveAlreadySaved(
-                        remoteID: flight.remoteID,
-                        startedAt: Date(timeIntervalSince1970: Double(flight.startedAtMs) / 1_000)
-                       ) {
-                        // The file is already durable. Expand this flight's shape snapshot
-                        // from the journal, then retire the journal. Do not write a second file.
-                        _ = await caltopoPublisher.replaceInterruptedPoints(
-                            liveTrackID: flight.id, observations: flight.observations)
-                        try await waypointAppendJournal.acknowledgeRecovered(flightID: flight.id)
-                        continue
-                    }
-                    if let prior = existingEntries.last(where: { $0.id == flight.id }), prior.finished {
-                        if TrackArchiveConfirmation.isConfirmed(
-                            decision: prior.decision,
-                            archiveConfirmed: prior.archiveConfirmed == true,
-                            hasArchiveId: !(prior.caltopoArchiveId ?? "").isEmpty
-                        ) {
-                            try await publicationLedger.remember(flightID: flight.id, disposition: .published)
-                        } else if prior.decision == "local" {
-                            try await publicationLedger.remember(flightID: flight.id, disposition: .declined)
-                        }
-                        try await waypointAppendJournal.acknowledgeRecovered(flightID: flight.id)
-                        continue
-                    }
-                    let ownership = flight.ownership
-                    let open = existingEntries.last(where: { $0.id == flight.id && !$0.finished })
+                    let stored = storedEntries.last(where: { $0.id == flight.id })
                     let interruptedCount = await caltopoPublisher.interruptedObservationCount(liveTrackID: flight.id)
-                    let startedOnMap = open?.publicationStarted == true || interruptedCount != nil
+                    let startedOnMap = RestartFlightRecovery.flightAlreadyStarted(
+                        publicationStarted: stored?.publicationStarted == true,
+                        interruptedRecordPresent: interruptedCount != nil)
+                    let ownership = flight.ownership
                     if let decision = RestartFlightRecovery.decide(
                         liveTrackID: flight.id,
                         journalPointCount: flight.observations.count,
@@ -239,10 +214,59 @@ final class RIDTrackViewModel: ObservableObject {
                             archiveStatus = "Kept recovered journal \(flight.label); flight file was not written"
                             continue
                         }
-                        _ = await caltopoPublisher.replaceInterruptedPoints(
-                            liveTrackID: flight.id, observations: flight.observations)
+                        if interruptedCount != nil {
+                            let expanded = await caltopoPublisher.replaceInterruptedPoints(
+                                liveTrackID: flight.id, observations: flight.observations)
+                            if !expanded {
+                                archiveStatus = "Kept recovered journal \(flight.label); the shape snapshot was not expanded"
+                                continue
+                            }
+                        }
+                        try await self.commitRecoveredJournal(flight, ownership: ownership)
+                        continue
                     }
-                    try await awaitingMapJournal.record(
+                    if try await publicationLedger.blocksAwaitingMapPromotion(flightID: flight.id) {
+                        try await waypointAppendJournal.acknowledgeRecovered(flightID: flight.id)
+                        continue
+                    }
+                    if flight.startedAtMs > 0,
+                       await archiveStore.archiveAlreadySaved(
+                        remoteID: flight.remoteID,
+                        startedAt: Date(timeIntervalSince1970: Double(flight.startedAtMs) / 1_000)
+                       ) {
+                        try await waypointAppendJournal.acknowledgeRecovered(flightID: flight.id)
+                        continue
+                    }
+                    if let prior = stored, prior.finished {
+                        if TrackArchiveConfirmation.isConfirmed(
+                            decision: prior.decision,
+                            archiveConfirmed: prior.archiveConfirmed == true,
+                            hasArchiveId: !(prior.caltopoArchiveId ?? "").isEmpty
+                        ) {
+                            try await publicationLedger.remember(flightID: flight.id, disposition: .published)
+                        } else if prior.decision == "local" {
+                            try await publicationLedger.remember(flightID: flight.id, disposition: .declined)
+                        }
+                        try await waypointAppendJournal.acknowledgeRecovered(flightID: flight.id)
+                        continue
+                    }
+                    try await self.commitRecoveredJournal(flight, ownership: ownership)
+                } catch {
+                    // Leave the .ndjson until awaiting-map commit succeeds on a later pass.
+                    archiveStatus = "Could not commit recovered track \(flight.label): \(error.localizedDescription)"
+                }
+            }
+        } catch {
+            archiveStatus = "Could not recover unfinished tracks: \(error.localizedDescription)"
+        }
+    }
+
+    /// Records the recovered row and retires the journal. Does not delete clue photos.
+    private func commitRecoveredJournal(
+        _ flight: WaypointTrackAppendJournal.RecoveredFlight,
+        ownership: FlightOwnershipContext
+    ) async throws {
+        try await awaitingMapJournal.record(
                         remoteID: flight.remoteID,
                         label: flight.label,
                         observations: flight.observations,
@@ -255,28 +279,20 @@ final class RIDTrackViewModel: ObservableObject {
                         claim: ownership.known ? ownership.claim : "",
                         ownershipContextKnown: ownership.known,
                         blockAutomaticPublication: ownership.blocksOperatorPublish)
-                    try await awaitingMapJournal.record(
-                        remoteID: flight.remoteID,
-                        label: flight.label,
-                        observations: flight.observations,
-                        mapID: flight.mapID,
-                        teamID: flight.teamID,
-                        finished: true,
-                        flightID: flight.id,
-                        ownershipReviewPending: ownership.requiresHold,
-                        recordedPilot: ownership.recordedPilot,
-                        claim: ownership.known ? ownership.claim : "",
-                        ownershipContextKnown: ownership.known,
-                        blockAutomaticPublication: ownership.blocksOperatorPublish)
-                    try await waypointAppendJournal.acknowledgeRecovered(flightID: flight.id)
-                } catch {
-                    // Leave the .ndjson until awaiting-map commit succeeds on a later pass.
-                    archiveStatus = "Could not commit recovered track \(flight.label): \(error.localizedDescription)"
-                }
-            }
-        } catch {
-            archiveStatus = "Could not recover unfinished tracks: \(error.localizedDescription)"
-        }
+        try await awaitingMapJournal.record(
+            remoteID: flight.remoteID,
+            label: flight.label,
+            observations: flight.observations,
+            mapID: flight.mapID,
+            teamID: flight.teamID,
+            finished: true,
+            flightID: flight.id,
+            ownershipReviewPending: ownership.requiresHold,
+            recordedPilot: ownership.recordedPilot,
+            claim: ownership.known ? ownership.claim : "",
+            ownershipContextKnown: ownership.known,
+            blockAutomaticPublication: ownership.blocksOperatorPublish)
+        try await waypointAppendJournal.acknowledgeRecovered(flightID: flight.id)
     }
 
     /// True when a saved flight already covers this journal, so recovery must not write a second file.

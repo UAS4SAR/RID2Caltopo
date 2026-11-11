@@ -63,6 +63,7 @@ actor AppleTrackArchiveStore {
     static let authorizationRejectedNotification = Notification.Name("trackerArchiveAuthorizationRejected")
     enum ArchiveError: Error {
         case documentsDirectoryUnavailable
+        case recoveredFileIncomplete
     }
 
     private let rootURL: URL?
@@ -146,16 +147,22 @@ actor AppleTrackArchiveStore {
         let fileName = AwaitingMapFlightArchive.filenames(remoteID: remoteID, startedAt: startedAt).first { $0.hasSuffix(".json") }
             ?? RidTrackGeoJSON.suggestedFilenameBase(aircraftID: remoteID, startDate: startedAt) + ".json"
         let destination = directory.appendingPathComponent(fileName)
-        if !FileManager.default.fileExists(atPath: destination.path) {
-            let data = try RidTrackGeoJSON.encodeRecovered(
-                remoteID: remoteID,
-                observations: observations,
-                title: label,
-                metadata: metadata
-            )
-            try safeWrite(data, to: destination)
+        let data = try RidTrackGeoJSON.encodeRecovered(
+            remoteID: remoteID,
+            observations: observations,
+            title: label,
+            metadata: metadata
+        )
+        let expected = observations.count
+        let existingCount = (try? Data(contentsOf: destination)).flatMap(RecoveredFlightFile.coordinateCount)
+        if existingCount != expected {
+            try RecoveredFlightFile.writeVerified(data, to: destination, expectedPoints: expected)
+            AppleFlightStorage.fileChanged(destination)
         }
         let stored = try Data(contentsOf: destination)
+        guard RecoveredFlightFile.coordinateCount(stored) == expected else {
+            throw ArchiveError.recoveredFileIncomplete
+        }
         let result = await process(data: stored, file: destination)
         return AppleTrackArchiveOutcome(url: destination, trackerResult: result)
     }

@@ -1421,7 +1421,12 @@ actor AppleCaltopoPublisher {
                     trackFolderName: trackFolderName,
                     date: flightDate
                 )
-                try await client.archiveLiveTrack(
+                // This id may already be a Shape (another tablet archived it while this
+                // one was off). Posting the shape and then deleting /LiveTrack/{id}
+                // removed that shape. Update it and do not delete the id. A LiveTrack
+                // this tablet just created is still stopped on the normal finish path,
+                // which deletes only the LiveTrack class after conversion.
+                try await client.updateArchivedTrack(
                     liveTrackID: current.liveTrackID,
                     label: current.label,
                     observations: current.observations,
@@ -1446,7 +1451,7 @@ actor AppleCaltopoPublisher {
                 ))
                 AppleLog.info(
                     "CalTopo",
-                    "Recovered interrupted LiveTrack remoteId=\(current.remoteID) liveTrackId=\(current.liveTrackID) points=\(current.points.count)"
+                    "Recovered interrupted LiveTrack remoteId=\(current.remoteID) liveTrackId=\(current.liveTrackID) points=\(current.points.count) delete=skipped"
                 )
             } catch {
                 // Keep this entry pending for the next independent retry.

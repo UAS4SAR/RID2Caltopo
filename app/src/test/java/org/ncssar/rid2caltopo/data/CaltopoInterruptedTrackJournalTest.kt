@@ -133,7 +133,7 @@ class CaltopoInterruptedTrackJournalTest {
     }
 
     @Test
-    fun legacyPendingEntryAlreadyOnMapOnlyNeedsCleanup() {
+    fun existingShapeThatAlreadyHoldsEveryPointIsNotDeleted() {
         CaltopoInterruptedTrackJournal.save("map", "RID", "legacy", "Flight", "", JSONArray("[[-121,39,500]]"))
         val fixture = TestR2cRuntimeFactory.create("legacy")
         fixture.calTopoSessionGateway.recoveryDeleteResponseCode = 400
@@ -142,7 +142,7 @@ class CaltopoInterruptedTrackJournalTest {
             .put("geometry", JSONObject().put("type", "LineString").put("coordinates", JSONArray("[[-121,39,500]]")))
         CaltopoInterruptedTrackJournal.recover("map", "folder", fixture.runtime, listOf(shape))
         assertEquals(0, fixture.calTopoSessionGateway.countOperations("editObject"))
-        assertEquals(1, fixture.calTopoSessionGateway.countOperations("deleteLiveTrack"))
+        assertEquals(0, fixture.calTopoSessionGateway.countOperations("deleteLiveTrack"))
         assertEquals(0, CaltopoInterruptedTrackJournal.entriesForTesting().length())
     }
 
@@ -184,6 +184,7 @@ class CaltopoInterruptedTrackJournalTest {
             .put("geometry", JSONObject().put("type", "LineString").put("coordinates", JSONArray("[[-121,39,500]]")))
         CaltopoInterruptedTrackJournal.recover("map", "folder", fixture.runtime, listOf(shape))
         assertEquals(1, fixture.calTopoSessionGateway.countOperations("editObject"))
+        assertEquals(0, fixture.calTopoSessionGateway.countOperations("deleteLiveTrack"))
         assertEquals(0, CaltopoInterruptedTrackJournal.entriesForTesting().length())
     }
 

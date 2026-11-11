@@ -2329,6 +2329,12 @@ public class CaltopoMap {
                             return;
                         }
                         if (!featureClassForArchive.equals("LiveTrack")) {
+                            // The id is already a Shape, or it was minted for this flight.
+                            // Do not DELETE /LiveTrack/{id}. That delete removes the shape
+                            // when the object is already a Shape. A LiveTrack this tablet
+                            // just created still takes the branch below: the Shape POST
+                            // converts it, and the LiveTrack DELETE then 400s, which is
+                            // why a normal handoff keeps its shape.
                             if (destinationMapId.equals(GetMapId())) refreshArtifactsAfterArchiveFinished(archivedTrackId, true);
                             if (onComplete != null) onComplete.accept(true);
                             return;

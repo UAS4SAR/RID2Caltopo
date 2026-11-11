@@ -85,6 +85,9 @@ object FlightArchiveStore {
         }
     }
 
+    @JvmStatic
+    fun readFile(dir: DocumentFile, name: String): ByteArray? = read(dir, name)
+
     private fun read(dir: DocumentFile, name: String): ByteArray? {
         val context = context() ?: return null
         plainDirectory(dir)?.let { return File(it, name).takeIf { file -> file.isFile }?.readBytes() }

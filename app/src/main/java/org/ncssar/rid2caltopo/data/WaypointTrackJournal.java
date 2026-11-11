@@ -369,6 +369,9 @@ public final class WaypointTrackJournal {
                             recovered.id, recovered.points.length(), hold, autoPublish, block));
                     // A live publication still owns this journal. Recovery must not close it
                     // or take the Tracker lease.
+                    // Load the awaiting-map row and the interrupted record before deciding
+                    // the flight already started or finished. load() marks every row
+                    // finished; that flag is not "the flight file was written."
                     boolean onMap = AwaitingMapFlights.publicationAlreadyStarted(recovered.id)
                             || CaltopoInterruptedTrackJournal.hasLiveTrack(recovered.id);
                     if (onMap && CaltopoLiveTrack.hasActivePublication(recovered.id)) {
@@ -621,24 +624,49 @@ public final class WaypointTrackJournal {
             String fileName = OperatorArchiveFilename.track(
                     recovered.remote.isEmpty() ? recovered.label : recovered.remote,
                     stamp);
-            // Skip rewrite when this flight's archive already exists in its day folder.
-            if (archiveFile(recovered) != null) {
-                CTDebug(TAG, "writeRecoveredGeoJson(): archive already present for " + fileName);
+            String payload = collection.toString();
+            if (coordinateCount(payload) != recovered.points.length()) return false;
+            // A short file is not this flight. Rewrite it. A file that already holds
+            // every journal point is left as-is. An unreadable file keeps the journal.
+            byte[] current = FlightArchiveStore.readFile(dayDir, fileName);
+            if (current != null && coordinateCount(new String(current, StandardCharsets.UTF_8))
+                    == recovered.points.length()) {
+                CTDebug(TAG, "writeRecoveredGeoJson(): archive already holds every point for " + fileName);
                 return true;
             }
+            if (current == null && archiveFile(recovered) != null) return false;
             boolean wrote = FlightArchiveStore.writeFlight(
                     dayDir,
                     fileName,
-                    collection.toString(),
+                    payload,
                     recovered.label,
                     recovered.remote,
                     recovered.id,
                     new ArrayList<>());
-            if (wrote && localOnly) {
+            if (!wrote) return false;
+            byte[] readBack = FlightArchiveStore.readFile(dayDir, fileName);
+            if (readBack == null
+                    || coordinateCount(new String(readBack, StandardCharsets.UTF_8)) != recovered.points.length()) {
+                return false;
+            }
+            if (localOnly) {
                 FlightPublicationLedger.remember(
                         recovered.id, FlightPublicationLedger.Disposition.LOCAL_ARCHIVED);
             }
-            return wrote;
+            return true;
+        }
+
+        private static int coordinateCount(String geoJson) {
+            try {
+                JSONArray coordinates = new JSONObject(geoJson)
+                        .getJSONArray("features")
+                        .getJSONObject(0)
+                        .getJSONObject("geometry")
+                        .getJSONArray("coordinates");
+                return coordinates.length();
+            } catch (Exception error) {
+                return -1;
+            }
         }
     }
 

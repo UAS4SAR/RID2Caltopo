@@ -96,6 +96,12 @@ public enum AwaitingMapFlightJournalError: Error, LocalizedError, Sendable {
 /// Geometry and journal mutations stay on this actor; durable writes precede publication.
 public actor AwaitingMapFlightJournal {
     /// Use only from a worker. Every reader distinguishes absent data from failed recovery.
+    /// The rows on disk, without the first-load rewrite that marks every row finished.
+    public func storedEntries() async throws -> [AwaitingMapFlight] {
+        let fileURL = self.fileURL
+        return try await disk.run { try Self.readSavedEntries(fileURL: fileURL) }
+    }
+
     public nonisolated static func readSavedEntries(fileURL: URL) throws -> [AwaitingMapFlight] {
         let data: Data
         do { data = try Data(contentsOf: fileURL) }
