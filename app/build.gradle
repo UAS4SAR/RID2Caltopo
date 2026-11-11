@@ -48,8 +48,8 @@ def generateDjiProvisioningAssets = tasks.register("generateDjiProvisioningAsset
 }
 tasks.named("preBuild").configure { dependsOn(generateDjiProvisioningAssets) }
 def versionMajor = 2
-def versionMinor = 5
-def versionPatch = 8
+def versionMinor = 6
+def versionPatch = 0
 def appVersionName = "${versionMajor}.${versionMinor}.${versionPatch}"
 def canonicalReleaseNotesFile = rootProject.file("release-notes/${appVersionName}/whats_new.txt")
 def runProcess = { File workingDirectory, List command, Map environmentOverrides = [:], boolean ignoreExitValue = false ->
@@ -257,7 +257,7 @@ android {
         applicationId "org.ncssar.rid2caltopo"
         minSdk = 29
         targetSdk = 36
-        versionCode = 444
+        versionCode = 445
         versionName appVersionName
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
 

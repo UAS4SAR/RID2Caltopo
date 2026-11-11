@@ -1,0 +1,4 @@
+Latest changes:
+- This device's location is used to place you on the map only while an app screen is visible.
+- The privacy policy explains how this device's location is used.
+- Groundwork for an external Remote ID receiver. Current use is unchanged.
