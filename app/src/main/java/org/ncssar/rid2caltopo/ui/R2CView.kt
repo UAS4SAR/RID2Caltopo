@@ -25,7 +25,11 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
@@ -440,12 +444,21 @@ fun R2CViewPreview() {
 fun DroneSpecConfirmationDialog(
     state: DroneSpecConfirmationUiState,
     onFieldChange: (organization: String?, pilotCallsign: String?, droneDescription: String?) -> Unit,
-    onSave: () -> Unit,
+    onSave: (PreparedDroneConfirmation?) -> Unit,
     onUnknown: () -> Unit,
     onInspect: (() -> Unit)? = null,
     onPairSession: (() -> Unit)? = null,
     onCancelPairing: (() -> Unit)? = null,
 ) {
+    val saveScope = rememberCoroutineScope()
+    var saving by remember(state.remoteId) { mutableStateOf(false) }
+    var saveError by remember(state.remoteId) { mutableStateOf<String?>(null) }
+    val pilotFocus = remember(state.remoteId) { FocusRequester() }
+    var pilotText by remember(state.remoteId) { mutableStateOf(TextFieldValue(state.pilotCallsign, TextRange(0, state.pilotCallsign.length))) }
+    LaunchedEffect(state.remoteId) { pilotFocus.requestFocus() }
+    LaunchedEffect(state.pilotCallsign) {
+        if (pilotText.text != state.pilotCallsign) pilotText = TextFieldValue(state.pilotCallsign, TextRange(state.pilotCallsign.length))
+    }
     var readiness by remember(state.remoteId) { mutableStateOf(org.ncssar.rid2caltopo.data.FlightReadiness(
         aircraft = CaltopoClient.GetPersistedDroneSpecs().firstOrNull { it.remoteId == state.remoteId }?.readiness ?: org.ncssar.rid2caltopo.data.AircraftReadiness(),
         selectedAccessories = emptySet()).restoringEquipment(org.ncssar.rid2caltopo.data.AircraftOrganizationAccess.rememberedEquipment(state.remoteId))) }
@@ -454,13 +467,57 @@ fun DroneSpecConfirmationDialog(
     val pilotMatched = org.json.JSONObject(readiness.pilotJson).optString("memberId").isNotBlank() &&
         org.json.JSONObject(readiness.pilotJson).optString("callsign").equals(pilotCallsign, true)
 
+    fun prepareClaim(replacing: org.ncssar.rid2caltopo.data.PeerCoordinator.DroneClaim?) {
+                    if (state.pairingOnly) { onSave(null); return }
+                    val input = readiness
+                    val confirmation = state
+                    val settingsRevision = CaltopoClient.GetSettingsRevision()
+                    val mapId = CaltopoMap.GetMapId()
+                    val sourceSpec = CaltopoClient.GetDroneSpec(state.remoteId)
+                    val prior = sourceSpec?.flightReadinessSnapshot()
+                    val previousJson = prior?.json ?: "{}"
+                    val previousRevision = prior?.revision ?: 0L
+                    saving = true
+                    saveError = null
+                    saveScope.launch {
+                        try {
+                            val prepared = withContext(Dispatchers.IO) {
+                                val organizationScope = CaltopoClient.GetTrackerCoordinationUrlPfx().trimEnd('/')
+                                var selectedReadiness = input
+                                input.operatingProfileJson?.let { raw ->
+                                    val selected = org.json.JSONObject(raw)
+                                    org.ncssar.rid2caltopo.data.AircraftOrganizationAccess.rememberProfileForScope(organizationScope, selected.getJSONObject("profile"))
+                                    if (selected.optBoolean("useForAssignment")) {
+                                        org.ncssar.rid2caltopo.data.OperatingProfiles.remember(selected.getJSONObject("profile"),
+                                            org.ncssar.rid2caltopo.data.IncidentBriefing.fromJSON(selected.optJSONObject("incidentBriefing")))
+                                        selected.put("assignmentId", org.ncssar.rid2caltopo.data.OperatingProfiles.assignmentId)
+                                    } else {
+                                        org.ncssar.rid2caltopo.data.OperatingProfiles.endAssignment()
+                                        selected.put("assignmentId", "")
+                                    }
+                                    selectedReadiness = input.copy(operatingProfileJson = selected.toString())
+                                }
+                                val roster = org.ncssar.rid2caltopo.data.AircraftOrganizationAccess.cachedStateForScope(organizationScope).optJSONArray("pilots")
+                                val recorded = selectedReadiness.resolvingPilot(pilotCallsign, roster).confirmed()
+                                org.ncssar.rid2caltopo.data.AircraftOrganizationAccess.rememberEquipmentForScope(organizationScope, confirmation.remoteId, selectedReadiness)
+                                PreparedDroneConfirmation(confirmation, settingsRevision, mapId, sourceSpec, previousRevision,
+                                    org.ncssar.rid2caltopo.data.OperatingProfiles.mergeHistory(previousJson, recorded.toJSON().toString()), replacing)
+                            }
+                            onSave(prepared)
+                        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                            throw cancelled
+                        } catch (error: Exception) {
+                            saveError = "Could not prepare flight details. Please try again."
+                        } finally { saving = false }
+                    }
+    }
 
     AlertDialog(
         onDismissRequest = {},
         properties = DialogProperties(dismissOnBackPress = false, dismissOnClickOutside = false),
         title = {
             Text(
-                if (state.pairingOnly || state.mappedIdIsRemoteId) "Add New Drone" else "Publish?"
+                if (state.pairingOnly || state.mappedIdIsRemoteId) "Add New Drone" else "Drone Ownership"
             )
         },
         text = {
@@ -476,6 +533,14 @@ fun DroneSpecConfirmationDialog(
                     Text(if (state.pairingOnly) "Save this mapping for future streams, or pair for this session only. Flight confirmation and publishing are separate." else "Save a local RID-map entry and confirm this flight for publishing to the selected map. Check the suggested model and enter the pilot callsign. Without a selected map, publication waits for map selection.")
                     Text("Pair video only leaves track publishing off.")
                 }
+                if (!state.pairingOnly) {
+                    val claim = try {
+                        R2cRuntimeRegistry.getDefaultRuntime().peerCoordinator.claimForRemoteId(state.remoteId)
+                    } catch (_: Exception) {
+                        null
+                    }
+                    claim?.let { Text(takeoverClaimText(it.callsign, it.deviceName)) }
+                }
                 if (!state.warning.isNullOrBlank()) {
                     Text(
                         text = state.warning,
@@ -483,14 +548,15 @@ fun DroneSpecConfirmationDialog(
                         style = MaterialTheme.typography.bodyMedium
                     )
                 }
+                saveError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
                 OutlinedTextField(
-                    value = state.pilotCallsign,
-                    onValueChange = { onFieldChange(null, it, null) },
+                    value = pilotText,
+                    onValueChange = { pilotText = it; onFieldChange(null, it.text, null) },
                     label = { Text(if (managedAircraft) "RPIC callsign" else "Pilot Callsign") },
                     supportingText = state.pilotCallsignWarning?.let { message ->
                         { Text(message) }
                     },
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().focusRequester(pilotFocus),
                     singleLine = true
                 )
                 OutlinedTextField(
@@ -505,46 +571,31 @@ fun DroneSpecConfirmationDialog(
         },
         confirmButton = {
             TextButton(
-                enabled = state.bootstrapDesignator == null || pilotCallsign.isNotBlank(),
-                onClick = save@ {
-                    if (state.pairingOnly) { onSave(); return@save }
-                    readiness.operatingProfileJson?.let { raw ->
-                        val selected = org.json.JSONObject(raw)
-                        org.ncssar.rid2caltopo.data.AircraftOrganizationAccess.rememberProfile(selected.getJSONObject("profile"))
-                        if (selected.optBoolean("useForAssignment")) {
-                            org.ncssar.rid2caltopo.data.OperatingProfiles.remember(selected.getJSONObject("profile"),
-                                org.ncssar.rid2caltopo.data.IncidentBriefing.fromJSON(selected.optJSONObject("incidentBriefing")))
-                            selected.put("assignmentId", org.ncssar.rid2caltopo.data.OperatingProfiles.assignmentId)
-                            readiness = readiness.copy(operatingProfileJson = selected.toString())
-                        } else {
-                            org.ncssar.rid2caltopo.data.OperatingProfiles.endAssignment()
-                            selected.put("assignmentId", "")
-                            readiness = readiness.copy(operatingProfileJson = selected.toString())
-                        }
-                    }
-                    val recorded = readiness.resolvingPilot(pilotCallsign, org.ncssar.rid2caltopo.data.AircraftOrganizationAccess.cachedState().optJSONArray("pilots")).confirmed()
-                    CaltopoClient.GetDroneSpec(state.remoteId)?.setFlightReadinessJson(recorded.toJSON().toString())
-                    org.ncssar.rid2caltopo.data.AircraftOrganizationAccess.rememberEquipment(state.remoteId, readiness)
-                    onSave()
+                enabled = !saving && (state.bootstrapDesignator == null || pilotCallsign.isNotBlank()),
+                onClick = {
+                    val claim = if (state.pairingOnly) null else R2cRuntimeRegistry.getDefaultRuntime().peerCoordinator.claimForRemoteId(state.remoteId)
+                    prepareClaim(claim)
                 }
             ) {
-                Text(if (state.pairingOnly) "Save mapping" else if (state.bootstrapDesignator != null) "Save and publish track" else "Publish track")
+                Text(if (state.pairingOnly) "Save mapping" else "Mine")
             }
         },
         dismissButton = {
             if (state.pairingOnly) {
                 androidx.compose.foundation.layout.Row {
-                    TextButton(onClick = { onCancelPairing?.invoke() }) { Text("Cancel") }
-                    TextButton(onClick = { onPairSession?.invoke() }) { Text("Pair for this session") }
+                    TextButton(enabled = !saving, onClick = { onCancelPairing?.invoke() }) { Text("Cancel") }
+                    TextButton(enabled = !saving, onClick = { onPairSession?.invoke() }) { Text("Pair for this session") }
                 }
             } else {
-                TextButton(onClick = onUnknown) {
-                    Text(if (state.bootstrapDesignator != null) "Pair video only" else "Don’t publish")
+                TextButton(enabled = !saving, onClick = onUnknown) {
+                    Text("Not Mine")
                 }
             }
         },
     )
 }
+
+data class PreparedDroneConfirmation(val state: DroneSpecConfirmationUiState, val settingsRevision: Long, val mapId: String, val sourceSpec: CtDroneSpec?, val readinessRevision: Long, val readiness: String, val replacing: org.ncssar.rid2caltopo.data.PeerCoordinator.DroneClaim? = null)
 
 @Composable
 fun MapStateView(viewModel: R2CViewModel) {

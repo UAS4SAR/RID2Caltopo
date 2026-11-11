@@ -1,0 +1,1 @@
+Each flight you confirm is saved as its own map track, named when you take over. Mine names a device that still holds the aircraft. An unconfirmed Mine waits for your review. A restart saves the whole track and updates that map track instead of deleting it.

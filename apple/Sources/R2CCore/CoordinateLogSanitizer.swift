@@ -104,6 +104,13 @@ public enum MarkerCleanupRetry {
         return (200..<300).contains(httpStatus) && verifiedSuccess
     }
 
+    /// A 400 for a marker that is not on the map is already gone. A 400 for a marker
+    /// that is still listed is a rejected delete and must be retried.
+    public static func alreadyRemoved(httpStatus: Int, listedOnMap: Bool) -> Bool {
+        if httpStatus == 404 { return true }
+        return httpStatus == 400 && !listedOnMap
+    }
+
     public static func idPrefix(_ id: String) -> String { String(id.prefix(8)) }
 
     public static func resetClockForTest() { clockMs = .min }

@@ -62,6 +62,7 @@ public final class DefaultPeerCoordinator implements PeerCoordinator {
     private volatile long myCaltopoRttMs = 2_000L;
     private volatile boolean standaloneStandbyEligible;
     @NonNull private volatile PeerCoordinator activeCoordinator = getMqttCoordinator();
+    @Nullable private volatile ClaimConflictListener claimConflictListener;
     @NonNull private volatile CoordinationIndicatorState lastIndicatorState = CoordinationIndicatorState.UNCONFIGURED;
     @NonNull private volatile String lastLoggedStatusSignature = "";
 
@@ -110,6 +111,7 @@ public final class DefaultPeerCoordinator implements PeerCoordinator {
         trackerFallbackActive = false;
         trackerUnavailableDetail = "";
         activeCoordinator = nextCoordinator;
+        activeCoordinator.setClaimConflictListener(claimConflictListener);
         if (trackerSelected) {
             TrackerPeerCoordinator.getInstance().setHardFailureListener(this::handleTrackerHardFailure);
         }
@@ -295,6 +297,12 @@ public final class DefaultPeerCoordinator implements PeerCoordinator {
                                  @NonNull String model,
                                  @NonNull String owner,
                                  @NonNull String mappedId) {
+        onDroneConfirmed(remoteId, org, model, owner, mappedId, null);
+    }
+
+    @Override
+    public void onDroneConfirmed(@NonNull String remoteId, @NonNull String org, @NonNull String model,
+                                 @NonNull String owner, @NonNull String mappedId, @Nullable DroneClaim replacing) {
         CaltopoClient.CTInfo(
                 "DefaultPeerCoord",
                 String.format(
@@ -309,7 +317,8 @@ public final class DefaultPeerCoordinator implements PeerCoordinator {
                 org,
                 model,
                 owner,
-                mappedId
+                mappedId,
+                replacing
         );
         ActiveTrackRegistration registration = activeTracks.get(remoteId);
         if (registration != null &&
@@ -318,6 +327,15 @@ public final class DefaultPeerCoordinator implements PeerCoordinator {
                 CaltopoClient.IsCurrentPeerDroneConfirmed(remoteId)) {
             activateRegistration(registration);
         }
+    }
+
+    @Override @Nullable public DroneClaim claimForRemoteId(@NonNull String remoteId) {
+        return activeCoordinator.claimForRemoteId(remoteId);
+    }
+
+    @Override public void setClaimConflictListener(@Nullable ClaimConflictListener listener) {
+        claimConflictListener = listener;
+        activeCoordinator.setClaimConflictListener(listener);
     }
 
     @Override
@@ -340,6 +358,16 @@ public final class DefaultPeerCoordinator implements PeerCoordinator {
     @Override
     public boolean hasActivePeerOwner(@NonNull String remoteId) {
         return activeCoordinator.hasActivePeerOwner(remoteId);
+    }
+
+    @Override public boolean hasOnlineIncidentPeer() { return activeCoordinator.hasOnlineIncidentPeer(); }
+    @Override public boolean isIncidentPeerPresenceKnown() { return activeCoordinator.isIncidentPeerPresenceKnown(); }
+    @Override public boolean isClaimPending(@NonNull String remoteId) { return activeCoordinator.isClaimPending(remoteId); }
+    @Override @NonNull public String ownershipClaimState(@NonNull String remoteId) {
+        return activeCoordinator.ownershipClaimState(remoteId);
+    }
+    @Override public void noteFlightStart(@NonNull String remoteId, long startedAtMs) {
+        activeCoordinator.noteFlightStart(remoteId, startedAtMs);
     }
 
     @Override
@@ -655,6 +683,7 @@ public final class DefaultPeerCoordinator implements PeerCoordinator {
         }
         activeCoordinator.stop();
         activeCoordinator = coordinator;
+        activeCoordinator.setClaimConflictListener(claimConflictListener);
         trackerSelected = tracker;
         if (peerListChangedListener != null) {
             activeCoordinator.setPeerListChangedListener(peerListChangedListener);

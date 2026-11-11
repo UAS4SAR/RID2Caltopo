@@ -3,6 +3,8 @@ package org.ncssar.rid2caltopo.data
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Before
@@ -134,6 +136,14 @@ class TrackerPeerCoordinatorTest {
 
     private fun confirmLocalDrone(remoteId: String = "DRONE1") {
         coordinator.onDroneConfirmed(remoteId, "NCSSAR", "DJI Mini 4 Pro", "1sar7", "1sar7DjMn4Pr")
+        acknowledgeLocalDrone(remoteId)
+    }
+
+    private fun acknowledgeLocalDrone(remoteId: String = "DRONE1") {
+        transport.receive(JSONObject().put("type", "drone_confirmed")
+            .put("remoteId", remoteId).put("confirmedByGuid", "zone-alpha")
+            .put("org", "NCSSAR").put("model", "DJI Mini 4 Pro")
+            .put("ownerName", "1sar7").put("mappedId", "1sar7DjMn4Pr").toString())
     }
 
     @Test
@@ -715,6 +725,21 @@ class TrackerPeerCoordinatorTest {
     }
 
     @Test
+    fun ownershipWaitsForTrackerConfirmationBeforeLivePublishing() {
+        coordinator.start("MAP1", "zone-alpha", "Alpha", null)
+        val track = FakeLiveTrack("DRONE1")
+        coordinator.onLiveTrackCreated(track, CtDroneSpec("DRONE1"), 50.0, 1234L)
+        coordinator.onDroneConfirmed("DRONE1", "NCSSAR", "DJI Mini 4 Pro", "1sar7", "1sar7DjMn4Pr")
+        assertTrue(coordinator.isClaimPending("DRONE1"))
+        assertFalse(track.localOwnerFlag)
+        assertFalse(coordinator.isLocalAlertEligible("DRONE1"))
+        acknowledgeLocalDrone()
+        assertFalse(coordinator.isClaimPending("DRONE1"))
+        assertTrue(track.localOwnerFlag)
+        assertTrue(coordinator.isLocalAlertEligible("DRONE1"))
+    }
+
+    @Test
     fun confirmationSavedBeforeCoordinatorStart_isReplayedAndPublishes() {
         CaltopoClient.SaveDroneSpecConfirmation(
             "DRONE1", "NCSSAR", "DJI Mini 4 Pro", "1sar7", "1sar7DjMn4Pr"
@@ -726,6 +751,7 @@ class TrackerPeerCoordinatorTest {
         val track = FakeLiveTrack("DRONE1")
         coordinator.onLiveTrackCreated(track, drone!!, 50.0, 1234L)
         coordinator.handleOwnerAssignedForTesting("DRONE1", "zone-alpha", 1L)
+        acknowledgeLocalDrone()
 
         assertTrue(track.localOwnerFlag)
         assertTrue(coordinator.isLocalAlertEligible("DRONE1"))
@@ -830,6 +856,19 @@ class TrackerPeerCoordinatorTest {
     }
 
     @Test
+    fun peerConfirmationWithUntimedPilotLabelDoesNotCreatePhantomTrack() {
+        coordinator.start("MAP1", "zone-alpha", "Alpha", null)
+        transport.receive(JSONObject().put("type", "drone_confirmed")
+            .put("remoteId", "DRONEIPAD").put("confirmedByGuid", "zone-bravo")
+            .put("mappedId", "1sar1001-01DjMtrc4td").put("trackLabel", "10-01DjMtrc4td")
+            .put("org", "NCSSAR").put("model", "Matrice 4TD").put("ownerName", "10").toString())
+        val drone = CaltopoClient.GetDroneSpec("DRONEIPAD")!!
+        assertEquals("10-01DjMtrc4td", drone.displayLabel)
+        assertFalse(drone.isActive)
+        assertEquals("", drone.trackLabel())
+    }
+
+    @Test
     fun peerDroneConfirmedThenLiveTrack_doesNotStealOwnershipOrStartLocalTrack() {
         coordinator.start("MAP1", "zone-alpha", "Alpha", null)
         transport.receive(
@@ -874,25 +913,26 @@ class TrackerPeerCoordinatorTest {
                 .put("remoteId", "DRONEADOPT1")
                 .put("confirmedByGuid", "zone-bravo")
                 .put("mappedId", "1sar7DjMtrc4td")
-                .put("trackLabel", "1sar7DjMtrc4td_170600Nov03")
+                .put("trackLabel", "1sar7DjMtrc4td_170601Nov03")
                 .put("org", "NCSSAR")
                 .put("model", "Matrice 4TD")
                 .put("ownerName", "1SAR7")
                 .toString()
         )
         val drone = CaltopoClient.GetDroneSpec("DRONEADOPT1")!!
-        assertEquals("1sar7DjMtrc4td_170600Nov03", drone.trackLabel())
+        assertEquals("1sar7DjMtrc4td_170601Nov03", drone.trackLabel())
+        val device = CaltopoSession.liveTrackDeviceId("DRONEADOPT1", CaltopoClient.GetConnectKey())
         CaltopoMap.rememberAdoptableLiveTrack(
             "peer-live-track-id",
-            "1sar7DjMtrc4td_170600Nov03",
-            CaltopoSession.liveTrackDeviceId("DRONEADOPT1", CaltopoClient.GetConnectKey()),
+            "1sar7DjMtrc4td_170601Nov03",
+            device,
             "zone-bravo"
         )
-        val adopted = CaltopoMap.takeAdoptableLiveTrack(
-            CaltopoSession.liveTrackDeviceId("DRONEADOPT1", CaltopoClient.GetConnectKey())
+        assertNull(CaltopoMap.takeAdoptableLiveTrack(device))
+        assertEquals(
+            "a5-shape",
+            OwnedFlightLiveTrack.shapeIdForArchive("peer-live-track-id", false, true, "a5-shape")
         )
-        assertEquals("peer-live-track-id", adopted?.trackId)
-        assertEquals("1sar7DjMtrc4td_170600Nov03", adopted?.title)
     }
 
     @Test
@@ -1385,6 +1425,43 @@ class TrackerPeerCoordinatorTest {
     }
 
     @Test
+    fun staleConfirmationCannotReplaceNewerOwner() {
+        coordinator.start("MAP1", "zone-alpha", "Alpha", null)
+        coordinator.handleOwnerAssignedForTesting("DRONE1", "zone-bravo", 9L)
+        transport.receive(JSONObject().put("type", "drone_confirmed")
+            .put("remoteId", "DRONE1").put("confirmedByGuid", "zone-alpha")
+            .put("leaseSeq", 8L).put("ownerName", "1sar7").toString())
+        assertFalse(coordinator.isLocalOwner("DRONE1"))
+        assertFalse(coordinator.isLocalAlertEligible("DRONE1"))
+    }
+
+    @Test
+    fun peerConfirmationDoesNotMakeThisTabletTheMine() {
+        CaltopoClient.ApplyPeerDroneSpecConfirmation(
+            "DRONEPEERMINE", "NCSSAR", "DJI Mini 4 Pro", "1SAR7", "1sar7DjMn4Pr"
+        )
+        val drone = CaltopoClient.GetDroneSpec("DRONEPEERMINE")!!
+        assertFalse(drone.isCurrentFlightConfirmed)
+        assertTrue(CaltopoClient.IsCurrentPeerDroneConfirmed("DRONEPEERMINE"))
+        assertFalse(CaltopoClient.IsCurrentLocallyConfirmedDrone("DRONEPEERMINE"))
+    }
+
+    @Test
+    fun nextFlightDropsThePreviousExpiredClaim() {
+        coordinator.start("MAP1", "zone-alpha", "Alpha", null)
+        val drone = CtDroneSpec("DRONE1")
+        val track = FakeLiveTrack("DRONE1")
+        coordinator.onLiveTrackCreated(track, drone, 50.0, 1234L)
+        coordinator.noteFlightStart("DRONE1", 1_000L)
+        confirmLocalDrone()
+        coordinator.handleOwnerAssignedForTesting("DRONE1", "zone-alpha", 4L)
+        coordinator.handleOwnerExpiredForTesting("DRONE1")
+        assertEquals("expired", coordinator.ownershipClaimState("DRONE1"))
+        coordinator.noteFlightStart("DRONE1", 60_000L)
+        assertEquals("none", coordinator.ownershipClaimState("DRONE1"))
+    }
+
+    @Test
     fun ownerExpired_clearsLocalOwnership() {
         coordinator.start("MAP1", "zone-alpha", "Alpha", null)
         val drone = CtDroneSpec("DRONE1")
@@ -1446,6 +1523,173 @@ class TrackerPeerCoordinatorTest {
 
         assertFalse(track.localOwnerFlag)
         assertFalse(coordinator.isLocalOwner("DRONE1"))
+    }
+
+    @Test
+    fun ownerAssignmentNamesTheLeaseWhenTheConfirmationDetailsNeverArrived() {
+        coordinator.start("MAP1", "zone-alpha", "Alpha", null)
+        transport.receive(
+            JSONObject()
+                .put("type", "owner_assigned")
+                .put("remoteId", "DRONE1")
+                .put("ownerGuid", "zone-bravo")
+                .put("leaseSeq", 3)
+                .toString()
+        )
+        val claim = coordinator.claimForRemoteId("DRONE1")
+        assertNotNull(claim)
+        assertEquals("zone-bravo", claim!!.guid)
+
+        transport.receive(
+            JSONObject()
+                .put("type", "drone_confirmed")
+                .put("remoteId", "DRONE1")
+                .put("confirmedByGuid", "zone-bravo")
+                .put("ownerName", "1SAR7")
+                .put("confirmedAtMs", 1_700_000_000_000L)
+                .put("org", "NCSSAR")
+                .put("model", "Matrice")
+                .put("mappedId", "1sar7")
+                .toString()
+        )
+        transport.receive(
+            JSONObject()
+                .put("type", "owner_assigned")
+                .put("remoteId", "DRONE1")
+                .put("ownerGuid", "zone-bravo")
+                .put("leaseSeq", 4)
+                .toString()
+        )
+        val detailed = coordinator.claimForRemoteId("DRONE1")
+        assertEquals("1SAR7", detailed!!.callsign)
+        assertEquals(1_700_000_000_000L, detailed.confirmedAtMs)
+    }
+
+    @Test
+    fun peerClaimIsNamedOnReplacement_andClearedWhenThatOwnerExpires() {
+        coordinator.start("MAP1", "zone-alpha", "Alpha", null)
+        transport.receive(
+            JSONObject()
+                .put("type", "drone_confirmed")
+                .put("remoteId", "DRONE1")
+                .put("confirmedByGuid", "zone-bravo")
+                .put("confirmedByDeviceName", "Ken T.'s iPad")
+                .put("ownerName", "1SAR7")
+                .put("confirmedAtMs", 1_700_000_000_000L)
+                .put("org", "NCSSAR")
+                .put("model", "DJI Mini 4 Pro")
+                .put("mappedId", "1sar7DjMn4Pr")
+                .toString()
+        )
+        val claim = coordinator.claimForRemoteId("DRONE1")
+        assertNotNull(claim)
+        assertEquals("zone-bravo", claim!!.guid)
+        assertEquals("1SAR7", claim.callsign)
+        assertEquals("Ken T.'s iPad", claim.deviceName)
+        assertEquals(1_700_000_000_000L, claim.confirmedAtMs)
+
+        transport.receive(
+            JSONObject()
+                .put("type", "owner_expired")
+                .put("remoteId", "DRONE1")
+                .put("prevOwnerGuid", "zone-bravo")
+                .toString()
+        )
+        assertNull(coordinator.claimForRemoteId("DRONE1"))
+
+        transport.receive(
+            JSONObject()
+                .put("type", "drone_confirmed")
+                .put("remoteId", "DRONE1")
+                .put("confirmedByGuid", "zone-bravo")
+                .put("confirmedByDeviceName", "Ken T.'s iPad")
+                .put("ownerName", "1SAR7")
+                .put("confirmedAtMs", 1_700_000_000_000L)
+                .put("org", "NCSSAR")
+                .put("model", "DJI Mini 4 Pro")
+                .put("mappedId", "1sar7DjMn4Pr")
+                .toString()
+        )
+        val liveClaim = coordinator.claimForRemoteId("DRONE1")
+        assertNotNull(liveClaim)
+        coordinator.onDroneConfirmed(
+            "DRONE1", "NCSSAR", "DJI Mini 4 Pro", "1SAR7", "1sar7DjMn4Pr", liveClaim
+        )
+        val replacement = transport.sentMessages.map { JSONObject(it) }
+            .last { it.optString("type") == "drone_confirmed" && it.optString("remoteId") == "DRONE1" }
+        assertEquals("zone-bravo", replacement.optString("replaceConfirmedBy"))
+        assertEquals(1_700_000_000_000L, replacement.optLong("replaceConfirmedAtMs"))
+    }
+
+    @Test
+    fun round9VideoReturnsAndSaveNamesTheA5Lease() {
+        val ipad = "f6cbd6d2-ea23-45cd-b4ef-a559822c31ad"
+        val a5 = "833a8140-2a8b-3b23-8876-c3af62524ef0"
+        val remoteId = "1581F8HGX255S00A0FZT"
+        coordinator.start("4J0LF02", ipad, "iPad", null)
+        transport.receive(
+            JSONObject()
+                .put("type", "owner_assigned")
+                .put("remoteId", remoteId)
+                .put("ownerGuid", a5)
+                .put("leaseSeq", 9)
+                .toString()
+        )
+        transport.sentMessages.clear()
+        coordinator.onDroneLost(remoteId)
+
+        val claim = coordinator.claimForRemoteId(remoteId)
+        assertNotNull(claim)
+        assertEquals(a5, claim!!.guid)
+        assertTrue(transport.sentMessages.none { JSONObject(it).optString("type") == "drone_lost" })
+
+        coordinator.onDroneConfirmed(remoteId, "NCSSAR", "DJI Matrice 4TD", "1SAR7", "1sar7DjMtrc4td", claim)
+        val replacement = transport.sentMessages.map { JSONObject(it) }
+            .last { it.optString("type") == "drone_confirmed" && it.optString("remoteId") == remoteId }
+        assertEquals(a5, replacement.optString("replaceConfirmedBy"))
+        assertEquals(
+            "Sent pending drone confirmation remoteId=$remoteId replaceConfirmedBy=$a5",
+            TrackerPeerCoordinator.sentConfirmationLog(replacement),
+        )
+    }
+
+    @Test
+    fun round12TakeoverSendsOneConfirmationNamingTheIpad() {
+        val ipad = "f6cbd6d2-ea23-45cd-b4ef-a559822c31ad"
+        val a5 = "833a8140-2a8b-3b23-8876-c3af62524ef0"
+        val remoteId = "1581F8HGX255S00A0FZT"
+        coordinator.start("4J0LF02", a5, "A5 Pro", null)
+        transport.receive(
+            JSONObject()
+                .put("type", "drone_confirmed")
+                .put("remoteId", remoteId)
+                .put("confirmedByGuid", ipad)
+                .put("ownerName", "1SAR7")
+                .put("confirmedAtMs", 1_794_361_766_000L)
+                .put("org", "NCSSAR")
+                .put("model", "DJI Matrice 4TD")
+                .put("mappedId", "1sar7DjMtrc4td")
+                .toString()
+        )
+        transport.sentMessages.clear()
+        val claim = coordinator.claimForRemoteId(remoteId)
+        assertNotNull(claim)
+        coordinator.onDroneConfirmed(remoteId, "NCSSAR", "DJI Matrice 4TD", "1sar7", "1sar7DjMtrc4td", claim)
+        coordinator.onDroneConfirmed(remoteId, "NCSSAR", "DJI Matrice 4TD", "1sar7", "1sar7DjMtrc4td")
+        coordinator.onDroneConfirmed(remoteId, "NCSSAR", "DJI Matrice 4TD", "1sar7", "1sar7DjMtrc4td")
+        val sent = transport.sentMessages.map { JSONObject(it) }
+            .filter { it.optString("type") == "drone_confirmed" && it.optString("remoteId") == remoteId }
+        assertEquals(1, sent.size)
+        assertEquals(ipad, sent.single().optString("replaceConfirmedBy"))
+    }
+
+    @Test
+    fun saveLogNamesNoZoneWhenTheLeaseIsFree() {
+        val confirmation = org.json.JSONObject().put("type", "drone_confirmed").put("remoteId", "RID")
+        assertEquals(
+            "Sent pending drone confirmation remoteId=RID replaceConfirmedBy=none",
+            TrackerPeerCoordinator.sentConfirmationLog(confirmation),
+        )
     }
 
     @Test

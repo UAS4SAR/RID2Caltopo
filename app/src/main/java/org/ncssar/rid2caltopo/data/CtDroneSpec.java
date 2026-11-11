@@ -104,6 +104,7 @@ public class CtDroneSpec implements Comparable<CtDroneSpec>, Serializable {
     private static final String MAPPED_ID_FILTER_REGEX = "[^-_a-zA-Z0-9]";
     private static final String CALLSIGN_OPT_MODEL_REGEX = "^([0-9]?[a-zA-Z]+[0-9]+)([_a-zA-Z0-9]{1,8})?$";
     private static final Pattern CallsignOptModelPattern = Pattern.compile(CALLSIGN_OPT_MODEL_REGEX);
+    private static final Pattern TRACK_CALLSIGN_PREFIX = Pattern.compile("^(?:[0-9]+[a-z]+|sar)[0-9]+", Pattern.CASE_INSENSITIVE);
     private static final double EARTH_RADIUS_METERS = 6371008.8;
     private static long MostRecentWaypointTimestampInMsec = System.currentTimeMillis();
     private static volatile long MostRecentRidMessageTimestampInMsec = System.currentTimeMillis();
@@ -117,8 +118,31 @@ public class CtDroneSpec implements Comparable<CtDroneSpec>, Serializable {
     private String ownerName;
     private AircraftReadiness readiness;
     private volatile transient String flightReadinessJson;
+    private transient long flightReadinessRevision;
+    public static final class FlightReadinessSnapshot {
+        public final String json;
+        public final long revision;
+        private FlightReadinessSnapshot(String json, long revision) { this.json = json; this.revision = revision; }
+    }
     public String getFlightReadinessJson() { return flightReadinessJson == null ? "{}" : flightReadinessJson; }
-    public synchronized void setFlightReadinessJson(String value) { flightReadinessJson = OperatingProfiles.mergeHistory(getFlightReadinessJson(), value); }
+    public synchronized FlightReadinessSnapshot flightReadinessSnapshot() {
+        return new FlightReadinessSnapshot(getFlightReadinessJson(), flightReadinessRevision);
+    }
+    public void setFlightReadinessJson(String value) {
+        while (true) {
+            FlightReadinessSnapshot snapshot = flightReadinessSnapshot();
+            String prepared = OperatingProfiles.mergeHistory(snapshot.json, value);
+            if (installPreparedFlightReadinessJson(snapshot.revision, prepared)) return;
+        }
+    }
+    /** Publish worker-prepared readiness only if its in-memory input is still current. */
+    public synchronized boolean installPreparedFlightReadinessJson(long expectedRevision, String value) {
+        if (flightReadinessRevision != expectedRevision) return false;
+        flightReadinessJson = value;
+        flightReadinessRevision++;
+        return true;
+    }
+    private synchronized void clearFlightReadiness() { flightReadinessJson = null; flightReadinessRevision++; }
     public AircraftReadiness getReadiness() { return readiness == null ? new AircraftReadiness() : readiness; }
     public void setReadiness(AircraftReadiness value) { readiness = value; }
     private String model; /* This is the concise text description of the drone. */
@@ -181,6 +205,8 @@ public class CtDroneSpec implements Comparable<CtDroneSpec>, Serializable {
     private boolean okToLog;
     private transient boolean localArchiveOnly;
     private transient boolean currentFlightConfirmed;
+    /** Peer confirmation may name the aircraft. It is not this tablet's Mine. */
+    private transient boolean peerIdentityKnown;
     private volatile transient boolean outOfRange;
     @Nullable private transient Boolean airborne = Boolean.FALSE;
 
@@ -196,11 +222,8 @@ public class CtDroneSpec implements Comparable<CtDroneSpec>, Serializable {
         String trimmed = sharedLabel.trim();
         if (trimmed.isEmpty() || trimmed.equals(trackLabel)) return;
         String oldTrackLabel = trackLabel;
-        trackLabel = trimmed;
+        trackLabel = WaypointTrack.RenameTrackForFlightLabel(oldTrackLabel == null ? "" : oldTrackLabel, trimmed, this);
         trackLabelAdoptedFromPeer = true;
-        if (oldTrackLabel != null && !oldTrackLabel.isEmpty() && !oldTrackLabel.equals(trackLabel)) {
-            WaypointTrack.RenameTrack(oldTrackLabel, trackLabel, this);
-        }
     }
 
     public JSONObject asJSONObject() {
@@ -275,7 +298,7 @@ public class CtDroneSpec implements Comparable<CtDroneSpec>, Serializable {
     public void reset() {
         proximityPosition = null;
         currentFlightConfirmed = false;
-        flightReadinessJson = null;
+        clearFlightReadiness();
         outOfRange = false;
         hasRecordedWaypoint = false;
         if (trackLabel.isEmpty()) return;
@@ -318,18 +341,30 @@ public class CtDroneSpec implements Comparable<CtDroneSpec>, Serializable {
         CaltopoClient.DroneSpecStatusChanged(this, false);
     }
 
-    // Track labels should be brief, but they should also identify:
-    //  1. Callsign of the rpic.
-    //  2. Brief description of the drone.
-    //  3. Start time for flight
-    //  If 1 is absent from the mappedId, then just use the remote id - guaranteed unique for each drone.
-    //  If 1 is present, but 2 is absent, but model is present, then try to extract abbreviated info from the Model field..
-    //  If 1 is present, but 2 is absent and model is absent, tack on the remoteID.
     private void updateTrackLabel() {
-        // Match Apple: preserve the aircraft designator and first accepted waypoint.
-        // Pilot identity belongs in metadata, not in place of the aircraft designator.
-        trackLabel = String.format(Locale.US, "%s_%s", getDisplayLabel(),
-                TimeDatestampString(startMsecTimestamp));
+        String oldLabel = trackLabel == null ? "" : trackLabel;
+        String requested = String.format(Locale.US, "%s_%s", getDisplayLabel(), TimeDatestampString(startMsecTimestamp));
+        trackLabel = WaypointTrack.RenameTrackForFlightLabel(oldLabel, requested, this);
+    }
+
+    /**
+     * The points already recorded belong to a flight this tablet was only shadowing.
+     * The next accepted waypoint starts the owned flight. Confirmation and the pilot stay.
+     */
+    /** The owned flight's label and archive time are this instant, not the shadow start. */
+    public void retitleToOwnedStart(long ownedStartMs) {
+        if (ownedStartMs <= 0L) return;
+        startMsecTimestamp = ownedStartMs;
+        if (trackLabel == null || trackLabel.isEmpty()) return;
+        updateTrackLabel();
+        if (myLiveTrack != null) myLiveTrack.renameTrack();
+    }
+
+    public void beginOwnedFlightAfterShadow() {
+        trackLabel = EMPTY_STRING;
+        trackLabelAdoptedFromPeer = false;
+        startMsecTimestamp = 0;
+        hasRecordedWaypoint = false;
     }
 
     public void setMyLiveTrack(@Nullable CaltopoLiveTrack newTrack) {
@@ -341,9 +376,22 @@ public class CtDroneSpec implements Comparable<CtDroneSpec>, Serializable {
 
     public boolean okToLog() {return okToLog;}
     public boolean isCurrentFlightConfirmed() { return currentFlightConfirmed; }
-    public void setCurrentFlightConfirmed(boolean confirmed) { currentFlightConfirmed = confirmed; }
+    public void notePeerIdentity() { peerIdentityKnown = true; }
+    public void setCurrentFlightConfirmed(boolean confirmed) {
+        boolean wasConfirmed = currentFlightConfirmed;
+        currentFlightConfirmed = confirmed;
+        if (confirmed && !wasConfirmed && startMsecTimestamp > 0) {
+            String oldLabel = trackLabel;
+            updateTrackLabel();
+            if (!trackLabel.equals(oldLabel) && myLiveTrack != null) myLiveTrack.renameTrack();
+        }
+        WaypointTrack.NoteOwnershipContextForRemote(remoteId == null ? "" : remoteId);
+    }
     public boolean isLocalArchiveOnly() { return localArchiveOnly; }
-    public void setLocalArchiveOnly(boolean localArchiveOnly) { this.localArchiveOnly = localArchiveOnly; }
+    public void setLocalArchiveOnly(boolean localArchiveOnly) {
+        this.localArchiveOnly = localArchiveOnly;
+        WaypointTrack.NoteOwnershipContextForRemote(remoteId == null ? "" : remoteId);
+    }
 
     public String getDurationInSecAsString() {
         long durationInMsec = 0;
@@ -1250,11 +1298,6 @@ public class CtDroneSpec implements Comparable<CtDroneSpec>, Serializable {
                     oldMappedId, newStr, System.identityHashCode(myListener)));
             if (startMsecTimestamp > 0) {
                 updateTrackLabel();
-                if (oldTrackLabel != null &&
-                        !oldTrackLabel.isEmpty() &&
-                        !oldTrackLabel.equals(trackLabel)) {
-                    WaypointTrack.RenameTrack(oldTrackLabel, trackLabel, this);
-                }
             }
             if (null != myLiveTrack) myLiveTrack.renameTrack();
             if (null != myListener) {
@@ -1274,8 +1317,19 @@ public class CtDroneSpec implements Comparable<CtDroneSpec>, Serializable {
     public String getMappedId() { return mappedId;}
     /** Operator-visible aircraft label; mappedId remains the stable stream routing key. */
     public String getDisplayLabel() {
-        if (mappedId != null && !mappedId.trim().isEmpty()) return mappedId.trim();
-        return remoteId;
+        String designator = mappedId != null && !mappedId.trim().isEmpty() ? mappedId.trim() : remoteId;
+        return (currentFlightConfirmed || peerIdentityKnown) ? FlightDisplayLabel(designator, owner) : designator;
+    }
+
+    @NonNull
+    public static String FlightDisplayLabel(@NonNull String mappedId, @Nullable String pilotCallsign) {
+        String callsign = pilotCallsign == null ? "" : pilotCallsign.trim();
+        if (callsign.isEmpty()) return mappedId;
+        if (mappedId.regionMatches(true, 0, callsign, 0, callsign.length()) &&
+                (mappedId.length() == callsign.length() || !Character.isDigit(mappedId.charAt(callsign.length())))) return mappedId;
+        Matcher prefix = TRACK_CALLSIGN_PREFIX.matcher(mappedId);
+        if (prefix.find()) return callsign + mappedId.substring(prefix.end());
+        return mappedId.isEmpty() ? callsign : callsign + "-" + mappedId;
     }
     public long getStartMsecTimestamp() { return startMsecTimestamp; }
     public String getOrg() { return org;}
@@ -1288,12 +1342,9 @@ public class CtDroneSpec implements Comparable<CtDroneSpec>, Serializable {
         if (normalized.equals(owner)) return;
         String oldTrackLabel = trackLabel;
         owner = normalized;
-        if (startMsecTimestamp > 0) {
+        if (currentFlightConfirmed && startMsecTimestamp > 0) {
             updateTrackLabel();
-            if (oldTrackLabel != null && !oldTrackLabel.isEmpty() && !oldTrackLabel.equals(trackLabel)) {
-                WaypointTrack.RenameTrack(oldTrackLabel, trackLabel, this);
-            }
-            if (null != myLiveTrack) myLiveTrack.renameTrack();
+            if (null != myLiveTrack && !trackLabel.equals(oldTrackLabel)) myLiveTrack.renameTrack();
         }
     }
     public String getOwnerName() { return ownerName == null ? "" : ownerName;}

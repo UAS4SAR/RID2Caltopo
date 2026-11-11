@@ -82,6 +82,24 @@ public struct RidAircraftTrack: Sendable, Equatable, Identifiable {
     public fileprivate(set) var distanceMeters: Double
     public fileprivate(set) var acceptedCountBySource: [RidObservation.Source: Int]
 
+    func withStart(_ startedAt: Date, points: [RidTrackPoint]) -> RidAircraftTrack {
+        RidAircraftTrack(
+            aircraftID: aircraftID,
+            flightStartedAt: startedAt,
+            points: points,
+            lastObservation: lastObservation,
+            lastAircraftMessageAt: lastAircraftMessageAt,
+            lastSignalAt: lastSignalAt,
+            lastSignalStrengthDbm: lastSignalStrengthDbm,
+            lastSignalSource: lastSignalSource,
+            lastDirectSignalStrengthDbm: lastDirectSignalStrengthDbm,
+            lastDirectSignalSource: lastDirectSignalSource,
+            lastDroneToBridgeSignalStrengthDbm: lastDroneToBridgeSignalStrengthDbm,
+            distanceMeters: distanceMeters,
+            acceptedCountBySource: acceptedCountBySource
+        )
+    }
+
     public func isActive(at date: Date, timeout: TimeInterval = 30) -> Bool {
         date.timeIntervalSince(lastAircraftMessageAt) <= timeout
     }
@@ -103,9 +121,18 @@ public enum RidTrackIngestOutcome: Sendable, Equatable {
     case rejectedInvalidObservation
 }
 
+public struct ShadowSplit: Sendable {
+    public let shadow: RidAircraftTrack?
+    public let owned: RidAircraftTrack?
+}
+
 public actor RidTrackStore {
     public private(set) var policy: RidTrackPolicy
     private var tracksByAircraftID: [String: RidAircraftTrack] = [:]
+    /// After this tablet gives up the lease, further points are not a flight until it owns again.
+    private var suspendedUntilOwned: Set<String> = []
+    /// When set, the archived file starts at this time. The live track keeps earlier points.
+    private var ownedFromByAircraft: [String: Date] = [:]
 
     public init(policy: RidTrackPolicy = RidTrackPolicy()) {
         self.policy = policy
@@ -290,6 +317,91 @@ public actor RidTrackStore {
 
     public func removeAll() {
         tracksByAircraftID.removeAll()
+    }
+
+    public func track(aircraftID: String) -> RidAircraftTrack? {
+        tracksByAircraftID[Self.canonicalAircraftID(aircraftID)]
+    }
+
+    /// Ends the current flight immediately. The next ingest starts a new flight.
+    public func take(aircraftID: String) -> RidAircraftTrack? {
+        tracksByAircraftID.removeValue(forKey: Self.canonicalAircraftID(aircraftID))
+    }
+
+    /// Points before this stay on the live track. The archived file starts here.
+    public func markOwned(aircraftID: String, at grantedAt: Date) {
+        ownedFromByAircraft[Self.canonicalAircraftID(aircraftID)] = grantedAt
+    }
+
+    /// Further points stay in memory for the map and clues, and are not a new file.
+    public func clearOwned(aircraftID: String) {
+        ownedFromByAircraft.removeValue(forKey: Self.canonicalAircraftID(aircraftID))
+    }
+
+    /// The owned slice for a file. Nil when this tablet never held the lease for these points.
+    public func recordForArchive(_ track: RidAircraftTrack, ownedDuringFlight: Bool) -> RidAircraftTrack? {
+        let key = Self.canonicalAircraftID(track.aircraftID)
+        guard let grant = ownedFromByAircraft[key] else {
+            return ownedDuringFlight ? track : nil
+        }
+        let kept = track.points.filter { $0.receivedAt >= grant }
+        guard let first = kept.first else { return nil }
+        return track.withStart(first.receivedAt, points: kept)
+    }
+
+    /// Stops a new local file after the lease moves to another tablet.
+    public func suspendRecordingUntilOwned(aircraftID: String) {
+        let key = Self.canonicalAircraftID(aircraftID)
+        suspendedUntilOwned.insert(key)
+        tracksByAircraftID.removeValue(forKey: key)
+    }
+
+    /// The next accepted point starts this tablet's owned flight.
+    public func resumeOwnedRecording(aircraftID: String) {
+        suspendedUntilOwned.remove(Self.canonicalAircraftID(aircraftID))
+    }
+
+    /// Drops points from before the lease grant. Nothing is written for them.
+    /// A later call with the same grant leaves the remaining flight in place.
+    public func trimShadow(aircraftID: String, ownershipGrantedAt: Date) {
+        let key = Self.canonicalAircraftID(aircraftID)
+        guard let track = tracksByAircraftID[key] else { return }
+        if track.flightStartedAt >= ownershipGrantedAt { return }
+        let kept = track.points.filter { $0.receivedAt >= ownershipGrantedAt }
+        guard let first = kept.first else {
+            tracksByAircraftID.removeValue(forKey: key)
+            return
+        }
+        tracksByAircraftID[key] = track.withStart(first.receivedAt, points: kept)
+    }
+
+    /// Points received before the lease was granted stay on the shadow track.
+    /// The track that remains, if any, starts at or after that grant.
+    public func closeShadow(aircraftID: String, ownershipGrantedAt: Date) -> ShadowSplit {
+        let key = Self.canonicalAircraftID(aircraftID)
+        guard let track = tracksByAircraftID[key] else {
+            return ShadowSplit(shadow: nil, owned: nil)
+        }
+        if track.flightStartedAt >= ownershipGrantedAt {
+            return ShadowSplit(shadow: nil, owned: track)
+        }
+        let shadowPoints = track.points.filter { $0.receivedAt < ownershipGrantedAt }
+        let ownedPoints = track.points.filter { $0.receivedAt >= ownershipGrantedAt }
+        let shadow = shadowPoints.isEmpty ? nil : track.withStart(track.flightStartedAt, points: shadowPoints)
+        guard let firstOwned = ownedPoints.first else {
+            tracksByAircraftID.removeValue(forKey: key)
+            return ShadowSplit(shadow: shadow ?? track, owned: nil)
+        }
+        let owned = track.withStart(firstOwned.receivedAt, points: ownedPoints)
+        tracksByAircraftID[key] = owned
+        return ShadowSplit(shadow: shadow, owned: owned)
+    }
+
+    public func restoreIfAbsent(_ track: RidAircraftTrack) {
+        let key = Self.canonicalAircraftID(track.aircraftID)
+        if tracksByAircraftID[key] == nil {
+            tracksByAircraftID[key] = track
+        }
     }
 
     public static func canonicalAircraftID(_ value: String) -> String {

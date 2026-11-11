@@ -410,6 +410,8 @@ final class AppleCaltopoProfileLifecycle: ObservableObject {
 @MainActor
 final class AppleOrgConfigSettings: ObservableObject {
     @Published private(set) var organizationName: String
+    @Published private(set) var droneOwnership: String
+    private var ownershipRecords: [String: DroneOwnershipPolicy.Record] = [:]
     @Published private(set) var incident: String
     @Published private(set) var operationalPeriod: String
     @Published private(set) var trackFolder: String
@@ -449,6 +451,12 @@ final class AppleOrgConfigSettings: ObservableObject {
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         organizationName = defaults.string(forKey: "org.name") ?? ""
+        ownershipRecords = Self.loadOwnershipRecords(defaults)
+        if ownershipRecords.isEmpty, let legacy = defaults.string(forKey: "org.droneOwnership") {
+            let mode = DroneOwnershipPolicy.normalize(legacy)
+            ownershipRecords[Self.ownershipScope(defaults: defaults)] = .init(mode: mode, appliedMode: mode, staged: false)
+        }
+        droneOwnership = ownershipRecords[Self.ownershipScope(defaults: defaults)]?.mode ?? DroneOwnershipPolicy.all
         // Incident and operational period are session choices on Android.
         // Begin every process with Android's defaults instead of restoring the
         // previous operational session.
@@ -508,6 +516,59 @@ final class AppleOrgConfigSettings: ObservableObject {
 
     var trackerAPIKey: String { Self.loadTrackerAPIKey() ?? "" }
 
+    func setDroneOwnership(_ value: String) {
+        guard DroneOwnershipPolicy.canChange(
+            belongsToOrganization: AppleAircraftOrganizationAccess.belongsToOrganization,
+            configAdminVerified: AppleAircraftOrganizationAccess.canEdit
+        ) else { return }
+        let scope = Self.ownershipScope(defaults: defaults)
+        let next = DroneOwnershipPolicy.edit(ownershipRecords[scope] ?? .initial, to: value)
+        ownershipRecords[scope] = next
+        droneOwnership = next.mode
+        Self.saveOwnershipRecords(ownershipRecords, defaults: defaults)
+    }
+
+    func receivePublishedDroneOwnership(_ value: String) {
+        let scope = Self.ownershipScope(defaults: defaults)
+        let next = DroneOwnershipPolicy.receive(ownershipRecords[scope] ?? .initial, published: value)
+        ownershipRecords[scope] = next
+        if scope == Self.ownershipScope(defaults: defaults) { droneOwnership = next.mode }
+        Self.saveOwnershipRecords(ownershipRecords, defaults: defaults)
+    }
+
+    func bindDroneOwnershipScope() {
+        let scope = Self.ownershipScope(defaults: defaults)
+        let record = ownershipRecords[scope] ?? .initial
+        ownershipRecords[scope] = record
+        droneOwnership = record.mode
+    }
+
+    private static func ownershipScope(defaults: UserDefaults) -> String {
+        let key = loadTrackerAPIKey() ?? ""
+        return DroneOwnershipPolicy.scope(
+            enrolled: key.hasPrefix("r2c_dev_"),
+            trackerPrefix: defaults.string(forKey: "org.trackerURLPrefix") ?? "")
+    }
+
+    private static func loadOwnershipRecords(_ defaults: UserDefaults) -> [String: DroneOwnershipPolicy.Record] {
+        guard let data = defaults.data(forKey: "org.droneOwnershipRecords"),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: [String: Any]] else { return [:] }
+        return root.mapValues { value in
+            DroneOwnershipPolicy.Record(
+                mode: DroneOwnershipPolicy.normalize(value["mode"] as? String),
+                appliedMode: DroneOwnershipPolicy.normalize(value["applied"] as? String),
+                staged: (value["staged"] as? Bool) == true || (value["staged"] as? NSNumber)?.boolValue == true)
+        }
+    }
+
+    private static func saveOwnershipRecords(_ records: [String: DroneOwnershipPolicy.Record], defaults: UserDefaults) {
+        let root = records.mapValues { ["mode": $0.mode, "applied": $0.appliedMode, "staged": $0.staged] as [String: Any] }
+        if let data = try? JSONSerialization.data(withJSONObject: root) {
+            defaults.set(data, forKey: "org.droneOwnershipRecords")
+        }
+        defaults.set(records[ownershipScope(defaults: defaults)]?.mode ?? DroneOwnershipPolicy.all, forKey: "org.droneOwnership")
+    }
+
     var hasManagedTrackerEnrollment: Bool {
         sourceDescription == "Managed r2c-tracker enrollment" &&
             !trackerURLPrefix.isEmpty &&
@@ -560,6 +621,7 @@ final class AppleOrgConfigSettings: ObservableObject {
             trackerEnrollmentURL = ""
             sourceDescription = "Manual Settings"
             defaults.set(self.trackerURLPrefix, forKey: "org.trackerURLPrefix")
+            bindDroneOwnershipScope()
             defaults.removeObject(forKey: "org.faaProxyURL")
             defaults.removeObject(forKey: "org.trackerEnrollmentURL")
             defaults.set(sourceDescription, forKey: "org.sourceDescription")
@@ -591,6 +653,7 @@ final class AppleOrgConfigSettings: ObservableObject {
             sourceDescription = "Managed r2c-tracker enrollment"
             defaults.set(organizationName, forKey: "org.name")
             defaults.set(self.trackerURLPrefix, forKey: "org.trackerURLPrefix")
+            bindDroneOwnershipScope()
             defaults.set(self.faaProxyURL, forKey: "org.faaProxyURL")
             defaults.set(trackerEnrollmentURL, forKey: "org.trackerEnrollmentURL")
             defaults.set(usePeers, forKey: "org.usePeers")

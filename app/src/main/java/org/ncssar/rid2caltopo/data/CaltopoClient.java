@@ -481,6 +481,8 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
     private static boolean ProcessingDroneSpecUpdate = false;
     private static boolean PendingDroneSpecUpdate = false;
     private static boolean NotifySettingsChangedFlag;
+    private static final java.util.concurrent.atomic.AtomicLong SettingsRevision = new java.util.concurrent.atomic.AtomicLong();
+    public static long GetSettingsRevision() { return SettingsRevision.get(); }
     private static final Set<String> SessionUnknownDroneRemoteIds = new HashSet<>();
     private static final Set<String> SessionConfirmedDroneRemoteIds = new HashSet<>();
     private static final Set<String> CurrentPeerConfirmedDroneRemoteIds = new HashSet<>();
@@ -2905,8 +2907,26 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
             @NonNull String owner,
             @NonNull String mappedId
     ) {
+        SaveDroneSpecConfirmation(remoteId, org, model, owner, mappedId, null, 0, null);
+    }
+
+    public static boolean SaveDroneSpecConfirmation(
+            @NonNull String remoteId, @NonNull String org, @NonNull String model,
+            @NonNull String owner, @NonNull String mappedId,
+            @Nullable CtDroneSpec expectedSpec, long expectedReadinessRevision, @Nullable String preparedReadiness
+    ) {
         ClientClassState ccs = GetState();
-        if (RejectNonCanonicalRemoteId("SaveDroneSpecConfirmation()", remoteId)) return;
+        if (RejectNonCanonicalRemoteId("SaveDroneSpecConfirmation()", remoteId)) return false;
+        CtDroneSpec activeDs = ccs.droneSpecTable.get(remoteId);
+        if (expectedSpec != null && activeDs != expectedSpec) return false;
+        if (activeDs == null) {
+            activeDs = new CtDroneSpec(remoteId, mappedId.trim(), org.trim(), model.trim(), owner.trim());
+            CtDroneSpec existing = ccs.droneSpecTable.putIfAbsent(remoteId, activeDs);
+            if (existing != null) activeDs = existing;
+        }
+        if (preparedReadiness != null && !activeDs.installPreparedFlightReadinessJson(expectedReadinessRevision, preparedReadiness)) {
+            return false;
+        }
         SessionConfirmedDroneRemoteIds.add(remoteId);
         CurrentPeerConfirmedDroneRemoteIds.add(remoteId);
         CurrentLocallyConfirmedDroneRemoteIds.add(remoteId);
@@ -2915,24 +2935,12 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
         String trimmedOwner = owner.trim();
         String trimmedMappedId = mappedId.trim();
 
-        CtDroneSpec activeDs = ccs.droneSpecTable.get(remoteId);
-        String previousMappedId = activeDs != null ? activeDs.getMappedId().trim() : "";
-        WaypointTrack.TrackPoint latestPointBeforeMappedIdChange = activeDs != null
-                ? LatestLocalTrackPoint(activeDs)
-                : null;
-        if (activeDs == null) {
-            // Confirmation panel edits are session-scoped operator input.
-            // Keep them only in the active table for this app invocation; they
-            // can seed later confirmations in this run but must not become part
-            // of the persisted ridmap cache.
-            activeDs = new CtDroneSpec(remoteId, trimmedMappedId, trimmedOrg, trimmedModel, trimmedOwner);
-            ccs.droneSpecTable.put(remoteId, activeDs);
-        } else {
-            activeDs.setOrg(trimmedOrg);
-            activeDs.setModel(trimmedModel);
-            activeDs.setOwner(trimmedOwner);
-            activeDs.setMappedId(trimmedMappedId);
-        }
+        String previousMappedId = activeDs.getMappedId().trim();
+        WaypointTrack.TrackPoint latestPointBeforeMappedIdChange = LatestLocalTrackPoint(activeDs);
+        activeDs.setOrg(trimmedOrg);
+        activeDs.setModel(trimmedModel);
+        activeDs.setOwner(trimmedOwner);
+        activeDs.setMappedId(trimmedMappedId);
         activeDs.setCurrentFlightConfirmed(true);
         boolean mappedIdChanged = !previousMappedId.equals(activeDs.getMappedId().trim());
         if (activeDs.isLocalArchiveOnly() && isTeamDroneOrg(trimmedOrg)) {
@@ -2942,10 +2950,10 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
             activeDs.setLocalArchiveOnly(shouldKeepConfirmedDroneLocalOnly(trimmedOrg));
             UpdateDroneSpecs();
         }
-        if (!activeDs.isLocalArchiveOnly()) WaypointTrack.CapturePublicationIntent(activeDs);
         if (mappedIdChanged) {
             NotifyLatestLocalTrackPoint(activeDs, latestPointBeforeMappedIdChange);
         }
+        return true;
     }
 
     public static void ApplyPeerDroneSpecConfirmation(
@@ -2959,7 +2967,7 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
         if (RejectNonCanonicalRemoteId("ApplyPeerDroneSpecConfirmation()", remoteId)) return;
         SessionConfirmedDroneRemoteIds.add(remoteId);
         CurrentPeerConfirmedDroneRemoteIds.add(remoteId);
-        // Peer confirmation must not look like a local Save for ownership replay.
+        // Peer confirmation must not look like a local Save, and must not make this tablet the Mine.
         CurrentLocallyConfirmedDroneRemoteIds.remove(remoteId);
 
         String trimmedOrg = org.trim();
@@ -2982,8 +2990,8 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
             if (!trimmedOwner.isEmpty()) activeDs.setOwner(trimmedOwner);
             if (!trimmedMappedId.isEmpty()) activeDs.setMappedId(trimmedMappedId);
         }
-        activeDs.setCurrentFlightConfirmed(true);
-        activeDs.setLocalArchiveOnly(false);
+        activeDs.notePeerIdentity();
+        // Publication stays with a local Save.
 
         UpdateDroneSpecs();
     }
@@ -3091,9 +3099,7 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
 
     @Nullable
     private static WaypointTrack.TrackPoint LatestLocalTrackPoint(@NonNull CtDroneSpec droneSpec) {
-        List<WaypointTrack.TrackPoint> points = WaypointTrack.GetTrackPointsSnapshot(droneSpec);
-        if (points.isEmpty()) return null;
-        return points.get(points.size() - 1);
+        return WaypointTrack.GetLatestTrackPoint(droneSpec);
     }
 
     private static void NotifyLatestLocalTrackPoint(@NonNull CtDroneSpec droneSpec,
@@ -3399,6 +3405,7 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
         if (notifySettings) {
             NotifySettingsChanged();
         }
+        if (ctxt != null) OrgConfigManager.bindCurrentOwnershipScope(ctxt);
         return true;
     }
 
@@ -4296,6 +4303,7 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
     }
 
     private static void NotifySettingsChanged() {
+        SettingsRevision.incrementAndGet();
         if (!NotifySettingsChangedFlag && null != SettingsListener) {
             CTDebug(TAG, "notifySettingsChanged()");
             NotifySettingsChangedFlag = true;

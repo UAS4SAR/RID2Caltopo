@@ -21,6 +21,7 @@ public struct RidTrackArchiveMetadata: Sendable, Equatable {
     /// `r2c_prop.tracker_upload_authorized`; `false` makes the archive permanently ineligible
     /// for tracker upload (non-owners must not upload).
     public var trackerUploadAuthorized: Bool
+    public var trackerClaimPending: Bool
 
     public init(
         mappedID: String = "",
@@ -37,7 +38,8 @@ public struct RidTrackArchiveMetadata: Sendable, Equatable {
         flightReadiness: FlightReadiness? = nil,
         flightID: String = "",
         capturedVideoDescription: String = "",
-        trackerUploadAuthorized: Bool = false
+        trackerUploadAuthorized: Bool = false,
+        trackerClaimPending: Bool = false
     ) {
         self.flightReadiness = flightReadiness
         self.mappedID = mappedID
@@ -54,6 +56,7 @@ public struct RidTrackArchiveMetadata: Sendable, Equatable {
         self.flightID = flightID
         self.capturedVideoDescription = capturedVideoDescription
         self.trackerUploadAuthorized = trackerUploadAuthorized
+        self.trackerClaimPending = trackerClaimPending
     }
 }
 
@@ -91,6 +94,7 @@ public enum RidTrackGeoJSON {
             "mid": mappedID,
             "local_archive_only": metadata.localArchiveOnly,
             "tracker_upload_authorized": metadata.trackerUploadAuthorized,
+            "tracker_claim_pending": metadata.trackerClaimPending,
             "incident": metadata.incident,
             "op_period": metadata.operationalPeriod,
             "map_id": metadata.mapID,
@@ -109,6 +113,59 @@ public enum RidTrackGeoJSON {
         if !videoDescription.isEmpty {
             properties["description"] = videoDescription
         }
+        FlightArchivePointTiming.write(into: &properties, receivedAtMs: receivedMilliseconds, droneClock: droneClock)
+        if !metadata.flightID.isEmpty { properties["r2c_flight_id"] = metadata.flightID }
+        let feature: [String: Any] = [
+            "type": "Feature",
+            "properties": properties,
+            "geometry": [
+                "type": "LineString",
+                "coordinates": coordinates,
+            ],
+        ]
+        return try JSONSerialization.data(
+            withJSONObject: ["type": "FeatureCollection", "features": [feature]],
+            options: [.prettyPrinted, .sortedKeys]
+        )
+    }
+
+    /// Flight file for a journal recovered after the process died. Uses every observation
+    /// and only the pilot stored on that journal.
+    public static func encodeRecovered(
+        remoteID: String,
+        observations: [RidObservation],
+        title: String,
+        metadata: RidTrackArchiveMetadata
+    ) throws -> Data {
+        let startDate = observations.first?.droneTimestamp ?? observations.first?.receivedAt ?? Date()
+        let coordinates: [[String]] = observations.map { observation in
+            let stamped = observation.droneTimestamp ?? observation.receivedAt
+            return [
+                String(format: "%.6f", locale: Locale(identifier: "en_US_POSIX"), observation.longitude),
+                String(format: "%.6f", locale: Locale(identifier: "en_US_POSIX"), observation.latitude),
+                String(format: "%.0f", locale: Locale(identifier: "en_US_POSIX"), observation.altitudeMeters ?? -1_000),
+                String(Int64((stamped.timeIntervalSince1970 * 1_000).rounded())),
+            ]
+        }
+        let receivedMilliseconds: [Int64?] = observations.map {
+            Int64(($0.receivedAt.timeIntervalSince1970 * 1_000).rounded())
+        }
+        let droneClock = observations.map { $0.droneTimestamp != nil }
+        var properties: [String: Any] = [
+            "title": title,
+            "start_time": formattedStartTime(startDate),
+            "r2c_prop": [
+                "owner": metadata.owner,
+                "model": metadata.model,
+                "org": metadata.organization,
+                "rid": remoteID,
+                "mid": metadata.mappedID,
+                "local_archive_only": metadata.localArchiveOnly,
+                "tracker_upload_authorized": metadata.trackerUploadAuthorized,
+                "tracker_claim_pending": metadata.trackerClaimPending,
+                "map_id": metadata.mapID,
+            ] as [String: Any],
+        ]
         FlightArchivePointTiming.write(into: &properties, receivedAtMs: receivedMilliseconds, droneClock: droneClock)
         if !metadata.flightID.isEmpty { properties["r2c_flight_id"] = metadata.flightID }
         let feature: [String: Any] = [
@@ -172,15 +229,16 @@ public enum RidTrackGeoJSON {
                                points: points, flightID: flightID)
     }
 
-    /// Match live CalTopo publication, including when no incident map is selected.
-    /// The pilot callsign remains separate flight metadata.
+    /// Match the confirmed pilot label used for live CalTopo publication.
     public static func archiveTitle(
         for track: RidAircraftTrack,
         metadata: RidTrackArchiveMetadata,
         timeZone: TimeZone = .current
     ) -> String {
-        CaltopoTrackLabel.androidCompatible(
-            baseLabel: metadata.mappedID.isEmpty ? track.aircraftID : metadata.mappedID,
+        let mappedID = metadata.mappedID.isEmpty ? track.aircraftID : metadata.mappedID
+        let pilot = (metadata.flightReadiness?.dictionary["pilot"] as? [String: Any])?["callsign"] as? String ?? ""
+        return CaltopoTrackLabel.androidCompatible(
+            baseLabel: RidAircraftIdentity.flightLabel(mappedID: mappedID, pilotCallsign: pilot),
             firstWaypointAt: track.points.first?.receivedAt ?? track.lastObservation.receivedAt,
             timeZone: timeZone
         )
@@ -188,9 +246,11 @@ public enum RidTrackGeoJSON {
 
     public static func suggestedFilename(
         for track: RidAircraftTrack,
+        ownershipGrantedAt grant: Date? = nil,
         timeZone: TimeZone = .current
     ) -> String {
-        let startDate = track.points.first?.receivedAt ?? track.lastObservation.receivedAt
+        let first = track.points.first?.receivedAt ?? track.lastObservation.receivedAt
+        let startDate = OwnedFlightFileName.stamp(grant: grant, firstStored: first)
         return suggestedFilenameBase(aircraftID: track.aircraftID, startDate: startDate, timeZone: timeZone) + ".json"
     }
 

@@ -53,6 +53,9 @@ import org.ncssar.rid2caltopo.data.ExternalDisplayAlertRouting
 import org.ncssar.rid2caltopo.data.ExternalDisplayContentMode
 import org.ncssar.rid2caltopo.data.ExternalDisplayMode
 import org.ncssar.rid2caltopo.data.RidLocationAccuracyPrefs
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.Request
+import org.ncssar.rid2caltopo.data.OrgConfigManager
 
 @Composable
 fun CaltopoSettingsScreen(
@@ -72,6 +75,12 @@ fun CaltopoSettingsScreen(
     var showRidMappingAdmin by remember { mutableStateOf(false) }
     val ridMappingCount = CaltopoClient.GetPersistedDroneSpecs().size
     val organizationName by settingsViewModel.organizationName.collectAsState()
+    val droneOwnership by org.ncssar.rid2caltopo.data.OrgConfigManager.droneOwnership.collectAsState()
+    val ownershipScope = rememberCoroutineScope()
+    val appContext = LocalContext.current.applicationContext
+    var ownershipDialog by remember { mutableStateOf(false) }
+    var ownershipBusy by remember { mutableStateOf(false) }
+    var ownershipMessage by remember { mutableStateOf("") }
     val trackFolder by settingsViewModel.trackFolder.collectAsState()
     val incident by settingsViewModel.incident.collectAsState()
     val opPeriod by settingsViewModel.opPeriod.collectAsState()
@@ -207,6 +216,30 @@ fun CaltopoSettingsScreen(
                     style = MaterialTheme.typography.titleMedium,
                     modifier = Modifier.fillMaxWidth()
                 )
+                Text("Drone Ownership", style = MaterialTheme.typography.labelLarge, modifier = Modifier.fillMaxWidth())
+                OutlinedButton(onClick = {
+                    ownershipBusy = true
+                    ownershipScope.launch {
+                        val editable = withContext(Dispatchers.IO) {
+                            if (org.ncssar.rid2caltopo.data.AircraftOrganizationAccess.belongsToOrganization()) {
+                                org.ncssar.rid2caltopo.data.AircraftOrganizationAccess.refresh()
+                            }
+                            org.ncssar.rid2caltopo.data.AircraftOrganizationAccess.canEdit()
+                        }
+                        ownershipBusy = false
+                        if (editable) ownershipDialog = true
+                        else ownershipMessage = "Read-only. This organization account cannot change Drone Ownership."
+                    }
+                }, enabled = !ownershipBusy, modifier = Modifier.fillMaxWidth()) { Text(when (droneOwnership) {
+                    "streaming_device" -> "Drones streaming to this device"
+                    "streaming_shared_incident" -> "Drones streaming to this device w/in same incident"
+                    else -> "All detected drones"
+                }) }
+                Text(if (org.ncssar.rid2caltopo.data.AircraftOrganizationAccess.belongsToOrganization())
+                    "Saved on this device. A config administrator distributes it by uploading organization configuration from System Admin."
+                    else "Saved on this device.",
+                    style = MaterialTheme.typography.bodySmall, modifier = Modifier.fillMaxWidth())
+                if (ownershipMessage.isNotEmpty()) Text(ownershipMessage, style = MaterialTheme.typography.bodySmall)
                 SettingsHelpLabel("Organization designator")
                 OutlinedTextField(
                     value = organizationName,
@@ -681,6 +714,27 @@ fun CaltopoSettingsScreen(
                 }
             }
         }
+    }
+    if (ownershipDialog) {
+        AlertDialog(onDismissRequest = { ownershipDialog = false }, title = { Text("Drone Ownership") },
+            text = {
+                Column {
+                    Text("Choose which detected drones prompt for ownership. This is saved on this device and takes effect immediately.")
+                    listOf("all_detected" to "All detected drones", "streaming_device" to "Drones streaming to this device",
+                        "streaming_shared_incident" to "Drones streaming to this device w/in same incident").forEach { (mode, label) ->
+                        TextButton(onClick = {
+                            ownershipDialog = false
+                            val saved = org.ncssar.rid2caltopo.data.OrgConfigManager.setLocalDroneOwnership(appContext, mode)
+                            if (saved) org.ncssar.rid2caltopo.app.R2CActivity.getR2CActivity()?.notifyDroneOwnershipChanged()
+                            ownershipMessage = if (saved) {
+                                if (org.ncssar.rid2caltopo.data.AircraftOrganizationAccess.belongsToOrganization())
+                                    "Saved on this device. Upload organization configuration from System Admin to distribute it."
+                                else "Saved on this device."
+                            } else "Read-only. This organization account cannot change Drone Ownership."
+                        }, enabled = !ownershipBusy) { Text(if (droneOwnership == mode) "✓ $label" else label) }
+                    }
+                }
+            }, confirmButton = {}, dismissButton = { TextButton(onClick = { ownershipDialog = false }) { Text("Cancel") } })
     }
     pendingExit?.let { action ->
         AlertDialog(onDismissRequest = { pendingExit = null }, title = { Text("Unsaved Settings") },

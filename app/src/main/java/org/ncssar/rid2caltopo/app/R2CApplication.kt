@@ -56,6 +56,7 @@ class R2CApplication : Application() {
 
     private fun initializeOnWorker() {
         preloadStartupPreferences()
+        org.ncssar.rid2caltopo.data.OrgConfigManager.restoreDroneOwnership(this)
         org.ncssar.rid2caltopo.video.anomaly.AnomalyPrefs.clearLegacySettings(this)
         AppConfigStore.initialize(this)
         CaltopoClient.PrepareSavedSettings()

@@ -37,6 +37,8 @@ public final class WaypointTrackJournal {
     private static final String HEADER = "header";
     private static final String POINT = "point";
     private static final String FINISHED = "finished";
+    private static final String CONTEXT = "context";
+    private static final ConcurrentHashMap<String, String> LastContext = new ConcurrentHashMap<>();
 
     private static final ExecutorService Writer = Executors.newSingleThreadExecutor(task -> {
         Thread thread = new Thread(task, "waypoint-track-journal");
@@ -52,6 +54,15 @@ public final class WaypointTrackJournal {
     @Nullable private static volatile Runnable recoverBetweenRecordStepsHook;
     /** Fault injection: runs after successful open+finish (+ best-effort local write), before delete. */
     @Nullable private static volatile Runnable recoverBeforeDeleteHook;
+    /** Tests supply saved flights so recovery does not need the archive directory. */
+    @Nullable private static volatile RecoveredFlightDedup.Lookup savedFlightLookupForTesting;
+    /** Tests capture the flight file. Production writes the archive and returns whether it is durable. */
+    @Nullable private static volatile RecoveredArchiveWriter recoveredArchiveWriterForTesting;
+
+    /** True when the flight file now holds this journal. A false result must keep the .ndjson. */
+    interface RecoveredArchiveWriter {
+        boolean write(@NonNull RecoveredFlight flight, boolean localOnly);
+    }
 
     private WaypointTrackJournal() { }
 
@@ -68,6 +79,16 @@ public final class WaypointTrackJournal {
     @VisibleForTesting
     static void setRecoverBeforeDeleteHook(@Nullable Runnable hook) {
         recoverBeforeDeleteHook = hook;
+    }
+
+    @VisibleForTesting
+    static void setSavedFlightLookupForTesting(@Nullable RecoveredFlightDedup.Lookup lookup) {
+        savedFlightLookupForTesting = lookup;
+    }
+
+    @VisibleForTesting
+    static void setRecoveredArchiveWriterForTesting(@Nullable RecoveredArchiveWriter writer) {
+        recoveredArchiveWriterForTesting = writer;
     }
 
     @VisibleForTesting
@@ -172,6 +193,32 @@ public final class WaypointTrackJournal {
         });
     }
 
+    /**
+     * Append the latest known pilot/claim facts. Identical repeats are skipped.
+     * Legacy journals simply have no context line; recovery must not invent one.
+     */
+    public static void noteContext(@NonNull String flightId, @NonNull FlightOwnershipContext.Snapshot snapshot) {
+        JSONObject row = FlightOwnershipContext.toJson(snapshot);
+        String encoded = row.toString();
+        if (encoded.equals(LastContext.get(flightId))) return;
+        Writer.execute(() -> {
+            synchronized (lockFor(flightId)) {
+                try {
+                    File file = journalFile(flightId);
+                    if (!file.exists()) {
+                        LastContext.remove(flightId);
+                        return;
+                    }
+                    if (encoded.equals(LastContext.get(flightId))) return;
+                    appendLine(file, row);
+                    LastContext.put(flightId, encoded);
+                } catch (Exception error) {
+                    CTError(TAG, "noteContext failed for " + flightId, error);
+                }
+            }
+        });
+    }
+
     /** Append one accepted waypoint. Safe to call from any thread; I/O is serialized. */
     public static void appendPoint(
             @NonNull String flightId,
@@ -197,6 +244,19 @@ public final class WaypointTrackJournal {
                     appendLine(journalFile(flightId), point);
                 } catch (Exception error) {
                     CTError(TAG, "appendPoint failed for " + flightId, error);
+                }
+            }
+        });
+    }
+
+    /** Delete an unfinished journal without turning it into a flight file. */
+    public static void discardUnfinished(@NonNull String flightId) {
+        if (flightId.isEmpty()) return;
+        Writer.execute(() -> {
+            synchronized (lockFor(flightId)) {
+                File file = journalFile(flightId);
+                if (file.exists() && !file.delete()) {
+                    CTWarn(TAG, "discardUnfinished could not delete " + flightId);
                 }
             }
         });
@@ -282,6 +342,14 @@ public final class WaypointTrackJournal {
                         deleteJournalFile(file, "already-finished");
                         continue;
                     }
+                    if (recoverAgainstSavedFlight(recovered, file)) continue;
+                    if (DocumentFileCompat.archiveAlreadyPresent(recovered)) {
+                        CTDebug(TAG, String.format(Locale.US,
+                                "recoverUnfinished(): retiring %s; local archive already exists",
+                                recovered.id));
+                        deleteJournalFile(file, "archive-already-present");
+                        continue;
+                    }
                     if (shouldRetireWithoutPromotion(recovered)) {
                         CTDebug(TAG, String.format(Locale.US,
                                 "recoverUnfinished(): retiring %s without awaiting-map promotion",
@@ -292,30 +360,50 @@ public final class WaypointTrackJournal {
                         deleteJournalFile(file, "ledger-or-finished-gate");
                         continue;
                     }
+                    FlightOwnershipContext.Snapshot context = recovered.context;
+                    boolean hold = context.getRequiresHold();
+                    boolean autoPublish = context.getMayAutoPublish();
+                    boolean block = context.getBlocksOperatorPublish();
                     CTDebug(TAG, String.format(Locale.US,
-                            "recoverUnfinished(): promoting %s (%d points) into awaiting-map / flight storage",
-                            recovered.id, recovered.points.length()));
+                            "recoverUnfinished(): promoting %s (%d points) hold=%s auto=%s block=%s",
+                            recovered.id, recovered.points.length(), hold, autoPublish, block));
+                    // A live publication still owns this journal. Recovery must not close it
+                    // or take the Tracker lease.
+                    // Load the awaiting-map row and the interrupted record before deciding
+                    // the flight already started or finished. load() marks every row
+                    // finished; that flag is not "the flight file was written."
+                    boolean onMap = AwaitingMapFlights.publicationAlreadyStarted(recovered.id)
+                            || CaltopoInterruptedTrackJournal.hasLiveTrack(recovered.id);
+                    if (onMap && CaltopoLiveTrack.hasActivePublication(recovered.id)) {
+                        CTDebug(TAG, "recoverUnfinished(): leaving live journal " + recovered.id);
+                        continue;
+                    }
+                    boolean startedOnMap = onMap && !CaltopoLiveTrack.hasActivePublication(recovered.id);
+                    // The flight file is written from every journal point before the journal
+                    // can be retired. A failed write leaves the .ndjson for the next launch.
+                    // Tracker upload of that file is the one archive poll, and only when this
+                    // journal's own verified Mine authorizes it. Recovery does not send a claim.
+                    if (startedOnMap) {
+                        if (!writeLocalTrackIfPossible(recovered, !autoPublish)) {
+                            CTWarn(TAG, "recoverUnfinished(): kept " + file.getName()
+                                    + "; flight file was not written");
+                            continue;
+                        }
+                        CaltopoInterruptedTrackJournal.replacePointsIfSameFlight(
+                                recovered.id, recovered.points);
+                    }
                     // Commit-then-delete: only remove the journal after AwaitingMapFlights
                     // open+finish succeed. A kill or failure mid-way leaves the .ndjson.
-                    AwaitingMapFlights.record(
-                            recovered.id,
-                            recovered.remote,
-                            recovered.label,
-                            recovered.points,
-                            false,
-                            recovered.map,
-                            recovered.team);
+                    // Legacy and unverified Mine claims stay in review. Known unconfirmed
+                    // flights are retained but cannot be published. Only a verified Mine
+                    // selection (or one tracker was never asked to verify) may auto-publish.
+                    recordRecovered(recovered, false, hold, block);
                     Runnable between = recoverBetweenRecordStepsHook;
                     if (between != null) between.run();
-                    AwaitingMapFlights.record(
-                            recovered.id,
-                            recovered.remote,
-                            recovered.label,
-                            recovered.points,
-                            true,
-                            recovered.map,
-                            recovered.team);
-                    writeLocalTrackIfPossible(recovered, /*localOnly=*/false);
+                    recordRecovered(recovered, true, hold, block);
+                    if (!startedOnMap) {
+                        writeLocalTrackIfPossible(recovered, !autoPublish);
+                    }
                     Runnable beforeDelete = recoverBeforeDeleteHook;
                     if (beforeDelete != null) beforeDelete.run();
                     deleteJournalFile(file, "promoted");
@@ -325,6 +413,97 @@ public final class WaypointTrackJournal {
                 }
             }
         }
+    }
+
+    private static void recordRecovered(
+            @NonNull RecoveredFlight recovered, boolean finished, boolean hold, boolean block) {
+        FlightOwnershipContext.Snapshot context = recovered.context;
+        AwaitingMapFlights.recordOwned(
+                recovered.id,
+                recovered.remote,
+                recovered.label,
+                recovered.points,
+                finished,
+                recovered.map,
+                recovered.team,
+                hold,
+                context.getRecordedPilot(),
+                context.getKnown() ? context.getClaim() : "",
+                context.getKnown(),
+                block);
+    }
+
+    /**
+     * True when this journal is the same flight as a file already saved under any name.
+     * A match never writes a second file. The journal stays if the saved file cannot be shown
+     * to hold every journal point.
+     */
+    private static boolean recoverAgainstSavedFlight(
+            @NonNull RecoveredFlight recovered, @NonNull File journal) {
+        long[] times = pointTimes(recovered.points);
+        if (times.length == 0) return false;
+        RecoveredFlightDedup.Lookup lookup = savedFlightLookupForTesting;
+        final RecoveredFlightDedup.Decision decision;
+        try {
+            java.util.List<RecoveredFlightDedup.SavedFlight> saved = lookup != null
+                    ? lookup.flights()
+                    : FlightArchiveStore.savedFlightsNear(times[0]);
+            decision = RecoveredFlightDedup.decide(recovered.remote, times, saved);
+        } catch (Exception error) {
+            CTWarn(TAG, "recoverUnfinished(): saved-flight scan failed; journal kept on the existing path "
+                    + journal.getName(), error);
+            return false;
+        }
+        if (decision.getKind() == RecoveredFlightDedup.Kind.WRITE_NEW) return false;
+        if (decision.getKind() == RecoveredFlightDedup.Kind.RETIRE) {
+            CTDebug(TAG, String.format(Locale.US,
+                    "recoverUnfinished(): retiring %s; %s already holds these points",
+                    recovered.id, decision.getFileName()));
+            deleteJournalFile(journal, "saved-flight-holds-points");
+            return true;
+        }
+        final boolean merged;
+        try {
+            merged = lookup != null
+                    ? lookup.mergeInto(decision.getDayDirectory(), decision.getFileName(), recovered.points)
+                    : FlightArchiveStore.mergeJournalPoints(
+                            decision.getDayDirectory(), decision.getFileName(), recovered.points, times);
+        } catch (Exception error) {
+            CTWarn(TAG, "recoverUnfinished(): kept " + journal.getName()
+                    + "; merge into " + decision.getFileName() + " failed", error);
+            return true;
+        }
+        if (merged) {
+            CTDebug(TAG, String.format(Locale.US,
+                    "recoverUnfinished(): merged %s into %s", recovered.id, decision.getFileName()));
+            deleteJournalFile(journal, "merged-into-saved-flight");
+        } else {
+            CTWarn(TAG, String.format(Locale.US,
+                    "recoverUnfinished(): kept %s; %s does not yet hold every journal point",
+                    journal.getName(), decision.getFileName()));
+        }
+        return true;
+    }
+
+    @NonNull
+    private static long[] pointTimes(@NonNull JSONArray points) {
+        java.util.ArrayList<Long> times = new java.util.ArrayList<>();
+        for (int i = 0; i < points.length(); i++) {
+            JSONArray point = points.optJSONArray(i);
+            if (point == null || point.length() < 4) continue;
+            long time = point.optLong(3, 0L);
+            if (time <= 0L) {
+                try {
+                    time = Long.parseLong(point.optString(3));
+                } catch (NumberFormatException ignored) {
+                    time = 0L;
+                }
+            }
+            if (time > 0L) times.add(time);
+        }
+        long[] out = new long[times.size()];
+        for (int i = 0; i < times.size(); i++) out[i] = times.get(i);
+        return out;
     }
 
     private static boolean shouldRetireWithoutPromotion(@NonNull RecoveredFlight recovered) {
@@ -344,24 +523,77 @@ public final class WaypointTrackJournal {
                 + "; file still present");
     }
 
-    private static void writeLocalTrackIfPossible(@NonNull RecoveredFlight recovered, boolean localOnly) {
+    /** @return true only when the flight file is durable, so the journal may be retired. */
+    private static boolean writeLocalTrackIfPossible(@NonNull RecoveredFlight recovered, boolean localOnly) {
+        RecoveredArchiveWriter hook = recoveredArchiveWriterForTesting;
+        if (hook != null) {
+            try {
+                return hook.write(recovered, localOnly);
+            } catch (Exception error) {
+                CTWarn(TAG, "Local track write skipped for " + recovered.id + ": " + error.getMessage());
+                return false;
+            }
+        }
         try {
-            DocumentFileCompat.writeRecoveredGeoJson(recovered, localOnly);
+            return DocumentFileCompat.writeRecoveredGeoJson(recovered, localOnly);
         } catch (Exception error) {
             CTWarn(TAG, "Local track write skipped for " + recovered.id + ": " + error.getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * Points from an unfinished journal with this flight id, or null. Used so a shape
+     * update can include points that were not yet in the interrupted-publication snapshot.
+     */
+    @Nullable
+    static JSONArray pointsForFlight(@NonNull String flightId) {
+        if (flightId.isEmpty()) return null;
+        File file = journalFile(flightId);
+        if (!file.isFile()) return null;
+        try {
+            RecoveredFlight recovered = readJournal(file);
+            if (recovered == null || recovered.finished || recovered.points.length() == 0) return null;
+            if (!flightId.equals(recovered.id)) return null;
+            return recovered.points;
+        } catch (Exception error) {
+            return null;
         }
     }
 
     /** Small helper keeps SAF/DocumentFile imports out of the hot journal path. */
     private static final class DocumentFileCompat {
-        static void writeRecoveredGeoJson(@NonNull RecoveredFlight recovered, boolean localOnly)
+        static boolean archiveAlreadyPresent(@NonNull RecoveredFlight recovered) {
+            try {
+                return archiveFile(recovered) != null;
+            } catch (Exception ignored) {
+                return false;
+            }
+        }
+
+        @Nullable
+        private static androidx.documentfile.provider.DocumentFile archiveFile(
+                @NonNull RecoveredFlight recovered) {
+            long stamp = recovered.firstTimestampMs > 0
+                    ? recovered.firstTimestampMs
+                    : (recovered.startedAtMs > 0 ? recovered.startedAtMs : 0L);
+            if (stamp <= 0L) return null;
+            androidx.documentfile.provider.DocumentFile dayDir =
+                    CaltopoClient.GetTrackDirForTime(stamp);
+            if (dayDir == null) return null;
+            String fileName = OperatorArchiveFilename.track(
+                    recovered.remote.isEmpty() ? recovered.label : recovered.remote, stamp);
+            return dayDir.findFile(fileName);
+        }
+
+        static boolean writeRecoveredGeoJson(@NonNull RecoveredFlight recovered, boolean localOnly)
                 throws Exception {
             long stamp = recovered.firstTimestampMs > 0
                     ? recovered.firstTimestampMs
                     : (recovered.startedAtMs > 0 ? recovered.startedAtMs : System.currentTimeMillis());
             androidx.documentfile.provider.DocumentFile dayDir =
                     CaltopoClient.GetTrackDirForTime(stamp);
-            if (dayDir == null) return;
+            if (dayDir == null) return false;
             JSONObject feature = new JSONObject();
             feature.put("type", "Feature");
             JSONObject properties = new JSONObject();
@@ -371,6 +603,15 @@ public final class WaypointTrackJournal {
             JSONObject r2cProp = new JSONObject();
             r2cProp.put("rid", recovered.remote);
             r2cProp.put("local_archive_only", localOnly);
+            FlightOwnershipContext.Snapshot context = recovered.context;
+            // Only a pilot actually stored on the journal is written. Legacy files omit it.
+            if (!context.getRecordedPilot().isEmpty()) r2cProp.put("owner", context.getRecordedPilot());
+            if (context.getKnown() && !context.getOrg().isEmpty()) r2cProp.put("org", context.getOrg());
+            if (context.getKnown() && !context.getModel().isEmpty()) r2cProp.put("model", context.getModel());
+            if (context.getKnown() && !context.getMappedId().isEmpty()) r2cProp.put("mid", context.getMappedId());
+            boolean adverse = context.getRequiresHold();
+            r2cProp.put("tracker_claim_pending", adverse && context.getKnown() && context.getConfirmation().equals(FlightOwnershipContext.MINE));
+            r2cProp.put("tracker_upload_authorized", context.getMayAutoPublish());
             properties.put("r2c_prop", r2cProp);
             feature.put("properties", properties);
             JSONObject geometry = new JSONObject();
@@ -383,22 +624,48 @@ public final class WaypointTrackJournal {
             String fileName = OperatorArchiveFilename.track(
                     recovered.remote.isEmpty() ? recovered.label : recovered.remote,
                     stamp);
-            // Skip rewrite when this flight's archive already exists in its day folder.
-            if (dayDir.findFile(fileName) != null) {
-                CTDebug(TAG, "writeRecoveredGeoJson(): archive already present for " + fileName);
-                return;
+            String payload = collection.toString();
+            if (coordinateCount(payload) != recovered.points.length()) return false;
+            // A short file is not this flight. Rewrite it. A file that already holds
+            // every journal point is left as-is. An unreadable file keeps the journal.
+            byte[] current = FlightArchiveStore.readFile(dayDir, fileName);
+            if (current != null && coordinateCount(new String(current, StandardCharsets.UTF_8))
+                    == recovered.points.length()) {
+                CTDebug(TAG, "writeRecoveredGeoJson(): archive already holds every point for " + fileName);
+                return true;
             }
-            FlightArchiveStore.writeFlight(
+            if (current == null && archiveFile(recovered) != null) return false;
+            boolean wrote = FlightArchiveStore.writeFlight(
                     dayDir,
                     fileName,
-                    collection.toString(),
+                    payload,
                     recovered.label,
                     recovered.remote,
                     recovered.id,
                     new ArrayList<>());
+            if (!wrote) return false;
+            byte[] readBack = FlightArchiveStore.readFile(dayDir, fileName);
+            if (readBack == null
+                    || coordinateCount(new String(readBack, StandardCharsets.UTF_8)) != recovered.points.length()) {
+                return false;
+            }
             if (localOnly) {
                 FlightPublicationLedger.remember(
                         recovered.id, FlightPublicationLedger.Disposition.LOCAL_ARCHIVED);
+            }
+            return true;
+        }
+
+        private static int coordinateCount(String geoJson) {
+            try {
+                JSONArray coordinates = new JSONObject(geoJson)
+                        .getJSONArray("features")
+                        .getJSONObject(0)
+                        .getJSONObject("geometry")
+                        .getJSONArray("coordinates");
+                return coordinates.length();
+            } catch (Exception error) {
+                return -1;
             }
         }
     }
@@ -415,6 +682,8 @@ public final class WaypointTrackJournal {
         JSONArray points = new JSONArray();
         long firstTimestampMs = 0L;
         long startedAtMs = 0L;
+        FlightOwnershipContext.Snapshot context = FlightOwnershipContext.legacy();
+        boolean sawContext = false;
         try (BufferedReader reader = new BufferedReader(
                 new InputStreamReader(new FileInputStream(file), StandardCharsets.UTF_8))) {
             String line;
@@ -437,14 +706,18 @@ public final class WaypointTrackJournal {
                             .put(String.format(Locale.US, "%d", row.optLong("t")));
                     points.put(coordinate);
                     if (firstTimestampMs <= 0L) firstTimestampMs = row.optLong("t");
+                } else if (CONTEXT.equals(type)) {
+                    context = FlightOwnershipContext.fromJson(row);
+                    sawContext = true;
                 } else if (FINISHED.equals(type)) {
                     finished = true;
                 }
             }
         }
         if (id.isEmpty()) return null;
+        if (!sawContext) context = FlightOwnershipContext.legacy();
         return new RecoveredFlight(id, remote, label, map, team, points, finished,
-                firstTimestampMs, startedAtMs);
+                firstTimestampMs, startedAtMs, context);
     }
 
     @VisibleForTesting
@@ -458,14 +731,23 @@ public final class WaypointTrackJournal {
         final boolean finished;
         final long firstTimestampMs;
         final long startedAtMs;
+        final FlightOwnershipContext.Snapshot context;
 
         RecoveredFlight(String id, String remote, String label, String map, String team,
                         JSONArray points, boolean finished, long firstTimestampMs) {
-            this(id, remote, label, map, team, points, finished, firstTimestampMs, 0L);
+            this(id, remote, label, map, team, points, finished, firstTimestampMs, 0L,
+                    FlightOwnershipContext.legacy());
         }
 
         RecoveredFlight(String id, String remote, String label, String map, String team,
                         JSONArray points, boolean finished, long firstTimestampMs, long startedAtMs) {
+            this(id, remote, label, map, team, points, finished, firstTimestampMs, startedAtMs,
+                    FlightOwnershipContext.legacy());
+        }
+
+        RecoveredFlight(String id, String remote, String label, String map, String team,
+                        JSONArray points, boolean finished, long firstTimestampMs, long startedAtMs,
+                        FlightOwnershipContext.Snapshot context) {
             this.id = id;
             this.remote = remote;
             this.label = label;
@@ -475,6 +757,7 @@ public final class WaypointTrackJournal {
             this.finished = finished;
             this.firstTimestampMs = firstTimestampMs;
             this.startedAtMs = startedAtMs;
+            this.context = context == null ? FlightOwnershipContext.legacy() : context;
         }
     }
 

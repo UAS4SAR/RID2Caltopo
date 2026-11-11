@@ -1,0 +1,676 @@
+########################################################################
+# RID2Caltopo 2.5.8 (444) running on iPadOS 27.0.1 (iPad13,4)
+# Writing logs to: /var/mobile/Containers/Data/Application/2E505062-6AAA-45C7-8BFC-5642A68BD124/Documents/RID2Caltopo/FlightStorage/2026-11-11/Log_11Nov2026-081843-PST-0800.txt
+########################################################################
+2026-11-11T08:18:43.848 PST -08:00 [INFO][11233-5635] [BackupProtection] Private storage excluded; operational Library data remains backup-eligible
+2026-11-11T08:18:43.864 PST -08:00 [INFO][11233-5635] [BackupProtection] Device-bound credential protection checked; pending=0
+2026-11-11T08:18:43.872 PST -08:00 [INFO][11233-9731] [Terms] TermsAcceptanceRestored version=2026-10-24.1 sha256=f8c4b55b49f5ddba2f4bce15604a66d4a0912e67eca0afe751592b9fc19b0a64 acceptedAt=2026-10-25T01:52:08Z scope=local-installation
+2026-11-11T08:18:43.886 PST -08:00 [INFO][11233-main] [App] Process launched pid=11233 state=inactive options=[] log=Log_11Nov2026-081843-PST-0800.txt
+2026-11-11T08:18:43.887 PST -08:00 [INFO][11233-4355] [MappingStorage] Mapping storage: already migrated
+2026-11-11T08:18:43.977 PST -08:00 [INFO][11233-main] [AlertCoordinator] Started; alert evaluation runs independently of the UI (evaluate every 1 s, maintenance every 15 s)
+2026-11-11T08:18:43.985 PST -08:00 [INFO][11233-main] [ClueTerrain] diag activeClueTerrainTasks=0 mainHitchCount=0 mapOverlayRebuilds=0
+2026-11-11T08:18:43.988 PST -08:00 [INFO][11233-main] [ProximityAlert] Evaluation stale=0 allAircraft=false enabled=false suspended=false tracks=0 team=0 eligible=
+2026-11-11T08:18:43.990 PST -08:00 [ERROR][11233-main] [MediaMTX] RTMP listener unavailable while server is stopped; starting
+2026-11-11T08:18:44.079 PST -08:00 [INFO][11233-main] [Clue] clue integrity orphans=0 missingPhoto=0 pendingOrFailed=0
+2026-11-11T08:18:44.233 PST -08:00 [DEBUG][11233-19971] [MediaMTX] 2026/11/11 16:18:44 INF MediaMTX v1.16.2-dirty, ios, arm64
+2026-11-11T08:18:44.234 PST -08:00 [DEBUG][11233-19971] [MediaMTX] 2026/11/11 16:18:44 INF configuration loaded from /private/var/mobile/Containers/Data/Application/2E505062-6AAA-45C7-8BFC-5642A68BD124/tmp/RID2Caltopo-MediaMTX/mediamtx.yml
+2026-11-11T08:18:44.234 PST -08:00 [DEBUG][11233-19971] [MediaMTX] 2026/11/11 16:18:44 INF [metrics] listener opened on 127.0.0.1:9998
+2026-11-11T08:18:44.234 PST -08:00 [DEBUG][11233-19971] [MediaMTX] 2026/11/11 16:18:44 DEB path manager created
+2026-11-11T08:18:44.235 PST -08:00 [DEBUG][11233-19971] [MediaMTX] 2026/11/11 16:18:44 INF [RTSP] listener opened on 127.0.0.1:8554 (TCP/RTSP)
+2026-11-11T08:18:44.235 PST -08:00 [DEBUG][11233-19971] [MediaMTX] 2026/11/11 16:18:44 INF [RTMP] listener opened on :1935
+2026-11-11T08:18:44.235 PST -08:00 [DEBUG][11233-19971] [MediaMTX] 2026/11/11 16:18:44 INF [HLS] listener opened on 127.0.0.1:8888
+2026-11-11T08:18:44.235 PST -08:00 [DEBUG][11233-19971] [MediaMTX] Go runtime asyncpreemptoff=1
+2026-11-11T08:18:45.069 PST -08:00 [INFO][11233-main] [OrganizationAccess] Device owner authenticated
+2026-11-11T08:18:46.265 PST -08:00 [INFO][11233-main] [MapFocus] Automatic focus evaluation follow=true adjusted=false focused=none streams=
+2026-11-11T08:18:46.329 PST -08:00 [INFO][11233-main] [App] Diagnostic logging started
+2026-11-11T08:18:46.333 PST -08:00 [INFO][11233-main] [ClueTerrain] hitch sources mainHitchCount=1 activeClueTerrainTasks=0 mapOverlayRebuilds=1 lastMapOverlayMs=0.0 lastMapOverlayPoints=0 thumbPresence=0 peerRecv=0 mapAnnot=1 recent=map.overlay@81ms
+2026-11-11T08:18:46.335 PST -08:00 [DEBUG][11233-19971] [MediaMTX] 2026/11/11 16:18:46 INF [RTMP] [conn 127.0.0.1:57138] opened
+2026-11-11T08:18:46.336 PST -08:00 [DEBUG][11233-19971] [MediaMTX] 2026/11/11 16:18:46 DEB [RTMP] [conn 127.0.0.1:57138] RTMP handshake: initializing server connection
+2026-11-11T08:18:46.337 PST -08:00 [DEBUG][11233-19971] [MediaMTX] 2026/11/11 16:18:46 INF [RTMP] [conn 127.0.0.1:57138] RTMP handshake failed during initialization: elapsedMs=1 socketReads=1 socketBytes=0 socketWaitMs=1 maxSocketReadMs=1 error=EOF
+2026-11-11T08:18:46.337 PST -08:00 [DEBUG][11233-19971] [MediaMTX] 2026/11/11 16:18:46 INF [RTMP] [conn 127.0.0.1:57138] closed: EOF
+2026-11-11T08:18:46.342 PST -08:00 [INFO][11233-main] [PersonalBrowser] navigation-finished frame=(0.0, 0.0, 0.0, 0.0) window=(0.0, 0.0) zoom=1.0 range=0.25...1.0 offset=(0.0, 0.0) content=(0.0, 0.0)
+2026-11-11T08:18:46.448 PST -08:00 [INFO][11233-main] [App] Application UI started
+2026-11-11T08:18:46.448 PST -08:00 [INFO][11233-main] [Location] Background operation enabled for this session
+2026-11-11T08:18:46.449 PST -08:00 [INFO][11233-main] [NetworkChecks] Network path available; refreshing safety data and organization Tracker check-in
+2026-11-11T08:18:46.449 PST -08:00 [INFO][11233-main] [NetworkChecks] connectivity restored → flush clues=0
+2026-11-11T08:18:46.449 PST -08:00 [INFO][11233-main] [BluetoothRID] Waiting
+2026-11-11T08:18:46.449 PST -08:00 [INFO][11233-main] [BluetoothRID] Scanning
+2026-11-11T08:18:46.450 PST -08:00 [INFO][11233-9731] [NetworkChecks] connectivity restored → flush archives=0 liveTracks=0 clues=wake
+2026-11-11T08:18:46.451 PST -08:00 [DEBUG][11233-16643] [MapCache] cache index ready files=16758 reason=cache elapsedMs=58
+2026-11-11T08:18:46.478 PST -08:00 [INFO][11233-main] [TrackerPeer] Standalone flights stay independent
+2026-11-11T08:18:46.494 PST -08:00 [INFO][11233-main] [Location] Authorization: when in use
+2026-11-11T08:18:46.497 PST -08:00 [INFO][11233-main] [Location] Published Core Location cache accuracyMeters=21 ageSeconds=0 provisional=true
+2026-11-11T08:18:46.498 PST -08:00 [INFO][11233-main] [NetworkDiagnostics] Network snapshotId=net-1 reason=startup ssid=taylorfam2 bssidHash=af6177bea225 ipv4=en0=192.168.68.55 wifiRssiDbm=unavailable status=satisfied interfaces=wifi expensive=false constrained=false
+2026-11-11T08:18:46.499 PST -08:00 [INFO][11233-main] [Location] Authorization: when in use
+2026-11-11T08:18:46.501 PST -08:00 [INFO][11233-main] [Location] Published fresh fix accuracyMeters=20 ageSeconds=3 provisional=false
+2026-11-11T08:18:46.507 PST -08:00 [INFO][11233-main] [MapViewport] Initial center set from operator location
+2026-11-11T08:18:46.516 PST -08:00 [INFO][11233-main] [Location] ±20 m
+2026-11-11T08:18:46.516 PST -08:00 [INFO][11233-main] [Network] Controller RTMP server rtmp://192.168.68.55 interfaces=en0=192.168.68.55
+2026-11-11T08:18:46.521 PST -08:00 [INFO][11233-main] [Location] Published fresh fix accuracyMeters=20 ageSeconds=0 provisional=false
+2026-11-11T08:18:46.671 PST -08:00 [INFO][11233-80387] [CalTopo] Ignoring duplicate publisher configuration for map id=
+2026-11-11T08:18:47.247 PST -08:00 [INFO][11233-main] [OrganizationAccess] Tracker account verification HTTP 200
+2026-11-11T08:18:47.249 PST -08:00 [INFO][11233-main] [OrganizationAccess] Tracker account verification completed; identityPresent=true
+2026-11-11T08:18:47.425 PST -08:00 [INFO][11233-13831] [TerrainPrefetch] S1M preparation tiles=2 operatingRadiusM=1609.344
+2026-11-11T08:18:47.620 PST -08:00 [INFO][11233-main] [Airspace] FAA Facility Map returned 0 record(s)
+2026-11-11T08:18:48.309 PST -08:00 [INFO][11233-main] [Video] Native recording decoder opening 1sar7djmtrc4td_10Nov2026_173850_PST.mp4 backend=FFmpeg v2.5.6rc3-45-g4eeb914e / VideoToolbox recording playback
+2026-11-11T08:18:48.309 PST -08:00 [INFO][11233-main] [Video] Local managed-video playback requested file=1sar7djmtrc4td_10Nov2026_173850_PST.mp4
+2026-11-11T08:18:48.322 PST -08:00 [INFO][11233-main] [Video] Native recording decoder opening 1sar7djmn4pr_10Nov2026_063546_PST.mp4 backend=FFmpeg v2.5.6rc3-45-g4eeb914e / VideoToolbox recording playback
+2026-11-11T08:18:48.322 PST -08:00 [INFO][11233-main] [Video] Local managed-video playback requested file=1sar7djmn4pr_10Nov2026_063546_PST.mp4
+2026-11-11T08:18:48.348 PST -08:00 [INFO][11233-main] [RecordingCatalog] Read recording metadata file=1sar7djmtrc4td_10Nov2026_174425_PST.mp4 sizeBytes=215844772
+2026-11-11T08:18:48.348 PST -08:00 [INFO][11233-main] [RecordingCatalog] Read recording metadata file=1sar7djmtrc4td_11Nov2026_072922_PST.mp4 sizeBytes=120100172
+2026-11-11T08:18:48.434 PST -08:00 [INFO][11233-main] [ClueTerrain] hitch sources mainHitchCount=4 activeClueTerrainTasks=0 mapOverlayRebuilds=1 lastMapOverlayMs=0.0 lastMapOverlayPoints=0 thumbPresence=0 peerRecv=0 mapAnnot=1 recent=map.overlay@2184ms
+2026-11-11T08:18:48.810 PST -08:00 [INFO][11233-36643] [TerrainPrefetch] Terrain preparation complete=true
+2026-11-11T08:18:48.867 PST -08:00 [INFO][11233-main] [LandRules] Loaded 0 protected-land area(s); sourceErrors=0
+2026-11-11T08:18:49.217 PST -08:00 [INFO][11233-main] [NOTAM] Fetched 45 notices radiusStatuteMiles=1
+2026-11-11T08:18:49.241 PST -08:00 [DEBUG][11233-main] [TrackerPeer] Managed video thumbnail encode elapsedMs=28 bytes=8909 src=1920x1088
+2026-11-11T08:18:49.241 PST -08:00 [DEBUG][11233-main] [TrackerPeer] Managed video thumbnail captured session=0a442f75-25cf-79e3-4ac5-fbc21d4227d9 drone=1sar7djmtrc4td revision=1794413929240
+2026-11-11T08:18:49.253 PST -08:00 [DEBUG][11233-main] [TrackerPeer] Managed video thumbnail encode elapsedMs=11 bytes=22946 src=1280x720
+2026-11-11T08:18:49.463 PST -08:00 [INFO][11233-main] [ClueTerrain] hitch sources mainHitchCount=6 activeClueTerrainTasks=0 mapOverlayRebuilds=1 lastMapOverlayMs=0.0 lastMapOverlayPoints=0 thumbPresence=4 peerRecv=0 mapAnnot=1 recent=map.overlay@3213ms,thumb.await@222ms,thumb.apply@222ms/8909B,thumb.await@210ms,thumb.apply@210ms/22946B
+2026-11-11T08:18:50.056 PST -08:00 [INFO][11233-80387] [TerrainPrefetch] S1M decode warm complete operatingRadiusM=1609.344
+2026-11-11T08:18:50.337 PST -08:00 [INFO][11233-main] [Video] Native recording decoder opening 1sar7djmtrc4td_10Nov2026_123433_PST.mp4 backend=FFmpeg v2.5.6rc3-45-g4eeb914e / VideoToolbox recording playback
+2026-11-11T08:18:50.337 PST -08:00 [INFO][11233-main] [Video] Local managed-video playback requested file=1sar7djmtrc4td_10Nov2026_123433_PST.mp4
+2026-11-11T08:18:50.345 PST -08:00 [INFO][11233-main] [Video] Native recording decoder opening 1sar7djmtrc4td_10Nov2026_174425_PST.mp4 backend=FFmpeg v2.5.6rc3-45-g4eeb914e / VideoToolbox recording playback
+2026-11-11T08:18:50.345 PST -08:00 [INFO][11233-main] [Video] Local managed-video playback requested file=1sar7djmtrc4td_10Nov2026_174425_PST.mp4
+2026-11-11T08:18:50.369 PST -08:00 [INFO][11233-main] [RecordingCatalog] Read recording metadata file=1sar7djmtrc4td_10Nov2026_173850_PST.mp4 sizeBytes=127127518
+2026-11-11T08:18:50.370 PST -08:00 [INFO][11233-main] [RecordingCatalog] Read recording metadata file=1sar7djmtrc4td_10Nov2026_171125_PST.mp4 sizeBytes=91511472
+2026-11-11T08:18:50.893 PST -08:00 [DEBUG][11233-main] [MapPane] Mapping layers ready count=3 selected=none
+2026-11-11T08:18:50.909 PST -08:00 [INFO][11233-main] [TrackerPeer] Connecting to tracker
+2026-11-11T08:18:50.952 PST -08:00 [INFO][11233-main] [ClueTerrain] hitch sources mainHitchCount=8 activeClueTerrainTasks=0 mapOverlayRebuilds=1 lastMapOverlayMs=0.0 lastMapOverlayPoints=0 thumbPresence=4 peerRecv=0 mapAnnot=1 recent=map.overlay@4701ms,thumb.await@1710ms,thumb.apply@1710ms/8909B,thumb.await@1698ms,thumb.apply@1698ms/22946B
+2026-11-11T08:18:50.969 PST -08:00 [INFO][11233-main] [RecordingCatalog] Read recording metadata file=1sar7djmtrc4td_10Nov2026_170800_PST.mp4 sizeBytes=86653537
+2026-11-11T08:18:50.969 PST -08:00 [INFO][11233-main] [RecordingCatalog] Read recording metadata file=1sar7djmtrc4td_10Nov2026_144650_PST.mp4 sizeBytes=96879923
+2026-11-11T08:18:51.264 PST -08:00 [DEBUG][11233-main] [TrackerPeer] Managed video thumbnail encode elapsedMs=18 bytes=8252 src=1920x1088
+2026-11-11T08:18:51.264 PST -08:00 [DEBUG][11233-main] [TrackerPeer] Managed video thumbnail encode elapsedMs=18 bytes=29737 src=1920x1088
+2026-11-11T08:18:51.285 PST -08:00 [INFO][11233-main] [TrackerPeer] WebSocket opened mapId='4J0LF02' zoneId='f6cbd6d2-ea23-45cd-b4ef-a559822c31ad'
+2026-11-11T08:18:51.297 PST -08:00 [INFO][11233-main] [TrackerPeer] Waiting for tracker hello
+2026-11-11T08:18:51.342 PST -08:00 [INFO][11233-main] [Map] CalTopo artifact refresh mode=full received=32 features=32 ignoredTracks=0 10 markers, 4 lines, 10 areas
+2026-11-11T08:18:51.475 PST -08:00 [INFO][11233-main] [TrackerPeer] Tracker verified
+2026-11-11T08:18:51.479 PST -08:00 [INFO][11233-main] [TrackerPeer] Peer zones updated count=0
+2026-11-11T08:18:52.141 PST -08:00 [DEBUG][11233-main] [TrackerPeer] Managed video presence accepted count=1 sessions=20
+2026-11-11T08:18:52.385 PST -08:00 [INFO][11233-main] [Video] Native recording decoder opening 1sar7djmtrc4td_10Nov2026_170800_PST.mp4 backend=FFmpeg v2.5.6rc3-45-g4eeb914e / VideoToolbox recording playback
+2026-11-11T08:18:52.385 PST -08:00 [INFO][11233-main] [Video] Local managed-video playback requested file=1sar7djmtrc4td_10Nov2026_170800_PST.mp4
+2026-11-11T08:18:52.397 PST -08:00 [INFO][11233-main] [Video] Native recording decoder opening 1sar7djmtrc4td_11Nov2026_072922_PST.mp4 backend=FFmpeg v2.5.6rc3-45-g4eeb914e / VideoToolbox recording playback
+2026-11-11T08:18:52.397 PST -08:00 [INFO][11233-main] [Video] Local managed-video playback requested file=1sar7djmtrc4td_11Nov2026_072922_PST.mp4
+2026-11-11T08:18:52.414 PST -08:00 [INFO][11233-main] [RecordingCatalog] Read recording metadata file=1sar7djmtrc4td_10Nov2026_140942_PST.mp4 sizeBytes=80305745
+2026-11-11T08:18:52.414 PST -08:00 [INFO][11233-main] [RecordingCatalog] Read recording metadata file=1sar7djmtrc4td_10Nov2026_144221_PST.mp4 sizeBytes=114940243
+2026-11-11T08:18:53.365 PST -08:00 [DEBUG][11233-main] [TrackerPeer] Managed video thumbnail encode elapsedMs=27 bytes=22644 src=1920x1088
+2026-11-11T08:18:53.365 PST -08:00 [DEBUG][11233-main] [TrackerPeer] Managed video thumbnail encode elapsedMs=28 bytes=24775 src=1920x1088
+2026-11-11T08:18:54.464 PST -08:00 [INFO][11233-main] [Video] Native recording decoder opening 1sar7djmtrc4td_10Nov2026_140440_PST.mp4 backend=FFmpeg v2.5.6rc3-45-g4eeb914e / VideoToolbox recording playback
+2026-11-11T08:18:54.464 PST -08:00 [INFO][11233-main] [Video] Local managed-video playback requested file=1sar7djmtrc4td_10Nov2026_140440_PST.mp4
+2026-11-11T08:18:54.475 PST -08:00 [INFO][11233-main] [Video] Native recording decoder opening 1sar7djmtrc4td_10Nov2026_171125_PST.mp4 backend=FFmpeg v2.5.6rc3-45-g4eeb914e / VideoToolbox recording playback
+2026-11-11T08:18:54.475 PST -08:00 [INFO][11233-main] [Video] Local managed-video playback requested file=1sar7djmtrc4td_10Nov2026_171125_PST.mp4
+2026-11-11T08:18:54.492 PST -08:00 [INFO][11233-main] [RecordingCatalog] Read recording metadata file=1sar7djmtrc4td_10Nov2026_133326_PST.mp4 sizeBytes=145318157
+2026-11-11T08:18:54.492 PST -08:00 [INFO][11233-main] [RecordingCatalog] Read recording metadata file=1sar7djmtrc4td_10Nov2026_140440_PST.mp4 sizeBytes=100455434
+2026-11-11T08:18:55.444 PST -08:00 [DEBUG][11233-main] [TrackerPeer] Managed video thumbnail encode elapsedMs=28 bytes=25496 src=1920x1088
+2026-11-11T08:18:55.444 PST -08:00 [DEBUG][11233-main] [TrackerPeer] Managed video thumbnail encode elapsedMs=28 bytes=23863 src=1920x1088
+2026-11-11T08:18:56.336 PST -08:00 [INFO][11233-main] [ClueTerrain] hitch sources mainHitchCount=11 activeClueTerrainTasks=0 mapOverlayRebuilds=1 lastMapOverlayMs=0.0 lastMapOverlayPoints=0 thumbPresence=16 peerRecv=0 mapAnnot=1 recent=thumb.await@2971ms,thumb.apply@2971ms/22644B,thumb.await@2970ms,thumb.apply@2959ms/24775B,thumb.await@892ms,thumb.await@892ms,thumb.apply@892ms/25496B,thumb.apply@891ms/23863B
+2026-11-11T08:18:56.474 PST -08:00 [INFO][11233-main] [Video] Native recording decoder opening 1sar7djmtrc4td_10Nov2026_144650_PST.mp4 backend=FFmpeg v2.5.6rc3-45-g4eeb914e / VideoToolbox recording playback
+2026-11-11T08:18:56.474 PST -08:00 [INFO][11233-main] [Video] Local managed-video playback requested file=1sar7djmtrc4td_10Nov2026_144650_PST.mp4
+2026-11-11T08:18:56.488 PST -08:00 [INFO][11233-main] [Video] Native recording decoder opening 1sar7djmtrc4td_10Nov2026_132843_PST.mp4 backend=FFmpeg v2.5.6rc3-45-g4eeb914e / VideoToolbox recording playback
+2026-11-11T08:18:56.488 PST -08:00 [INFO][11233-main] [Video] Local managed-video playback requested file=1sar7djmtrc4td_10Nov2026_132843_PST.mp4
+2026-11-11T08:18:56.506 PST -08:00 [INFO][11233-main] [RecordingCatalog] Read recording metadata file=1sar7djmtrc4td_10Nov2026_132843_PST.mp4 sizeBytes=112146862
+2026-11-11T08:18:56.506 PST -08:00 [INFO][11233-main] [RecordingCatalog] Read recording metadata file=1sar7djmtrc4td_10Nov2026_123932_PST.mp4 sizeBytes=121638971
+2026-11-11T08:18:57.403 PST -08:00 [DEBUG][11233-main] [TrackerPeer] Managed video thumbnail encode elapsedMs=21 bytes=25881 src=1920x1088
+2026-11-11T08:18:57.420 PST -08:00 [DEBUG][11233-main] [TrackerPeer] Managed video thumbnail encode elapsedMs=17 bytes=32251 src=1920x1088
+2026-11-11T08:18:58.420 PST -08:00 [INFO][11233-main] [ClueTerrain] hitch sources mainHitchCount=12 activeClueTerrainTasks=0 mapOverlayRebuilds=1 lastMapOverlayMs=0.0 lastMapOverlayPoints=0 thumbPresence=20 peerRecv=0 mapAnnot=1 recent=thumb.await@2975ms,thumb.await@2975ms,thumb.apply@2975ms/25496B,thumb.apply@2974ms/23863B,thumb.await@1016ms,thumb.apply@1016ms/25881B,thumb.await@998ms,thumb.apply@998ms/32251B
+2026-11-11T08:18:58.474 PST -08:00 [INFO][11233-main] [Video] Native recording decoder opening 1sar7djmtrc4td_10Nov2026_133326_PST.mp4 backend=FFmpeg v2.5.6rc3-45-g4eeb914e / VideoToolbox recording playback
+2026-11-11T08:18:58.474 PST -08:00 [INFO][11233-main] [Video] Local managed-video playback requested file=1sar7djmtrc4td_10Nov2026_133326_PST.mp4
+2026-11-11T08:18:58.484 PST -08:00 [INFO][11233-main] [Video] Native recording decoder opening 1sar7djmn4pr_10Nov2026_075002_PST.mp4 backend=FFmpeg v2.5.6rc3-45-g4eeb914e / VideoToolbox recording playback
+2026-11-11T08:18:58.484 PST -08:00 [INFO][11233-main] [Video] Local managed-video playback requested file=1sar7djmn4pr_10Nov2026_075002_PST.mp4
+2026-11-11T08:18:58.499 PST -08:00 [INFO][11233-main] [RecordingCatalog] Read recording metadata file=1sar7djmtrc4td_10Nov2026_123433_PST.mp4 sizeBytes=106365804
+2026-11-11T08:18:58.499 PST -08:00 [INFO][11233-main] [RecordingCatalog] Read recording metadata file=1sar7djmtrc4td_10Nov2026_113131_PST.mp4 sizeBytes=246416005
+2026-11-11T08:18:59.412 PST -08:00 [DEBUG][11233-main] [TrackerPeer] Managed video thumbnail encode elapsedMs=29 bytes=19831 src=1920x1088
+2026-11-11T08:18:59.414 PST -08:00 [DEBUG][11233-72451] [MediaMTX] 2026/11/11 16:18:59 INF [RTMP] [conn 127.0.0.1:57139] opened
+2026-11-11T08:18:59.414 PST -08:00 [DEBUG][11233-72451] [MediaMTX] 2026/11/11 16:18:59 DEB [RTMP] [conn 127.0.0.1:57139] RTMP handshake: initializing server connection
+2026-11-11T08:18:59.415 PST -08:00 [DEBUG][11233-72451] [MediaMTX] 2026/11/11 16:18:59 INF [RTMP] [conn 127.0.0.1:57139] closed: EOF
+2026-11-11T08:18:59.435 PST -08:00 [DEBUG][11233-main] [TrackerPeer] Managed video thumbnail encode elapsedMs=21 bytes=26336 src=1280x720
+2026-11-11T08:19:00.517 PST -08:00 [INFO][11233-main] [Video] Native recording decoder opening 1sar7djmtrc4td_10Nov2026_112538_PST.mp4 backend=FFmpeg v2.5.6rc3-45-g4eeb914e / VideoToolbox recording playback
+2026-11-11T08:19:00.517 PST -08:00 [INFO][11233-main] [Video] Local managed-video playback requested file=1sar7djmtrc4td_10Nov2026_112538_PST.mp4
+2026-11-11T08:19:00.528 PST -08:00 [INFO][11233-main] [Video] Native recording decoder opening 1sar7djmn4pr_10Nov2026_063751_PST.mp4 backend=FFmpeg v2.5.6rc3-45-g4eeb914e / VideoToolbox recording playback
+2026-11-11T08:19:00.529 PST -08:00 [INFO][11233-main] [Video] Local managed-video playback requested file=1sar7djmn4pr_10Nov2026_063751_PST.mp4
+2026-11-11T08:19:00.545 PST -08:00 [INFO][11233-main] [RecordingCatalog] Read recording metadata file=1sar7djmtrc4td_10Nov2026_112538_PST.mp4 sizeBytes=171883577
+2026-11-11T08:19:00.546 PST -08:00 [INFO][11233-main] [RecordingCatalog] Read recording metadata file=1sar7djmtrc4td_10Nov2026_095319_PST.mp4 sizeBytes=128331943
+2026-11-11T08:19:01.469 PST -08:00 [DEBUG][11233-main] [TrackerPeer] Managed video thumbnail encode elapsedMs=51 bytes=20848 src=1920x1088
+2026-11-11T08:19:01.469 PST -08:00 [DEBUG][11233-main] [TrackerPeer] Managed video thumbnail encode elapsedMs=23 bytes=34371 src=1280x720
+2026-11-11T08:19:02.551 PST -08:00 [INFO][11233-main] [Video] Native recording decoder opening 1sar7djmtrc4td_10Nov2026_140942_PST.mp4 backend=FFmpeg v2.5.6rc3-45-g4eeb914e / VideoToolbox recording playback
+2026-11-11T08:19:02.551 PST -08:00 [INFO][11233-main] [Video] Local managed-video playback requested file=1sar7djmtrc4td_10Nov2026_140942_PST.mp4
+2026-11-11T08:19:02.560 PST -08:00 [INFO][11233-main] [Video] Native recording decoder opening 1sar7djmn4pr_10Nov2026_090237_PST.mp4 backend=FFmpeg v2.5.6rc3-45-g4eeb914e / VideoToolbox recording playback
+2026-11-11T08:19:02.561 PST -08:00 [INFO][11233-main] [Video] Local managed-video playback requested file=1sar7djmn4pr_10Nov2026_090237_PST.mp4
+2026-11-11T08:19:02.576 PST -08:00 [INFO][11233-main] [RecordingCatalog] Read recording metadata file=1sar7djmn4pr_10Nov2026_075002_PST.mp4 sizeBytes=137510670
+2026-11-11T08:19:02.576 PST -08:00 [INFO][11233-main] [RecordingCatalog] Read recording metadata file=1sar7djmn4pr_10Nov2026_090237_PST.mp4 sizeBytes=148360713
+2026-11-11T08:19:03.544 PST -08:00 [DEBUG][11233-main] [TrackerPeer] Managed video thumbnail encode elapsedMs=37 bytes=26704 src=1280x720
+2026-11-11T08:19:03.544 PST -08:00 [DEBUG][11233-main] [TrackerPeer] Managed video thumbnail encode elapsedMs=37 bytes=20750 src=1920x1088
+2026-11-11T08:19:04.578 PST -08:00 [INFO][11233-main] [Video] Native recording decoder opening 1sar7djmtrc4td_10Nov2026_095319_PST.mp4 backend=FFmpeg v2.5.6rc3-45-g4eeb914e / VideoToolbox recording playback
+2026-11-11T08:19:04.578 PST -08:00 [INFO][11233-main] [Video] Local managed-video playback requested file=1sar7djmtrc4td_10Nov2026_095319_PST.mp4
+2026-11-11T08:19:04.588 PST -08:00 [INFO][11233-main] [Video] Native recording decoder opening 1sar7djmtrc4td_10Nov2026_144221_PST.mp4 backend=FFmpeg v2.5.6rc3-45-g4eeb914e / VideoToolbox recording playback
+2026-11-11T08:19:04.588 PST -08:00 [INFO][11233-main] [Video] Local managed-video playback requested file=1sar7djmtrc4td_10Nov2026_144221_PST.mp4
+2026-11-11T08:19:04.603 PST -08:00 [INFO][11233-main] [RecordingCatalog] Read recording metadata file=1sar7djmn4pr_10Nov2026_063546_PST.mp4 sizeBytes=122965786
+2026-11-11T08:19:04.603 PST -08:00 [INFO][11233-main] [RecordingCatalog] Read recording metadata file=1sar7djmn4pr_10Nov2026_063751_PST.mp4 sizeBytes=152155098
+2026-11-11T08:19:05.248 PST -08:00 [INFO][11233-main] [TrackerPeer] Peer zones updated count=1
+2026-11-11T08:19:05.282 PST -08:00 [INFO][11233-main] [TrackerPeer] Peer zones updated count=1
+2026-11-11T08:19:05.299 PST -08:00 [INFO][11233-main] [ClueTerrain] hitch sources mainHitchCount=13 activeClueTerrainTasks=0 mapOverlayRebuilds=1 lastMapOverlayMs=0.0 lastMapOverlayPoints=0 thumbPresence=32 peerRecv=0 mapAnnot=1 recent=thumb.await@3829ms,thumb.await@3829ms,thumb.apply@3829ms/20848B,thumb.apply@3828ms/34371B,thumb.await@1754ms,thumb.await@1754ms,thumb.apply@1754ms/26704B,thumb.apply@1754ms/20750B
+2026-11-11T08:19:05.535 PST -08:00 [DEBUG][11233-main] [TrackerPeer] Managed video thumbnail encode elapsedMs=26 bytes=23367 src=1920x1088
+2026-11-11T08:19:05.536 PST -08:00 [DEBUG][11233-main] [TrackerPeer] Managed video thumbnail encode elapsedMs=27 bytes=28114 src=1920x1088
+2026-11-11T08:19:06.591 PST -08:00 [INFO][11233-main] [Video] Native recording decoder opening 1sar7djmtrc4td_10Nov2026_113131_PST.mp4 backend=FFmpeg v2.5.6rc3-45-g4eeb914e / VideoToolbox recording playback
+2026-11-11T08:19:06.591 PST -08:00 [INFO][11233-main] [Video] Local managed-video playback requested file=1sar7djmtrc4td_10Nov2026_113131_PST.mp4
+2026-11-11T08:19:06.600 PST -08:00 [INFO][11233-main] [Video] Native recording decoder opening 1sar7djmtrc4td_10Nov2026_123932_PST.mp4 backend=FFmpeg v2.5.6rc3-45-g4eeb914e / VideoToolbox recording playback
+2026-11-11T08:19:06.600 PST -08:00 [INFO][11233-main] [Video] Local managed-video playback requested file=1sar7djmtrc4td_10Nov2026_123932_PST.mp4
+2026-11-11T08:19:07.586 PST -08:00 [INFO][11233-main] [ClueTerrain] hitch sources mainHitchCount=14 activeClueTerrainTasks=0 mapOverlayRebuilds=1 lastMapOverlayMs=0.0 lastMapOverlayPoints=0 thumbPresence=36 peerRecv=0 mapAnnot=1 recent=thumb.await@4042ms,thumb.await@4042ms,thumb.apply@4041ms/26704B,thumb.apply@4041ms/20750B,thumb.await@2050ms,thumb.apply@2050ms/23367B,thumb.await@2050ms,thumb.apply@2029ms/28114B
+2026-11-11T08:19:07.587 PST -08:00 [DEBUG][11233-main] [TrackerPeer] Managed video thumbnail encode elapsedMs=35 bytes=23453 src=1920x1088
+2026-11-11T08:19:07.587 PST -08:00 [DEBUG][11233-main] [TrackerPeer] Managed video thumbnail encode elapsedMs=35 bytes=21443 src=1920x1088
+2026-11-11T08:19:11.329 PST -08:00 [INFO][11233-main] [Location] Published fresh fix accuracyMeters=13 ageSeconds=0 provisional=false
+2026-11-11T08:19:11.355 PST -08:00 [INFO][11233-main] [Location] ±13 m
+2026-11-11T08:19:11.561 PST -08:00 [INFO][11233-main] [Map] CalTopo artifact refresh mode=delta received=0 features=32 ignoredTracks=0 10 markers, 4 lines, 10 areas
+2026-11-11T08:19:13.985 PST -08:00 [INFO][11233-main] [ClueTerrain] diag activeClueTerrainTasks=0 mainHitchCount=14 mapOverlayRebuilds=1
+2026-11-11T08:19:14.796 PST -08:00 [DEBUG][11233-9731] [MediaMTX] 2026/11/11 16:19:14 INF [RTMP] [conn 127.0.0.1:57140] opened
+2026-11-11T08:19:14.796 PST -08:00 [DEBUG][11233-9731] [MediaMTX] 2026/11/11 16:19:14 DEB [RTMP] [conn 127.0.0.1:57140] RTMP handshake: initializing server connection
+2026-11-11T08:19:14.797 PST -08:00 [DEBUG][11233-9731] [MediaMTX] 2026/11/11 16:19:14 INF [RTMP] [conn 127.0.0.1:57140] closed: EOF
+2026-11-11T08:19:16.580 PST -08:00 [INFO][11233-main] [MapFocus] Operator pan or zoom suspends automatic follow
+2026-11-11T08:19:16.601 PST -08:00 [INFO][11233-main] [MapFocus] Automatic focus evaluation follow=true adjusted=true focused=none streams=
+2026-11-11T08:19:29.972 PST -08:00 [DEBUG][11233-52483] [MediaMTX] 2026/11/11 16:19:29 INF [RTMP] [conn 127.0.0.1:57498] opened
+2026-11-11T08:19:29.973 PST -08:00 [DEBUG][11233-52483] [MediaMTX] 2026/11/11 16:19:29 DEB [RTMP] [conn 127.0.0.1:57498] RTMP handshake: initializing server connection
+2026-11-11T08:19:29.973 PST -08:00 [DEBUG][11233-52483] [MediaMTX] 2026/11/11 16:19:29 INF [RTMP] [conn 127.0.0.1:57498] closed: EOF
+2026-11-11T08:19:31.644 PST -08:00 [INFO][11233-main] [Map] CalTopo artifact refresh mode=delta received=0 features=32 ignoredTracks=0 10 markers, 4 lines, 10 areas
+2026-11-11T08:19:43.984 PST -08:00 [INFO][11233-main] [ClueTerrain] diag activeClueTerrainTasks=0 mainHitchCount=14 mapOverlayRebuilds=1
+2026-11-11T08:19:45.086 PST -08:00 [DEBUG][11233-47119] [MediaMTX] 2026/11/11 16:19:45 INF [RTMP] [conn 127.0.0.1:57499] opened
+2026-11-11T08:19:45.086 PST -08:00 [DEBUG][11233-47119] [MediaMTX] 2026/11/11 16:19:45 DEB [RTMP] [conn 127.0.0.1:57499] RTMP handshake: initializing server connection
+2026-11-11T08:19:45.086 PST -08:00 [DEBUG][11233-47119] [MediaMTX] 2026/11/11 16:19:45 INF [RTMP] [conn 127.0.0.1:57499] closed: EOF
+2026-11-11T08:19:52.324 PST -08:00 [INFO][11233-main] [Map] CalTopo artifact refresh mode=delta received=0 features=32 ignoredTracks=0 10 markers, 4 lines, 10 areas
+2026-11-11T08:19:55.335 PST -08:00 [DEBUG][11233-main] [TrackerPeer] Managed video presence accepted count=24 sessions=20
+2026-11-11T08:20:00.217 PST -08:00 [DEBUG][11233-52483] [MediaMTX] 2026/11/11 16:20:00 INF [RTMP] [conn 127.0.0.1:57500] opened
+2026-11-11T08:20:00.218 PST -08:00 [DEBUG][11233-52483] [MediaMTX] 2026/11/11 16:20:00 DEB [RTMP] [conn 127.0.0.1:57500] RTMP handshake: initializing server connection
+2026-11-11T08:20:00.218 PST -08:00 [DEBUG][11233-52483] [MediaMTX] 2026/11/11 16:20:00 INF [RTMP] [conn 127.0.0.1:57500] RTMP handshake failed during initialization: elapsedMs=0 socketReads=1 socketBytes=0 socketWaitMs=0 maxSocketReadMs=0 error=EOF
+2026-11-11T08:20:00.218 PST -08:00 [DEBUG][11233-52483] [MediaMTX] 2026/11/11 16:20:00 INF [RTMP] [conn 127.0.0.1:57500] closed: EOF
+2026-11-11T08:20:06.136 PST -08:00 [INFO][11233-main] [TrackerPeer] Peer zones updated count=1
+2026-11-11T08:20:12.406 PST -08:00 [INFO][11233-main] [Map] CalTopo artifact refresh mode=delta received=0 features=32 ignoredTracks=0 10 markers, 4 lines, 10 areas
+2026-11-11T08:20:13.985 PST -08:00 [INFO][11233-main] [ClueTerrain] diag activeClueTerrainTasks=0 mainHitchCount=14 mapOverlayRebuilds=1
+2026-11-11T08:20:15.348 PST -08:00 [DEBUG][11233-52483] [MediaMTX] 2026/11/11 16:20:15 INF [RTMP] [conn 127.0.0.1:57501] opened
+2026-11-11T08:20:15.349 PST -08:00 [DEBUG][11233-52483] [MediaMTX] 2026/11/11 16:20:15 DEB [RTMP] [conn 127.0.0.1:57501] RTMP handshake: initializing server connection
+2026-11-11T08:20:15.349 PST -08:00 [DEBUG][11233-52483] [MediaMTX] 2026/11/11 16:20:15 INF [RTMP] [conn 127.0.0.1:57501] closed: EOF
+2026-11-11T08:20:21.564 PST -08:00 [INFO][11233-99415] [CalTopo] adopted folder title=Drone Tracks id=d0a12222-6a08-433a-8b96-c82d3c574214
+2026-11-11T08:20:21.564 PST -08:00 [INFO][11233-99415] [CalTopo] adopted folder title=Drone Tracks 11Nov id=126dc0be-44d7-4ded-8a01-787aa7f909bc
+2026-11-11T08:20:21.568 PST -08:00 [INFO][11233-99415] [CalTopo] Ignoring duplicate publisher configuration for map id=4J0LF02
+2026-11-11T08:20:21.580 PST -08:00 [INFO][11233-main] [CalTopo] Ready
+2026-11-11T08:20:30.471 PST -08:00 [DEBUG][11233-82507] [MediaMTX] 2026/11/11 16:20:30 INF [RTMP] [conn 127.0.0.1:57502] opened
+2026-11-11T08:20:30.471 PST -08:00 [DEBUG][11233-82507] [MediaMTX] 2026/11/11 16:20:30 DEB [RTMP] [conn 127.0.0.1:57502] RTMP handshake: initializing server connection
+2026-11-11T08:20:30.471 PST -08:00 [DEBUG][11233-82507] [MediaMTX] 2026/11/11 16:20:30 INF [RTMP] [conn 127.0.0.1:57502] closed: EOF
+2026-11-11T08:20:32.480 PST -08:00 [INFO][11233-main] [Map] CalTopo artifact refresh mode=delta received=0 features=32 ignoredTracks=0 10 markers, 4 lines, 10 areas
+2026-11-11T08:20:43.247 PST -08:00 [INFO][11233-main] [Location] Published fresh fix accuracyMeters=8 ageSeconds=0 provisional=false
+2026-11-11T08:20:43.257 PST -08:00 [INFO][11233-main] [Location] ±8 m
+2026-11-11T08:20:43.984 PST -08:00 [INFO][11233-main] [ClueTerrain] diag activeClueTerrainTasks=0 mainHitchCount=14 mapOverlayRebuilds=1
+2026-11-11T08:20:45.585 PST -08:00 [DEBUG][11233-82507] [MediaMTX] 2026/11/11 16:20:45 INF [RTMP] [conn 127.0.0.1:57503] opened
+2026-11-11T08:20:45.585 PST -08:00 [DEBUG][11233-82507] [MediaMTX] 2026/11/11 16:20:45 DEB [RTMP] [conn 127.0.0.1:57503] RTMP handshake: initializing server connection
+2026-11-11T08:20:45.585 PST -08:00 [DEBUG][11233-82507] [MediaMTX] 2026/11/11 16:20:45 INF [RTMP] [conn 127.0.0.1:57503] closed: EOF
+2026-11-11T08:20:46.426 PST -08:00 [INFO][11233-main] [BluetoothRID] High-priority scan restart=1 callbacks=0
+2026-11-11T08:20:52.550 PST -08:00 [INFO][11233-main] [Map] CalTopo artifact refresh mode=delta received=0 features=32 ignoredTracks=0 10 markers, 4 lines, 10 areas
+2026-11-11T08:20:55.540 PST -08:00 [DEBUG][11233-main] [TrackerPeer] Managed video presence accepted count=10 sessions=20
+2026-11-11T08:21:00.715 PST -08:00 [DEBUG][11233-52483] [MediaMTX] 2026/11/11 16:21:00 INF [RTMP] [conn 127.0.0.1:57504] opened
+2026-11-11T08:21:00.715 PST -08:00 [DEBUG][11233-52483] [MediaMTX] 2026/11/11 16:21:00 DEB [RTMP] [conn 127.0.0.1:57504] RTMP handshake: initializing server connection
+2026-11-11T08:21:00.715 PST -08:00 [DEBUG][11233-52483] [MediaMTX] 2026/11/11 16:21:00 INF [RTMP] [conn 127.0.0.1:57504] closed: EOF
+2026-11-11T08:21:00.716 PST -08:00 [DEBUG][11233-52483] [MediaMTX] 2026/11/11 16:21:00 INF [RTMP] [conn 127.0.0.1:57504] RTMP handshake failed during initialization: elapsedMs=0 socketReads=1 socketBytes=0 socketWaitMs=0 maxSocketReadMs=0 error=EOF
+2026-11-11T08:21:06.142 PST -08:00 [INFO][11233-main] [TrackerPeer] Peer zones updated count=1
+2026-11-11T08:21:12.890 PST -08:00 [INFO][11233-main] [Map] CalTopo artifact refresh mode=delta received=0 features=32 ignoredTracks=0 10 markers, 4 lines, 10 areas
+2026-11-11T08:21:13.986 PST -08:00 [INFO][11233-main] [ClueTerrain] diag activeClueTerrainTasks=0 mainHitchCount=14 mapOverlayRebuilds=1
+2026-11-11T08:21:15.847 PST -08:00 [DEBUG][11233-77331] [MediaMTX] 2026/11/11 16:21:15 INF [RTMP] [conn 127.0.0.1:57505] opened
+2026-11-11T08:21:15.847 PST -08:00 [DEBUG][11233-77331] [MediaMTX] 2026/11/11 16:21:15 DEB [RTMP] [conn 127.0.0.1:57505] RTMP handshake: initializing server connection
+2026-11-11T08:21:15.847 PST -08:00 [DEBUG][11233-77331] [MediaMTX] 2026/11/11 16:21:15 INF [RTMP] [conn 127.0.0.1:57505] closed: EOF
+2026-11-11T08:21:30.977 PST -08:00 [DEBUG][11233-77331] [MediaMTX] 2026/11/11 16:21:30 INF [RTMP] [conn 127.0.0.1:57506] opened
+2026-11-11T08:21:30.978 PST -08:00 [DEBUG][11233-77331] [MediaMTX] 2026/11/11 16:21:30 DEB [RTMP] [conn 127.0.0.1:57506] RTMP handshake: initializing server connection
+2026-11-11T08:21:30.978 PST -08:00 [DEBUG][11233-77331] [MediaMTX] 2026/11/11 16:21:30 INF [RTMP] [conn 127.0.0.1:57506] closed: EOF
+2026-11-11T08:21:32.973 PST -08:00 [INFO][11233-main] [Map] CalTopo artifact refresh mode=delta received=0 features=32 ignoredTracks=0 10 markers, 4 lines, 10 areas
+2026-11-11T08:21:43.983 PST -08:00 [INFO][11233-main] [ClueTerrain] diag activeClueTerrainTasks=0 mainHitchCount=14 mapOverlayRebuilds=1
+2026-11-11T08:21:46.108 PST -08:00 [DEBUG][11233-72451] [MediaMTX] 2026/11/11 16:21:46 INF [RTMP] [conn 127.0.0.1:57507] opened
+2026-11-11T08:21:46.108 PST -08:00 [DEBUG][11233-72451] [MediaMTX] 2026/11/11 16:21:46 DEB [RTMP] [conn 127.0.0.1:57507] RTMP handshake: initializing server connection
+2026-11-11T08:21:46.109 PST -08:00 [DEBUG][11233-72451] [MediaMTX] 2026/11/11 16:21:46 INF [RTMP] [conn 127.0.0.1:57507] closed: EOF
+2026-11-11T08:21:53.073 PST -08:00 [INFO][11233-main] [Map] CalTopo artifact refresh mode=delta received=0 features=32 ignoredTracks=0 10 markers, 4 lines, 10 areas
+2026-11-11T08:21:56.422 PST -08:00 [DEBUG][11233-main] [TrackerPeer] Managed video presence accepted count=10 sessions=20
+2026-11-11T08:22:01.222 PST -08:00 [DEBUG][11233-47119] [MediaMTX] 2026/11/11 16:22:01 INF [RTMP] [conn 127.0.0.1:57508] opened
+2026-11-11T08:22:01.222 PST -08:00 [DEBUG][11233-47119] [MediaMTX] 2026/11/11 16:22:01 DEB [RTMP] [conn 127.0.0.1:57508] RTMP handshake: initializing server connection
+2026-11-11T08:22:01.223 PST -08:00 [DEBUG][11233-47119] [MediaMTX] 2026/11/11 16:22:01 INF [RTMP] [conn 127.0.0.1:57508] RTMP handshake failed during initialization: elapsedMs=0 socketReads=1 socketBytes=0 socketWaitMs=0 maxSocketReadMs=0 error=EOF
+2026-11-11T08:22:01.223 PST -08:00 [DEBUG][11233-47119] [MediaMTX] 2026/11/11 16:22:01 INF [RTMP] [conn 127.0.0.1:57508] closed: EOF
+2026-11-11T08:22:06.150 PST -08:00 [INFO][11233-main] [TrackerPeer] Peer zones updated count=1
+2026-11-11T08:22:13.139 PST -08:00 [INFO][11233-main] [Map] CalTopo artifact refresh mode=delta received=0 features=32 ignoredTracks=0 10 markers, 4 lines, 10 areas
+2026-11-11T08:22:13.985 PST -08:00 [INFO][11233-main] [ClueTerrain] diag activeClueTerrainTasks=0 mainHitchCount=14 mapOverlayRebuilds=1
+2026-11-11T08:22:16.353 PST -08:00 [DEBUG][11233-77331] [MediaMTX] 2026/11/11 16:22:16 INF [RTMP] [conn 127.0.0.1:57509] opened
+2026-11-11T08:22:16.353 PST -08:00 [DEBUG][11233-77331] [MediaMTX] 2026/11/11 16:22:16 DEB [RTMP] [conn 127.0.0.1:57509] RTMP handshake: initializing server connection
+2026-11-11T08:22:16.354 PST -08:00 [DEBUG][11233-77331] [MediaMTX] 2026/11/11 16:22:16 INF [RTMP] [conn 127.0.0.1:57509] closed: EOF
+2026-11-11T08:22:31.467 PST -08:00 [DEBUG][11233-82507] [MediaMTX] 2026/11/11 16:22:31 INF [RTMP] [conn 127.0.0.1:57510] opened
+2026-11-11T08:22:31.468 PST -08:00 [DEBUG][11233-82507] [MediaMTX] 2026/11/11 16:22:31 DEB [RTMP] [conn 127.0.0.1:57510] RTMP handshake: initializing server connection
+2026-11-11T08:22:31.468 PST -08:00 [DEBUG][11233-82507] [MediaMTX] 2026/11/11 16:22:31 INF [RTMP] [conn 127.0.0.1:57510] closed: EOF
+2026-11-11T08:22:33.390 PST -08:00 [INFO][11233-main] [Map] CalTopo artifact refresh mode=delta received=0 features=32 ignoredTracks=0 10 markers, 4 lines, 10 areas
+2026-11-11T08:22:43.984 PST -08:00 [INFO][11233-main] [ClueTerrain] diag activeClueTerrainTasks=0 mainHitchCount=14 mapOverlayRebuilds=1
+2026-11-11T08:22:46.432 PST -08:00 [INFO][11233-main] [BluetoothRID] High-priority scan restart=2 callbacks=0
+2026-11-11T08:22:46.599 PST -08:00 [DEBUG][11233-72451] [MediaMTX] 2026/11/11 16:22:46 INF [RTMP] [conn 127.0.0.1:57511] opened
+2026-11-11T08:22:46.599 PST -08:00 [DEBUG][11233-72451] [MediaMTX] 2026/11/11 16:22:46 DEB [RTMP] [conn 127.0.0.1:57511] RTMP handshake: initializing server connection
+2026-11-11T08:22:46.599 PST -08:00 [DEBUG][11233-72451] [MediaMTX] 2026/11/11 16:22:46 INF [RTMP] [conn 127.0.0.1:57511] closed: EOF
+2026-11-11T08:22:53.504 PST -08:00 [INFO][11233-main] [Map] CalTopo artifact refresh mode=delta received=0 features=32 ignoredTracks=0 10 markers, 4 lines, 10 areas
+2026-11-11T08:23:01.730 PST -08:00 [DEBUG][11233-77331] [MediaMTX] 2026/11/11 16:23:01 INF [RTMP] [conn 127.0.0.1:57512] opened
+2026-11-11T08:23:01.730 PST -08:00 [DEBUG][11233-77331] [MediaMTX] 2026/11/11 16:23:01 DEB [RTMP] [conn 127.0.0.1:57512] RTMP handshake: initializing server connection
+2026-11-11T08:23:01.731 PST -08:00 [DEBUG][11233-77331] [MediaMTX] 2026/11/11 16:23:01 INF [RTMP] [conn 127.0.0.1:57512] RTMP handshake failed during initialization: elapsedMs=0 socketReads=1 socketBytes=0 socketWaitMs=0 maxSocketReadMs=0 error=EOF
+2026-11-11T08:23:01.731 PST -08:00 [DEBUG][11233-77331] [MediaMTX] 2026/11/11 16:23:01 INF [RTMP] [conn 127.0.0.1:57512] closed: EOF
+2026-11-11T08:23:02.215 PST -08:00 [DEBUG][11233-main] [TrackerPeer] Managed video presence accepted count=11 sessions=20
+2026-11-11T08:23:06.466 PST -08:00 [INFO][11233-main] [TrackerPeer] Peer zones updated count=1
+2026-11-11T08:23:13.656 PST -08:00 [INFO][11233-main] [Map] CalTopo artifact refresh mode=delta received=0 features=32 ignoredTracks=0 10 markers, 4 lines, 10 areas
+2026-11-11T08:23:13.984 PST -08:00 [INFO][11233-main] [ClueTerrain] diag activeClueTerrainTasks=0 mainHitchCount=14 mapOverlayRebuilds=1
+2026-11-11T08:23:16.861 PST -08:00 [DEBUG][11233-77331] [MediaMTX] 2026/11/11 16:23:16 INF [RTMP] [conn 127.0.0.1:57513] opened
+2026-11-11T08:23:16.862 PST -08:00 [DEBUG][11233-77331] [MediaMTX] 2026/11/11 16:23:16 DEB [RTMP] [conn 127.0.0.1:57513] RTMP handshake: initializing server connection
+2026-11-11T08:23:16.862 PST -08:00 [DEBUG][11233-77331] [MediaMTX] 2026/11/11 16:23:16 INF [RTMP] [conn 127.0.0.1:57513] closed: EOF
+2026-11-11T08:23:31.980 PST -08:00 [DEBUG][11233-72451] [MediaMTX] 2026/11/11 16:23:31 INF [RTMP] [conn 127.0.0.1:57514] opened
+2026-11-11T08:23:31.980 PST -08:00 [DEBUG][11233-72451] [MediaMTX] 2026/11/11 16:23:31 DEB [RTMP] [conn 127.0.0.1:57514] RTMP handshake: initializing server connection
+2026-11-11T08:23:31.981 PST -08:00 [DEBUG][11233-72451] [MediaMTX] 2026/11/11 16:23:31 INF [RTMP] [conn 127.0.0.1:57514] closed: EOF
+2026-11-11T08:23:33.722 PST -08:00 [INFO][11233-main] [Map] CalTopo artifact refresh mode=delta received=0 features=32 ignoredTracks=0 10 markers, 4 lines, 10 areas
+2026-11-11T08:23:37.394 PST -08:00 [INFO][11233-main] [TrackerPeer] Ownership remoteId=1581F8HGX255S00A0FZT ownerZoneId=833a8140-2a8b-3b23-8876-c3af62524ef0 local=false alertEligible=false
+2026-11-11T08:23:37.412 PST -08:00 [INFO][11233-main] [TrackerPeer] Peer traffic shadow remoteId=1581F8HGX255S00A0FZT source=sei fromZoneId=833a8140-2a8b-3b23-8876-c3af62524ef0 seq=1 sourceAgeMs=202 trackerAgeMs=299 headingDeg=null speedKt=null altAgeMs=202 altState=pending mslAltM=null mslAltAgeMs=null correctionM=null demSource= demResolutionM=null incidentPadFt=100.0 nearestDistanceM=null schedulingPadFt=100.0 shadowIntervalMs=16000
+2026-11-11T08:23:37.484 PST -08:00 [DEBUG][11233-main] [RIDTiming] stage=annotation_update aircraft=1581F8HGX255S00A0FZT inset=false receivedMs=1794414217209 receiveToAnnotationMs=274
+2026-11-11T08:23:39.440 PST -08:00 [INFO][11233-main] [TrackerPeer] Peer traffic shadow remoteId=1581F8HGX255S00A0FZT source=rid fromZoneId=833a8140-2a8b-3b23-8876-c3af62524ef0 seq=1 sourceAgeMs=267 trackerAgeMs=347 headingDeg=null speedKt=null altAgeMs=267 altState=pending mslAltM=null mslAltAgeMs=null correctionM=null demSource= demResolutionM=null incidentPadFt=100.0 nearestDistanceM=null schedulingPadFt=100.0 shadowIntervalMs=16000
+2026-11-11T08:23:43.984 PST -08:00 [INFO][11233-main] [ClueTerrain] diag activeClueTerrainTasks=0 mainHitchCount=14 mapOverlayRebuilds=2
+2026-11-11T08:23:47.107 PST -08:00 [DEBUG][11233-99415] [MediaMTX] 2026/11/11 16:23:47 INF [RTMP] [conn 127.0.0.1:57515] opened
+2026-11-11T08:23:47.107 PST -08:00 [DEBUG][11233-99415] [MediaMTX] 2026/11/11 16:23:47 DEB [RTMP] [conn 127.0.0.1:57515] RTMP handshake: initializing server connection
+2026-11-11T08:23:47.108 PST -08:00 [DEBUG][11233-99415] [MediaMTX] 2026/11/11 16:23:47 INF [RTMP] [conn 127.0.0.1:57515] closed: EOF
+2026-11-11T08:23:53.812 PST -08:00 [INFO][11233-main] [Map] CalTopo artifact refresh mode=delta received=2 features=34 ignoredTracks=1 11 markers, 4 lines, 10 areas
+2026-11-11T08:23:54.493 PST -08:00 [INFO][11233-main] [TrackerPeer] Peer traffic shadow remoteId=1581F8HGX255S00A0FZT source=sei fromZoneId=833a8140-2a8b-3b23-8876-c3af62524ef0 seq=2 sourceAgeMs=0 trackerAgeMs=81 headingDeg=75.2 speedKt=null altAgeMs=0 altState=locked mslAltM=548.010620117 mslAltAgeMs=0 correctionM=26.863620116999982 demSource=usgs-epqs demResolutionM=null incidentPadFt=100.0 nearestDistanceM=null schedulingPadFt=100.0 shadowIntervalMs=16000
+2026-11-11T08:23:55.518 PST -08:00 [INFO][11233-main] [TrackerPeer] Peer traffic shadow remoteId=1581F8HGX255S00A0FZT source=rid fromZoneId=833a8140-2a8b-3b23-8876-c3af62524ef0 seq=2 sourceAgeMs=35 trackerAgeMs=91 headingDeg=75.2 speedKt=null altAgeMs=35 altState=locked mslAltM=548.010620117 mslAltAgeMs=35 correctionM=26.863620116999982 demSource=usgs-epqs demResolutionM=null incidentPadFt=100.0 nearestDistanceM=null schedulingPadFt=100.0 shadowIntervalMs=16000
+2026-11-11T08:24:02.213 PST -08:00 [DEBUG][11233-82507] [MediaMTX] 2026/11/11 16:24:02 INF [RTMP] [conn 127.0.0.1:57516] opened
+2026-11-11T08:24:02.213 PST -08:00 [DEBUG][11233-82507] [MediaMTX] 2026/11/11 16:24:02 DEB [RTMP] [conn 127.0.0.1:57516] RTMP handshake: initializing server connection
+2026-11-11T08:24:02.213 PST -08:00 [DEBUG][11233-82507] [MediaMTX] 2026/11/11 16:24:02 INF [RTMP] [conn 127.0.0.1:57516] RTMP handshake failed during initialization: elapsedMs=0 socketReads=1 socketBytes=0 socketWaitMs=0 maxSocketReadMs=0 error=EOF
+2026-11-11T08:24:02.213 PST -08:00 [DEBUG][11233-82507] [MediaMTX] 2026/11/11 16:24:02 INF [RTMP] [conn 127.0.0.1:57516] closed: EOF
+2026-11-11T08:24:02.537 PST -08:00 [DEBUG][11233-main] [TrackerPeer] Managed video presence accepted count=10 sessions=20
+2026-11-11T08:24:06.711 PST -08:00 [INFO][11233-main] [TrackerPeer] Peer zones updated count=1
+2026-11-11T08:24:11.185 PST -08:00 [INFO][11233-main] [TrackerPeer] Peer traffic shadow remoteId=1581F8HGX255S00A0FZT source=sei fromZoneId=833a8140-2a8b-3b23-8876-c3af62524ef0 seq=3 sourceAgeMs=634 trackerAgeMs=708 headingDeg=75.2 speedKt=null altAgeMs=634 altState=locked mslAltM=548.016620117 mslAltAgeMs=634 correctionM=26.863620116999982 demSource=usgs-epqs demResolutionM=null incidentPadFt=100.0 nearestDistanceM=null schedulingPadFt=100.0 shadowIntervalMs=16000
+2026-11-11T08:24:11.942 PST -08:00 [INFO][11233-main] [TrackerPeer] Peer traffic shadow remoteId=1581F8HGX255S00A0FZT source=rid fromZoneId=833a8140-2a8b-3b23-8876-c3af62524ef0 seq=3 sourceAgeMs=66 trackerAgeMs=70 headingDeg=75.2 speedKt=null altAgeMs=66 altState=locked mslAltM=548.940620117 mslAltAgeMs=66 correctionM=26.863620116999982 demSource=usgs-epqs demResolutionM=null incidentPadFt=100.0 nearestDistanceM=null schedulingPadFt=100.0 shadowIntervalMs=16000
+2026-11-11T08:24:13.896 PST -08:00 [INFO][11233-main] [Map] CalTopo artifact refresh mode=delta received=2 features=34 ignoredTracks=1 11 markers, 4 lines, 10 areas
+2026-11-11T08:24:13.982 PST -08:00 [INFO][11233-main] [ClueTerrain] diag activeClueTerrainTasks=0 mainHitchCount=14 mapOverlayRebuilds=2
+2026-11-11T08:24:17.318 PST -08:00 [DEBUG][11233-122455] [MediaMTX] 2026/11/11 16:24:17 INF [RTMP] [conn 127.0.0.1:57517] opened
+2026-11-11T08:24:17.318 PST -08:00 [DEBUG][11233-122455] [MediaMTX] 2026/11/11 16:24:17 DEB [RTMP] [conn 127.0.0.1:57517] RTMP handshake: initializing server connection
+2026-11-11T08:24:17.319 PST -08:00 [DEBUG][11233-122455] [MediaMTX] 2026/11/11 16:24:17 INF [RTMP] [conn 127.0.0.1:57517] closed: EOF
+2026-11-11T08:24:26.622 PST -08:00 [INFO][11233-main] [TrackerPeer] Peer traffic shadow remoteId=1581F8HGX255S00A0FZT source=sei fromZoneId=833a8140-2a8b-3b23-8876-c3af62524ef0 seq=4 sourceAgeMs=8 trackerAgeMs=95 headingDeg=75.2 speedKt=null altAgeMs=8 altState=locked mslAltM=551.3466201169999 mslAltAgeMs=8 correctionM=26.863620116999982 demSource=usgs-epqs demResolutionM=null incidentPadFt=100.0 nearestDistanceM=null schedulingPadFt=100.0 shadowIntervalMs=16000
+2026-11-11T08:24:28.798 PST -08:00 [INFO][11233-main] [TrackerPeer] Peer traffic shadow remoteId=1581F8HGX255S00A0FZT source=rid fromZoneId=833a8140-2a8b-3b23-8876-c3af62524ef0 seq=4 sourceAgeMs=143 trackerAgeMs=171 headingDeg=75.2 speedKt=null altAgeMs=143 altState=locked mslAltM=556.249620117 mslAltAgeMs=143 correctionM=26.863620116999982 demSource=usgs-epqs demResolutionM=null incidentPadFt=100.0 nearestDistanceM=null schedulingPadFt=100.0 shadowIntervalMs=16000
+2026-11-11T08:24:32.444 PST -08:00 [DEBUG][11233-98183] [MediaMTX] 2026/11/11 16:24:32 INF [RTMP] [conn 127.0.0.1:57518] opened
+2026-11-11T08:24:32.444 PST -08:00 [DEBUG][11233-98183] [MediaMTX] 2026/11/11 16:24:32 DEB [RTMP] [conn 127.0.0.1:57518] RTMP handshake: initializing server connection
+2026-11-11T08:24:32.444 PST -08:00 [DEBUG][11233-98183] [MediaMTX] 2026/11/11 16:24:32 INF [RTMP] [conn 127.0.0.1:57518] closed: EOF
+2026-11-11T08:24:34.035 PST -08:00 [INFO][11233-main] [Map] CalTopo artifact refresh mode=delta received=2 features=34 ignoredTracks=1 11 markers, 4 lines, 10 areas
+2026-11-11T08:24:42.712 PST -08:00 [INFO][11233-main] [TrackerPeer] Peer traffic shadow remoteId=1581F8HGX255S00A0FZT source=sei fromZoneId=833a8140-2a8b-3b23-8876-c3af62524ef0 seq=5 sourceAgeMs=0 trackerAgeMs=50 headingDeg=75.2 speedKt=null altAgeMs=0 altState=locked mslAltM=556.582620117 mslAltAgeMs=0 correctionM=26.863620116999982 demSource=usgs-epqs demResolutionM=null incidentPadFt=100.0 nearestDistanceM=null schedulingPadFt=100.0 shadowIntervalMs=16000
+2026-11-11T08:24:42.733 PST -08:00 [DEBUG][11233-main] [RIDTiming] stage=annotation_update aircraft=1581F8HGX255S00A0FZT inset=false receivedMs=1794414282752 receiveToAnnotationMs=-18
+2026-11-11T08:24:43.982 PST -08:00 [INFO][11233-main] [ClueTerrain] diag activeClueTerrainTasks=0 mainHitchCount=14 mapOverlayRebuilds=2
+2026-11-11T08:24:44.688 PST -08:00 [INFO][11233-main] [TrackerPeer] Peer traffic shadow remoteId=1581F8HGX255S00A0FZT source=rid fromZoneId=833a8140-2a8b-3b23-8876-c3af62524ef0 seq=5 sourceAgeMs=160 trackerAgeMs=52 headingDeg=75.2 speedKt=null altAgeMs=160 altState=locked mslAltM=556.593620117 mslAltAgeMs=160 correctionM=26.863620116999982 demSource=usgs-epqs demResolutionM=null incidentPadFt=100.0 nearestDistanceM=null schedulingPadFt=100.0 shadowIntervalMs=16000
+2026-11-11T08:24:46.437 PST -08:00 [INFO][11233-main] [BluetoothRID] High-priority scan restart=3 callbacks=0
+2026-11-11T08:24:47.563 PST -08:00 [DEBUG][11233-52483] [MediaMTX] 2026/11/11 16:24:47 INF [RTMP] [conn 127.0.0.1:57519] opened
+2026-11-11T08:24:47.563 PST -08:00 [DEBUG][11233-52483] [MediaMTX] 2026/11/11 16:24:47 DEB [RTMP] [conn 127.0.0.1:57519] RTMP handshake: initializing server connection
+2026-11-11T08:24:47.563 PST -08:00 [DEBUG][11233-52483] [MediaMTX] 2026/11/11 16:24:47 INF [RTMP] [conn 127.0.0.1:57519] closed: EOF
+2026-11-11T08:24:54.131 PST -08:00 [INFO][11233-main] [Map] CalTopo artifact refresh mode=delta received=2 features=34 ignoredTracks=1 11 markers, 4 lines, 10 areas
+2026-11-11T08:24:58.904 PST -08:00 [INFO][11233-main] [TrackerPeer] Peer traffic shadow remoteId=1581F8HGX255S00A0FZT source=sei fromZoneId=833a8140-2a8b-3b23-8876-c3af62524ef0 seq=6 sourceAgeMs=0 trackerAgeMs=92 headingDeg=75.2 speedKt=null altAgeMs=0 altState=locked mslAltM=556.570620117 mslAltAgeMs=0 correctionM=26.863620116999982 demSource=usgs-epqs demResolutionM=null incidentPadFt=100.0 nearestDistanceM=null schedulingPadFt=100.0 shadowIntervalMs=16000
+2026-11-11T08:25:02.678 PST -08:00 [DEBUG][11233-82507] [MediaMTX] 2026/11/11 16:25:02 INF [RTMP] [conn 127.0.0.1:57520] opened
+2026-11-11T08:25:02.678 PST -08:00 [DEBUG][11233-82507] [MediaMTX] 2026/11/11 16:25:02 DEB [RTMP] [conn 127.0.0.1:57520] RTMP handshake: initializing server connection
+2026-11-11T08:25:02.678 PST -08:00 [DEBUG][11233-82507] [MediaMTX] 2026/11/11 16:25:02 INF [RTMP] [conn 127.0.0.1:57520] RTMP handshake failed during initialization: elapsedMs=0 socketReads=1 socketBytes=0 socketWaitMs=0 maxSocketReadMs=0 error=EOF
+2026-11-11T08:25:02.678 PST -08:00 [DEBUG][11233-82507] [MediaMTX] 2026/11/11 16:25:02 INF [RTMP] [conn 127.0.0.1:57520] closed: EOF
+2026-11-11T08:25:03.110 PST -08:00 [DEBUG][11233-main] [TrackerPeer] Managed video presence accepted count=10 sessions=20
+2026-11-11T08:25:05.765 PST -08:00 [INFO][11233-main] [TrackerPeer] Peer traffic shadow remoteId=1581F8HGX255S00A0FZT source=rid fromZoneId=833a8140-2a8b-3b23-8876-c3af62524ef0 seq=6 sourceAgeMs=78 trackerAgeMs=93 headingDeg=75.2 speedKt=null altAgeMs=78 altState=locked mslAltM=556.570620117 mslAltAgeMs=78 correctionM=26.863620116999982 demSource=usgs-epqs demResolutionM=null incidentPadFt=100.0 nearestDistanceM=null schedulingPadFt=100.0 shadowIntervalMs=16000
+2026-11-11T08:25:06.672 PST -08:00 [INFO][11233-main] [TrackerPeer] Peer zones updated count=1
+2026-11-11T08:25:13.983 PST -08:00 [INFO][11233-main] [ClueTerrain] diag activeClueTerrainTasks=0 mainHitchCount=14 mapOverlayRebuilds=2
+2026-11-11T08:25:14.243 PST -08:00 [INFO][11233-main] [Map] CalTopo artifact refresh mode=delta received=5 features=37 ignoredTracks=1 14 markers, 4 lines, 10 areas
+2026-11-11T08:25:15.115 PST -08:00 [INFO][11233-main] [TrackerPeer] Peer traffic shadow remoteId=1581F8HGX255S00A0FZT source=sei fromZoneId=833a8140-2a8b-3b23-8876-c3af62524ef0 seq=7 sourceAgeMs=52 trackerAgeMs=48 headingDeg=75.2 speedKt=null altAgeMs=52 altState=locked mslAltM=559.727620117 mslAltAgeMs=52 correctionM=26.863620116999982 demSource=usgs-epqs demResolutionM=null incidentPadFt=100.0 nearestDistanceM=null schedulingPadFt=100.0 shadowIntervalMs=16000
+2026-11-11T08:25:17.800 PST -08:00 [DEBUG][11233-82507] [MediaMTX] 2026/11/11 16:25:17 INF [RTMP] [conn 127.0.0.1:57521] opened
+2026-11-11T08:25:17.800 PST -08:00 [DEBUG][11233-82507] [MediaMTX] 2026/11/11 16:25:17 DEB [RTMP] [conn 127.0.0.1:57521] RTMP handshake: initializing server connection
+2026-11-11T08:25:17.800 PST -08:00 [DEBUG][11233-82507] [MediaMTX] 2026/11/11 16:25:17 INF [RTMP] [conn 127.0.0.1:57521] closed: EOF
+2026-11-11T08:25:22.562 PST -08:00 [INFO][11233-main] [TrackerPeer] Peer traffic shadow remoteId=1581F8HGX255S00A0FZT source=rid fromZoneId=833a8140-2a8b-3b23-8876-c3af62524ef0 seq=7 sourceAgeMs=188 trackerAgeMs=242 headingDeg=75.2 speedKt=null altAgeMs=188 altState=locked mslAltM=563.8226201169999 mslAltAgeMs=188 correctionM=26.863620116999982 demSource=usgs-epqs demResolutionM=null incidentPadFt=100.0 nearestDistanceM=null schedulingPadFt=100.0 shadowIntervalMs=16000
+2026-11-11T08:25:32.922 PST -08:00 [DEBUG][11233-98183] [MediaMTX] 2026/11/11 16:25:32 INF [RTMP] [conn 127.0.0.1:57522] opened
+2026-11-11T08:25:32.922 PST -08:00 [DEBUG][11233-98183] [MediaMTX] 2026/11/11 16:25:32 DEB [RTMP] [conn 127.0.0.1:57522] RTMP handshake: initializing server connection
+2026-11-11T08:25:32.923 PST -08:00 [DEBUG][11233-98183] [MediaMTX] 2026/11/11 16:25:32 INF [RTMP] [conn 127.0.0.1:57522] closed: EOF
+2026-11-11T08:25:34.548 PST -08:00 [INFO][11233-main] [TrackerPeer] Peer traffic shadow remoteId=1581F8HGX255S00A0FZT source=sei fromZoneId=833a8140-2a8b-3b23-8876-c3af62524ef0 seq=8 sourceAgeMs=0 trackerAgeMs=55 headingDeg=75.2 speedKt=null altAgeMs=0 altState=locked mslAltM=563.830620117 mslAltAgeMs=0 correctionM=26.863620116999982 demSource=usgs-epqs demResolutionM=null incidentPadFt=100.0 nearestDistanceM=null schedulingPadFt=100.0 shadowIntervalMs=16000
+2026-11-11T08:25:34.577 PST -08:00 [INFO][11233-main] [Map] CalTopo artifact refresh mode=delta received=4 features=38 ignoredTracks=1 15 markers, 4 lines, 10 areas
+2026-11-11T08:25:38.841 PST -08:00 [INFO][11233-main] [TrackerPeer] Peer traffic shadow remoteId=1581F8HGX255S00A0FZT source=rid fromZoneId=833a8140-2a8b-3b23-8876-c3af62524ef0 seq=8 sourceAgeMs=36 trackerAgeMs=83 headingDeg=75.2 speedKt=null altAgeMs=36 altState=locked mslAltM=563.8316201169999 mslAltAgeMs=36 correctionM=26.863620116999982 demSource=usgs-epqs demResolutionM=null incidentPadFt=100.0 nearestDistanceM=null schedulingPadFt=100.0 shadowIntervalMs=16000
+2026-11-11T08:25:43.984 PST -08:00 [INFO][11233-main] [ClueTerrain] diag activeClueTerrainTasks=0 mainHitchCount=14 mapOverlayRebuilds=2
+2026-11-11T08:25:48.053 PST -08:00 [DEBUG][11233-72451] [MediaMTX] 2026/11/11 16:25:48 INF [RTMP] [conn 127.0.0.1:57523] opened
+2026-11-11T08:25:48.054 PST -08:00 [DEBUG][11233-72451] [MediaMTX] 2026/11/11 16:25:48 DEB [RTMP] [conn 127.0.0.1:57523] RTMP handshake: initializing server connection
+2026-11-11T08:25:48.054 PST -08:00 [DEBUG][11233-72451] [MediaMTX] 2026/11/11 16:25:48 INF [RTMP] [conn 127.0.0.1:57523] closed: EOF
+2026-11-11T08:25:50.616 PST -08:00 [INFO][11233-main] [TrackerPeer] Peer traffic shadow remoteId=1581F8HGX255S00A0FZT source=sei fromZoneId=833a8140-2a8b-3b23-8876-c3af62524ef0 seq=9 sourceAgeMs=0 trackerAgeMs=64 headingDeg=75.2 speedKt=null altAgeMs=0 altState=locked mslAltM=563.830620117 mslAltAgeMs=0 correctionM=26.863620116999982 demSource=usgs-epqs demResolutionM=null incidentPadFt=100.0 nearestDistanceM=null schedulingPadFt=100.0 shadowIntervalMs=16000
+2026-11-11T08:25:50.642 PST -08:00 [DEBUG][11233-main] [RIDTiming] stage=annotation_update aircraft=1581F8HGX255S00A0FZT inset=false receivedMs=1794414350650 receiveToAnnotationMs=-8
+2026-11-11T08:25:54.716 PST -08:00 [INFO][11233-main] [Map] CalTopo artifact refresh mode=delta received=4 features=40 ignoredTracks=1 17 markers, 4 lines, 10 areas
+2026-11-11T08:25:54.756 PST -08:00 [INFO][11233-main] [ClueTerrain] hitch sources mainHitchCount=15 activeClueTerrainTasks=0 mapOverlayRebuilds=2 lastMapOverlayMs=0.0 lastMapOverlayPoints=1 thumbPresence=40 peerRecv=0 mapAnnot=19 recent=map.annot@4113ms
+2026-11-11T08:25:55.947 PST -08:00 [INFO][11233-main] [TrackerPeer] Peer traffic shadow remoteId=1581F8HGX255S00A0FZT source=rid fromZoneId=833a8140-2a8b-3b23-8876-c3af62524ef0 seq=9 sourceAgeMs=359 trackerAgeMs=330 headingDeg=75.2 speedKt=null altAgeMs=359 altState=locked mslAltM=575.988620117 mslAltAgeMs=359 correctionM=26.863620116999982 demSource=usgs-epqs demResolutionM=null incidentPadFt=100.0 nearestDistanceM=null schedulingPadFt=100.0 shadowIntervalMs=16000
+2026-11-11T08:26:03.167 PST -08:00 [DEBUG][11233-36027] [MediaMTX] 2026/11/11 16:26:03 INF [RTMP] [conn 127.0.0.1:57524] opened
+2026-11-11T08:26:03.168 PST -08:00 [DEBUG][11233-36027] [MediaMTX] 2026/11/11 16:26:03 DEB [RTMP] [conn 127.0.0.1:57524] RTMP handshake: initializing server connection
+2026-11-11T08:26:03.168 PST -08:00 [DEBUG][11233-36027] [MediaMTX] 2026/11/11 16:26:03 INF [RTMP] [conn 127.0.0.1:57524] RTMP handshake failed during initialization: elapsedMs=0 socketReads=1 socketBytes=0 socketWaitMs=0 maxSocketReadMs=0 error=EOF
+2026-11-11T08:26:03.168 PST -08:00 [DEBUG][11233-36027] [MediaMTX] 2026/11/11 16:26:03 INF [RTMP] [conn 127.0.0.1:57524] closed: EOF
+2026-11-11T08:26:03.485 PST -08:00 [DEBUG][11233-main] [TrackerPeer] Managed video presence accepted count=10 sessions=20
+2026-11-11T08:26:06.785 PST -08:00 [INFO][11233-main] [TrackerPeer] Peer zones updated count=1
+2026-11-11T08:26:06.932 PST -08:00 [INFO][11233-main] [TrackerPeer] Peer traffic shadow remoteId=1581F8HGX255S00A0FZT source=sei fromZoneId=833a8140-2a8b-3b23-8876-c3af62524ef0 seq=10 sourceAgeMs=50 trackerAgeMs=49 headingDeg=46.2 speedKt=null altAgeMs=50 altState=locked mslAltM=577.497620117 mslAltAgeMs=50 correctionM=26.863620116999982 demSource=usgs-epqs demResolutionM=null incidentPadFt=100.0 nearestDistanceM=null schedulingPadFt=100.0 shadowIntervalMs=16000
+2026-11-11T08:26:12.529 PST -08:00 [INFO][11233-main] [TrackerPeer] Peer traffic shadow remoteId=1581F8HGX255S00A0FZT source=rid fromZoneId=833a8140-2a8b-3b23-8876-c3af62524ef0 seq=10 sourceAgeMs=226 trackerAgeMs=227 headingDeg=76.9 speedKt=null altAgeMs=226 altState=locked mslAltM=577.5246201169999 mslAltAgeMs=226 correctionM=26.863620116999982 demSource=usgs-epqs demResolutionM=null incidentPadFt=100.0 nearestDistanceM=null schedulingPadFt=100.0 shadowIntervalMs=16000
+2026-11-11T08:26:13.982 PST -08:00 [INFO][11233-main] [ClueTerrain] diag activeClueTerrainTasks=0 mainHitchCount=15 mapOverlayRebuilds=2
+2026-11-11T08:26:14.815 PST -08:00 [INFO][11233-main] [Map] CalTopo artifact refresh mode=delta received=2 features=40 ignoredTracks=1 17 markers, 4 lines, 10 areas
+2026-11-11T08:26:14.854 PST -08:00 [INFO][11233-main] [ClueTerrain] hitch sources mainHitchCount=16 activeClueTerrainTasks=0 mapOverlayRebuilds=2 lastMapOverlayMs=0.0 lastMapOverlayPoints=1 thumbPresence=40 peerRecv=0 mapAnnot=22 recent=map.annot@2307ms
+2026-11-11T08:26:18.290 PST -08:00 [DEBUG][11233-52483] [MediaMTX] 2026/11/11 16:26:18 INF [RTMP] [conn 127.0.0.1:57525] opened
+2026-11-11T08:26:18.290 PST -08:00 [DEBUG][11233-52483] [MediaMTX] 2026/11/11 16:26:18 DEB [RTMP] [conn 127.0.0.1:57525] RTMP handshake: initializing server connection
+2026-11-11T08:26:18.291 PST -08:00 [DEBUG][11233-52483] [MediaMTX] 2026/11/11 16:26:18 INF [RTMP] [conn 127.0.0.1:57525] closed: EOF
+2026-11-11T08:26:22.874 PST -08:00 [INFO][11233-main] [TrackerPeer] Peer traffic shadow remoteId=1581F8HGX255S00A0FZT source=sei fromZoneId=833a8140-2a8b-3b23-8876-c3af62524ef0 seq=11 sourceAgeMs=0 trackerAgeMs=71 headingDeg=55.8 speedKt=null altAgeMs=0 altState=locked mslAltM=577.5146201169999 mslAltAgeMs=0 correctionM=26.863620116999982 demSource=usgs-epqs demResolutionM=null incidentPadFt=100.0 nearestDistanceM=null schedulingPadFt=100.0 shadowIntervalMs=16000
+2026-11-11T08:26:29.018 PST -08:00 [INFO][11233-main] [TrackerPeer] Peer traffic shadow remoteId=1581F8HGX255S00A0FZT source=rid fromZoneId=833a8140-2a8b-3b23-8876-c3af62524ef0 seq=11 sourceAgeMs=206 trackerAgeMs=270 headingDeg=22.8 speedKt=null altAgeMs=206 altState=locked mslAltM=577.422620117 mslAltAgeMs=206 correctionM=26.863620116999982 demSource=usgs-epqs demResolutionM=null incidentPadFt=100.0 nearestDistanceM=null schedulingPadFt=100.0 shadowIntervalMs=16000
+2026-11-11T08:26:33.367 PST -08:00 [DEBUG][11233-52483] [MediaMTX] 2026/11/11 16:26:33 INF [RTMP] [conn 127.0.0.1:57526] opened
+2026-11-11T08:26:33.367 PST -08:00 [DEBUG][11233-52483] [MediaMTX] 2026/11/11 16:26:33 DEB [RTMP] [conn 127.0.0.1:57526] RTMP handshake: initializing server connection
+2026-11-11T08:26:33.367 PST -08:00 [DEBUG][11233-52483] [MediaMTX] 2026/11/11 16:26:33 INF [RTMP] [conn 127.0.0.1:57526] closed: EOF
+2026-11-11T08:26:34.900 PST -08:00 [INFO][11233-main] [Map] CalTopo artifact refresh mode=delta received=2 features=40 ignoredTracks=1 17 markers, 4 lines, 10 areas
+2026-11-11T08:26:38.977 PST -08:00 [INFO][11233-main] [TrackerPeer] Peer traffic shadow remoteId=1581F8HGX255S00A0FZT source=sei fromZoneId=833a8140-2a8b-3b23-8876-c3af62524ef0 seq=12 sourceAgeMs=0 trackerAgeMs=50 headingDeg=244.8 speedKt=null altAgeMs=0 altState=locked mslAltM=576.7696201169999 mslAltAgeMs=0 correctionM=26.863620116999982 demSource=usgs-epqs demResolutionM=null incidentPadFt=100.0 nearestDistanceM=null schedulingPadFt=100.0 shadowIntervalMs=16000
+2026-11-11T08:26:43.982 PST -08:00 [INFO][11233-main] [ClueTerrain] diag activeClueTerrainTasks=0 mainHitchCount=17 mapOverlayRebuilds=2
+2026-11-11T08:26:45.302 PST -08:00 [INFO][11233-main] [TrackerPeer] Peer traffic shadow remoteId=1581F8HGX255S00A0FZT source=rid fromZoneId=833a8140-2a8b-3b23-8876-c3af62524ef0 seq=12 sourceAgeMs=131 trackerAgeMs=100 headingDeg=209.6 speedKt=null altAgeMs=131 altState=locked mslAltM=576.5436201169999 mslAltAgeMs=131 correctionM=26.863620116999982 demSource=usgs-epqs demResolutionM=null incidentPadFt=100.0 nearestDistanceM=null schedulingPadFt=100.0 shadowIntervalMs=16000
+2026-11-11T08:26:46.457 PST -08:00 [INFO][11233-main] [BluetoothRID] High-priority scan restart=4 callbacks=0
+2026-11-11T08:26:48.434 PST -08:00 [DEBUG][11233-52483] [MediaMTX] 2026/11/11 16:26:48 INF [RTMP] [conn 127.0.0.1:57527] opened
+2026-11-11T08:26:48.435 PST -08:00 [DEBUG][11233-52483] [MediaMTX] 2026/11/11 16:26:48 DEB [RTMP] [conn 127.0.0.1:57527] RTMP handshake: initializing server connection
+2026-11-11T08:26:48.435 PST -08:00 [DEBUG][11233-52483] [MediaMTX] 2026/11/11 16:26:48 INF [RTMP] [conn 127.0.0.1:57527] closed: EOF
+2026-11-11T08:26:54.990 PST -08:00 [INFO][11233-main] [TrackerPeer] Peer traffic shadow remoteId=1581F8HGX255S00A0FZT source=sei fromZoneId=833a8140-2a8b-3b23-8876-c3af62524ef0 seq=13 sourceAgeMs=0 trackerAgeMs=78 headingDeg=218.1 speedKt=null altAgeMs=0 altState=locked mslAltM=589.123620117 mslAltAgeMs=0 correctionM=26.863620116999982 demSource=usgs-epqs demResolutionM=null incidentPadFt=100.0 nearestDistanceM=null schedulingPadFt=100.0 shadowIntervalMs=16000
+2026-11-11T08:26:55.013 PST -08:00 [DEBUG][11233-main] [RIDTiming] stage=annotation_update aircraft=1581F8HGX255S00A0FZT inset=false receivedMs=1794414415013 receiveToAnnotationMs=0
+2026-11-11T08:26:55.093 PST -08:00 [INFO][11233-main] [Map] CalTopo artifact refresh mode=delta received=2 features=40 ignoredTracks=1 17 markers, 4 lines, 10 areas
+2026-11-11T08:26:55.141 PST -08:00 [INFO][11233-main] [ClueTerrain] hitch sources mainHitchCount=18 activeClueTerrainTasks=0 mapOverlayRebuilds=2 lastMapOverlayMs=0.0 lastMapOverlayPoints=1 thumbPresence=40 peerRecv=0 mapAnnot=27 recent=map.annot@128ms
+2026-11-11T08:27:02.400 PST -08:00 [INFO][11233-main] [TrackerPeer] Peer traffic shadow remoteId=1581F8HGX255S00A0FZT source=rid fromZoneId=833a8140-2a8b-3b23-8876-c3af62524ef0 seq=13 sourceAgeMs=400 trackerAgeMs=453 headingDeg=219.6 speedKt=null altAgeMs=400 altState=locked mslAltM=599.439620117 mslAltAgeMs=400 correctionM=26.863620116999982 demSource=usgs-epqs demResolutionM=null incidentPadFt=100.0 nearestDistanceM=null schedulingPadFt=100.0 shadowIntervalMs=16000
+2026-11-11T08:27:03.504 PST -08:00 [DEBUG][11233-122455] [MediaMTX] 2026/11/11 16:27:03 INF [RTMP] [conn 127.0.0.1:57528] opened
+2026-11-11T08:27:03.504 PST -08:00 [DEBUG][11233-122455] [MediaMTX] 2026/11/11 16:27:03 DEB [RTMP] [conn 127.0.0.1:57528] RTMP handshake: initializing server connection
+2026-11-11T08:27:03.504 PST -08:00 [DEBUG][11233-122455] [MediaMTX] 2026/11/11 16:27:03 INF [RTMP] [conn 127.0.0.1:57528] RTMP handshake failed during initialization: elapsedMs=0 socketReads=1 socketBytes=0 socketWaitMs=0 maxSocketReadMs=0 error=EOF
+2026-11-11T08:27:03.504 PST -08:00 [DEBUG][11233-122455] [MediaMTX] 2026/11/11 16:27:03 INF [RTMP] [conn 127.0.0.1:57528] closed: EOF
+2026-11-11T08:27:03.795 PST -08:00 [DEBUG][11233-main] [TrackerPeer] Managed video presence accepted count=10 sessions=20
+2026-11-11T08:27:11.310 PST -08:00 [INFO][11233-main] [TrackerPeer] Peer traffic shadow remoteId=1581F8HGX255S00A0FZT source=sei fromZoneId=833a8140-2a8b-3b23-8876-c3af62524ef0 seq=14 sourceAgeMs=159 trackerAgeMs=262 headingDeg=38.1 speedKt=null altAgeMs=159 altState=locked mslAltM=559.546620117 mslAltAgeMs=159 correctionM=26.863620116999982 demSource=usgs-epqs demResolutionM=null incidentPadFt=100.0 nearestDistanceM=null schedulingPadFt=100.0 shadowIntervalMs=16000
+2026-11-11T08:27:13.981 PST -08:00 [INFO][11233-main] [ClueTerrain] diag activeClueTerrainTasks=0 mainHitchCount=18 mapOverlayRebuilds=2
+2026-11-11T08:27:15.199 PST -08:00 [INFO][11233-main] [Map] CalTopo artifact refresh mode=delta received=2 features=40 ignoredTracks=1 17 markers, 4 lines, 10 areas
+2026-11-11T08:27:15.238 PST -08:00 [INFO][11233-main] [ClueTerrain] hitch sources mainHitchCount=19 activeClueTerrainTasks=0 mapOverlayRebuilds=2 lastMapOverlayMs=0.0 lastMapOverlayPoints=1 thumbPresence=40 peerRecv=0 mapAnnot=29 recent=map.annot@3905ms
+2026-11-11T08:27:18.479 PST -08:00 [INFO][11233-main] [TrackerPeer] Peer traffic shadow remoteId=1581F8HGX255S00A0FZT source=rid fromZoneId=833a8140-2a8b-3b23-8876-c3af62524ef0 seq=14 sourceAgeMs=281 trackerAgeMs=327 headingDeg=38.1 speedKt=null altAgeMs=281 altState=locked mslAltM=549.123620117 mslAltAgeMs=281 correctionM=26.863620116999982 demSource=usgs-epqs demResolutionM=null incidentPadFt=100.0 nearestDistanceM=null schedulingPadFt=100.0 shadowIntervalMs=16000
+2026-11-11T08:27:18.571 PST -08:00 [DEBUG][11233-122455] [MediaMTX] 2026/11/11 16:27:18 INF [RTMP] [conn 127.0.0.1:57529] opened
+2026-11-11T08:27:18.571 PST -08:00 [DEBUG][11233-122455] [MediaMTX] 2026/11/11 16:27:18 DEB [RTMP] [conn 127.0.0.1:57529] RTMP handshake: initializing server connection
+2026-11-11T08:27:18.571 PST -08:00 [DEBUG][11233-122455] [MediaMTX] 2026/11/11 16:27:18 INF [RTMP] [conn 127.0.0.1:57529] closed: EOF
+2026-11-11T08:27:21.909 PST -08:00 [INFO][11233-main] [TrackerPeer] Peer zones updated count=1
+2026-11-11T08:27:27.285 PST -08:00 [INFO][11233-main] [TrackerPeer] Peer traffic shadow remoteId=1581F8HGX255S00A0FZT source=sei fromZoneId=833a8140-2a8b-3b23-8876-c3af62524ef0 seq=15 sourceAgeMs=0 trackerAgeMs=82 headingDeg=38.1 speedKt=null altAgeMs=0 altState=locked mslAltM=548.010620117 mslAltAgeMs=0 correctionM=26.863620116999982 demSource=usgs-epqs demResolutionM=null incidentPadFt=100.0 nearestDistanceM=null schedulingPadFt=100.0 shadowIntervalMs=16000
+2026-11-11T08:27:33.640 PST -08:00 [DEBUG][11233-72451] [MediaMTX] 2026/11/11 16:27:33 INF [RTMP] [conn 127.0.0.1:57530] opened
+2026-11-11T08:27:33.640 PST -08:00 [DEBUG][11233-72451] [MediaMTX] 2026/11/11 16:27:33 DEB [RTMP] [conn 127.0.0.1:57530] RTMP handshake: initializing server connection
+2026-11-11T08:27:33.640 PST -08:00 [DEBUG][11233-72451] [MediaMTX] 2026/11/11 16:27:33 INF [RTMP] [conn 127.0.0.1:57530] closed: EOF
+2026-11-11T08:27:35.392 PST -08:00 [INFO][11233-main] [Map] CalTopo artifact refresh mode=delta received=2 features=40 ignoredTracks=1 17 markers, 4 lines, 10 areas
+2026-11-11T08:27:43.980 PST -08:00 [INFO][11233-main] [ClueTerrain] diag activeClueTerrainTasks=0 mainHitchCount=19 mapOverlayRebuilds=2
+2026-11-11T08:27:48.708 PST -08:00 [DEBUG][11233-67619] [MediaMTX] 2026/11/11 16:27:48 INF [RTMP] [conn 127.0.0.1:57531] opened
+2026-11-11T08:27:48.708 PST -08:00 [DEBUG][11233-67619] [MediaMTX] 2026/11/11 16:27:48 DEB [RTMP] [conn 127.0.0.1:57531] RTMP handshake: initializing server connection
+2026-11-11T08:27:48.709 PST -08:00 [DEBUG][11233-67619] [MediaMTX] 2026/11/11 16:27:48 INF [RTMP] [conn 127.0.0.1:57531] closed: EOF
+2026-11-11T08:27:48.826 PST -08:00 [DEBUG][11233-67619] [MediaMTX] 2026/11/11 16:27:48 INF [RTMP] [conn 192.168.68.56:52234] opened
+2026-11-11T08:27:48.826 PST -08:00 [DEBUG][11233-67619] [MediaMTX] 2026/11/11 16:27:48 DEB [RTMP] [conn 192.168.68.56:52234] RTMP handshake: initializing server connection
+2026-11-11T08:27:48.842 PST -08:00 [DEBUG][11233-122455] [MediaMTX] 2026/11/11 16:27:48 DEB [RTMP] [conn 192.168.68.56:52234] RTMP handshake: waiting for connect/publish
+2026-11-11T08:27:48.858 PST -08:00 [DEBUG][11233-67619] [MediaMTX] 2026/11/11 16:27:48 DEB [RTMP] [conn 192.168.68.56:52234] RTMP accept succeeded: publish=true path=/1sar7djmtrc4td query=
+2026-11-11T08:27:48.859 PST -08:00 [DEBUG][11233-98183] [MediaMTX] 2026/11/11 16:27:48 DEB [RTMP] [conn 192.168.68.56:52234] RTMP publish: initializing media reader for path '1sar7djmtrc4td'
+2026-11-11T08:27:49.406 PST -08:00 [DEBUG][11233-82507] [MediaMTX] 2026/11/11 16:27:49 DEB [RTMP] [conn 192.168.68.56:52234] RTMP publish: reader initialized for path '1sar7djmtrc4td' in 546.012916ms with 1 RTMP tracks (videoOnly=true)
+2026-11-11T08:27:49.408 PST -08:00 [INFO][11233-main] [Streams] Focused publisher 1sar7djmtrc4td, replacing demo
+2026-11-11T08:27:49.408 PST -08:00 [INFO][11233-main] [Streams] Admitted 1sar7djmtrc4td as 1sar7djmtrc4td profile=GENERIC networkSnapshotId=net-1
+2026-11-11T08:27:49.408 PST -08:00 [INFO][11233-main] [Video] Native adaptive-buffer decoder opening rtsp://127.0.0.1:8554/1sar7djmtrc4td backend=FFmpeg v2.5.6rc3-45-g4eeb914e / VideoToolbox
+2026-11-11T08:27:49.408 PST -08:00 [INFO][11233-main] [Video] Decoder session requested url=http://127.0.0.1:8888/1sar7djmtrc4td/index.m3u8 path=1sar7djmtrc4td networkSnapshotId=net-1
+2026-11-11T08:27:49.408 PST -08:00 [INFO][11233-main] [Video] MediaMTX publisher path=1sar7djmtrc4td status=Publishing
+2026-11-11T08:27:49.409 PST -08:00 [INFO][11233-main] [Streams] Configured video telemetry binding stream=1SAR7DJMTRC4TD aircraft=1581F8HGX255S00A0FZT
+2026-11-11T08:27:49.409 PST -08:00 [INFO][11233-main] [DroneConfirmation] Panel path=queue_new_flight remoteId=1581F8HGX255S00A0FZT publication=gated_unconfirmed aircraftReceivedAt=nil publisherSessions=["1sar7djmtrc4td|192.168.68.56:52234"] designator=1sar7djmtrc4td publisherConnId=192.168.68.56:52234 decodedFrameAgeSeconds=-1.0
+2026-11-11T08:27:49.409 PST -08:00 [INFO][11233-main] [DroneConfirmation] Queueing confirmation remoteId=1581F8HGX255S00A0FZT aircraftReceivedAt=nil publisherSessions=["1sar7djmtrc4td|192.168.68.56:52234"] designator=1sar7djmtrc4td publisherConnId=192.168.68.56:52234 decodedFrameAgeSeconds=-1.0
+2026-11-11T08:27:49.406 PST -08:00 [DEBUG][11233-82507] [MediaMTX] 2026/11/11 16:27:49 DEB [RTMP] [conn 192.168.68.56:52234] RTMP publish: mapping tracks to stream for path '1sar7djmtrc4td'
+2026-11-11T08:27:49.406 PST -08:00 [DEBUG][11233-82507] [MediaMTX] 2026/11/11 16:27:49 DEB [RTMP] [conn 192.168.68.56:52234] RTMP publish: mapped 1 medias for path '1sar7djmtrc4td' (1 track (H264))
+2026-11-11T08:27:49.407 PST -08:00 [DEBUG][11233-122455] [MediaMTX] 2026/11/11 16:27:49 DEB [path 1sar7djmtrc4td] created
+2026-11-11T08:27:49.407 PST -08:00 [DEBUG][11233-122455] [MediaMTX] 2026/11/11 16:27:49 INF [RTMP] [conn 192.168.68.56:52234] is publishing to path '1sar7djmtrc4td'
+2026-11-11T08:27:49.407 PST -08:00 [DEBUG][11233-67619] [MediaMTX] 2026/11/11 16:27:49 INF [path 1sar7djmtrc4td] [recorder] recording 1 track (H264)
+2026-11-11T08:27:49.408 PST -08:00 [DEBUG][11233-67619] [MediaMTX] 2026/11/11 16:27:49 INF [path 1sar7djmtrc4td] stream is available and online, 1 track (H264)
+2026-11-11T08:27:49.421 PST -08:00 [INFO][11233-main] [Video] Attached native video surface count=1
+2026-11-11T08:27:49.409 PST -08:00 [DEBUG][11233-122455] [MediaMTX] 2026/11/11 16:27:49 INF [RTSP] [conn 127.0.0.1:57532] opened
+2026-11-11T08:27:49.410 PST -08:00 [DEBUG][11233-122455] [MediaMTX] 2026/11/11 16:27:49 DEB [RTSP] [conn 127.0.0.1:57532] [c->s] OPTIONS rtsp://127.0.0.1:8554/1sar7djmtrc4td RTSP/1.0
+2026-11-11T08:27:49.410 PST -08:00 [DEBUG][11233-122455] [MediaMTX] CSeq: 1
+2026-11-11T08:27:49.410 PST -08:00 [DEBUG][11233-122455] [MediaMTX] User-Agent: Lavf61.1.100
+2026-11-11T08:27:49.410 PST -08:00 [DEBUG][11233-122455] [MediaMTX] 
+2026-11-11T08:27:49.410 PST -08:00 [DEBUG][11233-122455] [MediaMTX] 
+2026-11-11T08:27:49.410 PST -08:00 [DEBUG][11233-122455] [MediaMTX] 2026/11/11 16:27:49 DEB [RTSP] [conn 127.0.0.1:57532] [s->c] RTSP/1.0 200 OK
+2026-11-11T08:27:49.427 PST -08:00 [INFO][11233-main] [Video] Connecting
+2026-11-11T08:27:49.427 PST -08:00 [INFO][11233-main] [MediaMTX] Streaming 1sar7djmtrc4td
+2026-11-11T08:27:49.410 PST -08:00 [DEBUG][11233-122455] [MediaMTX] CSeq: 1
+2026-11-11T08:27:49.411 PST -08:00 [DEBUG][11233-122455] [MediaMTX] Public: DESCRIBE, ANNOUNCE, SETUP, PLAY, RECORD, PAUSE, GET_PARAMETER, TEARDOWN
+2026-11-11T08:27:49.411 PST -08:00 [DEBUG][11233-122455] [MediaMTX] Server: gortsplib
+2026-11-11T08:27:49.411 PST -08:00 [DEBUG][11233-122455] [MediaMTX] 
+2026-11-11T08:27:49.431 PST -08:00 [INFO][11233-main] [MapFocus] Automatic focus evaluation follow=true adjusted=true focused=none streams=unresolved
+2026-11-11T08:27:49.411 PST -08:00 [DEBUG][11233-122455] [MediaMTX] 
+2026-11-11T08:27:49.411 PST -08:00 [DEBUG][11233-122455] [MediaMTX] Accept: application/sdp
+2026-11-11T08:27:49.411 PST -08:00 [DEBUG][11233-122455] [MediaMTX] CSeq: 2
+2026-11-11T08:27:49.412 PST -08:00 [DEBUG][11233-122455] [MediaMTX] User-Agent: Lavf61.1.100
+2026-11-11T08:27:49.412 PST -08:00 [DEBUG][11233-122455] [MediaMTX] 
+2026-11-11T08:27:49.412 PST -08:00 [DEBUG][11233-122455] [MediaMTX] 
+2026-11-11T08:27:49.412 PST -08:00 [DEBUG][11233-122455] [MediaMTX] 2026/11/11 16:27:49 DEB [RTSP] [conn 127.0.0.1:57532] [c->s] DESCRIBE rtsp://127.0.0.1:8554/1sar7djmtrc4td RTSP/1.0
+2026-11-11T08:27:49.412 PST -08:00 [DEBUG][11233-122455] [MediaMTX] 2026/11/11 16:27:49 DEB [RTSP] [conn 127.0.0.1:57532] [s->c] RTSP/1.0 200 OK
+2026-11-11T08:27:49.412 PST -08:00 [DEBUG][11233-122455] [MediaMTX] CSeq: 2
+2026-11-11T08:27:49.413 PST -08:00 [DEBUG][11233-122455] [MediaMTX] Content-Base: rtsp://127.0.0.1:8554/1sar7djmtrc4td/
+2026-11-11T08:27:49.413 PST -08:00 [DEBUG][11233-122455] [MediaMTX] Content-Length: 248
+2026-11-11T08:27:49.413 PST -08:00 [DEBUG][11233-122455] [MediaMTX] Content-Type: application/sdp
+2026-11-11T08:27:49.413 PST -08:00 [DEBUG][11233-122455] [MediaMTX] Server: gortsplib
+2026-11-11T08:27:49.413 PST -08:00 [DEBUG][11233-122455] [MediaMTX] 
+2026-11-11T08:27:49.413 PST -08:00 [DEBUG][11233-122455] [MediaMTX] v=0
+2026-11-11T08:27:49.413 PST -08:00 [DEBUG][11233-122455] [MediaMTX] o=- 0 0 IN IP4 127.0.0.1
+2026-11-11T08:27:49.414 PST -08:00 [DEBUG][11233-122455] [MediaMTX] s=MediaMTX
+2026-11-11T08:27:49.414 PST -08:00 [DEBUG][11233-122455] [MediaMTX] c=IN IP4 0.0.0.0
+2026-11-11T08:27:49.414 PST -08:00 [DEBUG][11233-122455] [MediaMTX] t=0 0
+2026-11-11T08:27:49.414 PST -08:00 [DEBUG][11233-122455] [MediaMTX] m=video 0 RTP/AVP 96
+2026-11-11T08:27:49.414 PST -08:00 [DEBUG][11233-122455] [MediaMTX] a=control:trackID=0
+2026-11-11T08:27:49.414 PST -08:00 [DEBUG][11233-122455] [MediaMTX] a=rtpmap:96 H264/90000
+2026-11-11T08:27:49.414 PST -08:00 [DEBUG][11233-122455] [MediaMTX] 
+2026-11-11T08:27:49.414 PST -08:00 [DEBUG][11233-122455] [MediaMTX] a=fmtp:96 packetization-mode=1; profile-level-id=640028; sprop-parameter-sets=Z2QAKKy0A8ARNKQUGBQbQoTU,aO4G8sA=
+2026-11-11T08:27:49.414 PST -08:00 [DEBUG][11233-122455] [MediaMTX] 2026/11/11 16:27:49 DEB [RTSP] [conn 127.0.0.1:57532] [c->s] SETUP rtsp://127.0.0.1:8554/1sar7djmtrc4td/trackID=0 RTSP/1.0
+2026-11-11T08:27:49.414 PST -08:00 [DEBUG][11233-122455] [MediaMTX] CSeq: 3
+2026-11-11T08:27:49.415 PST -08:00 [DEBUG][11233-122455] [MediaMTX] Transport: RTP/AVP/TCP;unicast;interleaved=0-1
+2026-11-11T08:27:49.415 PST -08:00 [DEBUG][11233-122455] [MediaMTX] User-Agent: Lavf61.1.100
+2026-11-11T08:27:49.415 PST -08:00 [DEBUG][11233-122455] [MediaMTX] 
+2026-11-11T08:27:49.415 PST -08:00 [DEBUG][11233-122455] [MediaMTX] 
+2026-11-11T08:27:49.415 PST -08:00 [DEBUG][11233-122455] [MediaMTX] 2026/11/11 16:27:49 INF [RTSP] [session 0c0aa753] created by 127.0.0.1:57532
+2026-11-11T08:27:49.415 PST -08:00 [DEBUG][11233-122455] [MediaMTX] 2026/11/11 16:27:49 DEB [RTSP] [conn 127.0.0.1:57532] [s->c] RTSP/1.0 200 OK
+2026-11-11T08:27:49.415 PST -08:00 [DEBUG][11233-122455] [MediaMTX] CSeq: 3
+2026-11-11T08:27:49.415 PST -08:00 [DEBUG][11233-122455] [MediaMTX] Server: gortsplib
+2026-11-11T08:27:49.415 PST -08:00 [DEBUG][11233-122455] [MediaMTX] Session: 0243b615a2ee48c2b0184f2af55c7b85;timeout=55
+2026-11-11T08:27:49.415 PST -08:00 [DEBUG][11233-122455] [MediaMTX] Transport: RTP/AVP/TCP;unicast;interleaved=0-1;ssrc=DAA9D7C4
+2026-11-11T08:27:49.416 PST -08:00 [DEBUG][11233-122455] [MediaMTX] 
+2026-11-11T08:27:49.416 PST -08:00 [DEBUG][11233-82507] [MediaMTX] 
+2026-11-11T08:27:49.416 PST -08:00 [DEBUG][11233-82507] [MediaMTX] CSeq: 4
+2026-11-11T08:27:49.416 PST -08:00 [DEBUG][11233-82507] [MediaMTX] Range: npt=0.000-
+2026-11-11T08:27:49.416 PST -08:00 [DEBUG][11233-82507] [MediaMTX] Session: 0243b615a2ee48c2b0184f2af55c7b85
+2026-11-11T08:27:49.416 PST -08:00 [DEBUG][11233-82507] [MediaMTX] User-Agent: Lavf61.1.100
+2026-11-11T08:27:49.416 PST -08:00 [DEBUG][11233-82507] [MediaMTX] 
+2026-11-11T08:27:49.416 PST -08:00 [DEBUG][11233-82507] [MediaMTX] 
+2026-11-11T08:27:49.457 PST -08:00 [INFO][11233-main] [DroneConfirmation] Confirmation panel presented remoteId=1581F8HGX255S00A0FZT
+2026-11-11T08:27:49.416 PST -08:00 [DEBUG][11233-82507] [MediaMTX] 2026/11/11 16:27:49 DEB [RTSP] [conn 127.0.0.1:57532] [c->s] PLAY rtsp://127.0.0.1:8554/1sar7djmtrc4td/ RTSP/1.0
+2026-11-11T08:27:49.416 PST -08:00 [DEBUG][11233-82507] [MediaMTX] 2026/11/11 16:27:49 INF [RTSP] [session 0c0aa753] is reading from path '1sar7djmtrc4td', with TCP, 1 track (H264)
+2026-11-11T08:27:49.416 PST -08:00 [DEBUG][11233-82507] [MediaMTX] 2026/11/11 16:27:49 DEB [RTSP] [conn 127.0.0.1:57532] [s->c] RTSP/1.0 200 OK
+2026-11-11T08:27:49.417 PST -08:00 [DEBUG][11233-82507] [MediaMTX] CSeq: 4
+2026-11-11T08:27:49.417 PST -08:00 [DEBUG][11233-82507] [MediaMTX] Server: gortsplib
+2026-11-11T08:27:49.417 PST -08:00 [DEBUG][11233-82507] [MediaMTX] Session: 0243b615a2ee48c2b0184f2af55c7b85;timeout=55
+2026-11-11T08:27:49.417 PST -08:00 [DEBUG][11233-82507] [MediaMTX] RTP-Info: url=rtsp://127.0.0.1:8554/1sar7djmtrc4td/trackID=0
+2026-11-11T08:27:49.417 PST -08:00 [DEBUG][11233-82507] [MediaMTX] 
+2026-11-11T08:27:49.417 PST -08:00 [DEBUG][11233-82507] [MediaMTX] 
+2026-11-11T08:27:50.097 PST -08:00 [INFO][11233-main] [OrganizationAccess] Tracker account verification HTTP 200
+2026-11-11T08:27:50.100 PST -08:00 [INFO][11233-main] [OrganizationAccess] Tracker account verification completed; identityPresent=true
+2026-11-11T08:27:50.369 PST -08:00 [DEBUG][11233-93811] [MediaMTX] 2026/11/11 16:27:50 DEB [path 1sar7djmtrc4td] [recorder] creating segment /var/mobile/Containers/Data/Application/2E505062-6AAA-45C7-8BFC-5642A68BD124/Documents/RID2Caltopo/FlightStorage/2026-11-11/1sar7djmtrc4td/1sar7djmtrc4td_2026-11-11_16-27-49-407920.mp4
+2026-11-11T08:27:50.411 PST -08:00 [INFO][11233-main] [Video] Render buffer path=1sar7djmtrc4td decoded=0 dequeued=0 queueDepth=0 bufferedSpanMs=0 targetMs=0 sourceIntervalMs=0 renderIntervalMs=0 underruns=0 dropped=0 resets=0 presentationSkipped=0 queueBytes=0 decodeRecoveries=0 lastDecodeRecovery= displaySubmitted=0 surfaceBusyDrops=0 callbackHz=0.0 callbackWorkMeanMs=0.00 callbackMaxGapMs=0.0 mainApplyMaxGapMs=0.0 hitchRecent=none socketWaitMs=none afterMediaMs=none
+2026-11-11T08:27:50.873 PST -08:00 [INFO][11233-main] [DroneConfirmation] Confirmed remoteId=1581F8HGX255S00A0FZT mappedId=1sar7DjMtrc4td organization='NCSSAR' callsign='1SAR7' description='DJI Matrice 4TD' sessionOnly=true
+2026-11-11T08:27:50.873 PST -08:00 [INFO][11233-main] [DroneConfirmation] Publication allowed remoteId=1581F8HGX255S00A0FZT panelConfirmed=true ignored=false
+2026-11-11T08:27:50.874 PST -08:00 [INFO][11233-main] [TrackerPeer] Sent pending drone confirmation remoteId=1581F8HGX255S00A0FZT replaceConfirmedBy=833a8140-2a8b-3b23-8876-c3af62524ef0
+2026-11-11T08:27:50.889 PST -08:00 [INFO][11233-main] [Streams] Automatic telemetry pairing prompt skipped after confirmation remoteID=1581F8HGX255S00A0FZT activeTelemetry=0 liveUnpaired=0
+2026-11-11T08:27:51.014 PST -08:00 [INFO][11233-main] [TrackerPeer] Ownership remoteId=1581F8HGX255S00A0FZT ownerZoneId=f6cbd6d2-ea23-45cd-b4ef-a559822c31ad local=true alertEligible=true
+2026-11-11T08:27:51.014 PST -08:00 [INFO][11233-main] [ClueTerrain] hitch sources mainHitchCount=22 activeClueTerrainTasks=0 mapOverlayRebuilds=3 lastMapOverlayMs=0.2 lastMapOverlayPoints=24 thumbPresence=40 peerRecv=0 mapAnnot=32 recent=map.overlay@131ms/24B
+2026-11-11T08:27:53.376 PST -08:00 [INFO][11233-123667] [Video] Native first frame 1920x1088 format='420v'
+2026-11-11T08:27:53.395 PST -08:00 [INFO][11233-main] [Video] Streaming
+2026-11-11T08:27:53.422 PST -08:00 [DEBUG][11233-main] [TrackerPeer] Managed video thumbnail encode elapsedMs=22 bytes=28918 src=1920x1088
+2026-11-11T08:27:53.437 PST -08:00 [DEBUG][11233-main] [TrackerPeer] Managed video thumbnail captured session=b847363a-90de-4c5c-b7b5-ef3f23b11869 drone=1sar7DjMtrc4td revision=1794414473422
+2026-11-11T08:27:54.061 PST -08:00 [INFO][11233-main] [VideoTelemetry] First accepted stream position aircraft=1581F8HGX255S00A0FZT height=0.0
+2026-11-11T08:27:54.062 PST -08:00 [INFO][11233-main] [RemoteID] rid_rx count=1 remoteId=1581F8HGX255S00A0FZT waypoint=1 wall=1794414474042 altM=519.8 transport=djiVideo rssi=unknown distanceFt=0.0 totalDistanceFt=0.0
+2026-11-11T08:27:54.062 PST -08:00 [INFO][11233-main] [AOL] Initialized from DJI altitude reference aircraft=1581F8HGX255S00A0FZT
+2026-11-11T08:27:54.062 PST -08:00 [INFO][11233-main] [AOL] Display transition: ATO=0 ft AGL=0 ft AOL=-- positionStale=false reason=Surface calculation pending for current position
+2026-11-11T08:27:54.062 PST -08:00 [INFO][11233-main] [TrackerPeer] Peer traffic sent remoteId=1581F8HGX255S00A0FZT source=rid seq=1 sourceAgeMs=21 headingDeg=null speedKt=null altAgeMs=21 altState=unconfirmed mslAltM=null mslAltAgeMs=null correctionM=null flightEpoch=null intervalMs=1000
+2026-11-11T08:27:54.063 PST -08:00 [INFO][11233-main] [RIDTiming] stage=track_ingest count=1 aircraft=1581F8HGX255S00A0FZT transport=djiVideo processingMs=2
+2026-11-11T08:27:54.077 PST -08:00 [INFO][11233-main] [MapFocus] Live video gained telemetry aircraft=1581F8HGX255S00A0FZT
+2026-11-11T08:27:54.081 PST -08:00 [INFO][11233-main] [MapFocus] Centered focused aircraft=1581F8HGX255S00A0FZT inset=false
+2026-11-11T08:27:54.088 PST -08:00 [INFO][11233-main] [MapFocus] Automatic focus evaluation follow=true adjusted=false focused=1581F8HGX255S00A0FZT streams=1581F8HGX255S00A0FZT
+2026-11-11T08:27:54.095 PST -08:00 [INFO][11233-main] [ProximityAlert] Evaluation stale=0 allAircraft=false enabled=false suspended=false tracks=1 team=1 eligible=1581F8HGX255S00A0FZT
+2026-11-11T08:27:54.238 PST -08:00 [INFO][11233-main] [TrackerPeer] Peer traffic schedule remoteId=1581F8HGX255S00A0FZT source=rid seq=1 intervalMs=16000 incidentPadFt=100.0 nearestDistanceM=null schedulingPadFt=100.0
+2026-11-11T08:27:54.270 PST -08:00 [INFO][11233-main] [AOL] State: Available
+2026-11-11T08:27:54.270 PST -08:00 [INFO][11233-main] [AOL] Display transition: ATO=0 ft AGL=0 ft AOL=-62 ft positionStale=false reason=Available
+2026-11-11T08:27:54.363 PST -08:00 [INFO][11233-main] [CalTopo] Started 1581F8HGX255S00A0FZT
+2026-11-11T08:27:54.383 PST -08:00 [DEBUG][11233-main] [TrackerPeer] Managed video thumbnail encode elapsedMs=18 bytes=29002 src=1920x1088
+2026-11-11T08:27:54.396 PST -08:00 [INFO][11233-main] [CalTopo] Published 1581F8HGX255S00A0FZT
+2026-11-11T08:27:54.442 PST -08:00 [INFO][11233-82507] [CalTopo] Published local device marker id=f6cbd6d2-ea23-45cd-b4ef-a559822c31ad folder='Drone Tracks'
+2026-11-11T08:27:55.043 PST -08:00 [INFO][11233-main] [TrackerPeer] Peer traffic sent remoteId=1581F8HGX255S00A0FZT source=sei seq=1 sourceAgeMs=32 headingDeg=null speedKt=null altAgeMs=1001 altState=unconfirmed mslAltM=null mslAltAgeMs=null correctionM=null flightEpoch=null intervalMs=1000
+2026-11-11T08:27:55.048 PST -08:00 [DEBUG][11233-main] [RIDTiming] stage=annotation_update aircraft=1581F8HGX255S00A0FZT inset=false receivedMs=1794414475010 receiveToAnnotationMs=37
+2026-11-11T08:27:55.123 PST -08:00 [INFO][11233-main] [AOL] Initialized from DJI altitude reference aircraft=1581F8HGX255S00A0FZT
+2026-11-11T08:27:55.139 PST -08:00 [INFO][11233-main] [TrackerPeer] Peer traffic schedule remoteId=1581F8HGX255S00A0FZT source=sei seq=1 intervalMs=16000 incidentPadFt=100.0 nearestDistanceM=null schedulingPadFt=100.0
+2026-11-11T08:27:55.540 PST -08:00 [INFO][11233-main] [Map] CalTopo artifact refresh mode=delta received=4 features=42 ignoredTracks=1 18 markers, 5 lines, 10 areas
+2026-11-11T08:27:55.557 PST -08:00 [INFO][11233-main] [ClueTerrain] hitch sources mainHitchCount=23 activeClueTerrainTasks=0 mapOverlayRebuilds=3 lastMapOverlayMs=0.2 lastMapOverlayPoints=24 thumbPresence=44 peerRecv=0 mapAnnot=34 recent=map.overlay@4673ms/24B,thumb.await@2134ms,thumb.apply@2119ms/28918B,map.annot@1486ms,thumb.await@1173ms,thumb.apply@1158ms/29002B,map.annot@508ms
+2026-11-11T08:27:56.168 PST -08:00 [INFO][11233-main] [AOL] Initialized from DJI altitude reference aircraft=1581F8HGX255S00A0FZT
+2026-11-11T08:27:57.211 PST -08:00 [INFO][11233-main] [AOL] Initialized from DJI altitude reference aircraft=1581F8HGX255S00A0FZT
+2026-11-11T08:27:58.248 PST -08:00 [INFO][11233-main] [AOL] Initialized from DJI altitude reference aircraft=1581F8HGX255S00A0FZT
+2026-11-11T08:27:58.253 PST -08:00 [DEBUG][11233-main] [CameraFootprint] CameraFootprint source=SEI gimbalTiltDeg=0.0 headingDeg=219.4 aglM=0.1 nearM=0 farM=3000 clamped=true
+2026-11-11T08:27:59.295 PST -08:00 [INFO][11233-main] [AOL] Initialized from DJI altitude reference aircraft=1581F8HGX255S00A0FZT
+2026-11-11T08:27:59.388 PST -08:00 [DEBUG][11233-main] [TrackerPeer] Managed video thumbnail encode elapsedMs=22 bytes=32847 src=1920x1088
+2026-11-11T08:28:00.349 PST -08:00 [INFO][11233-main] [AOL] Initialized from DJI altitude reference aircraft=1581F8HGX255S00A0FZT
+2026-11-11T08:28:01.404 PST -08:00 [INFO][11233-main] [AOL] Initialized from DJI altitude reference aircraft=1581F8HGX255S00A0FZT
+2026-11-11T08:28:02.463 PST -08:00 [INFO][11233-main] [AOL] Initialized from DJI altitude reference aircraft=1581F8HGX255S00A0FZT
+2026-11-11T08:28:03.258 PST -08:00 [DEBUG][11233-main] [CameraFootprint] CameraFootprint source=SEI gimbalTiltDeg=-20.1 headingDeg=138.6 aglM=22.5 nearM=34 farM=3000 clamped=true
+2026-11-11T08:28:03.510 PST -08:00 [INFO][11233-main] [AOL] Initialized from DJI altitude reference aircraft=1581F8HGX255S00A0FZT
+2026-11-11T08:28:04.016 PST -08:00 [DEBUG][11233-107567] [MediaMTX] 2026/11/11 16:28:04 INF [RTMP] [conn 127.0.0.1:57557] opened
+2026-11-11T08:28:04.017 PST -08:00 [DEBUG][11233-107567] [MediaMTX] 2026/11/11 16:28:04 DEB [RTMP] [conn 127.0.0.1:57557] RTMP handshake: initializing server connection
+2026-11-11T08:28:04.017 PST -08:00 [DEBUG][11233-107567] [MediaMTX] 2026/11/11 16:28:04 INF [RTMP] [conn 127.0.0.1:57557] RTMP handshake failed during initialization: elapsedMs=0 socketReads=1 socketBytes=0 socketWaitMs=0 maxSocketReadMs=0 error=EOF
+2026-11-11T08:28:04.017 PST -08:00 [DEBUG][11233-107567] [MediaMTX] 2026/11/11 16:28:04 INF [RTMP] [conn 127.0.0.1:57557] closed: EOF
+2026-11-11T08:28:04.321 PST -08:00 [DEBUG][11233-main] [TrackerPeer] Managed video presence accepted count=16 sessions=21
+2026-11-11T08:28:04.391 PST -08:00 [DEBUG][11233-main] [TrackerPeer] Managed video thumbnail encode elapsedMs=10 bytes=37549 src=1920x1088
+2026-11-11T08:28:04.563 PST -08:00 [INFO][11233-main] [AOL] Initialized from DJI altitude reference aircraft=1581F8HGX255S00A0FZT
+2026-11-11T08:28:05.616 PST -08:00 [INFO][11233-main] [AOL] Initialized from DJI altitude reference aircraft=1581F8HGX255S00A0FZT
+2026-11-11T08:28:06.664 PST -08:00 [INFO][11233-main] [AOL] Initialized from DJI altitude reference aircraft=1581F8HGX255S00A0FZT
+2026-11-11T08:28:07.710 PST -08:00 [INFO][11233-main] [AOL] Initialized from DJI altitude reference aircraft=1581F8HGX255S00A0FZT
+2026-11-11T08:28:08.269 PST -08:00 [DEBUG][11233-main] [CameraFootprint] CameraFootprint source=SEI gimbalTiltDeg=-20.1 headingDeg=53.0 aglM=23.7 nearM=37 farM=248 clamped=false
+2026-11-11T08:28:08.749 PST -08:00 [INFO][11233-main] [AOL] Initialized from DJI altitude reference aircraft=1581F8HGX255S00A0FZT
+2026-11-11T08:28:09.406 PST -08:00 [DEBUG][11233-main] [TrackerPeer] Managed video thumbnail encode elapsedMs=16 bytes=26519 src=1920x1088
+2026-11-11T08:28:09.808 PST -08:00 [INFO][11233-main] [AOL] Initialized from DJI altitude reference aircraft=1581F8HGX255S00A0FZT
+2026-11-11T08:28:10.844 PST -08:00 [INFO][11233-main] [AOL] Initialized from DJI altitude reference aircraft=1581F8HGX255S00A0FZT
+2026-11-11T08:28:10.844 PST -08:00 [INFO][11233-main] [TrackerPeer] Peer traffic sent remoteId=1581F8HGX255S00A0FZT source=rid seq=2 sourceAgeMs=35 headingDeg=49.4 speedKt=null altAgeMs=35 altState=unconfirmed mslAltM=null mslAltAgeMs=null correctionM=null flightEpoch=null intervalMs=16000
+2026-11-11T08:28:11.143 PST -08:00 [INFO][11233-main] [TrackerPeer] Peer traffic sent remoteId=1581F8HGX255S00A0FZT source=sei seq=2 sourceAgeMs=34 headingDeg=48.0 speedKt=null altAgeMs=334 altState=unconfirmed mslAltM=null mslAltAgeMs=null correctionM=null flightEpoch=null intervalMs=16000
+2026-11-11T08:28:11.891 PST -08:00 [INFO][11233-main] [AOL] Initialized from DJI altitude reference aircraft=1581F8HGX255S00A0FZT
+2026-11-11T08:28:12.941 PST -08:00 [INFO][11233-main] [AOL] Initialized from DJI altitude reference aircraft=1581F8HGX255S00A0FZT
+2026-11-11T08:28:13.292 PST -08:00 [DEBUG][11233-main] [CameraFootprint] CameraFootprint source=SEI gimbalTiltDeg=-11.5 headingDeg=23.5 aglM=23.7 nearM=52 farM=3000 clamped=true
+2026-11-11T08:28:13.992 PST -08:00 [INFO][11233-main] [ClueTerrain] diag activeClueTerrainTasks=0 mainHitchCount=23 mapOverlayRebuilds=3
+2026-11-11T08:28:13.994 PST -08:00 [INFO][11233-main] [AOL] Initialized from DJI altitude reference aircraft=1581F8HGX255S00A0FZT
+2026-11-11T08:28:14.405 PST -08:00 [DEBUG][11233-main] [TrackerPeer] Managed video thumbnail encode elapsedMs=10 bytes=30682 src=1920x1088
+2026-11-11T08:28:15.042 PST -08:00 [INFO][11233-main] [AOL] Initialized from DJI altitude reference aircraft=1581F8HGX255S00A0FZT
+2026-11-11T08:28:16.115 PST -08:00 [INFO][11233-main] [AOL] Initialized from DJI altitude reference aircraft=1581F8HGX255S00A0FZT
+2026-11-11T08:28:16.182 PST -08:00 [INFO][11233-main] [Map] CalTopo artifact refresh mode=delta received=2 features=42 ignoredTracks=1 18 markers, 5 lines, 10 areas
+2026-11-11T08:28:16.225 PST -08:00 [INFO][11233-main] [ClueTerrain] hitch sources mainHitchCount=24 activeClueTerrainTasks=0 mapOverlayRebuilds=3 lastMapOverlayMs=0.2 lastMapOverlayPoints=24 thumbPresence=52 peerRecv=0 mapAnnot=63 recent=map.annot@4841ms,map.annot@4069ms,map.annot@2997ms,map.annot@1969ms,thumb.await@1819ms,thumb.apply@1819ms/30682B,map.annot@919ms
+2026-11-11T08:28:16.442 PST -08:00 [DEBUG][11233-67619] [MediaMTX] 2026/11/11 16:28:16 DEB [RTSP] [conn 127.0.0.1:57532] [c->s] GET_PARAMETER rtsp://127.0.0.1:8554/1sar7djmtrc4td/ RTSP/1.0
+2026-11-11T08:28:16.442 PST -08:00 [DEBUG][11233-67619] [MediaMTX] CSeq: 5
+2026-11-11T08:28:16.442 PST -08:00 [DEBUG][11233-67619] [MediaMTX] Session: 0243b615a2ee48c2b0184f2af55c7b85
+2026-11-11T08:28:16.442 PST -08:00 [DEBUG][11233-67619] [MediaMTX] User-Agent: Lavf61.1.100
+2026-11-11T08:28:16.442 PST -08:00 [DEBUG][11233-67619] [MediaMTX] 
+2026-11-11T08:28:16.442 PST -08:00 [DEBUG][11233-67619] [MediaMTX] 2026/11/11 16:28:16 DEB [RTSP] [conn 127.0.0.1:57532] [s->c] RTSP/1.0 200 OK
+2026-11-11T08:28:16.442 PST -08:00 [DEBUG][11233-67619] [MediaMTX] CSeq: 5
+2026-11-11T08:28:16.442 PST -08:00 [DEBUG][11233-67619] [MediaMTX] Content-Type: text/parameters
+2026-11-11T08:28:16.442 PST -08:00 [DEBUG][11233-67619] [MediaMTX] Server: gortsplib
+2026-11-11T08:28:16.443 PST -08:00 [DEBUG][11233-67619] [MediaMTX] Session: 0243b615a2ee48c2b0184f2af55c7b85;timeout=55
+2026-11-11T08:28:16.443 PST -08:00 [DEBUG][11233-67619] [MediaMTX] 
+2026-11-11T08:28:16.443 PST -08:00 [DEBUG][11233-67619] [MediaMTX] 
+2026-11-11T08:28:16.443 PST -08:00 [DEBUG][11233-67619] [MediaMTX] 
+2026-11-11T08:28:17.161 PST -08:00 [INFO][11233-main] [AOL] Initialized from DJI altitude reference aircraft=1581F8HGX255S00A0FZT
+2026-11-11T08:28:18.216 PST -08:00 [INFO][11233-main] [AOL] Initialized from DJI altitude reference aircraft=1581F8HGX255S00A0FZT
+2026-11-11T08:28:18.302 PST -08:00 [DEBUG][11233-main] [CameraFootprint] CameraFootprint source=SEI gimbalTiltDeg=-11.5 headingDeg=21.8 aglM=23.7 nearM=52 farM=3000 clamped=true
+2026-11-11T08:28:19.115 PST -08:00 [DEBUG][11233-98183] [MediaMTX] 2026/11/11 16:28:19 INF [RTMP] [conn 127.0.0.1:57611] opened
+2026-11-11T08:28:19.115 PST -08:00 [DEBUG][11233-98183] [MediaMTX] 2026/11/11 16:28:19 DEB [RTMP] [conn 127.0.0.1:57611] RTMP handshake: initializing server connection
+2026-11-11T08:28:19.116 PST -08:00 [DEBUG][11233-98183] [MediaMTX] 2026/11/11 16:28:19 INF [RTMP] [conn 127.0.0.1:57611] closed: EOF
+2026-11-11T08:28:19.260 PST -08:00 [INFO][11233-main] [AOL] Initialized from DJI altitude reference aircraft=1581F8HGX255S00A0FZT
+2026-11-11T08:28:19.414 PST -08:00 [DEBUG][11233-main] [TrackerPeer] Managed video thumbnail encode elapsedMs=10 bytes=26437 src=1920x1088
+2026-11-11T08:28:20.286 PST -08:00 [INFO][11233-main] [AOL] Initialized from DJI altitude reference aircraft=1581F8HGX255S00A0FZT
+2026-11-11T08:28:21.319 PST -08:00 [INFO][11233-main] [AOL] Initialized from DJI altitude reference aircraft=1581F8HGX255S00A0FZT
+2026-11-11T08:28:22.026 PST -08:00 [INFO][11233-main] [TrackerPeer] Peer zones updated count=1
+2026-11-11T08:28:22.361 PST -08:00 [INFO][11233-main] [AOL] Initialized from DJI altitude reference aircraft=1581F8HGX255S00A0FZT
+2026-11-11T08:28:23.302 PST -08:00 [DEBUG][11233-main] [CameraFootprint] CameraFootprint source=SEI gimbalTiltDeg=-15.1 headingDeg=11.5 aglM=23.2 nearM=44 farM=1851 clamped=false
+2026-11-11T08:28:23.413 PST -08:00 [INFO][11233-main] [AOL] Initialized from DJI altitude reference aircraft=1581F8HGX255S00A0FZT
+2026-11-11T08:28:24.422 PST -08:00 [DEBUG][11233-main] [TrackerPeer] Managed video thumbnail encode elapsedMs=16 bytes=26954 src=1920x1088
+2026-11-11T08:28:24.472 PST -08:00 [INFO][11233-main] [AOL] Initialized from DJI altitude reference aircraft=1581F8HGX255S00A0FZT
+2026-11-11T08:28:25.510 PST -08:00 [INFO][11233-main] [AOL] Initialized from DJI altitude reference aircraft=1581F8HGX255S00A0FZT
+2026-11-11T08:28:26.542 PST -08:00 [INFO][11233-main] [AOL] Initialized from DJI altitude reference aircraft=1581F8HGX255S00A0FZT
+2026-11-11T08:28:27.248 PST -08:00 [INFO][11233-main] [TrackerPeer] Peer traffic sent remoteId=1581F8HGX255S00A0FZT source=sei seq=3 sourceAgeMs=16 headingDeg=325.6 speedKt=null altAgeMs=730 altState=unconfirmed mslAltM=null mslAltAgeMs=null correctionM=null flightEpoch=null intervalMs=16000
+2026-11-11T08:28:27.582 PST -08:00 [INFO][11233-main] [TrackerPeer] Peer traffic sent remoteId=1581F8HGX255S00A0FZT source=rid seq=3 sourceAgeMs=16 headingDeg=325.6 speedKt=null altAgeMs=16 altState=unconfirmed mslAltM=null mslAltAgeMs=null correctionM=null flightEpoch=null intervalMs=16000
+2026-11-11T08:28:28.303 PST -08:00 [DEBUG][11233-main] [CameraFootprint] CameraFootprint source=SEI gimbalTiltDeg=-15.8 headingDeg=12.8 aglM=23.2 nearM=43 farM=996 clamped=false
+2026-11-11T08:28:29.422 PST -08:00 [DEBUG][11233-main] [TrackerPeer] Managed video thumbnail encode elapsedMs=12 bytes=28882 src=1920x1088
+2026-11-11T08:28:30.104 PST -08:00 [INFO][11233-95911] [BackupProtection] Private storage excluded; operational Library data remains backup-eligible
+2026-11-11T08:28:30.106 PST -08:00 [INFO][11233-95911] [BackupProtection] Device-bound credential protection checked; pending=0
+2026-11-11T08:28:31.720 PST -08:00 [INFO][11233-main] [Clue] Clue capture stage=tap aircraft=1581F8HGX255S00A0FZT stream=1sar7djmtrc4td
+2026-11-11T08:28:31.747 PST -08:00 [INFO][11233-main] [Clue] Clue capture stage=jpeg elapsedMs=16 bytes=629758 1920x1088
+2026-11-11T08:28:31.749 PST -08:00 [INFO][11233-main] [Clue] Clue capture stage=form-open elapsedMs=29 aircraft=1581F8HGX255S00A0FZT imageReady=jpeg height=23.3(DJI SEI relative altitude) demRef=false
+2026-11-11T08:28:31.749 PST -08:00 [INFO][11233-main] [Clue] Snapshot bound aircraft=1581F8HGX255S00A0FZT -1.023 s · exact captureSource=stream-pts origin=frame height=23.3(DJI SEI relative altitude) demRef=false
+2026-11-11T08:28:31.773 PST -08:00 [INFO][11233-main] [Clue] Clue gimbal committed gimbalSource=sei pitch=-15.8 aircraft=1581F8HGX255S00A0FZT
+2026-11-11T08:28:31.884 PST -08:00 [INFO][11233-main] [ClueTerrain] hitch sources mainHitchCount=25 activeClueTerrainTasks=0 mapOverlayRebuilds=3 lastMapOverlayMs=0.2 lastMapOverlayPoints=24 thumbPresence=58 peerRecv=0 mapAnnot=90 recent=map.annot@4630ms,map.annot@4295ms,map.annot@3629ms,map.annot@3007ms,map.annot@2623ms,thumb.await@2461ms,thumb.apply@2447ms/28882B,map.annot@906ms
+2026-11-11T08:28:31.884 PST -08:00 [INFO][11233-main] [Clue] Clue capture stage=bind elapsedMs=164 aircraft=1581F8HGX255S00A0FZT
+2026-11-11T08:28:31.928 PST -08:00 [INFO][11233-main] [Clue] Clue ray-march totalMs=36.9 catalogMs=0.0 tileOpenDecodeMs=35.9 stepMs=33.7 samples=15 maxRangeM=1500 coarseStepM=200 hit=true startAltM=571.1 demUnderDroneM=547.9 aglM=23.3 datum=dem+agl stage=bounded-300ms
+2026-11-11T08:28:31.928 PST -08:00 [INFO][11233-main] [Clue] Clue projection method=terrain-raymarch tile=hit gimbalPitch=-15.8 gimbalYaw=12.8 demSource=usgs-geotiff-local-1m
+2026-11-11T08:28:32.185 PST -08:00 [INFO][11233-main] [Clue] Clue ray-march totalMs=40.1 catalogMs=0.0 tileOpenDecodeMs=40.0 stepMs=36.9 samples=15 maxRangeM=1500 coarseStepM=200 hit=true startAltM=571.1 demUnderDroneM=547.9 aglM=23.3 datum=dem+agl stage=bounded-2000ms
+2026-11-11T08:28:32.185 PST -08:00 [INFO][11233-main] [Clue] Clue projection method=terrain-raymarch tile=hit gimbalPitch=-15.8 gimbalYaw=12.8 demSource=usgs-geotiff-local-1m
+2026-11-11T08:28:32.185 PST -08:00 [INFO][11233-main] [Clue] DEM projection aircraft=1581F8HGX255S00A0FZT heading=12.8 aglM=23.3 gimbal=-15.8 terrainApplied=true demSource=usgs-geotiff-local-1m demResolutionM=1.0
+2026-11-11T08:28:33.322 PST -08:00 [DEBUG][11233-main] [CameraFootprint] CameraFootprint source=SEI gimbalTiltDeg=-15.8 headingDeg=12.7 aglM=23.3 nearM=43 farM=995 clamped=false
+2026-11-11T08:28:33.717 PST -08:00 [INFO][11233-main] [ClueTerrain] hitch sources mainHitchCount=27 activeClueTerrainTasks=0 mapOverlayRebuilds=3 lastMapOverlayMs=0.2 lastMapOverlayPoints=24 thumbPresence=58 peerRecv=0 mapAnnot=92 recent=map.annot@4839ms,map.annot@4456ms,thumb.await@4294ms,thumb.apply@4280ms/28882B,map.annot@2739ms,map.annot@1554ms,map.annot@741ms
+2026-11-11T08:28:34.265 PST -08:00 [DEBUG][11233-96279] [MediaMTX] 2026/11/11 16:28:34 INF [RTMP] [conn 127.0.0.1:57637] opened
+2026-11-11T08:28:34.265 PST -08:00 [DEBUG][11233-96279] [MediaMTX] 2026/11/11 16:28:34 DEB [RTMP] [conn 127.0.0.1:57637] RTMP handshake: initializing server connection
+2026-11-11T08:28:34.266 PST -08:00 [DEBUG][11233-96279] [MediaMTX] 2026/11/11 16:28:34 INF [RTMP] [conn 127.0.0.1:57637] closed: EOF
+2026-11-11T08:28:34.441 PST -08:00 [DEBUG][11233-main] [TrackerPeer] Managed video thumbnail encode elapsedMs=12 bytes=29106 src=1920x1088
+2026-11-11T08:28:35.139 PST -08:00 [INFO][11233-main] [ClueTerrain] hitch sources mainHitchCount=31 activeClueTerrainTasks=0 mapOverlayRebuilds=3 lastMapOverlayMs=0.2 lastMapOverlayPoints=24 thumbPresence=60 peerRecv=0 mapAnnot=93 recent=map.annot@4161ms,map.annot@2976ms,map.annot@2163ms,map.annot@838ms,thumb.await@697ms,thumb.apply@696ms/29106B
+2026-11-11T08:28:36.225 PST -08:00 [INFO][11233-main] [ClueTerrain] hitch sources mainHitchCount=33 activeClueTerrainTasks=0 mapOverlayRebuilds=3 lastMapOverlayMs=0.2 lastMapOverlayPoints=24 thumbPresence=60 peerRecv=0 mapAnnot=94 recent=map.annot@4062ms,map.annot@3250ms,map.annot@1925ms,thumb.await@1783ms,thumb.apply@1782ms/29106B,map.annot@854ms
+2026-11-11T08:28:36.373 PST -08:00 [INFO][11233-main] [Map] CalTopo artifact refresh mode=delta received=3 features=42 ignoredTracks=1 18 markers, 5 lines, 10 areas
+2026-11-11T08:28:36.885 PST -08:00 [INFO][11233-98183] [CalTopo] Published local device marker id=f6cbd6d2-ea23-45cd-b4ef-a559822c31ad folder='Drone Tracks'
+2026-11-11T08:28:37.662 PST -08:00 [INFO][11233-main] [ClueTerrain] hitch sources mainHitchCount=38 activeClueTerrainTasks=0 mapOverlayRebuilds=3 lastMapOverlayMs=0.2 lastMapOverlayPoints=24 thumbPresence=60 peerRecv=0 mapAnnot=95 recent=map.annot@4687ms,map.annot@3362ms,thumb.await@3221ms,thumb.apply@3220ms/29106B,map.annot@2291ms,map.annot@409ms
+2026-11-11T08:28:38.330 PST -08:00 [DEBUG][11233-main] [CameraFootprint] CameraFootprint source=SEI gimbalTiltDeg=-15.8 headingDeg=12.8 aglM=23.3 nearM=43 farM=996 clamped=false
+2026-11-11T08:28:39.488 PST -08:00 [DEBUG][11233-main] [TrackerPeer] Managed video thumbnail encode elapsedMs=29 bytes=29047 src=1920x1088
+2026-11-11T08:28:39.681 PST -08:00 [INFO][11233-main] [ClueTerrain] hitch sources mainHitchCount=40 activeClueTerrainTasks=0 mapOverlayRebuilds=3 lastMapOverlayMs=0.2 lastMapOverlayPoints=24 thumbPresence=62 peerRecv=0 mapAnnot=95 recent=map.annot@4311ms,map.annot@2428ms,thumb.await@193ms,thumb.apply@192ms/29047B
+2026-11-11T08:28:40.750 PST -08:00 [INFO][11233-main] [ClueTerrain] hitch sources mainHitchCount=43 activeClueTerrainTasks=0 mapOverlayRebuilds=3 lastMapOverlayMs=0.2 lastMapOverlayPoints=24 thumbPresence=62 peerRecv=0 mapAnnot=95 recent=map.annot@3497ms,thumb.await@1261ms,thumb.apply@1261ms/29047B
+2026-11-11T08:28:43.346 PST -08:00 [DEBUG][11233-main] [CameraFootprint] CameraFootprint source=SEI gimbalTiltDeg=-15.8 headingDeg=12.8 aglM=23.2 nearM=43 farM=995 clamped=false
+2026-11-11T08:28:43.363 PST -08:00 [INFO][11233-main] [ClueTerrain] hitch sources mainHitchCount=44 activeClueTerrainTasks=0 mapOverlayRebuilds=3 lastMapOverlayMs=0.2 lastMapOverlayPoints=24 thumbPresence=62 peerRecv=0 mapAnnot=96 recent=thumb.await@3874ms,thumb.apply@3874ms/29047B,map.annot@1949ms
+2026-11-11T08:28:43.422 PST -08:00 [INFO][11233-main] [TrackerPeer] Peer traffic sent remoteId=1581F8HGX255S00A0FZT source=sei seq=4 sourceAgeMs=13 headingDeg=325.6 speedKt=null altAgeMs=836 altState=unconfirmed mslAltM=null mslAltAgeMs=null correctionM=null flightEpoch=null intervalMs=16000
+2026-11-11T08:28:43.517 PST -08:00 [DEBUG][11233-97807] [MediaMTX] 2026/11/11 16:28:43 DEB [RTSP] [conn 127.0.0.1:57532] [c->s] GET_PARAMETER rtsp://127.0.0.1:8554/1sar7djmtrc4td/ RTSP/1.0
+2026-11-11T08:28:43.517 PST -08:00 [DEBUG][11233-97807] [MediaMTX] CSeq: 6
+2026-11-11T08:28:43.517 PST -08:00 [DEBUG][11233-97807] [MediaMTX] Session: 0243b615a2ee48c2b0184f2af55c7b85
+2026-11-11T08:28:43.517 PST -08:00 [DEBUG][11233-97807] [MediaMTX] User-Agent: Lavf61.1.100
+2026-11-11T08:28:43.517 PST -08:00 [DEBUG][11233-97807] [MediaMTX] 
+2026-11-11T08:28:43.517 PST -08:00 [DEBUG][11233-97807] [MediaMTX] 
+2026-11-11T08:28:43.517 PST -08:00 [DEBUG][11233-97807] [MediaMTX] 2026/11/11 16:28:43 DEB [RTSP] [conn 127.0.0.1:57532] [s->c] RTSP/1.0 200 OK
+2026-11-11T08:28:43.517 PST -08:00 [DEBUG][11233-97807] [MediaMTX] CSeq: 6
+2026-11-11T08:28:43.517 PST -08:00 [DEBUG][11233-97807] [MediaMTX] Content-Type: text/parameters
+2026-11-11T08:28:43.517 PST -08:00 [DEBUG][11233-97807] [MediaMTX] Server: gortsplib
+2026-11-11T08:28:43.517 PST -08:00 [DEBUG][11233-97807] [MediaMTX] Session: 0243b615a2ee48c2b0184f2af55c7b85;timeout=55
+2026-11-11T08:28:43.518 PST -08:00 [DEBUG][11233-97807] [MediaMTX] 
+2026-11-11T08:28:43.518 PST -08:00 [DEBUG][11233-97807] [MediaMTX] 
+2026-11-11T08:28:43.646 PST -08:00 [INFO][11233-main] [Clue] Clue form action publish=true aircraft=1581F8HGX255S00A0FZT titleLength=4
+2026-11-11T08:28:43.712 PST -08:00 [INFO][11233-main] [Clue] Clue save stage=bound elapsedMs=65 publishWithoutTerrainWait=true
+2026-11-11T08:28:43.712 PST -08:00 [INFO][11233-main] [Clue] Clue projection method=terrain-raymarch tile=hit gimbalPitch=-15.8 gimbalYaw=12.8 demSource=usgs-geotiff-local-1m
+2026-11-11T08:28:43.748 PST -08:00 [INFO][11233-main] [TrackerPeer] Peer traffic sent remoteId=1581F8HGX255S00A0FZT source=rid seq=4 sourceAgeMs=49 headingDeg=325.6 speedKt=null altAgeMs=49 altState=unconfirmed mslAltM=null mslAltAgeMs=null correctionM=null flightEpoch=null intervalMs=16000
+2026-11-11T08:28:43.749 PST -08:00 [INFO][11233-main] [Clue] Clue save stage=image-prepared elapsedMs=102 bytes=628272
+2026-11-11T08:28:43.777 PST -08:00 [INFO][11233-main] [Clue] Clue save stage=bound elapsedMs=27 publishWithoutTerrainWait=true
+2026-11-11T08:28:43.778 PST -08:00 [INFO][11233-main] [Clue] Clue save stage=image-prepared elapsedMs=28 bytes=628272
+2026-11-11T08:28:43.884 PST -08:00 [INFO][11233-main] [Clue] Clue save stage=durable id=0EC6EDA2-608B-4879-9021-4BEB357534CD elapsedMs=134
+2026-11-11T08:28:43.884 PST -08:00 [INFO][11233-main] [Clue] Local clue saved id=0EC6EDA2-608B-4879-9021-4BEB357534CD designator=1sar7DjMtrc4td bytes=628272 publish=true binding=-1.023 s · exact
+2026-11-11T08:28:43.884 PST -08:00 [INFO][11233-main] [Clue] Clue save stage=queued-upload id=0EC6EDA2-608B-4879-9021-4BEB357534CD elapsedMs=134
+2026-11-11T08:28:43.893 PST -08:00 [INFO][11233-93443] [Clue] Clue save stage=thumb id=0EC6EDA2-608B-4879-9021-4BEB357534CD bytes=7280
+2026-11-11T08:28:43.971 PST -08:00 [INFO][11233-main] [Clue] Clue upload start id=0EC6EDA2-608B-4879-9021-4BEB357534CD attempt=1 mapId=4J0LF02 teamId=personal:BCL66J submitDeadline=375s sendBudget=375s
+2026-11-11T08:28:43.972 PST -08:00 [INFO][11233-main] [Clue] Clue upload position id=0EC6EDA2-608B-4879-9021-4BEB357534CD source=terrain-raymarch offsetM=88.9
+2026-11-11T08:28:43.986 PST -08:00 [INFO][11233-main] [Clue] Clue upload send id=0EC6EDA2-608B-4879-9021-4BEB357534CD attempt=1 folder=d0a12222-6a08-433a-8b96-c82d3c574214 sendTimeout=374s
+2026-11-11T08:28:43.987 PST -08:00 [INFO][11233-main] [ClueTerrain] diag activeClueTerrainTasks=0 mainHitchCount=47 mapOverlayRebuilds=3
+2026-11-11T08:28:44.480 PST -08:00 [DEBUG][11233-main] [TrackerPeer] Managed video thumbnail encode elapsedMs=24 bytes=29260 src=1920x1088
+2026-11-11T08:28:44.513 PST -08:00 [INFO][11233-main] [ClueTerrain] hitch sources mainHitchCount=48 activeClueTerrainTasks=0 mapOverlayRebuilds=3 lastMapOverlayMs=0.2 lastMapOverlayPoints=24 thumbPresence=64 peerRecv=0 mapAnnot=96 recent=map.annot@3099ms,thumb.await@32ms,thumb.apply@12ms/29260B
+2026-11-11T08:28:46.346 PST -08:00 [INFO][11233-main] [Clue] Clue upload success id=0EC6EDA2-608B-4879-9021-4BEB357534CD attempt=1 status=200 marker=0ec6eda2-608b-4879-9021-4beb357534cd
+2026-11-11T08:28:46.461 PST -08:00 [INFO][11233-main] [BluetoothRID] High-priority scan restart=5 callbacks=0
+2026-11-11T08:28:46.461 PST -08:00 [INFO][11233-main] [Clue] Clue folder move ok id=0EC6EDA2-608B-4879-9021-4BEB357534CD folder=d0a12222-6a08-433a-8b96-c82d3c574214
+2026-11-11T08:28:47.938 PST -08:00 [INFO][11233-main] [AOL] Initialized from DJI altitude reference aircraft=1581F8HGX255S00A0FZT
+2026-11-11T08:28:48.347 PST -08:00 [DEBUG][11233-main] [CameraFootprint] CameraFootprint source=SEI gimbalTiltDeg=-15.8 headingDeg=18.0 aglM=23.3 nearM=43 farM=996 clamped=false
+2026-11-11T08:28:48.992 PST -08:00 [INFO][11233-main] [AOL] Initialized from DJI altitude reference aircraft=1581F8HGX255S00A0FZT
+2026-11-11T08:28:49.365 PST -08:00 [DEBUG][11233-16715] [MediaMTX] 2026/11/11 16:28:49 INF [RTMP] [conn 127.0.0.1:57662] opened
+2026-11-11T08:28:49.365 PST -08:00 [DEBUG][11233-16715] [MediaMTX] 2026/11/11 16:28:49 DEB [RTMP] [conn 127.0.0.1:57662] RTMP handshake: initializing server connection
+2026-11-11T08:28:49.365 PST -08:00 [DEBUG][11233-16715] [MediaMTX] 2026/11/11 16:28:49 INF [RTMP] [conn 127.0.0.1:57662] closed: EOF
+2026-11-11T08:28:49.420 PST -08:00 [DEBUG][11233-90503] [MediaMTX] 2026/11/11 16:28:49 INF [RTMP] [conn 192.168.68.56:52234] RTMP timing path=1sar7djmtrc4td wallMs=1794414529420 windowMs=60015 reads=3642 mediaUnits=3635 readMs=34 beforeMediaMs=34 afterMediaMs=0 mediaGapMs=34 maxReadMs=134 maxBeforeMediaMs=134 maxAfterMediaMs=0 maxMediaGapMs=134 ended=false socketWaitMs=34 nonSocketMs=0 maxSocketWaitMs=134 maxNonSocketMs=2 socketReads=21408 socketBytes=62630950 maxSocketReadMs=134 queueDepth=1 drops=0
+2026-11-11T08:28:49.473 PST -08:00 [DEBUG][11233-main] [TrackerPeer] Managed video thumbnail encode elapsedMs=14 bytes=10745 src=1920x1088
+2026-11-11T08:28:50.049 PST -08:00 [INFO][11233-main] [AOL] Initialized from DJI altitude reference aircraft=1581F8HGX255S00A0FZT
+2026-11-11T08:28:50.914 PST -08:00 [INFO][11233-main] [Video] Render buffer path=1sar7djmtrc4td decoded=1786 dequeued=1748 queueDepth=19 bufferedSpanMs=594 targetMs=700 sourceIntervalMs=33 renderIntervalMs=33 underruns=0 dropped=19 resets=0 presentationSkipped=0 queueBytes=59619264 decodeRecoveries=0 lastDecodeRecovery= displaySubmitted=1748 surfaceBusyDrops=0 callbackHz=28.9 callbackWorkMeanMs=0.37 callbackMaxGapMs=46.5 mainApplyMaxGapMs=151.7 hitchRecent=map.annot@2710ms,map.annot@2446ms,map.annot@1660ms,thumb.await@1440ms,thumb.apply@1440ms/10745B,map.annot@1399ms,map.annot@604ms,map.annot@343ms socketWaitMs=34 afterMediaMs=0 maxSocketWaitMs=134 maxAfterMediaMs=0 maxMediaGapMs=134
+2026-11-11T08:28:51.097 PST -08:00 [INFO][11233-main] [AOL] Initialized from DJI altitude reference aircraft=1581F8HGX255S00A0FZT
+2026-11-11T08:28:52.148 PST -08:00 [INFO][11233-main] [AOL] Initialized from DJI altitude reference aircraft=1581F8HGX255S00A0FZT
+2026-11-11T08:28:53.198 PST -08:00 [INFO][11233-main] [AOL] Initialized from DJI altitude reference aircraft=1581F8HGX255S00A0FZT
+2026-11-11T08:28:53.368 PST -08:00 [DEBUG][11233-main] [CameraFootprint] CameraFootprint source=SEI gimbalTiltDeg=-15.8 headingDeg=180.1 aglM=23.2 nearM=43 farM=996 clamped=false
+2026-11-11T08:28:54.244 PST -08:00 [INFO][11233-main] [RemoteID] rid_rx count=57 remoteId=1581F8HGX255S00A0FZT waypoint=58 wall=1794414534220 altM=543.1 transport=djiVideo rssi=unknown distanceFt=0.1 totalDistanceFt=635.9
+2026-11-11T08:28:54.258 PST -08:00 [INFO][11233-main] [RIDTiming] stage=track_ingest count=57 aircraft=1581F8HGX255S00A0FZT transport=djiVideo processingMs=15
+2026-11-11T08:28:54.482 PST -08:00 [DEBUG][11233-main] [TrackerPeer] Managed video thumbnail encode elapsedMs=11 bytes=27588 src=1920x1088
+2026-11-11T08:28:54.482 PST -08:00 [DEBUG][11233-main] [TrackerPeer] Managed video thumbnail captured session=b847363a-90de-4c5c-b7b5-ef3f23b11869 drone=1sar7DjMtrc4td revision=1794414534482
+2026-11-11T08:28:55.287 PST -08:00 [INFO][11233-main] [AOL] Initialized from DJI altitude reference aircraft=1581F8HGX255S00A0FZT
+2026-11-11T08:28:55.570 PST -08:00 [DEBUG][11233-main] [RIDTiming] stage=annotation_update aircraft=1581F8HGX255S00A0FZT inset=false receivedMs=1794414535496 receiveToAnnotationMs=73
+2026-11-11T08:28:56.324 PST -08:00 [INFO][11233-main] [AOL] Initialized from DJI altitude reference aircraft=1581F8HGX255S00A0FZT
+2026-11-11T08:28:56.637 PST -08:00 [INFO][11233-main] [Map] CalTopo artifact refresh mode=delta received=5 features=44 ignoredTracks=1 20 markers, 5 lines, 10 areas
+2026-11-11T08:28:56.698 PST -08:00 [INFO][11233-main] [ClueTerrain] hitch sources mainHitchCount=49 activeClueTerrainTasks=0 mapOverlayRebuilds=3 lastMapOverlayMs=0.2 lastMapOverlayPoints=24 thumbPresence=68 peerRecv=0 mapAnnot=110 recent=map.annot@4282ms,map.annot@4002ms,thumb.await@2215ms,thumb.apply@2215ms/27588B,map.annot@2189ms,map.annot@1126ms,map.annot@93ms
+2026-11-11T08:28:58.370 PST -08:00 [DEBUG][11233-main] [CameraFootprint] CameraFootprint source=SEI gimbalTiltDeg=-15.8 headingDeg=181.4 aglM=23.2 nearM=43 farM=996 clamped=false
+2026-11-11T08:28:59.507 PST -08:00 [DEBUG][11233-main] [TrackerPeer] Managed video thumbnail encode elapsedMs=14 bytes=27535 src=1920x1088
+2026-11-11T08:28:59.549 PST -08:00 [INFO][11233-main] [TrackerPeer] Peer traffic sent remoteId=1581F8HGX255S00A0FZT source=sei seq=5 sourceAgeMs=17 headingDeg=144.4 speedKt=null altAgeMs=117 altState=unconfirmed mslAltM=null mslAltAgeMs=null correctionM=null flightEpoch=null intervalMs=16000
+2026-11-11T08:29:00.510 PST -08:00 [INFO][11233-main] [TrackerPeer] Peer traffic sent remoteId=1581F8HGX255S00A0FZT source=rid seq=5 sourceAgeMs=22 headingDeg=144.4 speedKt=null altAgeMs=22 altState=unconfirmed mslAltM=null mslAltAgeMs=null correctionM=null flightEpoch=null intervalMs=16000
+2026-11-11T08:29:02.406 PST -08:00 [INFO][11233-main] [Video] Display locked or app in background; frame pull continues, rendering paused path=1sar7djmtrc4td

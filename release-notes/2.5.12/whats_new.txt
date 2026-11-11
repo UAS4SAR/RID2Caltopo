@@ -1,0 +1,2 @@
+Latest changes:
+- Live video reading is less likely to stall while the app is busy.

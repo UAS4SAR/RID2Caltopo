@@ -157,6 +157,7 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
         CaltopoLiveTrack track = LiveTrackByRemoteId.get(remoteId);
         if (track == null) return;
         synchronized (track) {
+            if (label != null && !label.isEmpty() && !label.equals(track.droneSpec.trackLabel())) return;
             if (track.requestedLiveTrackId == null && track.liveTrackId == null
                     && flightId != null && !flightId.isEmpty()) {
                 track.requestedLiveTrackId = flightId;
@@ -237,7 +238,11 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
     private final java.util.concurrent.atomic.AtomicReference<OwnershipRequest> ownershipRequest =
             new java.util.concurrent.atomic.AtomicReference<>();
 
+    /** Set only while closing a segment this tablet still owned, after the request already flipped. */
+    private boolean publishingOwnedHandoff;
+
     private boolean ownsPublication() {
+        if (publishingOwnedHandoff && localOwner) return true;
         OwnershipRequest requested = ownershipRequest.get();
         return localOwner && (requested == null || requested.owner);
     }
@@ -525,6 +530,7 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
             JSONObject properties = feature.optJSONObject("properties");
             if (properties == null || !"Shape".equals(properties.optString("class"))) continue;
             if (feature.optString("id", "").isEmpty()) continue;
+            if (CaltopoMap.isArchivedShape(feature.optString("id", ""))) continue;
             String prefix = properties.optString("title", "").split("_", 2)[0].trim()
                     .toLowerCase(Locale.ROOT);
             if (!wanted.contains(prefix)) continue;
@@ -744,15 +750,74 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
         CaltopoRecoveryWork.offMainStart(() -> setLocalOwnerOnWorker(request));
     }
 
-    private synchronized void setLocalOwnerOnWorker(OwnershipRequest request) {
-        if (shuttingDown || ownershipRequest.get() != request) return;
-        boolean isOwner = request.owner;
-        CTDebug(TAG, String.format(Locale.US,
-                "setLocalOwner(%s): %s → %s", droneSpec.trackLabel(), localOwner, isOwner));
-        localOwner = isOwner;
-        if (isOwner && mapStatus == CaltopoMap.MapStatusListener.mapStatus.up) {
-            backfillQueuedPointsFromWaypointTrackIfNeeded();
-            ensureLiveTrackStarted();
+    private void setLocalOwnerOnWorker(OwnershipRequest request) {
+        final ArchiveWork handoff;
+        final String destinationMap;
+        final String destinationFolder;
+        final boolean renameGrantFile;
+        synchronized (this) {
+            if (shuttingDown || ownershipRequest.get() != request) return;
+            boolean isOwner = request.owner;
+            boolean wasOwner = localOwner;
+            CTDebug(TAG, String.format(Locale.US,
+                    "setLocalOwner(%s): %s → %s", droneSpec.trackLabel(), wasOwner, isOwner));
+            boolean hadOwnedSegment = wasOwner && !isOwner && active
+                    && (liveTrackId != null || requestedLiveTrackId != null || !linePoints.isEmpty());
+            if (!hadOwnedSegment || !ownedSegmentReadyToPublish()) {
+                boolean granted = false;
+                if (!wasOwner && isOwner) {
+                    long grantedAtMs = System.currentTimeMillis();
+                    if (WaypointTrack.omitShadowPointsBeforeGrant(droneSpec, grantedAtMs)) {
+                        dropQueuedPointsBefore(grantedAtMs);
+                        granted = true;
+                    }
+                }
+                localOwner = isOwner;
+                if (isOwner && mapStatus == CaltopoMap.MapStatusListener.mapStatus.up) {
+                    backfillQueuedPointsFromWaypointTrackIfNeeded();
+                    ensureLiveTrackStarted();
+                }
+                renameGrantFile = granted;
+                handoff = null;
+                destinationMap = null;
+                destinationFolder = null;
+            } else {
+                // Close while this tablet still owns the publication, then drop ownership.
+                // The idle timeout must not later delete the live track or mark the file local_only.
+                destinationMap = CaltopoMap.GetMapId();
+                destinationFolder = CaltopoMap.resolveArchiveFolderIdForFlight(trackObservedStartedAtMs);
+                WaypointTrack.markClosedAsPriorOwner(segmentTrackLabel);
+                publishingOwnedHandoff = true;
+                try {
+                    handoff = prepareArchiveLocked(destinationMap);
+                } finally {
+                    publishingOwnedHandoff = false;
+                }
+                renameGrantFile = false;
+            }
+        }
+        // The archive rename is disk work. It stays outside the live-track lock.
+        if (renameGrantFile) WaypointTrack.renameArchiveToGrant(droneSpec);
+        if (handoff == null) return;
+        // Shape POST and the local file stay off the owner-assignment thread.
+        CaltopoRecoveryWork.executeArchive(() -> {
+            try {
+                applyArchiveWork(handoff, 0L, destinationMap, destinationFolder);
+            } catch (Exception e) {
+                CTError(TAG, "setLocalOwner(): owned-segment handoff failed", e);
+            }
+            NotifyLocalTrackFinished(droneSpec, "ownership handed to another tablet");
+        });
+    }
+
+    /** Verified Mine only. An unverified Mine stays on the ownership-hold path. */
+    private boolean ownedSegmentReadyToPublish() {
+        if (droneSpec.isLocalArchiveOnly() || !droneSpec.isCurrentFlightConfirmed()) return false;
+        try {
+            String claim = runtime.getPeerCoordinator().ownershipClaimState(myRemoteId);
+            return !FlightOwnershipContext.isAdverseClaim(claim == null ? "" : claim);
+        } catch (Exception ignored) {
+            return true;
         }
     }
 
@@ -1624,25 +1689,7 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
         String currentMap = CaltopoMap.GetMapId();
         if (currentMap == null || currentMap.isEmpty() || !currentMap.equals(mapId)) return null;
         if (requestedLiveTrackId == null) {
-            CaltopoMap.AdoptableLiveTrack adoptable = CaltopoMap.takeAdoptableLiveTrack(
-                    effectiveFleetDeviceId());
-            if (adoptable != null && !adoptable.trackId.isEmpty()) {
-                // Ownership handoff: continue the peer's existing LiveTrack id/label.
-                requestedLiveTrackId = adoptable.trackId;
-                liveTrackId = adoptable.trackId;
-                if (!adoptable.title.isEmpty()) {
-                    segmentTrackLabel = adoptable.title;
-                    droneSpec.adoptSharedTrackLabel(adoptable.title);
-                }
-                publicationMapId = mapId;
-                startInFlight = false;
-                active = true;
-                CaltopoMap.AddLiveTrack(liveTrackId, this);
-                CTInfo(TAG, String.format(Locale.US,
-                        "claimLiveTrackStart(%s): adopted peer liveTrack id=%s label=%s",
-                        effectiveFleetDeviceId(), liveTrackId, segmentTrackLabel));
-                return null;
-            }
+            // A granted lease starts a new LiveTrack. The previous owner's id stays theirs.
             requestedLiveTrackId = resolveStableLiveTrackIdLocked(deferredId);
             publicationMapId = mapId;
         }
@@ -1707,6 +1754,15 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
         }
     }
 
+    private void dropQueuedPointsBefore(long grantedAtMs) {
+        if (linePoints.isEmpty()) return;
+        java.util.Iterator<QueuedPoint> points = linePoints.iterator();
+        while (points.hasNext()) {
+            if (points.next().timestampMsec < grantedAtMs) points.remove();
+        }
+        queuedPointCount.set(linePoints.size());
+    }
+
     private void backfillQueuedPointsFromWaypointTrackIfNeeded() {
         if (liveTrackId != null || startLiveTrackOp != null || linePointsSentCount != 0) return;
 
@@ -1714,7 +1770,9 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
         if (snapshot.size() <= linePoints.size()) return;
 
         linePoints.clear();
+        long ownedFromMs = WaypointTrack.ownedFromMs(droneSpec);
         for (WaypointTrack.TrackPoint point : snapshot) {
+            if (ownedFromMs > 0L && point.timestampMsec < ownedFromMs) continue;
             linePoints.add(new QueuedPoint(
                     point.lat,
                     point.lng,
@@ -1817,6 +1875,7 @@ public class CaltopoLiveTrack implements CaltopoMap.MapStatusListener, LiveTrack
                         droneSpec.trackLabel(), reason), e);
             }
         }
+        WaypointTrack.PrepareTrackForFlightEnd(droneSpec);
         notifyPeerCoordinatorTrackEnded(true);
         NotifyLocalTrackFinished(droneSpec, reason);
     }

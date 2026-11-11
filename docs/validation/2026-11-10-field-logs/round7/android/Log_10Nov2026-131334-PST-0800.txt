@@ -1,0 +1,138 @@
+DEBUG[7621-main] 10Nov131241.380 PST -08:00: MainThreadStallMonitor Started main-thread stall monitor.
+  DEBUG[7621-7841] 10Nov131241.781 PST -08:00: AppConfigStore initialize(): datastore path=/data/user/0/org.ncssar.rid2caltopo/files/datastore/app_config.pb
+  DEBUG[7621-7841] 10Nov131241.784 PST -08:00: AppConfigStore readConfigBlockingFromDataStore(): exists=true size=12765
+  DEBUG[7621-7841] 10Nov131242.095 PST -08:00: AppConfigStore restoreClientState(): legacyImportComplete=true, ridMappings=29, loadedConfigFiles=6, archiveUriBlank=false
+  DEBUG[7621-7841] 10Nov131242.234 PST -08:00: CaltopoClient reloadPersistedStateInternal(): restored ClientClassState from proto store.
+  DEBUG[7621-7841] 10Nov131242.247 PST -08:00: CaltopoClient reloadPersistedStateInternal(): vers:'19', minDist:'2' ft, usePeersFlag:'true', captureVideoStreamsFlag:'true'
+newTrackDelayInSec:30, maxFlatlineToneDurationInSec:5, bridgeCheckDistanceFeet:20, alarmVolumePercent:100, alarmVolumeConfigured:false, debugLevel:Debugs, maxIdleTimeInMinutes:30, incident:Training, opPeriod:1, coordinateDisplayFormat:decimal
+predictiveHeadEnabled:false, proximityAlertSpacingFeet:100
+notamEnabled:true, notamRadiusNm:1, notamAutoRefresh:true, notamRefreshIntervalSeconds:1800, notamWarnInsideOneNm:true
+notamApiBaseUrl:'', notamTokenUrl:'', notamClientId:'', notamClientSecret:'', notamScope:'', notamLastUpdatedEpochMs:1794344543032
+landRestrictionsEnabled:true, landRestrictionsShowOnMap:true, landRestrictionsAutoRefresh:true, landRestrictionsRadiusNm:1, landRestrictionsLastUpdatedEpochMs:1794344549766
+faaConfigLabel:'', faaTokenPresent:false, faaPayloadCached:false, faaStale:false, faaLastValidatedEpochMs:0, faaLastFailureReason:''
+activeCaltopoProfileId:'home-default', caltopoProfiles:1, maTemplateConfigured:false
+archivePath: 'content://com.android.externalstorage.documents/tree/4A21-0000%3ADroneTrax', caltopoTrackFolder: 'Drone Tracks', caltopoDomainAndPort:caltopo.com,
+teamId: '###', credId: '######' credSecret: '###########', dronespecs: 29 k/v pairs:
+  rid:'1910F916JJHWLHEFGVYC', mid:'1sar10PtnscAtm2lt', org:'NCSSAR', model:'Potensic Atom LT', owner:'1sar10' trackLabel:
+  rid:'1581FBLKC263900B0TY0', mid:'1sar33DjAv360', org:'NCSSAR', model:'DJI Avata 360', owner:'' trackLabel:
+  rid:'1581F6W8W258F0022EZZ', mid:'1sar1001-01DjAvt2', org:'NCSSAR', model:'DJI Avata2', owner:'1sar1001-01' trackLabel:
+  rid:'1865F10X000000001540', mid:'1sar1002-02DjN', org:'NCSSAR', model:'DJI Neo', owner:'1sar1002-02' trackLabel:
+  rid:'1581F6Z9C256S003HCXU', mid:'1sar62Mn4Pr', org:'NCSSAR', model:'DJI Mini 4 Pro', owner:'' trackLabel:
+  rid:'1581F6Z9C24BK0036M9Q', mid:'1sar138DjMn4Pr', org:'NCSSAR', model:'DJI Mini 4 Pro', owner:'1sar138' trackLabel:
+  rid:'1748FEV2HN2925021279', mid:'1sar83AtlEv2640T', org:'NCSSAR', model:'Autel EVO 2 640 T', owner:'1sar83' trackLabel:
+  rid:'186975006977', mid:'1sar33DjN', org:'NCSSAR', model:'DJI Neo', owner:'1sar33' trackLabel:
+  rid:'1581FBLKC262T00B07G1', mid:'1sar7DjAvt360', org:'NCSSAR', model:'DJI Avata 360', owner:'1sar7' trackLabel:
+  rid:'18656A13568', mid:'1sar64DjMn2', org:'NCSSAR', model:'DJI Mini 2', owner:'1sar64' trackLabel:
+  rid:'1581F6W8B24C3002090Y', mid:'1sar1002-02DjAvt2', org:'NCSSAR', model:'DJI Avata2', owner:'1sar1002-02' trackLabel:
+  rid:'1581F6Z9C2527003BZFX', mid:'1sar1001-01DjMn4Pr', org:'NCSSAR', model:'DJI Mini 4 Pro', owner:'1sar1001-01' trackLabel:
+  rid:'1581F6Z9C24BH0036EJL', mid:'1sar7DjMn4Pr', org:'NCSSAR', model:'DJI Mini 4 Pro', owner:'1sar7' trackLabel:
+  rid:'1581F9DEC258S0295066', mid:'1sar10DjMn5Pr', org:'NCSSAR', model:'DJI Mini 5 Pro', owner:'1sar10' trackLabel:
+  rid:'187575000726', mid:'1sar50DjMn4k', org:'NCSSAR', model:'DJI Mini4K', owner:'1sar50' trackLabel:
+  rid:'1581F8HGX256G00A0JPU', mid:'1sar1002-02DjMtrc4td', org:'NCSSAR', model:'DJI Matrice 4TD', owner:'1sar1002-02' trackLabel:
+  rid:'1581F67QE239L00A00DE', mid:'1sar7DjMvc3Pr', org:'NCSSAR', model:'DJI Mavic 3 Pro', owner:'1sar7' trackLabel:
+  rid:'2003F100000000000198', mid:'1sar83DjN', org:'NCSSAR', model:'DJI Neo', owner:'1sar83' trackLabel:
+  rid:'1581F8HGX262U00A1E4M', mid:'1sar1001-01DjMtrc4td', org:'NCSSAR', model:'DJI Matrice 4TD', owner:'1sar1001-01' trackLabel:
+  rid:'1865CBM0200000188', mid:'1sar34DjN2', org:'NCSSAR', model:'DJI Neo 2', owner:'1sar34' trackLabel:
+  rid:'1581F6W8B251S00200V2', mid:'1sar7DjAvt2', org:'NCSSAR', model:'DJI Avata 2', owner:'1sar7' trackLabel:
+  rid:'1581F6Z9C2527003BZQB', mid:'1sar1002-02DjMn4Pr', org:'NCSSAR', model:'DJI Mini 4 Pro', owner:'1sar1002-02' trackLabel:
+  rid:'1748FEV3HMK924451281', mid:'1sar7AtlEvMx4n', org:'NCSSAR', model:'Autel Evo Max 4N', owner:'1sar7' trackLabel:
+  rid:'1748FEV2HN7824041047', mid:'1sar118AtlEv2v3', org:'NCSSAR', model:'Autel EVO II V3', owner:'1SAR118' trackLabel:
+  rid:'1581F6W8W25560020T3W', mid:'1sar118DjAvt2', org:'NCSSAR', model:'DJI Avata 2', owner:'1sar118' trackLabel:
+  rid:'1581F5YHX258E002U84R', mid:'1sar64DjMn3', org:'NCSSAR', model:'DJI Mini 3', owner:'1sar64' trackLabel:
+  rid:'1581F6Z9C249G0031CLB', mid:'1sar33DjMn4Pr', org:'NCSSAR', model:'DJI Mini 4 Pro', owner:'1sar33' trackLabel:
+  rid:'1581F8HGX255S00A0FZT', mid:'1sar7DjMtrc4td', org:'NCSSAR', model:'DJI Matrice 4TD', owner:'1sar7' trackLabel:
+  rid:'1865F10X000000000054', mid:'1sar1001-01DjN', org:'NCSSAR', model:'DJI Neo', owner:'1sar1001-01' trackLabel:,
+ loaded configFiles:
+  type:ct_ridmap, editor:org_config, dated: loaded at 085532Nov10  
+type:ct_credentials, editor:org_config, dated: loaded at 085532Nov10  
+type:ct_ridmap, editor:org_config, dated: loaded at 071629Nov10  
+type:ct_credentials, editor:org_config, dated: loaded at 071629Nov10  
+type:ct_ridmap, editor:org_config, dated: loaded at 170012Nov08  
+type:ct_credentials, editor:org_config, dated: loaded at 170012Nov08
+  DEBUG[7621-7841] 10Nov131242.272 PST -08:00: CaltopoClient CTEvent(r2c_InitialState): Bundle[{r2c_mappedIds=[1910F916JJHWLHEFGVYC:1sar10PtnscAtm2lt, 1581FBLKC263900B0TY0:1sar33DjAv360, 1581F6W8W258F0022EZZ:1sar1001-01DjAvt2, 1865F10X000000001540:1sar1002-02DjN, 1581F6Z9C256S003HCXU:1sar62Mn4Pr, 1581F6Z9C24BK0036M9Q:1sar138DjMn4Pr, 1748FEV2HN2925021279:1sar83AtlEv2640T, 186975006977:1sar33DjN, 1581FBLKC262T00B07G1:1sar7DjAvt360, 18656A13568:1sar64DjMn2, 1581F6W8B24C3002090Y:1sar1002-02DjAvt2, 1581F6Z9C2527003BZFX:1sar1001-01DjMn4Pr, 1581F6Z9C24BH0036EJL:1sar7DjMn4Pr, 1581F9DEC258S0295066:1sar10DjMn5Pr, 187575000726:1sar50DjMn4k, 1581F8HGX256G00A0JPU:1sar1002-02DjMtrc4td, 1581F67QE239L00A00DE:1sar7DjMvc3Pr, 2003F100000000000198:1sar83DjN, 1581F8HGX262U00A1E4M:1sar1001-01DjMtrc4td, 1865CBM0200000188:1sar34DjN2, 1581F6W8B251S00200V2:1sar7DjAvt2, 1581F6Z9C2527003BZQB:1sar1002-02DjMn4Pr, 1748FEV3HMK924451281:1sar7AtlEvMx4n, 1748FEV2HN7824041047:1sar118AtlEv2v3, 1581F6W8W25560020T3W:1sar118DjAvt2, 1581F5YHX258E002U84R:1sar64DjMn3, 1581F6Z9C249G0031CLB:1sar33DjMn4Pr, 1581F8HGX255S00A0FZT:1sar7DjMtrc4td, 1865F10X000000000054:1sar1001-01DjN]}]
+  DEBUG[7621-7841] 10Nov131242.491 PST -08:00: R2CApplication Crashlytics startup probe initialized app=[DEFAULT] version=2.5.8
+  DEBUG[7621-7829] 10Nov131242.646 PST -08:00: Airspace Controlled-airspace refresh waiting for GPS location
+  DEBUG[7621-7841] 10Nov131242.662 PST -08:00: Airspace Monitoring started or resumed
+  DEBUG[7621-7829] 10Nov131242.688 PST -08:00: NotamREST Fetch failed: Waiting for GPS location
+  DEBUG[7621-7841] 10Nov131242.692 PST -08:00: NotamREST Monitoring started or resumed
+  DEBUG[7621-7841] 10Nov131242.708 PST -08:00: LandRules Monitoring started or resumed
+  DEBUG[7621-7841] 10Nov131242.736 PST -08:00: NetworkDiagnostics Network snapshotId=net-1 reason=startup ssid=unavailable bssidHash=unavailable ipv4=192.168.68.69 wifiRssiDbm=-55 frequencyMhz=5200 validated=true captivePortal=false metered=false
+  DEBUG[7621-7841] 10Nov131242.743 PST -08:00: NetworkDiagnostics Network routes snapshotId=net-1 network=105 default=true interface=wlan0 addresses=[fe80::dc3d:2fff:fefb:d785/64, 192.168.68.69/22] routes=[fe80::/64 -> :: wlan0 mtu 0, ::/0 -> fe80::2a87:baff:fe1c:8878 wlan0 mtu 0, 192.168.68.0/22 -> 0.0.0.0 wlan0 mtu 0, 0.0.0.0/0 -> 192.168.68.1 wlan0 mtu 0]
+  DEBUG[7621-7841] 10Nov131242.746 PST -08:00: R2CApplication onCreate().
+  DEBUG[7621-7986] 10Nov131242.750 PST -08:00: NetworkChecks Internet available; refreshing safety data and organization Tracker check-in
+  DEBUG[7621-7990] 10Nov131242.765 PST -08:00: R2CApplication Historical process exit #0: pid=31153 timestamp=1794345056029 reason=EXIT_SELF(1) status=0 importance=300 pss=0 rss=78804 description='[ISOLATED NOT NEEDED] isolated not needed'
+  DEBUG[7621-7990] 10Nov131242.766 PST -08:00: R2CApplication Historical process exit #1: pid=28483 timestamp=1794345056000 reason=UNRECOGNIZED(16) status=0 importance=100 pss=0 rss=375272 description='stop org.ncssar.rid2caltopo due to installPackageLI'
+  DEBUG[7621-7990] 10Nov131242.767 PST -08:00: R2CApplication Historical process exit #2: pid=30948 timestamp=1794345055996 reason=UNRECOGNIZED(16) status=0 importance=400 pss=0 rss=170292 description='stop org.ncssar.rid2caltopo due to installPackageLI'
+  DEBUG[7621-7990] 10Nov131242.768 PST -08:00: R2CApplication Historical process exit #3: pid=11183 timestamp=1794340122385 reason=UNRECOGNIZED(16) status=0 importance=100 pss=0 rss=363932 description='stop org.ncssar.rid2caltopo due to installPackageLI'
+  DEBUG[7621-7827] 10Nov131242.768 PST -08:00: NotamREST refresh(force=true) enabled=true configured=true radiusStatuteMiles=1 hasLocation=false accuracyM=NaN
+  DEBUG[7621-7827] 10Nov131242.769 PST -08:00: NotamREST Fetch failed: Waiting for GPS location
+  DEBUG[7621-7990] 10Nov131242.769 PST -08:00: R2CApplication Historical process exit #4: pid=11445 timestamp=1794339885022 reason=OTHER(13) status=0 importance=400 pss=0 rss=76628 description='[TOO MANY EMPTY PROCS] too many empty'
+  DEBUG[7621-7974] 10Nov131242.814 PST -08:00: OperationalStorage Deferring Archive Dir hydrate while process is cached
+  DEBUG[7621-7988] 10Nov131243.064 PST -08:00: SplitMapPane Map cache root using archive SAF dir: content://com.android.externalstorage.documents/tree/4A21-0000%3ADroneTrax/document/4A21-0000%3ADroneTrax%2Fcache
+  DEBUG[7621-7988] 10Nov131243.111 PST -08:00: MapCacheTile #7 cache index start ns=tile_cache_v1
+  DEBUG[7621-7975] 10Nov131243.217 PST -08:00: WaypointTrackJournal recoverUnfinished(): promoting ef1e796f-91e5-5e6d-b8e9-4aa6ddea0734 (2 points) hold=true auto=false block=false
+  DEBUG[7621-7988] 10Nov131243.296 PST -08:00: MapCacheTile #8 cache index ready ns=tile_cache_v1 files=13968 reason=cache elapsedMs=188
+  DEBUG[7621-7988] 10Nov131243.376 PST -08:00: MapCacheTile #14 cache index start ns=icon_cache_v1
+  DEBUG[7621-7988] 10Nov131243.379 PST -08:00: MapCacheTile #15 cache index ready ns=icon_cache_v1 files=9 reason=cache elapsedMs=3
+  DEBUG[7621-7988] 10Nov131243.451 PST -08:00: MapCacheTile #21 cache index start ns=dem_point_v2
+  DEBUG[7621-7988] 10Nov131243.455 PST -08:00: MapCacheTile #22 cache index ready ns=dem_point_v2 files=19 reason=cache elapsedMs=5
+  DEBUG[7621-7975] 10Nov131244.227 PST -08:00: CaltopoClient GetTrackDirForTime(): found existing 'tracks-10Nov2026'
+  DEBUG[7621-7975] 10Nov131252.900 PST -08:00: OperationalStorage Verified sources area=queue-state elapsedMs=5194
+  DEBUG[7621-7975] 10Nov131253.127 PST -08:00: OperationalStorage Prepared area=queue-state reused=true elapsedMs=226
+  DEBUG[7621-7975] 10Nov131253.146 PST -08:00: OperationalStorage Operational state ready independently of bulk storage
+  DEBUG[7621-7975] 10Nov131253.328 PST -08:00: OperationalStorage Verified sources area=unfinished-recordings elapsedMs=52
+  DEBUG[7621-7975] 10Nov131253.568 PST -08:00: OperationalStorage Prepared area=unfinished-recordings reused=true elapsedMs=238
+  DEBUG[7621-7975] 10Nov131253.749 PST -08:00: OperationalStorage Verified sources area=recording-work elapsedMs=179
+  WARN[7621-7998] 10Nov131333.981 PST -08:00: OrganizationAccess Tracker account verification failed; type=InterruptedIOException
+  DEBUG[7621-7998] 10Nov131333.985 PST -08:00: CaltopoSession cancelInFlightRequestsForConnectivityRestore(): cancelled OkHttp calls and evicted pool
+  WARN[7621-7976] 10Nov131333.989 PST -08:00: OrgConfigManager Managed organization configuration sync failed.
+  java.io.InterruptedIOException: timeout
+    okhttp3.internal.connection.RealCall.timeoutExit(RealCall.kt:398)
+    okhttp3.internal.connection.RealCall.callDone(RealCall.kt:360)
+    okhttp3.internal.connection.RealCall.noMoreExchanges$okhttp(RealCall.kt:325)
+    okhttp3.internal.connection.RealCall.getResponseWithInterceptorChain$okhttp(RealCall.kt:209)
+    okhttp3.internal.connection.RealCall.execute(RealCall.kt:154)
+    org.ncssar.rid2caltopo.data.OrgConfigManager.enqueueManagedConfigurationSync$lambda$14(OrgConfigManager.kt:460)
+    org.ncssar.rid2caltopo.data.OrgConfigManager$$ExternalSyntheticLambda0.run(D8$$SyntheticClass:0)
+    java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1100)
+    java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:624)
+    java.lang.Thread.run(Thread.java:1571)
+Caused by: java.io.IOException: Canceled
+    okhttp3.internal.http.RetryAndFollowUpInterceptor.intercept(RetryAndFollowUpInterceptor.kt:72)
+    okhttp3.internal.http.RealInterceptorChain.proceed(RealInterceptorChain.kt:109)
+    okhttp3.internal.connection.RealCall.getResponseWithInterceptorChain$okhttp(RealCall.kt:201)
+    okhttp3.internal.connection.RealCall.execute(RealCall.kt:154)
+    org.ncssar.rid2caltopo.data.OrgConfigManager.enqueueManagedConfigurationSync$lambda$14(OrgConfigManager.kt:460)
+    org.ncssar.rid2caltopo.data.OrgConfigManager$$ExternalSyntheticLambda0.run(D8$$SyntheticClass:0)
+    java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1100)
+    java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:624)
+    java.lang.Thread.run(Thread.java:1571)
+  DEBUG[7621-7998] 10Nov131334.015 PST -08:00: OperationalStorage state file caltopo-interrupted-tracks.json skipped bulk archive prepare
+  DEBUG[7621-7975] 10Nov131334.070 PST -08:00: OperationalStorage Prepared area=recording-work reused=true elapsedMs=40320
+  DEBUG[7621-7975] 10Nov131334.113 PST -08:00: OperationalStorage Recorder state ready independently of bulk storage
+  DEBUG[7621-7992] 10Nov131334.129 PST -08:00: CaltopoClient GetTrackDirForTime(): found existing 'tracks-10Nov2026'
+  DEBUG[7621-7992] 10Nov131334.130 PST -08:00: CaltopoClient InitArchiveDir(): Initializing log stream...
+  DEBUG[7621-7998] 10Nov131334.134 PST -08:00: CaltopoMap recoverInterruptedTracksOnInternetRestored(): skip — map not ready
+  DEBUG[7621-7975] 10Nov131334.164 PST -08:00: OperationalStorage Verified sources area=processing elapsedMs=47
+  DEBUG[7621-7992] 10Nov131334.398 PST -08:00: CaltopoClient Logfile is up on <unknown> @["192.168.68.69"]
+########################################################################
+#  RID2Caltopo 2.5.8(10Nov2026:131033) running on Android OS v16(36)
+#  Writing logs to: androidx.documentfile.provider.TreeDocumentFile@dbb1826/Log_10Nov2026-131334-PST-0800.txt
+########################################################################
+
+  DEBUG[7621-7992] 10Nov131334.399 PST -08:00: R2CApplication Process started pid=7621; session log opened at process start
+  DEBUG[7621-7975] 10Nov131335.680 PST -08:00: OperationalStorage Verified sources area=map-statistics elapsedMs=1516
+  DEBUG[7621-7975] 10Nov131335.726 PST -08:00: OperationalStorage Verified sources area=legacy-cache elapsedMs=45
+  DEBUG[7621-7975] 10Nov131335.792 PST -08:00: OperationalStorage Verified sources area=legacy-fallback elapsedMs=65
+  DEBUG[7621-7975] 10Nov131335.903 PST -08:00: OperationalStorage Verified sources area=map-archives elapsedMs=109
+  DEBUG[7621-7975] 10Nov131336.755 PST -08:00: OperationalStorage Verified sources area=clues elapsedMs=851
+  DEBUG[7621-7975] 10Nov131338.164 PST -08:00: OperationalStorage Verified sources area=support-data elapsedMs=1408
+  DEBUG[7621-7975] 10Nov131338.227 PST -08:00: OperationalStorage Verified sources area=diagnostic-traces elapsedMs=62
+  DEBUG[7621-7975] 10Nov131338.282 PST -08:00: OperationalStorage Verified sources area=review-annotations elapsedMs=54
+  DEBUG[7621-7975] 10Nov131338.550 PST -08:00: OperationalStorage Prepared area=processing reused=false elapsedMs=267
+  DEBUG[7621-7975] 10Nov131339.379 PST -08:00: OperationalStorage Prepared area=map-statistics reused=true elapsedMs=828
+  DEBUG[7621-7975] 10Nov131339.489 PST -08:00: OperationalStorage Prepared area=legacy-cache reused=true elapsedMs=109
+  DEBUG[7621-7975] 10Nov131339.630 PST -08:00: OperationalStorage Prepared area=legacy-fallback reused=true elapsedMs=140
+  DEBUG[7621-7975] 10Nov131339.791 PST -08:00: OperationalStorage Prepared area=map-archives reused=true elapsedMs=160
+  DEBUG[7621-7995] 10Nov131342.693 PST -08:00: NotamREST Fetch failed: Waiting for GPS location
+  

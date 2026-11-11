@@ -142,6 +142,8 @@ public class WaypointTrack {
 	private String startTimeStr;
     private DocumentFile dataFilepath;
     private String fileName;
+    /** Shadow-start name, moved to [fileName] once the lease is granted. */
+    private String supersededArchiveName;
     // Aligned with coordinates: app receive time (diagnostic only), drone-clock flag and source.
     private final List<Long> pointReceivedAtMs = new ArrayList<>();
     // Published append-only render history: worker snapshots never lock the
@@ -161,6 +163,14 @@ public class WaypointTrack {
     private final long startedAtMs;
     private final String deferredPublicationId;
     private boolean archivePrepared = false;
+    /** This tablet owned the segment while it flew. A later takeover must not downgrade it. */
+    private boolean closedAsPriorOwner = false;
+    /** Points recorded before this tablet was granted the lease. Kept locally, never uploaded. */
+    private boolean closedAsShadow = false;
+    /** At least one point was stored while another tablet held the owner lease. */
+    private boolean recordedAsShadow = false;
+    /** Points before this stay in memory for the map and clues, and are left out of the file. */
+    private long ownedFromMs = 0L;
     private String archivedOwner = "";
     private String archivedFlightReadinessJson = "{}";
     private String archivedModel = "";
@@ -171,6 +181,8 @@ public class WaypointTrack {
     private boolean archivedOkToLog = false;
     private boolean archivedFlightConfirmed = false;
     private boolean archivedTrackerUploadAuthorized = false;
+    private boolean archivedTrackerClaimPending = false;
+    private String archivedClaimState = FlightOwnershipContext.NONE;
     private double archivedDistanceInFeet = 0.0;
 
 	public WaypointTrack(@NonNull String trackLabel, @NonNull CtDroneSpec droneSpec) {
@@ -187,6 +199,10 @@ public class WaypointTrack {
         this.opPeriod = CaltopoClient.GetOpPeriod();
         this.mapId = CaltopoMap.GetMapId();
 		CTDebug(TAG, String.format("AddWaypointForTrack(%s): Starting new track.", trackLabel));
+        try {
+            R2cRuntimeRegistry.getDefaultRuntime().getPeerCoordinator()
+                    .noteFlightStart(remoteId == null ? "" : remoteId, startedAtMs);
+        } catch (Exception ignored) { }
         WaypointTrackJournal.ensureOpen(
                 deferredPublicationId,
                 remoteId == null ? "" : remoteId,
@@ -244,11 +260,9 @@ public class WaypointTrack {
     }
 
     public static void CapturePublicationIntent(CtDroneSpec drone) {
-        for (WaypointTrack track : new ArrayList<>(TrackMap.values())) {
-            if (track.droneSpec.getRemoteId().equals(drone.getRemoteId())) {
-                track.recordPublicationIntent(false, true);
-            }
-        }
+        WaypointTrack track = TrackMap.get(drone.trackLabel());
+        if (track != null && track.droneSpec.getRemoteId().equals(drone.getRemoteId()))
+            track.recordPublicationIntent(false, true);
     }
 
     private static final class PublicationScope {
@@ -266,7 +280,25 @@ public class WaypointTrack {
         recordPublicationIntent(finished, false);
     }
 
+    static void NoteOwnershipContextForRemote(@NonNull String remoteId) {
+        if (remoteId.isEmpty()) return;
+        for (WaypointTrack track : new ArrayList<>(TrackMap.values())) {
+            if (remoteId.equals(track.droneSpec.getRemoteId())) track.noteOwnershipContext();
+        }
+    }
+
+    private void noteOwnershipContext() {
+        WaypointTrackJournal.noteContext(deferredPublicationId, FlightOwnershipContext.capture(droneSpec));
+    }
+
     private void recordPublicationIntent(boolean finished, boolean confirmIntent) {
+        FlightOwnershipContext.Snapshot liveContext = FlightOwnershipContext.capture(droneSpec);
+        final boolean ownershipReviewPending = finished ? archivedTrackerClaimPending : liveContext.getRequiresHold();
+        final String recordedPilot = finished
+                ? (archivedFlightConfirmed && !archivedLocalOnly ? archivedOwner : "")
+                : liveContext.getRecordedPilot();
+        final String claim = finished ? archivedClaimState : liveContext.getClaim();
+        noteOwnershipContext();
         // Capture consent's destination before dispatch, including when no map is selected.
         if (publicationIntentScope.compareAndSet(null,
                 new PublicationScope(CaltopoMap.GetMapId(), AwaitingMapFlights.selectedPublicationScope()))) {
@@ -275,14 +307,10 @@ public class WaypointTrack {
         if (finished) publicationIntentFinished.set(true);
         // Confirm with a connected map: mark publicationStarted immediately so a near-immediate
         // flight end cannot promote bound → deferred publish before the durable write lands.
-        if (confirmIntent) {
+        if (confirmIntent && !ownershipReviewPending) {
             AwaitingMapFlights.markPublicationStarted(droneSpec.getRemoteId());
-            PublicationScope scope = publicationIntentScope.get();
-            if (scope != null && !scope.map.isEmpty()) {
-                AwaitingMapFlights.notePublication(droneSpec.getRemoteId(), scope.map, trackLabel);
-            }
-            CaltopoLiveTrack.seedConfirmedPublication(
-                    droneSpec.getRemoteId(), deferredPublicationId, trackLabel);
+            String remoteId = droneSpec.getRemoteId(), label = trackLabel, flightId = deferredPublicationId;
+            CaltopoRecoveryWork.executeStart(() -> CaltopoLiveTrack.seedConfirmedPublication(remoteId, flightId, label));
         }
         // Publication intent must use the start lane so a stalled archive cannot block
         // awaiting-map durability for the next airborne flight.
@@ -293,13 +321,15 @@ public class WaypointTrack {
                 PublicationScope scope = publicationIntentScope.get();
                 if (!publicationIntentRecorded) {
                     // A slow provider may delay the first write until the flight has ended.
-                    AwaitingMapFlights.record(deferredPublicationId, droneSpec.getRemoteId(), trackLabel,
-                            points, false, scope.map, scope.team);
+                    AwaitingMapFlights.recordOwned(deferredPublicationId, droneSpec.getRemoteId(), trackLabel,
+                            points, false, scope.map, scope.team, ownershipReviewPending,
+                            recordedPilot, claim, true, false);
                     publicationIntentRecorded = true;
                 }
-                AwaitingMapFlights.record(deferredPublicationId, droneSpec.getRemoteId(), trackLabel,
-                        points, publicationIntentFinished.get(), scope.map, scope.team);
-                if (confirmIntent && !scope.map.isEmpty()) {
+                AwaitingMapFlights.recordOwned(deferredPublicationId, droneSpec.getRemoteId(), trackLabel,
+                        points, publicationIntentFinished.get(), scope.map, scope.team, ownershipReviewPending,
+                        recordedPilot, claim, true, false);
+                if (confirmIntent && !ownershipReviewPending && !scope.map.isEmpty()) {
                     AwaitingMapFlights.notePublication(droneSpec.getRemoteId(), scope.map, trackLabel);
                 }
             } catch (Exception error) {
@@ -311,6 +341,13 @@ public class WaypointTrack {
     @NonNull
     public static List<TrackPoint> GetTrackPointsSnapshot(@NonNull CtDroneSpec droneSpec) {
         return GetTrackPointsSnapshotForLabel(droneSpec.trackLabel());
+    }
+
+    @Nullable
+    public static TrackPoint GetLatestTrackPoint(@NonNull CtDroneSpec droneSpec) {
+        WaypointTrack track = TrackMap.get(droneSpec.trackLabel());
+        RenderPointNode tail = track == null ? null : track.renderTail;
+        return tail == null ? null : tail.point;
     }
 
     /** Worker callers freeze the segment label before dispatch, not the mutable drone object. */
@@ -352,6 +389,28 @@ public class WaypointTrack {
                 "RenameTrack(%s -> %s): track relabeled.", oldTrackLabel, newTrackLabel));
     }
 
+    /** Rekey a visible label without merging or scanning either track on the calling thread. */
+    @NonNull
+    public static String RenameTrackForFlightLabel(@NonNull String oldLabel, @NonNull String requestedLabel,
+                                                    @NonNull CtDroneSpec droneSpec) {
+        if (oldLabel.equals(requestedLabel)) return oldLabel;
+        WaypointTrack track = TrackMap.get(oldLabel);
+        String candidate = requestedLabel;
+        WaypointTrack occupied = TrackMap.get(candidate);
+        if (occupied != null && occupied != track) {
+            candidate = requestedLabel + "-" + droneSpec.getRemoteId();
+            occupied = TrackMap.get(candidate);
+            if (occupied != null && occupied != track) return oldLabel;
+        }
+        if (track == null) return candidate;
+        WaypointTrack previous = TrackMap.putIfAbsent(candidate, track);
+        if (previous != null && previous != track) return oldLabel;
+        track.trackLabel = candidate;
+        track.droneSpec = droneSpec;
+        TrackMap.remove(oldLabel, track);
+        return candidate;
+    }
+
 	public static void ArchiveTrack(@NonNull String trackLabel) {
 		WaypointTrack track = TrackMap.remove(trackLabel);
 		if (null != track) {
@@ -359,6 +418,12 @@ public class WaypointTrack {
             QueueTrackArchive(track);
         }
 	}
+
+    /** Capture claim state before flight-end notification retires the coordinator state. */
+    public static void PrepareTrackForFlightEnd(@NonNull CtDroneSpec spec) {
+        WaypointTrack track = TrackMap.get(spec.trackLabel());
+        if (track != null) track.prepareForArchive();
+    }
 
     public static void ArchiveTracks() {
 		if (0 == WaypointCount) {
@@ -386,13 +451,29 @@ public class WaypointTrack {
         archivedMappedId = droneSpec.getMappedId();
         archivedLocalOnly = droneSpec.isLocalArchiveOnly();
         archivedOkToLog = droneSpec.okToLog();
-        archivedFlightConfirmed = droneSpec.isCurrentFlightConfirmed() ||
-                CaltopoClient.IsCurrentPeerDroneConfirmed(archivedRemoteId);
+        archivedFlightConfirmed = droneSpec.isCurrentFlightConfirmed()
+                || CaltopoClient.IsCurrentLocallyConfirmedDrone(archivedRemoteId);
         archivedDistanceInFeet = droneSpec.getDistanceInFeet();
-        archivedTrackerUploadAuthorized = !archivedLocalOnly &&
-                isLocalFlightOwnerForUpload(archivedRemoteId) &&
+        String claim = FlightOwnershipContext.NONE;
+        try {
+            claim = R2cRuntimeRegistry.getDefaultRuntime().getPeerCoordinator().ownershipClaimState(archivedRemoteId);
+        } catch (Exception ignored) { }
+        if (closedAsShadow) {
+            archivedFlightConfirmed = false;
+            archivedLocalOnly = false;
+        }
+        boolean mine = archivedFlightConfirmed && !archivedLocalOnly;
+        archivedClaimState = claim == null ? FlightOwnershipContext.NONE : claim;
+        archivedTrackerClaimPending = mine && FlightOwnershipContext.isAdverseClaim(archivedClaimState);
+        // Ownership of a finished segment is who owned it while it flew. A takeover that
+        // lands before the idle timeout must not turn that segment into local_only.
+        boolean ownedWhileFlying = closedAsPriorOwner || isLocalFlightOwnerForUpload(archivedRemoteId);
+        archivedTrackerUploadAuthorized = mine &&
+                !archivedTrackerClaimPending &&
+                ownedWhileFlying &&
                 CaltopoClient.IsKnownTeamDroneForTrackerUpload(
                         archivedRemoteId, archivedOrg);
+        noteOwnershipContext();
         archivePrepared = true;
     }
 
@@ -421,6 +502,146 @@ public class WaypointTrack {
         if (!archivedOkToLog) return "declined";
         if (!archivedTrackerUploadAuthorized) return "tracker_skip";
         return "publish";
+    }
+
+    /**
+     * Ends the unconfirmed copy recorded while another tablet owned the aircraft.
+     * The returned track is no longer live. Its archive stays local and is not uploaded.
+     * The drone's next waypoint starts the owned flight.
+     */
+    @Nullable
+    static WaypointTrack detachShadow(@NonNull CtDroneSpec spec) {
+        String label = spec.trackLabel();
+        if (label == null || label.isEmpty()) return null;
+        WaypointTrack track = TrackMap.remove(label);
+        if (track == null) return null;
+        if (track.coordinates.length() == 0 || !track.recordedAsShadow) {
+            TrackMap.put(label, track);
+            return null;
+        }
+        track.closedAsShadow = true;
+        spec.beginOwnedFlightAfterShadow();
+        return track;
+    }
+
+    /**
+     * Drops points recorded while another tablet held the lease. The track, its label,
+     * and its local record stay; nothing is written for the dropped points.
+     */
+    static boolean omitShadowPointsBeforeGrant(@NonNull CtDroneSpec spec, long grantedAtMs) {
+        String label = spec.trackLabel();
+        if (label == null || label.isEmpty()) return false;
+        WaypointTrack track = TrackMap.get(label);
+        if (track == null) return false;
+        long ownedStartMs;
+        String aircraft;
+        long shadowMs;
+        synchronized (track) {
+            if (!track.recordedAsShadow && track.ownedFromMs > 0L) return false;
+            track.recordedAsShadow = false;
+            ownedStartMs = grantedAtMs;
+            shadowMs = track.firstCoordinateTimestampLocked();
+            aircraft = track.archiveAircraftID();
+            track.ownedFromMs = grantedAtMs;
+            track.noteOwnedStartLocked(ownedStartMs);
+            track.fileName = OperatorArchiveFilename.track(aircraft, ownedStartMs);
+            if (shadowMs > 0L && shadowMs != ownedStartMs) {
+                track.supersededArchiveName = OperatorArchiveFilename.track(aircraft, shadowMs);
+            }
+        }
+        spec.retitleToOwnedStart(ownedStartMs);
+        WaypointTrackJournal.discardUnfinished(track.deferredPublicationId);
+        return true;
+    }
+
+    /** Disk rename for a file created before the grant. Call off the live-track lock and off Main. */
+    static void renameArchiveToGrant(@NonNull CtDroneSpec spec) {
+        String label = spec.trackLabel();
+        WaypointTrack track = label == null ? null : TrackMap.get(label);
+        if (track == null) return;
+        final String from;
+        final String to;
+        final long grantMs;
+        synchronized (track) {
+            from = track.supersededArchiveName;
+            to = track.fileName;
+            grantMs = track.ownedFromMs;
+        }
+        if (from == null || to == null || from.equals(to) || grantMs <= 0L) return;
+        try {
+            androidx.documentfile.provider.DocumentFile dir = CaltopoClient.GetTrackDirForTime(grantMs);
+            if (dir != null) FlightArchiveStore.renameFlightIfPresent(dir, from, to);
+        } catch (Exception error) {
+            CTWarn(TAG, "renameArchiveToGrant(): left " + from + " in place", error);
+        }
+    }
+
+    /** Call before {@link #prepareForArchive()} when a takeover closes a segment this tablet owned. */
+    static void markClosedAsPriorOwner(@Nullable String trackLabel) {
+        if (trackLabel == null || trackLabel.isEmpty()) return;
+        WaypointTrack track = TrackMap.get(trackLabel);
+        if (track != null) track.closedAsPriorOwner = true;
+    }
+
+    private static long coordinateTimestamp(@Nullable JSONArray point) {
+        if (point == null || point.length() < 4) return 0L;
+        Object value = point.opt(3);
+        if (value instanceof Number) return ((Number) value).longValue();
+        if (value == null) return 0L;
+        try {
+            return Long.parseLong(String.valueOf(value));
+        } catch (NumberFormatException ignored) {
+            return 0L;
+        }
+    }
+
+    private void dropPointsBeforeLocked(long grantedAtMs) {
+        JSONArray kept = new JSONArray();
+        ArrayList<Long> keptReceived = new ArrayList<>();
+        ArrayList<Boolean> keptClock = new ArrayList<>();
+        ArrayList<String> keptSources = new ArrayList<>();
+        int removed = 0;
+        for (int i = 0; i < coordinates.length(); i++) {
+            JSONArray point = coordinates.optJSONArray(i);
+            long stamp = coordinateTimestamp(point);
+            if (point != null && stamp > 0L && stamp < grantedAtMs) {
+                removed++;
+                continue;
+            }
+            kept.put(point);
+            if (i < pointReceivedAtMs.size()) keptReceived.add(pointReceivedAtMs.get(i));
+            if (i < pointDroneClock.size()) keptClock.add(pointDroneClock.get(i));
+            if (i < pointSources.size()) keptSources.add(pointSources.get(i));
+        }
+        coordinates = kept;
+        pointReceivedAtMs.clear();
+        pointReceivedAtMs.addAll(keptReceived);
+        pointDroneClock.clear();
+        pointDroneClock.addAll(keptClock);
+        pointSources.clear();
+        pointSources.addAll(keptSources);
+        renderTail = null;
+        for (int i = 0; i < coordinates.length(); i++) {
+            JSONArray point = coordinates.optJSONArray(i);
+            if (point == null) continue;
+            long received = i < pointReceivedAtMs.size() && pointReceivedAtMs.get(i) != null
+                    ? pointReceivedAtMs.get(i) : point.optLong(3, 0L);
+            renderTail = new RenderPointNode(new TrackPoint(
+                    point.optDouble(1), point.optDouble(0), point.optDouble(2),
+                    point.optLong(3), received), renderTail);
+        }
+        WaypointCount = Math.max(0, WaypointCount - removed);
+    }
+
+    private void noteShadowIfAnotherTabletOwns(@NonNull CtDroneSpec spec) {
+        String remoteId = spec.getRemoteId();
+        if (remoteId == null || remoteId.isEmpty()) return;
+        try {
+            PeerCoordinator peers = R2cRuntimeRegistry.getDefaultRuntime().getPeerCoordinator();
+            if (!peers.isLocalOwner(remoteId) && peers.hasActivePeerOwner(remoteId)) {
+                recordedAsShadow = true;
+            }
+        } catch (Exception ignored) { }
     }
 
     private static boolean isLocalFlightOwnerForUpload(@NonNull String remoteId) {
@@ -526,6 +747,7 @@ public class WaypointTrack {
                     useArchiveSnapshot ? archivedLocalOnly : droneSpec.isLocalArchiveOnly());
             if (useArchiveSnapshot) {
                 r2cProp.put("tracker_upload_authorized", archivedTrackerUploadAuthorized);
+                if (archivedTrackerClaimPending) r2cProp.put("tracker_claim_pending", true);
             }
             r2cProp.put("incident", incident);
             r2cProp.put("op_period", opPeriod);
@@ -544,14 +766,14 @@ public class WaypointTrack {
             joProp.put("title", trackLabel);
             joProp.put("start_time", startTimeStr);
             joProp.put("r2c_prop", r2cProp);
-            // Compact receive-time / drone-clock encoding (see FlightArchivePointTiming).
-            FlightArchivePointTiming.write(joProp, pointReceivedAtMs, pointDroneClock, coordinates.length());
             joProp.put("r2c_flight_id", deferredPublicationId);
             jo.put("properties", joProp);
 
             JSONObject joGeometry = new JSONObject();
             joGeometry.put("type", "LineString");
-            joGeometry.put("coordinates", coordinates);
+            JSONArray archivedCoordinates = coordinatesForArchive();
+            FlightArchivePointTiming.write(joProp, pointReceivedAtMs, pointDroneClock, archivedCoordinates.length());
+            joGeometry.put("coordinates", archivedCoordinates);
             jo.put("geometry", joGeometry);
 
             JSONArray jaFeatures = new JSONArray();
@@ -741,6 +963,15 @@ public class WaypointTrack {
         });
     }
 
+    @NonNull
+    private static String propertiesFlightId(@Nullable JSONObject waypointTrack) {
+        if (waypointTrack == null) return "";
+        JSONArray features = waypointTrack.optJSONArray("features");
+        JSONObject feature = features == null ? null : features.optJSONObject(0);
+        JSONObject properties = feature == null ? null : feature.optJSONObject("properties");
+        return properties == null ? "" : properties.optString("r2c_flight_id", "");
+    }
+
     @Nullable
     private static JSONObject GetR2cProp(@Nullable JSONObject waypointTrack) {
         if (waypointTrack == null) return null;
@@ -774,12 +1005,17 @@ public class WaypointTrack {
         if (r2cProp.optBoolean("local_archive_only", false)) {
             return TrackerUploadEligibility.PERMANENTLY_INELIGIBLE;
         }
+        String flightId = propertiesFlightId(waypointTrack);
+        boolean released = OwnershipReviewReleases.allowsTrackerUpload(flightId);
+        if (r2cProp.optBoolean("tracker_claim_pending", false) && !released) {
+            return TrackerUploadEligibility.RETRY_LATER;
+        }
         String droneOrg = NormalizeTrackerOrg(r2cProp.optString("org", ""));
         String remoteId = r2cProp.optString("rid", "");
         if (!CaltopoClient.IsTrackerUploadIdentityForConfiguredOrg(remoteId, droneOrg)) {
             return TrackerUploadEligibility.RETRY_LATER;
         }
-        if (r2cProp.has("tracker_upload_authorized")) {
+        if (r2cProp.has("tracker_upload_authorized") && !released) {
             return r2cProp.optBoolean("tracker_upload_authorized", false)
                     ? TrackerUploadEligibility.ELIGIBLE
                     : TrackerUploadEligibility.PERMANENTLY_INELIGIBLE;
@@ -1144,7 +1380,12 @@ public class WaypointTrack {
 
     public void archive() {
         prepareForArchive();
-        long numCoords = coordinates.length();
+        if (!keepsArchiveFile()) {
+            CTDebug(TAG, "archive(): shadow points kept in memory only " + archivedRemoteId);
+            WaypointTrackJournal.discardUnfinished(deferredPublicationId);
+            return;
+        }
+        long numCoords = coordinatesForArchive().length();
         if (numCoords <= 0) {
             CTDebug(TAG, "archive(): no waypoints.");
             retireUnpublishedJournal(FlightPublicationLedger.Disposition.SUPPRESSED);
@@ -1212,12 +1453,16 @@ public class WaypointTrack {
                 CTError(TAG, "archive(): unable to write " + fileName);
                 return;
             }
-            WaypointTrackJournal.markFinishedAndRemove(deferredPublicationId);
+            WaypointTrackJournal.removeNow(deferredPublicationId);
             if (archivedLocalOnly) {
                 FlightPublicationLedger.remember(
                         deferredPublicationId, FlightPublicationLedger.Disposition.LOCAL_ARCHIVED);
             }
             dataFilepath = todaysArchiveDir.findFile(fileName);
+            if (supersededArchiveName != null && !supersededArchiveName.equals(fileName)) {
+                FlightArchiveStore.retireStaleArchiveName(
+                        todaysArchiveDir, supersededArchiveName, fileName, ownedFromMs);
+            }
             CTDebug(TAG, String.format(Locale.US, "archive(): wrote %d coordinates to %s", numCoords, fileName));
             CTDebug(TAG, String.format(Locale.US, "archive(%s): publish decision=%s",
                     fileName, publishDecisionLabel()));
@@ -1293,7 +1538,6 @@ public class WaypointTrack {
 
 	public synchronized void addWaypoint(double lat, double lng, long altInMeters, long timestampInMillisec,
 							long receivedAtMs, @NonNull String source, boolean droneClock) {
-
 		JSONArray ja = new JSONArray();
 		ja.put(String.format(Locale.US, "%.6f", lng));
 		ja.put(String.format(Locale.US, "%.6f", lat));
@@ -1301,6 +1545,7 @@ public class WaypointTrack {
 		ja.put(String.format(Locale.US, "%d", timestampInMillisec));
 		coordinates.put(ja);
 		pointReceivedAtMs.add(receivedAtMs);
+		noteShadowIfAnotherTabletOwns(droneSpec);
 		pointDroneClock.add(droneClock);
 		pointSources.add(source);
         renderTail = new RenderPointNode(new TrackPoint(lat, lng, altInMeters,
@@ -1309,6 +1554,7 @@ public class WaypointTrack {
         WaypointTrackJournal.appendPoint(
                 deferredPublicationId, lat, lng, altInMeters, timestampInMillisec,
                 receivedAtMs, source, droneClock);
+        noteOwnershipContext();
         if (droneSpec.isCurrentFlightConfirmed() && !droneSpec.isLocalArchiveOnly()) {
             recordPublicationIntent(false);
         }
@@ -1320,11 +1566,66 @@ public class WaypointTrack {
         return remoteID == null || remoteID.isEmpty() ? trackLabel : remoteID;
     }
 
-    private long archiveTimestampMsec() {
+    boolean keepsArchiveFile() {
+        return ownedFromMs > 0L || closedAsPriorOwner || !recordedAsShadow;
+    }
+
+    private JSONArray coordinatesForArchive() {
+        if (ownedFromMs <= 0L) return coordinates;
+        JSONArray kept = new JSONArray();
+        for (int i = 0; i < coordinates.length(); i++) {
+            JSONArray point = coordinates.optJSONArray(i);
+            long stamp = coordinateTimestamp(point);
+            if (point != null && (stamp <= 0L || stamp >= ownedFromMs)) kept.put(point);
+        }
+        return kept;
+    }
+
+    static long ownedFromMs(@NonNull CtDroneSpec spec) {
+        String label = spec.trackLabel();
+        WaypointTrack track = label == null ? null : TrackMap.get(label);
+        return track == null ? 0L : track.ownedFromMs;
+    }
+
+    private long firstKeptTimestampLocked() {
+        return firstCoordinateTimestampLocked();
+    }
+
+    private long firstCoordinateTimestampLocked() {
         JSONArray first = coordinates.optJSONArray(0);
-        long timestamp = first == null ? 0 : first.optLong(3, 0);
-        if (timestamp <= 0) timestamp = droneSpec.getStartMsecTimestamp();
-        return timestamp > 0 ? timestamp : System.currentTimeMillis();
+        return coordinateTimestamp(first);
+    }
+
+    /** Name used when this flight is written. The grant name once this tablet holds the lease. */
+    String archiveFileName() {
+        if (fileName != null) return fileName;
+        return OperatorArchiveFilename.track(archiveAircraftID(), archiveTimestampMsec());
+    }
+
+    private void noteOwnedStartLocked(long ownedStartMs) {
+        if (ownedStartMs <= 0L) return;
+        startTimeStr = new SimpleDateFormat("ddMMMyyyy-HHmmss", Locale.US).format(new Date(ownedStartMs));
+    }
+
+    /** True when a different tablet holds the lease, so this tablet must not record. */
+    static boolean anotherTabletOwns(@NonNull CtDroneSpec spec) {
+        String remoteId = spec.getRemoteId();
+        if (remoteId == null || remoteId.isEmpty()) return false;
+        try {
+            PeerCoordinator peers = R2cRuntimeRegistry.getDefaultRuntime().getPeerCoordinator();
+            return !peers.isLocalOwner(remoteId) && peers.hasActivePeerOwner(remoteId);
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    private long archiveTimestampMsec() {
+        if (ownedFromMs > 0L) return ownedFromMs;
+        long firstPoint = firstKeptTimestampLocked();
+        long ownedStart = droneSpec.getStartMsecTimestamp();
+        if (ownedStart > 0L && (firstPoint <= 0L || ownedStart <= firstPoint)) return ownedStart;
+        if (firstPoint > 0L) return firstPoint;
+        return System.currentTimeMillis();
     }
 
 }

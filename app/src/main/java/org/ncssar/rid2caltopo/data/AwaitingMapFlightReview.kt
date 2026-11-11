@@ -247,14 +247,16 @@ object AwaitingMapFlightDiscarder {
         val deletedClueIds: List<String>,
         val deletedArchiveFiles: List<String>,
         val failures: List<String>,
+        val journalAbsent: Boolean = false,
     ) {
         val succeeded: Boolean get() = entryRemoved && failures.isEmpty()
 
         fun logSummary(flight: JSONObject): String =
             "Discarded awaiting-map flight id=${flight.optString("id")} remoteId=${flight.optString("remote")} " +
                 "label=${flight.optString("label")} start=${AwaitingMapFlights.firstTime(flight)} entryRemoved=$entryRemoved " +
+                "journal=${if (journalAbsent) "absent" else "removed"} " +
                 "clues=${deletedClueIds.size}[${deletedClueIds.joinToString(",")}] " +
-                "archive=[${deletedArchiveFiles.joinToString(",")}]" +
+                "removed=[${deletedArchiveFiles.joinToString(",")}]" +
                 if (failures.isEmpty()) "" else " failures=[${failures.joinToString("; ")}]"
     }
 
@@ -293,7 +295,14 @@ object AwaitingMapFlightDiscarder {
         if (failures.isNotEmpty()) return Result(false, deletedClues, deletedFiles, failures)
         val removed = runCatching { removeEntry(flight.optString("id")) }
         removed.exceptionOrNull()?.let { failures += "journal: ${it.message}" }
-        if (removed.getOrNull() == false) failures += "journal entry not found"
-        return Result(removed.getOrNull() == true, deletedClues, deletedFiles, failures)
+        val entryWasPresent = removed.getOrNull() == true
+        // A missing inbox row is not a failure. The files above are what Discard removes.
+        return Result(
+            entryWasPresent || failures.isEmpty(),
+            deletedClues,
+            deletedFiles,
+            failures,
+            journalAbsent = !entryWasPresent && removed.exceptionOrNull() == null,
+        )
     }
 }

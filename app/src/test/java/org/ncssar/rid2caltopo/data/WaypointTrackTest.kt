@@ -110,6 +110,42 @@ class WaypointTrackTest {
     }
 
     @Test
+    fun flightConfirmationRelabelsAndSnapshotsPilotWithoutChangingRoutingOrPoints() {
+        val drone = activeDrone("RID-PILOT", "1sar1001-01DjMtrc4td", "1sar1001-01")
+        WaypointTrack.AddWaypointForTrack(drone, 39.153061, -121.132946, 101L, 1_000L)
+        drone.setFlightReadinessJson("{\"pilot\":{\"callsign\":\"10\"}}")
+        drone.owner = "10"
+        drone.setCurrentFlightConfirmed(true)
+        val expected = "10-01DjMtrc4td_" + CaltopoClient.TimeDatestampString(1_000L)
+        assertEquals(expected, drone.trackLabel())
+        assertEquals("1sar1001-01DjMtrc4td", drone.mappedId)
+        assertEquals(1, WaypointTrack.GetTrackPointsSnapshot(drone).size)
+        @Suppress("UNCHECKED_CAST")
+        val track = (trackMapField.get(null) as Map<String, WaypointTrack>).getValue(expected)
+        track.prepareForArchive()
+        drone.reset()
+        val props = track.getGeoJson()!!.getJSONArray("features").getJSONObject(0).getJSONObject("properties")
+        val metadata = props.getJSONObject("r2c_prop")
+        assertEquals(expected, props.getString("title"))
+        assertEquals("10", metadata.getString("owner"))
+        assertEquals("10", metadata.getJSONObject("flightReadiness").getJSONObject("pilot").getString("callsign"))
+        assertEquals("1sar1001-01DjMtrc4td", metadata.getString("mid"))
+    }
+
+    @Test
+    fun matchingPilotLabelsKeepDifferentAircraftTracksSeparate() {
+        val alpha = activeDrone("RID-ALPHA", "1sar1001-01DjMtrc4td", "10")
+        val bravo = activeDrone("RID-BRAVO", "1sar1002-01DjMtrc4td", "10")
+        WaypointTrack.AddWaypointForTrack(alpha, 39.1, -121.1, 100L, 1_000L)
+        WaypointTrack.AddWaypointForTrack(bravo, 39.2, -121.2, 200L, 1_000L)
+        alpha.setCurrentFlightConfirmed(true)
+        bravo.setCurrentFlightConfirmed(true)
+        assertFalse(alpha.trackLabel() == bravo.trackLabel())
+        assertEquals(39.1, WaypointTrack.GetTrackPointsSnapshot(alpha).single().lat, 0.000001)
+        assertEquals(39.2, WaypointTrack.GetTrackPointsSnapshot(bravo).single().lat, 0.000001)
+    }
+
+    @Test
     fun geoJsonStoresDroneTimeAndDiagnosticReceiveTimeAndFlightId() {
         val drone = activeDrone("RID-BIND", "RID-BIND")
         WaypointTrack.AddWaypointForTrack(drone, 39.153, -121.132, 100L, 1_790_553_873_000L, 1_790_553_873_400L, "rid", true)
@@ -209,6 +245,18 @@ class WaypointTrackTest {
         assertTrue(WaypointTrack.ShouldPublishGeoJsonStatsForTracker(geoJsonWithOrgAndRid(" ncssar ", "RIDTEAM1")))
         assertFalse(WaypointTrack.ShouldPublishGeoJsonStatsForTracker(geoJsonWithOrgAndRid("MUTUALAID", "RIDTEAM1")))
         assertFalse(WaypointTrack.ShouldPublishGeoJsonStatsForTracker(geoJsonWithOrgAndRid("", "RIDTEAM1")))
+    }
+
+    @Test
+    fun trackerClaimPendingNeverPublishesBeforeReview() {
+        CaltopoClient.SetHomeOrgName("NCSSAR")
+        confirmTeamDrone("RIDPENDING", "NCSSAR")
+        val geoJson = geoJsonWithOrgAndRid("NCSSAR", "RIDPENDING")
+        val metadata = geoJson.getJSONArray("features").getJSONObject(0)
+            .getJSONObject("properties").getJSONObject("r2c_prop")
+        metadata.put("tracker_upload_authorized", true)
+        metadata.put("tracker_claim_pending", true)
+        assertFalse(WaypointTrack.ShouldPublishGeoJsonStatsForTracker(geoJson))
     }
 
     @Test
@@ -340,6 +388,83 @@ class WaypointTrackTest {
         assertEquals("RIDSNAPSHOT1", r2cProp.getString("rid"))
         assertEquals("1sar7DjMn4Pr", r2cProp.getString("mid"))
         assertTrue(WaypointTrack.ShouldPublishGeoJsonStatsForTracker(geoJson))
+    }
+
+    @Test
+    fun takeoverWithinEndTimeout_publishesTheFlightThisTabletOwned() {
+        CaltopoClient.SetHomeOrgName("NCSSAR")
+        val fixture = TestR2cRuntimeFactory.create("owned-handoff")
+        R2cRuntimeRegistry.setDefaultRuntimeForTesting(fixture.runtime)
+        try {
+            val peer = fixture.peerCoordinator as FakePeerCoordinator
+            val owned = confirmedTeamDrone("RIDOWNEDHANDOFF")
+            val bystander = confirmedTeamDrone("RIDNEVEROWNED1")
+            peer.setPeerOwner(owned.remoteId, "ipad-zone")
+            peer.setPeerOwner(bystander.remoteId, "ipad-zone")
+            WaypointTrack.markClosedAsPriorOwner(owned.trackLabel())
+
+            val ownedTrack = trackFor(owned)
+            val bystanderTrack = trackFor(bystander)
+            ownedTrack.prepareForArchive()
+            bystanderTrack.prepareForArchive()
+
+            assertTrue(authorized(ownedTrack))
+            assertEquals("publish", decision(ownedTrack))
+            assertFalse(authorized(bystanderTrack))
+        } finally {
+            R2cRuntimeRegistry.resetDefaultRuntimeForTesting()
+        }
+    }
+
+    @Test
+    fun shadowBeforeTakeover_staysLocalAndTheUploadStartsAtTheGrant() {
+        CaltopoClient.SetHomeOrgName("NCSSAR")
+        val zone = java.time.ZoneId.of("America/Los_Angeles")
+        val shadowAt = java.time.ZonedDateTime.of(2026, 11, 10, 11, 25, 46, 0, zone)
+            .toInstant().toEpochMilli()
+        val grantedAt = java.time.ZonedDateTime.of(2026, 11, 10, 11, 28, 50, 0, zone)
+            .toInstant().toEpochMilli()
+        val fixture = TestR2cRuntimeFactory.create("shadow-grant")
+        R2cRuntimeRegistry.setDefaultRuntimeForTesting(fixture.runtime)
+        try {
+            val peer = fixture.peerCoordinator as FakePeerCoordinator
+            val drone = CtDroneSpec("RIDSHADOW1", "1sar7DjMtrc4td", "NCSSAR", "DJI Matrice 4TD", "1SAR7")
+            peer.setPeerOwner(drone.remoteId, "ipad-zone")
+            assertTrue(drone.checkNewWaypoint(
+                39.153000, -121.132000, 100.0, shadowAt, shadowAt,
+                true, CtDroneSpec.TransportTypeEnum.BT4))
+            WaypointTrack.AddWaypointForTrack(drone, 39.153000, -121.132000, 100L, shadowAt)
+            WaypointTrack.AddWaypointForTrack(drone, 39.153100, -121.132100, 101L, shadowAt + 60_000L)
+            assertEquals(listOf(shadowAt, shadowAt + 60_000L),
+                WaypointTrack.GetTrackPointsSnapshot(drone).map { it.timestampMsec })
+            assertFalse(trackFor(drone).keepsArchiveFile())
+            confirmTeamDrone("RIDSHADOW1", "NCSSAR")
+            drone.setCurrentFlightConfirmed(true)
+
+            peer.setLocalOwnership(drone.remoteId, true)
+            WaypointTrack.omitShadowPointsBeforeGrant(drone, grantedAt)
+            val ownedAt = grantedAt + 1_000L
+            assertTrue(drone.checkNewWaypoint(
+                39.153200, -121.132200, 102.0, ownedAt, ownedAt,
+                true, CtDroneSpec.TransportTypeEnum.BT4))
+            assertTrue(drone.trackLabel().endsWith("_" + CaltopoClient.TimeDatestampString(grantedAt)))
+            WaypointTrack.AddWaypointForTrack(drone, 39.153200, -121.132200, 102L, ownedAt)
+            val owned = trackFor(drone)
+            owned.prepareForArchive()
+            assertTrue(authorized(owned))
+            val ownedStart = firstTimestamp(owned)
+            assertEquals(ownedAt, ownedStart)
+            assertEquals(OperatorArchiveFilename.track(drone.remoteId, grantedAt), owned.archiveFileName())
+            assertFalse(owned.archiveFileName() == OperatorArchiveFilename.track(drone.remoteId, shadowAt))
+            assertTrue(ownedStart > shadowAt + 60_000L)
+            assertEquals(1, owned.geoJson!!.getJSONArray("features").getJSONObject(0)
+                .getJSONObject("geometry").getJSONArray("coordinates").length())
+            peer.setPeerOwner(drone.remoteId, "ipad-zone")
+            WaypointTrack.AddWaypointForTrack(drone, 39.153300, -121.132300, 103L, grantedAt + 120_000L)
+            assertTrue(WaypointTrack.GetTrackPointsSnapshot(drone).any { it.timestampMsec == grantedAt + 120_000L })
+        } finally {
+            R2cRuntimeRegistry.resetDefaultRuntimeForTesting()
+        }
     }
 
     @Test
@@ -526,6 +651,40 @@ class WaypointTrackTest {
             )
         )
         return drone
+    }
+
+    private fun confirmedTeamDrone(remoteId: String): CtDroneSpec {
+        val drone = activeDrone(remoteId, remoteId)
+        confirmTeamDrone(remoteId, "NCSSAR")
+        drone.setCurrentFlightConfirmed(true)
+        WaypointTrack.AddWaypointForTrack(drone, 39.153000, -121.132000, 100L, 1_000L)
+        return drone
+    }
+
+    private fun trackFor(drone: CtDroneSpec): WaypointTrack {
+        @Suppress("UNCHECKED_CAST")
+        val map = trackMapField.get(null) as Map<String, WaypointTrack>
+        return map.getValue(drone.trackLabel())
+    }
+
+    private fun firstTimestamp(track: WaypointTrack): Long {
+        val coords = track.geoJson!!.getJSONArray("features").getJSONObject(0)
+            .getJSONObject("geometry").getJSONArray("coordinates").getJSONArray(0)
+        return coords.getString(3).toLong()
+    }
+
+    private fun authorized(track: WaypointTrack): Boolean {
+        val geoJson = track.geoJson!!
+        return geoJson.getJSONArray("features").getJSONObject(0)
+            .getJSONObject("properties").getJSONObject("r2c_prop")
+            .getBoolean("tracker_upload_authorized")
+    }
+
+    private fun decision(track: WaypointTrack): String {
+        val method = WaypointTrack::class.java.getDeclaredMethod("publishDecisionLabel").apply {
+            isAccessible = true
+        }
+        return method.invoke(track) as String
     }
 
     private fun confirmTeamDrone(remoteId: String, org: String) {

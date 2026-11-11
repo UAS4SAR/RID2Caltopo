@@ -23,6 +23,7 @@ This is an explicit requirement from the project owner (October 26, 2026).
 
 - A routine request to install or update the app on a tablet authorizes building/signing as needed, an in-place installation, and lightweight verification of the installation result, app identity and version.
 - Keep the existing marketing version and build counter for intermediate local debug installs. Increment only when the user requests a new version or a distribution/upload requirement needs a new build identity. Record the artifact hash and install timestamp to distinguish local replacements.
+- Until Ken says otherwise, local debug builds stay marketing version 2.5.8 and build 444 (Android `versionCode` 444, Apple `CURRENT_PROJECT_VERSION` 444). Do not bump either number to distinguish a debug install. Same-version `adb install -r` is the Android replacement.
 - Full app-private, external-storage or archive backups require an explicit user request. Do not add them automatically to routine installs or to a request for device testing.
 - Extra on-device UI, functional or instrumentation testing requires an explicit user request. Do not expand an install-only request into device testing or release qualification, automatically launch/exercise the app, or add storage scans, data dumps or before/after data comparisons.
 - Installation and basic read-only OS installation/version checks are not physical-device tests and do not require a backup. Existing app data, settings, credentials and permissions must be preserved.

@@ -7,6 +7,15 @@ import java.util.Collections;
 import java.util.List;
 
 public interface PeerCoordinator {
+    final class DroneClaim {
+        public final String remoteId, guid, callsign, deviceName;
+        public final long confirmedAtMs;
+        public DroneClaim(String remoteId, String guid, String callsign, String deviceName, long confirmedAtMs) {
+            this.remoteId = remoteId; this.guid = guid; this.callsign = callsign;
+            this.deviceName = deviceName; this.confirmedAtMs = confirmedAtMs;
+        }
+    }
+    interface ClaimConflictListener { void onClaimConflict(@NonNull String remoteId); }
     interface CoordinationIndicatorListener {
         void onCoordinationIndicatorStateChanged(@NonNull CoordinationIndicatorState state);
     }
@@ -76,14 +85,32 @@ public interface PeerCoordinator {
                                   @NonNull String owner,
                                   @NonNull String mappedId) {
     }
+    default void onDroneConfirmed(@NonNull String remoteId, @NonNull String org, @NonNull String model,
+                                  @NonNull String owner, @NonNull String mappedId, @Nullable DroneClaim replacing) {
+        onDroneConfirmed(remoteId, org, model, owner, mappedId);
+    }
+    @Nullable default DroneClaim claimForRemoteId(@NonNull String remoteId) { return null; }
+    default void setClaimConflictListener(@Nullable ClaimConflictListener listener) { }
     boolean isLocalOwner(@NonNull String remoteId);
     default boolean isLocalAlertEligible(@NonNull String remoteId) {
         return true;
     }
+    default boolean isClaimPending(@NonNull String remoteId) { return false; }
+    /**
+     * {@code verified}, {@code pending}, {@code rejected}, {@code conflict}, {@code expired},
+     * or {@code none} when this device has not asked tracker to verify a claim.
+     */
+    @NonNull
+    default String ownershipClaimState(@NonNull String remoteId) { return "none"; }
+    /** A new flight start drops a claim outcome that belonged to an earlier flight. */
+    default void noteFlightStart(@NonNull String remoteId, long startedAtMs) {}
     /** True when a peer (not this device) currently holds the flight owner lease. */
     default boolean hasActivePeerOwner(@NonNull String remoteId) {
         return false;
     }
+    /** Constant-time snapshot of incident peer presence, valid only when known. */
+    default boolean hasOnlineIncidentPeer() { return false; }
+    default boolean isIncidentPeerPresenceKnown() { return false; }
     /** Owner zone guid for {@code remoteId}, or empty when none. */
     @NonNull
     default String ownerGuidForRemoteId(@NonNull String remoteId) {

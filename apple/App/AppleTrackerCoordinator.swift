@@ -364,6 +364,7 @@ enum AppleManagedOrganizationConfig {
         let mappingRevision = identities.backupRevision
         let configuration = caltopo.configuration, teams = caltopo.teamsCredentialDraft
         let folder = organization.trackFolder
+        let droneOwnership = organization.droneOwnership
         let templateSnapshot = organization.mutualAidTemplate
         let mappingSnapshot = identities.importedMappings
         let published = AppleAircraftOrganizationAccess.currentPreparedState
@@ -372,7 +373,7 @@ enum AppleManagedOrganizationConfig {
         let bytes = try await Task.detached(priority: .utility) {
             try ManagedOrganizationWireSnapshot.encode(teams: teams, trackFolder: folder,
                 mutualAid: templateSnapshot, identities: mappingSnapshot, published: published,
-                appVersion: appVersion, appBuild: appBuild)
+                appVersion: appVersion, appBuild: appBuild, droneOwnership: droneOwnership)
         }.value
         try Task.checkCancellation()
         guard !CredentialMutationGate.shared.isBusy,
@@ -397,6 +398,7 @@ enum AppleManagedOrganizationConfig {
         let mutualAid: MutualAidTemplateCredentials?
         let mappings: [OrgConfigRIDMapping]
         let aircraftSchema: Int
+        let droneOwnership: String
     }
 
     nonisolated private static func prepare(_ input: SnapshotInput) throws -> Prepared {
@@ -439,7 +441,8 @@ enum AppleManagedOrganizationConfig {
             strings[key] = credentials[key] as? String ?? ""
         }
         return Prepared(credentials: strings, mutualAid: mutualAid, mappings: mappings,
-                        aircraftSchema: (snapshot["aircraftSchemaVersion"] as? NSNumber)?.intValue ?? 0)
+                        aircraftSchema: (snapshot["aircraftSchemaVersion"] as? NSNumber)?.intValue ?? 0,
+                        droneOwnership: snapshot["droneOwnership"] as? String ?? "all_detected")
     }
 
     static func apply(
@@ -470,6 +473,9 @@ enum AppleManagedOrganizationConfig {
                   revision == identities.backupRevision else { throw CancellationError() }
             try await identities.applyImportedMappings(prepared.mappings, managedDownload: true)
             guard token == organization.trackerAPIKey, prefix == organization.trackerURLPrefix else { throw CancellationError() }
+            if snapshot["droneOwnership"] != nil {
+                organization.receivePublishedDroneOwnership(prepared.droneOwnership)
+            }
             defaults.set(versionMs, forKey: versionDefaultsKey)
             defaults.set(prepared.aircraftSchema, forKey: "org.managedReadinessSchemaVersion")
             AppleLog.info("OrgConfig", "Applied managed organization configuration \(versionMs)")
@@ -488,6 +494,10 @@ final class AppleTrackerCoordinator: ObservableObject {
 
     @Published private(set) var status: AppleTrackerCoordinationStatus = .unconfigured
     @Published private(set) var peers: [TrackerPeerZone] = []
+    @Published private(set) var onlineIncidentPeer: Bool?
+    private var peerPresenceRevision: UInt64 = 0
+    private var peerPresenceScanTask: Task<Bool?, Never>?
+    private var peerPresencePublishTask: Task<Void, Never>?
     @Published private(set) var statusDetail = "Tracker coordination not configured"
     @Published private(set) var helloAcknowledgedAtMilliseconds: Int64 = 0
     @Published private(set) var heartbeatAcknowledgedAtMilliseconds: Int64 = 0
@@ -622,6 +632,7 @@ final class AppleTrackerCoordinator: ObservableObject {
     private var firstSightingsSent: Set<String> = []
     private var seenVideoStreamRequestIDs: [String] = []
     private var pendingConfirmations: [String: TrackerCoordinationIdentity] = [:]
+    private var pendingClaimReplacements: [String: TrackerCoordinationIdentity] = [:]
     /// Saves made before coordination starts, or while the current flight is still active.
     /// Flight end must clear these so a rediscovered aircraft cannot inherit the prior flight.
     private var rememberedConfirmations: [String: TrackerCoordinationIdentity] = [:]
@@ -1029,7 +1040,9 @@ final class AppleTrackerCoordinator: ObservableObject {
         observedSightings[track.aircraftID] = sighting
         sendTrafficPositionIfEligible(sighting, source: "rid")
         if isFirst {
-            seedRememberedConfirmation(remoteID: track.aircraftID)
+            if seedRememberedConfirmation(remoteID: track.aircraftID) {
+                flushPendingConfirmations()
+            }
             wakeForCoordinationActivity(reason: "first sighting")
             scheduleFallbackOwnership(remoteID: track.aircraftID)
             sendFirstSightingIfNeeded(remoteID: track.aircraftID)
@@ -1038,11 +1051,29 @@ final class AppleTrackerCoordinator: ObservableObject {
         }
     }
 
-    func confirm(_ identity: RidAircraftIdentity) {
+    func confirm(_ identity: RidAircraftIdentity, replacing: TrackerCoordinationIdentity? = nil) {
         let trackerIdentity = Self.trackerIdentity(identity)
+        let holder = SaveConfirmationSend.holder(
+            explicit: replacing,
+            ownerZoneID: protocolState.ownerZoneID(remoteID: identity.remoteID),
+            localZoneID: zoneID,
+            remoteID: identity.remoteID)
+        if let pending = pendingConfirmations[identity.remoteID],
+           pending.ownerName == trackerIdentity.ownerName,
+           pending.mappedID == trackerIdentity.mappedID,
+           pending.organization == trackerIdentity.organization,
+           pending.model == trackerIdentity.model {
+            if pendingClaimReplacements[identity.remoteID] == nil, let holder {
+                pendingClaimReplacements[identity.remoteID] = holder
+            }
+            return
+        }
         rememberedConfirmations[identity.remoteID] = trackerIdentity
         pendingConfirmations[identity.remoteID] = trackerIdentity
-        if let event = protocolState.confirmLocally(remoteID: identity.remoteID) {
+        pendingClaimReplacements[identity.remoteID] = holder
+        claimedRemoteIDs.insert(identity.remoteID)
+        ownershipContextChanged?(identity.remoteID)
+        if !coordinationRequired, let event = protocolState.confirmLocally(remoteID: identity.remoteID) {
             publish(event)
         }
         guard coordinationRequired else {
@@ -1064,13 +1095,28 @@ final class AppleTrackerCoordinator: ObservableObject {
         flushPendingConfirmations()
     }
 
-    private func seedRememberedConfirmation(remoteID: String) {
-        guard let identity = rememberedConfirmations[remoteID] else { return }
-        pendingConfirmations[remoteID] = identity
-        if let event = protocolState.confirmLocally(remoteID: remoteID) {
-            publish(event)
+    /// Reopens an unacknowledged Save so it is sent again. Returns false when the
+    /// claim is already verified for this owner session, or ownership has moved
+    /// away, so a later RID fix cannot put it back into `pendingConfirmations`.
+    @discardableResult
+    private func seedRememberedConfirmation(remoteID: String) -> Bool {
+        guard let identity = rememberedConfirmations[remoteID] else { return false }
+        switch RememberedConfirmationReplay.decide(
+            alertEligible: protocolState.isLocalAlertEligible(remoteID: remoteID),
+            ownerZoneID: protocolState.ownerZoneID(remoteID: remoteID),
+            localZoneID: zoneID,
+            claimOutcome: claimOutcomes[remoteID] ?? ""
+        ) {
+        case .alreadyVerified, .ownershipLost:
+            return false
+        case .resend:
+            pendingConfirmations[remoteID] = identity
+            if !coordinationRequired, let event = protocolState.confirmLocally(remoteID: remoteID) {
+                publish(event)
+            }
+            AppleLog.info("TrackerPeer", "Replayed stored confirmation remoteId=\(remoteID)")
+            return true
         }
-        AppleLog.info("TrackerPeer", "Replayed stored confirmation remoteId=\(remoteID)")
     }
 
     /// Configuration resets transport state. Reapply only approvals that the
@@ -1087,6 +1133,7 @@ final class AppleTrackerCoordinator: ObservableObject {
         observedSightings.removeValue(forKey: remoteID)
         firstSightingsSent.remove(remoteID)
         pendingConfirmations.removeValue(forKey: remoteID)
+        pendingClaimReplacements.removeValue(forKey: remoteID)
         // Prior-flight Save must not auto-confirm the next rediscovery.
         let forgotRemembered = rememberedConfirmations.removeValue(forKey: remoteID) != nil
         protocolState.clearLocalConfirmation(remoteID: remoteID)
@@ -1183,6 +1230,63 @@ final class AppleTrackerCoordinator: ObservableObject {
     func publicationAllowed(remoteID: String) -> Bool {
         !coordinationRequired || protocolState.isLocalAlertEligible(remoteID: remoteID)
     }
+
+    private var claimOutcomes: [String: String] = [:]
+    private var claimOutcomeFlightStartedAtMs: [String: Int64] = [:]
+    private var flightStartedAtMs: [String: Int64] = [:]
+    private var claimedRemoteIDs: Set<String> = []
+
+    /// A new flight start drops a claim that belonged to an earlier flight of this aircraft.
+    func noteFlightStart(remoteID: String, startedAtMs: Int64) {
+        let id = remoteID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !id.isEmpty, startedAtMs > 0 else { return }
+        flightStartedAtMs[id] = startedAtMs
+        let tagged = claimOutcomeFlightStartedAtMs[id] ?? 0
+        if claimOutcomes[id] != nil,
+           !FlightOwnershipContext.claimApplies(storedFlightStartedAtMs: tagged, flightStartedAtMs: startedAtMs) {
+            claimOutcomes.removeValue(forKey: id)
+            claimOutcomeFlightStartedAtMs.removeValue(forKey: id)
+            ownershipContextChanged?(id)
+        }
+    }
+
+    func claimPending(remoteID: String) -> Bool {
+        coordinationRequired && pendingConfirmations[remoteID] != nil
+    }
+
+    func ownershipClaimState(remoteID: String) -> String {
+        let outcome = applicableClaimOutcome(remoteID)
+        if claimPending(remoteID: remoteID) {
+            if let outcome, ["rejected", "conflict", "expired"].contains(outcome) { return outcome }
+            return FlightOwnershipContext.pending
+        }
+        if let outcome { return outcome }
+        if isLocalOwner(remoteID: remoteID), protocolState.isConfirmedLocally(remoteID: remoteID) { return FlightOwnershipContext.verified }
+        return FlightOwnershipContext.none
+    }
+
+    private func applicableClaimOutcome(_ remoteID: String) -> String? {
+        guard let outcome = claimOutcomes[remoteID] else { return nil }
+        let tagged = claimOutcomeFlightStartedAtMs[remoteID] ?? 0
+        guard let current = flightStartedAtMs[remoteID] else { return outcome }
+        guard FlightOwnershipContext.claimApplies(storedFlightStartedAtMs: tagged, flightStartedAtMs: current) else { return nil }
+        return outcome
+    }
+
+    private func rememberClaimOutcome(remoteID: String, _ outcome: String) {
+        let trimmed = remoteID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        if outcome == FlightOwnershipContext.verified {
+            claimOutcomes.removeValue(forKey: trimmed)
+            claimOutcomeFlightStartedAtMs.removeValue(forKey: trimmed)
+        } else {
+            claimOutcomes[trimmed] = outcome
+            claimOutcomeFlightStartedAtMs[trimmed] = flightStartedAtMs[trimmed] ?? 0
+        }
+        ownershipContextChanged?(trimmed)
+    }
+
+    var ownershipContextChanged: ((String) -> Void)?
 
     func isLocalAlertEligible(remoteID: String) -> Bool {
         coordinationRequired && protocolState.isLocalAlertEligible(remoteID: remoteID)
@@ -1343,6 +1447,30 @@ final class AppleTrackerCoordinator: ObservableObject {
         if handleOrganizationConfigMessage(data) || handleManagedVideoMessage(data) {
             return
         }
+        if let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           object["type"] as? String == "drone_claim_unavailable",
+           let remoteID = object["remoteId"] as? String {
+            rememberClaimOutcome(remoteID: remoteID, FlightOwnershipContext.rejected)
+            return
+        }
+        if let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           object["type"] as? String == "drone_claim_conflict",
+           let claim = object["claim"] as? [String: Any],
+           let remoteID = claim["remoteId"] as? String {
+            pendingConfirmations.removeValue(forKey: remoteID)
+            pendingClaimReplacements.removeValue(forKey: remoteID)
+            rememberedConfirmations.removeValue(forKey: remoteID)
+            protocolState.clearLocalConfirmation(remoteID: remoteID)
+            rememberClaimOutcome(remoteID: remoteID, FlightOwnershipContext.conflict)
+            publish(.droneClaimConflict(identity: TrackerCoordinationIdentity(
+                remoteID: remoteID, mappedID: claim["mappedId"] as? String ?? "",
+                organization: claim["org"] as? String ?? "", model: claim["model"] as? String ?? "",
+                ownerName: claim["ownerName"] as? String ?? "",
+                confirmedByGuid: claim["confirmedByGuid"] as? String ?? "",
+                confirmedAtMs: (claim["confirmedAtMs"] as? NSNumber)?.int64Value ?? 0,
+                confirmedByDeviceName: claim["confirmedByDeviceName"] as? String ?? "")))
+            return
+        }
         do {
             let events = try protocolState.handleIncoming(data, receivedAtMilliseconds: Self.nowMilliseconds)
             for event in events {
@@ -1364,6 +1492,25 @@ final class AppleTrackerCoordinator: ObservableObject {
                     heartbeatSequenceAcknowledged = sequence
                 case let .peersUpdated(updatedPeers):
                     peers = updatedPeers
+                    peerPresenceRevision &+= 1
+                    let presenceRevision = peerPresenceRevision
+                    onlineIncidentPeer = nil
+                    peerPresenceScanTask?.cancel()
+                    peerPresencePublishTask?.cancel()
+                    let scan = Task.detached(priority: .utility) { () -> Bool? in
+                        for peer in updatedPeers {
+                            guard !Task.isCancelled else { return nil }
+                            if peer.online { return true }
+                        }
+                        return false
+                    }
+                    peerPresenceScanTask = scan
+                    peerPresencePublishTask = Task { [weak self] in
+                        let anyOnline = await scan.value
+                        guard !Task.isCancelled, let anyOnline, let self,
+                              self.peerPresenceRevision == presenceRevision else { return }
+                        self.onlineIncidentPeer = anyOnline
+                    }
                 case let .reconnectRequired(reason):
                     reconnect(reason: reason)
                 default:
@@ -1374,7 +1521,13 @@ final class AppleTrackerCoordinator: ObservableObject {
                    confirmedByZoneID == zoneID {
                     if case let .droneConfirmed(identity, _, _) = event {
                         pendingConfirmations.removeValue(forKey: identity.remoteID)
+                        pendingClaimReplacements.removeValue(forKey: identity.remoteID)
+                        rememberClaimOutcome(remoteID: identity.remoteID, FlightOwnershipContext.verified)
                     }
+                }
+                if case let .ownerExpired(remoteID) = event, claimedRemoteIDs.contains(remoteID) {
+                    claimedRemoteIDs.remove(remoteID)
+                    rememberClaimOutcome(remoteID: remoteID, FlightOwnershipContext.expired)
                 }
                 publish(event)
                 scheduleStandbyIfEligible()
@@ -1434,7 +1587,7 @@ final class AppleTrackerCoordinator: ObservableObject {
             }
             return true
         }
-        if type == "hello_ack",
+        if (type == "hello_ack" || type == "organization_config_changed"),
            let version = (object["organizationConfigVersionMs"] as? NSNumber)?.int64Value,
            version != 0,
            (version != Int64(defaults.integer(forKey: AppleManagedOrganizationConfig.versionDefaultsKey)) ||
@@ -1442,6 +1595,7 @@ final class AppleTrackerCoordinator: ObservableObject {
             organizationConfigSyncInProgress = true
             synchronizeOrganizationConfig(advertisedVersionMs: version)
         }
+        if type == "organization_config_changed" { return true }
         return false
     }
 
@@ -2890,6 +3044,10 @@ final class AppleTrackerCoordinator: ObservableObject {
         receiveFailureTask = nil
         connected = false
         helloAcknowledged = false
+        peerPresenceRevision &+= 1
+        peerPresenceScanTask?.cancel()
+        peerPresencePublishTask?.cancel()
+        onlineIncidentPeer = nil
         heartbeatTask?.cancel()
         watchdogTask?.cancel()
         status = .degraded
@@ -3102,9 +3260,14 @@ final class AppleTrackerCoordinator: ObservableObject {
     private func flushPendingConfirmations() {
         guard connected else { return }
         for (remoteID, identity) in pendingConfirmations {
-            guard let data = try? TrackerCoordinationWire.droneConfirmed(client: client, identity: identity) else { continue }
+            guard let data = try? TrackerCoordinationWire.droneConfirmed(client: client, identity: identity,
+                replacing: pendingClaimReplacements[remoteID]) else { continue }
             send(data)
-            AppleLog.info("TrackerPeer", "Sent pending drone confirmation remoteId=\(remoteID)")
+            let named = pendingClaimReplacements[remoteID]?.confirmedByGuid
+            AppleLog.info(
+                "TrackerPeer",
+                "Sent pending drone confirmation remoteId=\(remoteID) replaceConfirmedBy=\(named?.isEmpty == false ? named! : "none")"
+            )
         }
     }
 
@@ -3535,6 +3698,10 @@ final class AppleTrackerCoordinator: ObservableObject {
         generation = UUID()
         connected = false
         helloAcknowledged = false
+        peerPresenceRevision &+= 1
+        peerPresenceScanTask?.cancel()
+        peerPresencePublishTask?.cancel()
+        onlineIncidentPeer = nil
         receiveTask?.cancel()
         receiveFailureTask?.cancel()
         heartbeatTask?.cancel()

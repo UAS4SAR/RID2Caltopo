@@ -3066,17 +3066,39 @@ private func proximityDrone(
     ).isComplete)
 }
 
-@Test func legacyDesignatorIsUsedForTrackDisplay() {
+@Test func confirmedPilotReplacesCallsignWithoutChangingRoutingDesignator() {
+    let readiness = FlightReadiness().withReportedPilot(callsign: "1SAR8", matched: false)
     let identity = RidAircraftIdentity(
         remoteID: "RID-1",
         organization: "NCSSAR",
         pilotCallsign: "1SAR8",
         droneDescription: "DJI Mini 4 Pro",
-        mappedIDOverride: "MINI4PRO"
+        mappedIDOverride: "1sar1001-01DjMtrc4td",
+        flightReadiness: readiness
     )
 
-    #expect(identity.displayLabel == "MINI4PRO")
-    #expect(identity.mappedID == "MINI4PRO")
+    #expect(identity.displayLabel == "1SAR8-01DjMtrc4td")
+    #expect(identity.mappedID == "1sar1001-01DjMtrc4td")
+    #expect(RidAircraftIdentity.flightLabel(mappedID: "2SAR8DjMn4Pr", pilotCallsign: "1SAR7") == "1SAR7DjMn4Pr")
+    #expect(RidAircraftIdentity.flightLabel(mappedID: "1P16sx10", pilotCallsign: "1SAR7") == "1SAR7sx10")
+    #expect(RidAircraftIdentity.flightLabel(mappedID: "MA12Autel", pilotCallsign: "MA12") == "MA12Autel")
+    #expect(RidAircraftIdentity.flightLabel(mappedID: "1sar1001-01DjMtrc4td", pilotCallsign: "1SAR1") == "1SAR1-01DjMtrc4td")
+    #expect(RidAircraftIdentity.flightLabel(mappedID: "MINI4PRO", pilotCallsign: "1SAR8") == "1SAR8-MINI4PRO")
+    #expect(RidAircraftIdentity.flightLabel(mappedID: "1sar1001-01DjMtrc4td", pilotCallsign: "") == "1sar1001-01DjMtrc4td")
+    let imported = RidAircraftIdentity(remoteID: "RID-1", organization: "NCSSAR", pilotCallsign: "1SAR8",
+        droneDescription: "DJI Mini 4 Pro", mappedIDOverride: "1sar1001-01DjMtrc4td")
+    #expect(imported.displayLabel == "1sar1001-01DjMtrc4td")
+}
+
+@Test func pendingConfirmationIsNotAppliedToAnotherFlightOrOldTelemetry() {
+    let confirmation = Date(timeIntervalSince1970: 100)
+    let ended = Date(timeIntervalSince1970: 200)
+    #expect(FlightConfirmationWindow.matches(confirmedAt: confirmation, endedAt: ended,
+        flightStartedAt: Date(timeIntervalSince1970: 101), lastMessageAt: Date(timeIntervalSince1970: 190)))
+    #expect(!FlightConfirmationWindow.matches(confirmedAt: confirmation, endedAt: ended,
+        flightStartedAt: Date(timeIntervalSince1970: 201), lastMessageAt: Date(timeIntervalSince1970: 210)))
+    #expect(!FlightConfirmationWindow.matches(confirmedAt: confirmation, endedAt: nil,
+        flightStartedAt: Date(timeIntervalSince1970: 50), lastMessageAt: Date(timeIntervalSince1970: 99)))
 }
 
 @Test func operationalMapBearingLineReachesViewportEdgeAtCardinalHeadings() throws {
@@ -5250,6 +5272,14 @@ private func proximityDrone(
     #expect(request.httpBody == eligible)
 }
 
+@Test func pendingOwnershipArchiveIsHeldForReviewEvenIfOtherwiseAuthorized() {
+    let configuration = TrackerArchiveUploadConfiguration(urlPrefix: "https://tracker.example.test/",
+        apiKey: "token", organization: "NCSSAR")
+    let data = Data(#"{"features":[{"properties":{"r2c_prop":{"org":"NCSSAR","rid":"RID-1","tracker_upload_authorized":true,"tracker_claim_pending":true}}}]}"#.utf8)
+    #expect(TrackerArchiveUploadContract.eligibility(geoJSON: data, configuration: configuration,
+        knownRemoteIDs: ["RID-1"]) == .claimPending)
+}
+
 @Test func trackerArchiveUploadScopesRootPrefixToOrganization() throws {
     let configuration = TrackerArchiveUploadConfiguration(
         urlPrefix: "https://r2c-tracker.com",
@@ -6385,6 +6415,23 @@ private func bluetoothServiceData(message: [UInt8], counter: UInt8) -> Data {
     #expect(first["remoteId"] as? String == "DRONE1")
     #expect(first["trackLabel"] as? String == "1sar7DjMn4Pr")
     #expect(first["ownerName"] as? String == "1sar7")
+    let confirmed = TrackerCoordinationIdentity(remoteID: "DRONE1", mappedID: "1sar1001-01DjMtrc4td",
+        organization: "NCSSAR", model: "DJI Matrice 4TD", ownerName: "1SAR8")
+    let wire = try jsonObject(TrackerCoordinationWire.droneConfirmed(client: client, identity: confirmed))
+    #expect(wire["mappedId"] as? String == "1sar1001-01DjMtrc4td")
+    #expect(wire["trackLabel"] as? String == "1sar1001-01DjMtrc4td")
+    #expect(wire["ownerName"] as? String == "1SAR8")
+    #expect(wire["replaceConfirmedBy"] == nil)
+    let prior = TrackerCoordinationIdentity(
+        remoteID: "DRONE1", mappedID: "1sar7DjMn4Pr", organization: "NCSSAR",
+        model: "DJI Mini 4 Pro", ownerName: "1SAR7", confirmedByGuid: "zone-bravo",
+        confirmedAtMs: 1_700_000_000_000, confirmedByDeviceName: "Ken T.'s iPad"
+    )
+    let replacement = try jsonObject(TrackerCoordinationWire.droneConfirmed(
+        client: client, identity: confirmed, replacing: prior
+    ))
+    #expect(replacement["replaceConfirmedBy"] as? String == "zone-bravo")
+    #expect((replacement["replaceConfirmedAtMs"] as? NSNumber)?.int64Value == 1_700_000_000_000)
     let telemetry = first["telemetry"] as? [String: Any]
     #expect((telemetry?["headingDeg"] as? NSNumber)?.doubleValue == 92)
 }
@@ -6437,6 +6484,104 @@ private func bluetoothServiceData(message: [UInt8], counter: UInt8) -> Data {
     ).candidateRemoteID == nil)
 }
 
+@Test func streamingOwnershipPromptsWhenVideoArrivesWithoutEndingTelemetryFlights() {
+    var lifecycle = CurrentFlightConfirmationLifecycle()
+    let telemetryOnly = lifecycle.reconcile(
+        orderedRemoteIDs: ["DRONE1", "DRONE2"], confirmedRemoteIDs: [],
+        ignoredRemoteIDs: [], promptEligibleRemoteIDs: []
+    )
+    #expect(telemetryOnly.candidateRemoteID == nil)
+    let streaming = lifecycle.reconcile(
+        orderedRemoteIDs: ["DRONE1", "DRONE2"], confirmedRemoteIDs: [],
+        ignoredRemoteIDs: [], promptEligibleRemoteIDs: ["DRONE2"]
+    )
+    #expect(streaming.candidateRemoteID == "DRONE2")
+    #expect(streaming.endedRemoteIDs.isEmpty)
+    let streamStopped = lifecycle.reconcile(
+        orderedRemoteIDs: ["DRONE1", "DRONE2"], confirmedRemoteIDs: ["DRONE2"],
+        ignoredRemoteIDs: [], promptEligibleRemoteIDs: []
+    )
+    #expect(streamStopped.endedRemoteIDs.isEmpty)
+    #expect(streamStopped.candidateRemoteID == nil)
+    let allDetected = lifecycle.reconcile(
+        orderedRemoteIDs: ["DRONE1", "DRONE2"], confirmedRemoteIDs: ["DRONE2"],
+        ignoredRemoteIDs: []
+    )
+    #expect(allDetected.candidateRemoteID == "DRONE1")
+}
+
+@Test func round9SaveAfterVideoReturnsNamesTheA5Lease() throws {
+    let aircraft = "1581F8HGX255S00A0FZT"
+    let a5 = "833a8140-2a8b-3b23-8876-c3af62524ef0"
+    var book = ForeignLeaseBook()
+    book.noteZone(remoteID: aircraft, zoneID: a5)
+    book.endFlight(remoteID: aircraft)
+    #expect(book.claim(for: aircraft)?.confirmedByGuid == a5)
+    let publisher = "1sar7djmtrc4td|192.168.68.58:52674"
+    #expect(TakeoverClaimNotice.remoteIDsRearmedByNewPublisher(
+        locallyConfirmed: [], ignored: [], previous: [:],
+        current: [aircraft: [publisher]], foreignClaims: book.remoteIDs) == [aircraft])
+    let client = TrackerCoordinationClient(
+        mapID: "4J0LF02", zoneID: "f6cbd6d2-ea23-45cd-b4ef-a559822c31ad",
+        name: "iPad", appVersion: "2.5.8", appVersionCode: 444)
+    let save = TrackerCoordinationIdentity(
+        remoteID: aircraft, mappedID: "1sar7DjMtrc4td", organization: "NCSSAR",
+        model: "DJI Matrice 4TD", ownerName: "1SAR7")
+    let wire = try jsonObject(TrackerCoordinationWire.droneConfirmed(
+        client: client, identity: save, replacing: book.claim(for: aircraft)))
+    #expect(wire["replaceConfirmedBy"] as? String == a5)
+    #expect((wire["replaceConfirmedAtMs"] as? NSNumber)?.int64Value == 0)
+}
+
+@Test func newVideoPublisherRearmsTakeoverUnlessThisTabletAlreadyChose() {
+    let video = ["DRONE": Set(["1sar7djmn4pr|192.168.68.63:39014"])]
+    #expect(TakeoverClaimNotice.remoteIDsRearmedByNewPublisher(
+        locallyConfirmed: [], ignored: [], previous: [:], current: video) == ["DRONE"])
+    #expect(TakeoverClaimNotice.remoteIDsRearmedByNewPublisher(
+        locallyConfirmed: ["DRONE"], ignored: [], previous: [:], current: video).isEmpty)
+    #expect(TakeoverClaimNotice.remoteIDsRearmedByNewPublisher(
+        locallyConfirmed: ["DRONE"], ignored: [], previous: [:], current: video,
+        foreignClaims: ["DRONE"]) == ["DRONE"])
+    #expect(TakeoverClaimNotice.remoteIDsRearmedByNewPublisher(
+        locallyConfirmed: ["DRONE"], ignored: [], previous: [:], current: video,
+        foreignClaims: ["DRONE"], saveAwaitingGrant: ["DRONE"]).isEmpty)
+    #expect(!TakeoverClaimNotice.mayOpenPanel(saveProtected: true))
+    let ipad = "f6cbd6d2-ea23-45cd-b4ef-a559822c31ad"
+    let named = SaveConfirmationSend.holder(
+        explicit: nil, ownerZoneID: ipad, localZoneID: "833a8140-2a8b-3b23-8876-c3af62524ef0",
+        remoteID: "1581F8HGX255S00A0FZT")
+    #expect(named?.confirmedByGuid == ipad)
+    #expect(SaveConfirmationSend.holder(
+        explicit: nil, ownerZoneID: nil, localZoneID: "833a8140-2a8b-3b23-8876-c3af62524ef0",
+        remoteID: "1581F8HGX255S00A0FZT") == nil)
+    #expect(TakeoverClaimNotice.remoteIDsRearmedByNewPublisher(
+        locallyConfirmed: [], ignored: ["DRONE"], previous: [:], current: video).isEmpty)
+    #expect(TakeoverClaimNotice.remoteIDsRearmedByNewPublisher(
+        locallyConfirmed: [], ignored: [], previous: video, current: video).isEmpty)
+    #expect(TakeoverClaimNotice.remoteIDsRearmedByNewPublisher(
+        locallyConfirmed: [], ignored: [], previous: [:],
+        current: ["DRONE": Set(["1sar7djmn4pr|unknown"])]).isEmpty)
+    #expect(TakeoverClaimNotice.message(callsign: "1SAR7", deviceName: "Ken's iPad")
+        == "Claimed by 1SAR7 on Ken's iPad. Mine asks to take over that claim.")
+    #expect(TakeoverClaimNotice.message(callsign: " ", deviceName: "")
+        == "Claimed by Unknown RPIC on another device. Mine asks to take over that claim.")
+    #expect(!TakeoverClaimNotice.claimConflictReopensPanel(
+        alreadySavedThisFlight: true, panelAlreadyShowingForThisAircraft: false))
+    #expect(!TakeoverClaimNotice.claimConflictReopensPanel(
+        alreadySavedThisFlight: false, panelAlreadyShowingForThisAircraft: true))
+    #expect(TakeoverClaimNotice.claimConflictReopensPanel(
+        alreadySavedThisFlight: false, panelAlreadyShowingForThisAircraft: false))
+}
+
+@Test func sharedIncidentOwnershipRequiresVideoWhenAnotherDeviceOrPresenceIsUnknown() {
+    #expect(!CurrentFlightConfirmationLifecycle.requiresStream(mode: "all_detected", incidentSelected: true, peerPresenceKnown: false, otherDeviceOnline: true))
+    #expect(CurrentFlightConfirmationLifecycle.requiresStream(mode: "streaming_device", incidentSelected: false, peerPresenceKnown: true, otherDeviceOnline: false))
+    #expect(!CurrentFlightConfirmationLifecycle.requiresStream(mode: "streaming_shared_incident", incidentSelected: false, peerPresenceKnown: false, otherDeviceOnline: false))
+    #expect(!CurrentFlightConfirmationLifecycle.requiresStream(mode: "streaming_shared_incident", incidentSelected: true, peerPresenceKnown: true, otherDeviceOnline: false))
+    #expect(CurrentFlightConfirmationLifecycle.requiresStream(mode: "streaming_shared_incident", incidentSelected: true, peerPresenceKnown: true, otherDeviceOnline: true))
+    #expect(CurrentFlightConfirmationLifecycle.requiresStream(mode: "streaming_shared_incident", incidentSelected: true, peerPresenceKnown: false, otherDeviceOnline: false))
+}
+
 @Test func trackerOwnershipRequiresLocalLeaseAndLocalSave() throws {
     var state = TrackerCoordinationProtocolState(localZoneID: "zone-alpha")
     state.transportOpened(helloSentAtMilliseconds: 1_000)
@@ -6462,6 +6607,19 @@ private func bluetoothServiceData(message: [UInt8], counter: UInt8) -> Data {
     #expect(peerConfirmation.contains(
         .ownershipChanged(remoteID: "DRONE1", ownerZoneID: "zone-bravo", localOwner: false, alertEligible: false)
     ))
+    #expect(!state.isLocalOwner(remoteID: "DRONE1"))
+    #expect(!state.isLocalAlertEligible(remoteID: "DRONE1"))
+}
+
+@Test func staleTrackerConfirmationDoesNotReplaceNewerOwner() throws {
+    var state = TrackerCoordinationProtocolState(localZoneID: "zone-alpha")
+    _ = try state.handleIncoming(
+        Data(#"{"type":"owner_assigned","remoteId":"DRONE1","ownerGuid":"zone-bravo","leaseSeq":9}"#.utf8),
+        receivedAtMilliseconds: 1_000)
+    let events = try state.handleIncoming(
+        Data(#"{"type":"drone_confirmed","remoteId":"DRONE1","confirmedByGuid":"zone-alpha","leaseSeq":8}"#.utf8),
+        receivedAtMilliseconds: 1_100)
+    #expect(events == [.ignored(messageType: "stale drone_confirmed")])
     #expect(!state.isLocalOwner(remoteID: "DRONE1"))
     #expect(!state.isLocalAlertEligible(remoteID: "DRONE1"))
 }
@@ -7264,6 +7422,15 @@ func aolHighlightRequiresNegativeNumberAndExcludesAdjacentFields() {
         #expect(details["owner"] as? String == "1SAR7")
         #expect(details["map_id"] as? String == mapID)
     }
+    let readiness = FlightReadiness().withReportedPilot(callsign: "10", matched: false)
+    let confirmed = RidTrackArchiveMetadata(mappedID: "1sar1001-01DjMtrc4td", owner: "10", flightReadiness: readiness)
+    #expect(RidTrackGeoJSON.archiveTitle(for: track, metadata: confirmed, timeZone: zone) == "10-01DjMtrc4td_161522Sep12")
+    let root = try #require(JSONSerialization.jsonObject(with: RidTrackGeoJSON.encode(track: track, metadata: confirmed)) as? [String: Any])
+    let properties = try #require((root["features"] as? [[String: Any]])?.first?["properties"] as? [String: Any])
+    let details = try #require(properties["r2c_prop"] as? [String: Any])
+    #expect(details["mid"] as? String == "1sar1001-01DjMtrc4td")
+    let pilot = try #require((details["flightReadiness"] as? [String: Any])?["pilot"] as? [String: Any])
+    #expect(pilot["callsign"] as? String == "10")
     #expect(RidTrackGeoJSON.archiveTitle(for: track, metadata: .init(), timeZone: zone) == "RID01_161522Sep12")
 }
 

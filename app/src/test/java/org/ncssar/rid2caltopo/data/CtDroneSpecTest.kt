@@ -243,6 +243,21 @@ class CtDroneSpecTest {
         drone.owner = "1SAR8"
         assertEquals("MINI4PRO", drone.displayLabel)
         assertEquals("MINI4PRO", drone.mappedId)
+        drone.setCurrentFlightConfirmed(true)
+        assertEquals("1SAR8-MINI4PRO", drone.displayLabel)
+        assertEquals("MINI4PRO", drone.mappedId)
+        drone.setCurrentFlightConfirmed(false)
+        assertEquals("MINI4PRO", drone.displayLabel)
+    }
+
+    @Test fun flightDisplayLabelMatchesAppleAndPreservesAircraftSuffix() {
+        assertEquals("10-01DjMtrc4td", CtDroneSpec.FlightDisplayLabel("1sar1001-01DjMtrc4td", "10"))
+        assertEquals("1SAR1-01DjMtrc4td", CtDroneSpec.FlightDisplayLabel("1sar1001-01DjMtrc4td", "1SAR1"))
+        assertEquals("1SAR7DjMn4Pr", CtDroneSpec.FlightDisplayLabel("2SAR8DjMn4Pr", "1SAR7"))
+        assertEquals("1SAR7sx10", CtDroneSpec.FlightDisplayLabel("1P16sx10", "1SAR7"))
+        assertEquals("MA12Autel", CtDroneSpec.FlightDisplayLabel("MA12Autel", "MA12"))
+        assertEquals("1SAR8-MINI4PRO", CtDroneSpec.FlightDisplayLabel("MINI4PRO", "1SAR8"))
+        assertEquals("1sar1001-01DjMtrc4td", CtDroneSpec.FlightDisplayLabel("1sar1001-01DjMtrc4td", ""))
     }
 
     @Test

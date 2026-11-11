@@ -14,6 +14,7 @@ public struct WaypointTrackAppendJournal: Sendable {
         public var observations: [RidObservation]
         public var finished: Bool
         public var startedAtMs: Int64
+        public var ownership: FlightOwnershipContext = .legacy
     }
 
     private let directory: URL
@@ -62,6 +63,16 @@ public struct WaypointTrackAppendJournal: Sendable {
                 "startedAtMs": requestedStart,
             ]
             try Self.append(header, to: fileURL)
+        }
+    }
+
+    @discardableResult
+    public func noteContext(_ context: FlightOwnershipContext, flightID: String) async throws -> Bool {
+        try await disk.run {
+            let fileURL = self.fileURL(flightID)
+            guard FileManager.default.fileExists(atPath: fileURL.path) else { return false }
+            try Self.append(context.journalRow(), to: fileURL)
+            return true
         }
     }
 
@@ -164,6 +175,8 @@ public struct WaypointTrackAppendJournal: Sendable {
         var finished = false
         var startedAtMs: Int64 = 0
         var observations: [RidObservation] = []
+        var ownership = FlightOwnershipContext.legacy
+        var sawContext = false
         for line in text.split(whereSeparator: \.isNewline) where !line.isEmpty {
             guard let data = line.data(using: .utf8),
                   let row = try JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -205,6 +218,9 @@ public struct WaypointTrackAppendJournal: Sendable {
                     altitudeMeters: ele.flatMap { $0 > -998 ? $0 : nil },
                     droneTimestamp: droneTime
                 ))
+            case "context":
+                ownership = FlightOwnershipContext.from(journalRow: row)
+                sawContext = true
             case "finished":
                 finished = true
             default:
@@ -214,6 +230,7 @@ public struct WaypointTrackAppendJournal: Sendable {
         guard !id.isEmpty else { return nil }
         return RecoveredFlight(
             id: id, remoteID: remote, label: label, mapID: map, teamID: team,
-            observations: observations, finished: finished, startedAtMs: startedAtMs)
+            observations: observations, finished: finished, startedAtMs: startedAtMs,
+            ownership: sawContext ? ownership : .legacy)
     }
 }

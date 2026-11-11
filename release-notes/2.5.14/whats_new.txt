@@ -1,0 +1,3 @@
+Latest changes:
+- A confirmed flight is saved to the incident map when the flight ends.
+- Reviewing an earlier flight sends it to the tracker as well as the map.

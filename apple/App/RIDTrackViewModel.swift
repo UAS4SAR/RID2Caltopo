@@ -10,6 +10,11 @@ final class RIDTrackViewModel: ObservableObject {
     let shortFlightDecisions = ShortFlightRecordingGate()
     private let awaitingMapJournal = AwaitingMapFlightJournal(fileURL:
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("awaiting-map-flights.json"))
+    private static var ownershipReleaseURL: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("ownership-review-releases.json")
+    }
+
     private let waypointAppendJournal = WaypointTrackAppendJournal(directory:
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("waypoint-track-journals", isDirectory: true))
@@ -86,11 +91,22 @@ final class RIDTrackViewModel: ObservableObject {
     private var publicationMapID = ""
     private var publicationTeamID = ""
     private var lastDeferredSnapshot: [String: Date] = [:]
+    // Session confirmation can be retired before the asynchronous archive starts.
+    // Bind it to a flight ID so a later flight of the same aircraft cannot inherit it.
+    private var confirmedFlightIdentities: [String: RidAircraftIdentity] = [:]
+    private var pendingConfirmedIdentities: [String: (identity: RidAircraftIdentity, confirmedAt: Date, endedAt: Date?)] = [:]
+
+    func retirePendingConfirmation(remoteID: String) {
+        guard var pending = pendingConfirmedIdentities[remoteID] else { return }
+        pending.endedAt = Date()
+        pendingConfirmedIdentities[remoteID] = pending
+    }
 
     /// Confirm-time handoff: persist the team label, mark publicationStarted when a map is
     /// connected, and seed the publisher with the stable RidFlightID so finish cannot mint a
     /// second archive id. Chains onto `awaitingFlightWrites` so flight-end awaits this write.
-    func capturePublicationIntent(remoteID: String, label: String? = nil) {
+    func capturePublicationIntent(remoteID: String, label: String? = nil, identity: RidAircraftIdentity? = nil) {
+        noteOwnershipContext(remoteID: remoteID)
         lastDeferredSnapshot.removeValue(forKey: remoteID)
         let confirmedLabel = {
             let trimmed = label?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -98,6 +114,15 @@ final class RIDTrackViewModel: ObservableObject {
             return identityProvider?(remoteID)?.displayLabel ?? remoteID
         }()
         let track = tracks.first(where: { $0.aircraftID == remoteID })
+        if let identity {
+            if let track {
+                let id = RidFlightID.make(aircraftID: track.aircraftID, startedAt: track.flightStartedAt)
+                confirmedFlightIdentities[id] = identity
+                pendingConfirmedIdentities.removeValue(forKey: remoteID)
+            } else {
+                pendingConfirmedIdentities[remoteID] = (identity, Date(), nil)
+            }
+        }
         let previous = track.flatMap { recordAwaitingFlight($0) }
         let mapID = publicationMapID
         let flightID = track.map {
@@ -105,7 +130,10 @@ final class RIDTrackViewModel: ObservableObject {
         }
         let task = Task {
             await previous?.value
-            if !mapID.isEmpty {
+            let context: FlightOwnershipContext? = ownershipContextProvider?(remoteID)
+            let hold = context?.requiresHold == true
+                || peerCoordinator?.claimPending(remoteID: remoteID) == true
+            if !mapID.isEmpty && !hold {
                 do {
                     try await awaitingMapJournal.notePublication(
                         remoteID: remoteID, mapID: mapID, label: confirmedLabel)
@@ -140,14 +168,76 @@ final class RIDTrackViewModel: ObservableObject {
     private func recoverWaypointAppendJournalsLocked() async {
         do {
             let recovered = try await waypointAppendJournal.recoverUnfinished()
-            let existingEntries = await awaitingMapJournal.entries
+            // Disk rows, read before ready() rewrites every row to finished.
+            // A finished flag is not proof the flight file was written.
+            let storedEntries = (try? await awaitingMapJournal.storedEntries()) ?? []
             for flight in recovered {
                 do {
+                    if await self.retireJournalWhenSavedFlightCovers(flight) { continue }
+                    let stored = storedEntries.last(where: { $0.id == flight.id })
+                    let interruptedCount = await caltopoPublisher.interruptedObservationCount(liveTrackID: flight.id)
+                    let startedOnMap = RestartFlightRecovery.flightAlreadyStarted(
+                        publicationStarted: stored?.publicationStarted == true,
+                        interruptedRecordPresent: interruptedCount != nil)
+                    let ownership = flight.ownership
+                    if let decision = RestartFlightRecovery.decide(
+                        liveTrackID: flight.id,
+                        journalPointCount: flight.observations.count,
+                        interruptedPointCount: interruptedCount ?? 0,
+                        existingShapeIDs: [],
+                        ownership: ownership,
+                        startedOnMap: startedOnMap
+                    ) {
+                        let startedAt = flight.startedAtMs > 0
+                            ? Date(timeIntervalSince1970: Double(flight.startedAtMs) / 1_000)
+                            : (flight.observations.first?.droneTimestamp ?? flight.observations.first?.receivedAt ?? Date())
+                        do {
+                            _ = try await archiveStore.archiveRecoveredFlight(
+                                remoteID: flight.remoteID,
+                                flightID: flight.id,
+                                label: flight.label,
+                                startedAt: startedAt,
+                                observations: flight.observations,
+                                metadata: RidTrackArchiveMetadata(
+                                    mappedID: ownership.mappedID,
+                                    owner: decision.pilot,
+                                    model: ownership.model,
+                                    organization: ownership.organization,
+                                    mapID: flight.mapID,
+                                    localArchiveOnly: !decision.uploadOnce,
+                                    flightID: flight.id,
+                                    trackerUploadAuthorized: decision.uploadOnce,
+                                    trackerClaimPending: decision.heldForReview
+                                )
+                            )
+                        } catch {
+                            archiveStatus = "Kept recovered journal \(flight.label); flight file was not written"
+                            continue
+                        }
+                        if interruptedCount != nil {
+                            let expanded = await caltopoPublisher.replaceInterruptedPoints(
+                                liveTrackID: flight.id, observations: flight.observations)
+                            if !expanded {
+                                archiveStatus = "Kept recovered journal \(flight.label); the shape snapshot was not expanded"
+                                continue
+                            }
+                        }
+                        try await self.commitRecoveredJournal(flight, ownership: ownership)
+                        continue
+                    }
                     if try await publicationLedger.blocksAwaitingMapPromotion(flightID: flight.id) {
                         try await waypointAppendJournal.acknowledgeRecovered(flightID: flight.id)
                         continue
                     }
-                    if let prior = existingEntries.last(where: { $0.id == flight.id }), prior.finished {
+                    if flight.startedAtMs > 0,
+                       await archiveStore.archiveAlreadySaved(
+                        remoteID: flight.remoteID,
+                        startedAt: Date(timeIntervalSince1970: Double(flight.startedAtMs) / 1_000)
+                       ) {
+                        try await waypointAppendJournal.acknowledgeRecovered(flightID: flight.id)
+                        continue
+                    }
+                    if let prior = stored, prior.finished {
                         if TrackArchiveConfirmation.isConfirmed(
                             decision: prior.decision,
                             archiveConfirmed: prior.archiveConfirmed == true,
@@ -160,23 +250,7 @@ final class RIDTrackViewModel: ObservableObject {
                         try await waypointAppendJournal.acknowledgeRecovered(flightID: flight.id)
                         continue
                     }
-                    try await awaitingMapJournal.record(
-                        remoteID: flight.remoteID,
-                        label: flight.label,
-                        observations: flight.observations,
-                        mapID: flight.mapID,
-                        teamID: flight.teamID,
-                        finished: false,
-                        flightID: flight.id)
-                    try await awaitingMapJournal.record(
-                        remoteID: flight.remoteID,
-                        label: flight.label,
-                        observations: flight.observations,
-                        mapID: flight.mapID,
-                        teamID: flight.teamID,
-                        finished: true,
-                        flightID: flight.id)
-                    try await waypointAppendJournal.acknowledgeRecovered(flightID: flight.id)
+                    try await self.commitRecoveredJournal(flight, ownership: ownership)
                 } catch {
                     // Leave the .ndjson until awaiting-map commit succeeds on a later pass.
                     archiveStatus = "Could not commit recovered track \(flight.label): \(error.localizedDescription)"
@@ -187,17 +261,96 @@ final class RIDTrackViewModel: ObservableObject {
         }
     }
 
+    /// Records the recovered row and retires the journal. Does not delete clue photos.
+    private func commitRecoveredJournal(
+        _ flight: WaypointTrackAppendJournal.RecoveredFlight,
+        ownership: FlightOwnershipContext
+    ) async throws {
+        try await awaitingMapJournal.record(
+                        remoteID: flight.remoteID,
+                        label: flight.label,
+                        observations: flight.observations,
+                        mapID: flight.mapID,
+                        teamID: flight.teamID,
+                        finished: false,
+                        flightID: flight.id,
+                        ownershipReviewPending: ownership.requiresHold,
+                        recordedPilot: ownership.recordedPilot,
+                        claim: ownership.known ? ownership.claim : "",
+                        ownershipContextKnown: ownership.known,
+                        blockAutomaticPublication: ownership.blocksOperatorPublish)
+        try await awaitingMapJournal.record(
+            remoteID: flight.remoteID,
+            label: flight.label,
+            observations: flight.observations,
+            mapID: flight.mapID,
+            teamID: flight.teamID,
+            finished: true,
+            flightID: flight.id,
+            ownershipReviewPending: ownership.requiresHold,
+            recordedPilot: ownership.recordedPilot,
+            claim: ownership.known ? ownership.claim : "",
+            ownershipContextKnown: ownership.known,
+            blockAutomaticPublication: ownership.blocksOperatorPublish)
+        try await waypointAppendJournal.acknowledgeRecovered(flightID: flight.id)
+    }
+
+    /// True when a saved flight already covers this journal, so recovery must not write a second file.
+    private func retireJournalWhenSavedFlightCovers(_ flight: WaypointTrackAppendJournal.RecoveredFlight) async -> Bool {
+        let points: [[String]] = flight.observations.map { observation in
+            let time = Int64(((observation.droneTimestamp ?? observation.receivedAt).timeIntervalSince1970 * 1_000).rounded())
+            return [
+                String(format: "%.6f", locale: Locale(identifier: "en_US_POSIX"), observation.longitude),
+                String(format: "%.6f", locale: Locale(identifier: "en_US_POSIX"), observation.latitude),
+                String(format: "%.0f", locale: Locale(identifier: "en_US_POSIX"), observation.altitudeMeters ?? -1_000),
+                String(time),
+            ]
+        }
+        let times = points.compactMap { Int64($0[3]) }
+        guard !times.isEmpty, let root = await archiveStore.flightStorageRoot else { return false }
+        let around = flight.observations.first?.droneTimestamp ?? flight.observations.first?.receivedAt ?? Date()
+        let remoteID = flight.remoteID
+        let decision = await Task.detached(priority: .utility) {
+            let saved = SavedFlightIndex.flights(in: root, around: around)
+            return RecoveredJournalDedup.decide(remoteID: remoteID, journalTimesMs: times, saved: saved)
+        }.value
+        switch decision {
+        case .writeNew:
+            return false
+        case .retire:
+            try? await waypointAppendJournal.acknowledgeRecovered(flightID: flight.id)
+            return true
+        case let .merge(day, name, _):
+            let merged = await Task.detached(priority: .utility) {
+                SavedFlightIndex.merge(
+                    root: root, dayDirectory: day, fileName: name,
+                    journalPoints: points, journalTimesMs: times)
+            }.value
+            if merged {
+                try? await waypointAppendJournal.acknowledgeRecovered(flightID: flight.id)
+            } else {
+                archiveStatus = "Kept recovered journal \(flight.label); the saved flight does not yet hold every point"
+            }
+            return true
+        }
+    }
+
     private func appendWaypointJournal(track: RidAircraftTrack, observation: RidObservation) {
         let flightID = RidFlightID.make(aircraftID: track.aircraftID, startedAt: track.flightStartedAt)
         let label = identityProvider?(track.aircraftID)?.displayLabel ?? track.aircraftID
         let mapID = publicationMapID
         let teamID = publicationTeamID
+        let startedAtMs = Int64((track.flightStartedAt.timeIntervalSince1970 * 1_000).rounded())
+        peerCoordinator?.noteFlightStart(remoteID: track.aircraftID, startedAtMs: startedAtMs)
         Task(priority: .utility) {
             do {
                 try await waypointAppendJournal.ensureOpen(
                     flightID: flightID, remoteID: track.aircraftID, label: label,
                     mapID: mapID, teamID: teamID,
-                    startedAtMs: Int64((track.flightStartedAt.timeIntervalSince1970 * 1_000).rounded()))
+                    startedAtMs: startedAtMs)
+                if let context = ownershipContextProvider?(track.aircraftID) {
+                    await noteOwnershipContextIfChanged(context, flightID: flightID)
+                }
                 try await waypointAppendJournal.append(observation: observation, flightID: flightID)
             } catch {
                 archiveStatus = "Waypoint journal write failed: \(error.localizedDescription)"
@@ -206,14 +359,19 @@ final class RIDTrackViewModel: ObservableObject {
     }
 
     @discardableResult
-    private func recordAwaitingFlight(_ track: RidAircraftTrack, finished: Bool = false) -> Task<Void, Never>? {
+    private func recordAwaitingFlight(_ track: RidAircraftTrack, finished: Bool = false, labelOverride: String? = nil) -> Task<Void, Never>? {
         guard flightRecordingAllowed?(track.aircraftID) == true,
               publicationSuppressionProvider?(track.aircraftID) != true else { return nil }
         let now = Date()
         if !finished, now.timeIntervalSince(lastDeferredSnapshot[track.aircraftID] ?? .distantPast) < 5 { return nil }
         let points = track.points, fallbackSource = track.lastObservation.source, aircraftID = track.aircraftID
-        let label = identityProvider?(track.aircraftID)?.displayLabel ?? track.aircraftID
+        let label = labelOverride ?? identityProvider?(track.aircraftID)?.displayLabel ?? track.aircraftID
         let mapID = publicationMapID, teamID = publicationTeamID
+        peerCoordinator?.noteFlightStart(
+            remoteID: track.aircraftID,
+            startedAtMs: Int64((track.flightStartedAt.timeIntervalSince1970 * 1_000).rounded()))
+        let ownership = ownershipContextProvider?(track.aircraftID)
+        let ownershipReviewPending = ownership?.requiresHold ?? (peerCoordinator?.claimPending(remoteID: track.aircraftID) == true)
         let previous = awaitingFlightWrites[track.aircraftID]
         lastDeferredSnapshot[track.aircraftID] = now
         let task = Task {
@@ -227,7 +385,11 @@ final class RIDTrackViewModel: ObservableObject {
             do {
                 try await awaitingMapJournal.record(remoteID: track.aircraftID, label: label,
                     observations: samples, mapID: mapID, teamID: teamID, finished: finished,
-                    flightID: RidFlightID.make(aircraftID: track.aircraftID, startedAt: track.flightStartedAt))
+                    flightID: RidFlightID.make(aircraftID: track.aircraftID, startedAt: track.flightStartedAt),
+                    ownershipReviewPending: ownershipReviewPending,
+                    recordedPilot: ownership?.recordedPilot,
+                    claim: ownership?.claim,
+                    ownershipContextKnown: ownership == nil ? nil : true)
                 await refreshAwaitingMapState()
             } catch { archiveStatus = "Could not save pending publication: \(error.localizedDescription)" }
         }
@@ -235,8 +397,37 @@ final class RIDTrackViewModel: ObservableObject {
         return task
     }
 
-    func decideAwaitingFlight(_ id: String, mapID: String?, teamID: String) async -> Bool {
+    func configureOwnershipContext(_ provider: @escaping (String) -> FlightOwnershipContext) {
+        ownershipContextProvider = provider
+    }
+
+    private var lastOwnershipContext: [String: String] = [:]
+
+    func noteOwnershipContext(remoteID: String) {
+        guard let context = ownershipContextProvider?(remoteID),
+              let track = tracks.first(where: { $0.aircraftID == remoteID }) else { return }
+        let flightID = RidFlightID.make(aircraftID: track.aircraftID, startedAt: track.flightStartedAt)
+        Task(priority: .utility) {
+            await self.noteOwnershipContextIfChanged(context, flightID: flightID)
+        }
+    }
+
+    private func noteOwnershipContextIfChanged(_ context: FlightOwnershipContext, flightID: String) async {
+        let signature = "\(context.known)|\(context.confirmation)|\(context.claim)|\(context.recordedPilot)|\(context.organization)|\(context.model)|\(context.mappedID)"
+        if lastOwnershipContext[flightID] == signature { return }
+        if (try? await waypointAppendJournal.noteContext(context, flightID: flightID)) == true {
+            lastOwnershipContext[flightID] = signature
+        }
+    }
+
+    func decideAwaitingFlight(_ id: String, mapID: String?, teamID: String, peerOverride: Bool = false) async -> Bool {
         do {
+            if mapID != nil, try await awaitingMapJournal.authorizeOwnershipReview(id: id, peerOverride: peerOverride) {
+                let releaseURL = Self.ownershipReleaseURL
+                try? await Task.detached(priority: .utility) {
+                    try OwnershipReviewReleaseFile.allowTrackerUpload(flightID: id, fileURL: releaseURL)
+                }.value
+            }
             try await awaitingMapJournal.decide(id: id, mapID: mapID, teamID: teamID)
             if mapID == nil {
                 try? await publicationLedger.remember(flightID: id, disposition: .declined)
@@ -364,10 +555,20 @@ final class RIDTrackViewModel: ObservableObject {
     private var peerCoordinator: AppleTrackerCoordinator?
     private var identityProvider: ((String) -> RidAircraftIdentity?)?
     private var publicationSuppressionProvider: ((String) -> Bool)? = { _ in true }
+    private var ownershipContextProvider: ((String) -> FlightOwnershipContext)?
     private var flightRecordingAllowed: ((String) -> Bool)?
     private var peerConfirmationConsumer: ((TrackerCoordinationIdentity) -> Void)?
+    private var foreignOwnerConsumer: ((String, String) -> Void)?
     private var peerConfirmationClearer: ((String) -> Void)?
     private var flightEndConsumer: ((String) -> Void)?
+    /// Flight ids this tablet owned while they were flying. A later takeover still publishes them.
+    private var ownedFlightIDs: Set<String> = []
+    /// Verified Mine segments. Unverified Mine stays on the hold path and is not in this set.
+    private var ownedFlightMayUpload: Set<String> = []
+    /// Aircraft whose current points were recorded while another tablet held the lease.
+    private var shadowedAircraft: Set<String> = []
+    /// The grant time for the ownership we already split. A later event must not split again.
+    private var ownershipGrantedAtByAircraft: [String: Date] = [:]
     private var peerTrafficLatestSampleAtByAircraftID: [String: Date] = [:]
     private var pairedVideoActivityProvider: (() -> [String: Date])?
     private var validatedSEIPositionProvider:
@@ -432,7 +633,8 @@ final class RIDTrackViewModel: ObservableObject {
                         track: track, identity: self.identityProvider?(track.aircraftID))
                     // Snapshot publish gate before archive's flightEndConsumer clears DCP.
                     let publicationDecision = self.publicationDecision(for: track.aircraftID)
-                    await self.archive(track, publishFlightEnd: true)
+                    let ownedDuringFlight = self.flightWasOwned(track)
+                    await self.archive(track, publishFlightEnd: true, ownedDuringFlight: ownedDuringFlight)
                     self.pendingPublication.removeValue(forKey: track.aircraftID)
                     self.lastSEIPublicationAtByAircraftID.removeValue(
                         forKey: track.aircraftID
@@ -440,7 +642,8 @@ final class RIDTrackViewModel: ObservableObject {
                     await self.finishPublication(
                         track: track,
                         recording: recording,
-                        publicationDecision: publicationDecision
+                        publicationDecision: publicationDecision,
+                        ownedDuringFlight: ownedDuringFlight
                     )
                     self.terrainTasks.removeValue(forKey: track.aircraftID)?.cancel()
                     self.terrainRequestKeyByAircraftID.removeValue(forKey: track.aircraftID)
@@ -588,6 +791,13 @@ final class RIDTrackViewModel: ObservableObject {
         switch result {
         case let .accepted(track):
             acceptedObservationCount += 1
+            if let pending = pendingConfirmedIdentities[track.aircraftID],
+               FlightConfirmationWindow.matches(confirmedAt: pending.confirmedAt, endedAt: pending.endedAt,
+                   flightStartedAt: track.flightStartedAt, lastMessageAt: track.lastAircraftMessageAt) {
+                let id = RidFlightID.make(aircraftID: track.aircraftID, startedAt: track.flightStartedAt)
+                confirmedFlightIdentities[id] = pending.identity
+                pendingConfirmedIdentities.removeValue(forKey: track.aircraftID)
+            }
             if observation.source == .djiVideo {
                 if lastAcceptedStreamAt[observation.aircraftId] == nil {
                     AppleLog.info("VideoTelemetry", "First accepted stream position aircraft=\(observation.aircraftId) height=\(observation.heightMeters.map(String.init(describing:)) ?? "unknown")")
@@ -599,6 +809,10 @@ final class RIDTrackViewModel: ObservableObject {
             }
             if let code = observation.horizontalAccuracyCode {
                 lastHorizontalAccuracyCodeByAircraftID[track.aircraftID] = code
+            }
+            if peerCoordinator?.isLocalOwner(remoteID: track.aircraftID) == true,
+               peerCoordinator?.isLocalAlertEligible(remoteID: track.aircraftID) == true {
+                rememberOwnedFlight(track)
             }
             recordAwaitingFlight(track)
             appendWaypointJournal(track: track, observation: observation)
@@ -1487,6 +1701,7 @@ final class RIDTrackViewModel: ObservableObject {
         _ coordinator: AppleTrackerCoordinator,
         identityProvider: @escaping (String) -> RidAircraftIdentity?,
         peerConfirmationConsumer: @escaping (TrackerCoordinationIdentity) -> Void,
+        foreignOwnerConsumer: @escaping (String, String) -> Void = { _, _ in },
         peerConfirmationClearer: @escaping (String) -> Void,
         flightEndConsumer: @escaping (String) -> Void
     ) {
@@ -1494,6 +1709,7 @@ final class RIDTrackViewModel: ObservableObject {
         updateCaltopoThumbnailRefreshTargets()
         self.identityProvider = identityProvider
         self.peerConfirmationConsumer = peerConfirmationConsumer
+        self.foreignOwnerConsumer = foreignOwnerConsumer
         self.peerConfirmationClearer = peerConfirmationClearer
         self.flightEndConsumer = flightEndConsumer
         coordinator.setManagedVideoThumbnailUpdatedHandler { [weak self] droneDesignator in
@@ -1504,8 +1720,43 @@ final class RIDTrackViewModel: ObservableObject {
             for await event in coordinator.events {
                 guard !Task.isCancelled, let self else { return }
                 switch event {
-                case let .ownershipChanged(remoteID, _, localOwner, alertEligible):
+                case let .ownershipChanged(remoteID, ownerZoneID, localOwner, alertEligible):
                     self.ownershipActivationTasks.removeValue(forKey: remoteID)?.cancel()
+                    let aircraftID = RidTrackStore.canonicalAircraftID(remoteID)
+                    if localOwner, alertEligible {
+                        await self.store.markOwned(aircraftID: aircraftID, at: Date())
+                        if self.shadowedAircraft.contains(aircraftID),
+                           self.ownershipGrantedAtByAircraft[aircraftID] == nil {
+                            let grantedAt = Date()
+                            let before = await self.store.track(aircraftID: aircraftID)
+                            self.ownershipGrantedAtByAircraft[aircraftID] = grantedAt
+                            self.shadowedAircraft.remove(aircraftID)
+                            await self.store.trimShadow(
+                                aircraftID: aircraftID, ownershipGrantedAt: grantedAt)
+                            if let owned = await self.store.track(aircraftID: aircraftID) {
+                                self.rememberOwnedFlight(owned)
+                                if let before, before.flightStartedAt < owned.flightStartedAt,
+                                   let directory = await self.archiveStore.flightDayDirectory(for: before.flightStartedAt) {
+                                    let aircraft = before.aircraftID
+                                    let shadow = before.flightStartedAt
+                                    let grant = owned.flightStartedAt
+                                    await Task.detached(priority: .utility) {
+                                        OwnedFlightFileName.adopt(
+                                            directory: directory, aircraftID: aircraft,
+                                            shadowStart: shadow, grant: grant, timeZone: .current)
+                                    }.value
+                                }
+                            }
+                        } else if let owned = await self.store.track(aircraftID: aircraftID) {
+                            self.rememberOwnedFlight(owned)
+                        }
+                    } else if !localOwner {
+                        self.foreignOwnerConsumer?(remoteID, ownerZoneID)
+                        self.shadowedAircraft.insert(aircraftID)
+                        self.ownershipGrantedAtByAircraft.removeValue(forKey: aircraftID)
+                        await self.endOwnedFlightAtHandoff(aircraftID: aircraftID)
+                        await self.store.clearOwned(aircraftID: aircraftID)
+                    }
                     if localOwner, alertEligible,
                        self.publicationSuppressionProvider?(remoteID) != true {
                         // Start as soon as ownership is granted while the map is already up;
@@ -1530,8 +1781,12 @@ final class RIDTrackViewModel: ObservableObject {
                     self.publishRelay(relay)
                 case let .peerTrafficPosition(traffic):
                     await self.ingestPeerTraffic(traffic)
-                case let .droneConfirmed(identity, _, _):
+                case let .droneConfirmed(identity, _, confirmedLocally):
+                    if confirmedLocally { self.peerConfirmationClearer?(identity.remoteID) }
+                    else { self.peerConfirmationConsumer?(identity) }
+                case let .droneClaimConflict(identity):
                     self.peerConfirmationConsumer?(identity)
+                    NotificationCenter.default.post(name: Notification.Name("droneClaimConflict"), object: identity.remoteID)
                 case let .ownerExpired(remoteID):
                     self.peerConfirmationClearer?(remoteID)
                 default:
@@ -1690,19 +1945,68 @@ final class RIDTrackViewModel: ObservableObject {
             let recording = CaltopoRecordingAssociation(
                 track: track, identity: identityProvider?(track.aircraftID))
             let publicationDecision = publicationDecision(for: track.aircraftID)
-            await archive(track)
+            let ownedDuringFlight = flightWasOwned(track)
+            await archive(track, ownedDuringFlight: ownedDuringFlight)
             await finishPublication(
                 track: track,
                 recording: recording,
-                publicationDecision: publicationDecision
+                publicationDecision: publicationDecision,
+                ownedDuringFlight: ownedDuringFlight
             )
         }
+    }
+
+    /// A verified Mine is remembered for this flight start. A later takeover still publishes it.
+    private func rememberOwnedFlight(_ track: RidAircraftTrack) {
+        let flightID = RidFlightID.make(aircraftID: track.aircraftID, startedAt: track.flightStartedAt)
+        ownedFlightIDs.insert(flightID)
+        let suppressed = publicationSuppressionProvider?(track.aircraftID) == true
+        let recordingAllowed = flightRecordingAllowed?(track.aircraftID) != false
+        let ownership = ownershipContextProvider?(track.aircraftID)
+        let claimPending = ownership?.requiresHold
+            ?? (peerCoordinator?.claimPending(remoteID: track.aircraftID) == true)
+        if !suppressed && recordingAllowed && !claimPending {
+            ownedFlightMayUpload.insert(flightID)
+        }
+    }
+
+    private func flightWasOwned(_ track: RidAircraftTrack) -> Bool {
+        let flightID = RidFlightID.make(aircraftID: track.aircraftID, startedAt: track.flightStartedAt)
+        return ownedFlightMayUpload.contains(flightID)
+    }
+
+    /// Ends the flight this tablet owned at the handoff, before the idle timeout.
+    /// The next ingest starts a new flight and does not keep these points.
+    private func endOwnedFlightAtHandoff(aircraftID: String) async {
+        guard let current = await store.track(aircraftID: aircraftID) else { return }
+        let flightID = RidFlightID.make(aircraftID: current.aircraftID, startedAt: current.flightStartedAt)
+        guard ownedFlightMayUpload.contains(flightID) else { return }
+        guard let track = await store.take(aircraftID: aircraftID) else { return }
+        let takenID = RidFlightID.make(aircraftID: track.aircraftID, startedAt: track.flightStartedAt)
+        guard takenID == flightID else {
+            await store.restoreIfAbsent(track)
+            return
+        }
+        let recording = CaltopoRecordingAssociation(
+            track: track, identity: identityProvider?(track.aircraftID))
+        let publicationDecision = publicationDecision(for: track.aircraftID)
+        await archive(track, publishFlightEnd: true, ownedDuringFlight: true)
+        pendingPublication.removeValue(forKey: track.aircraftID)
+        lastSEIPublicationAtByAircraftID.removeValue(forKey: track.aircraftID)
+        await finishPublication(
+            track: track,
+            recording: recording,
+            publicationDecision: publicationDecision,
+            ownedDuringFlight: true
+        )
     }
 
     /// Captured before flight-end observers clear confirmation / Don't Publish state.
     private struct FlightPublicationDecision: Sendable {
         let allowsPublication: Bool
         let localOwner: Bool
+        let claimPending: Bool
+        let coordinatorAllowsPublication: Bool
     }
 
     private func publicationDecision(for remoteID: String) -> FlightPublicationDecision {
@@ -1711,7 +2015,9 @@ final class RIDTrackViewModel: ObservableObject {
         let localOwner = peerCoordinator?.isLocalOwner(remoteID: remoteID) ?? true
         return FlightPublicationDecision(
             allowsPublication: !suppressed && recordingAllowed,
-            localOwner: localOwner
+            localOwner: localOwner,
+            claimPending: peerCoordinator?.claimPending(remoteID: remoteID) == true,
+            coordinatorAllowsPublication: peerCoordinator?.publicationAllowed(remoteID: remoteID) != false
         )
     }
 
@@ -1736,18 +2042,58 @@ final class RIDTrackViewModel: ObservableObject {
         return message
     }
 
-    private func archive(_ track: RidAircraftTrack, publishFlightEnd: Bool = false) async {
+    private func archive(
+        _ track: RidAircraftTrack,
+        publishFlightEnd: Bool = false,
+        ownedDuringFlight: Bool = false,
+        retainingUnconfirmedShadow: Bool = false
+    ) async {
+        let original = track
+        let flightKeyForOwnership = RidFlightID.make(aircraftID: original.aircraftID, startedAt: original.flightStartedAt)
+        let wasOwned = ownedDuringFlight || ownedFlightMayUpload.contains(flightKeyForOwnership)
+        guard let track = await store.recordForArchive(original, ownedDuringFlight: wasOwned && !retainingUnconfirmedShadow) else {
+            let shadowID = RidFlightID.make(aircraftID: original.aircraftID, startedAt: original.flightStartedAt)
+            try? await waypointAppendJournal.markFinishedAndRemove(flightID: shadowID)
+            return
+        }
         let flightID = liveFlightID(aircraftID: track.aircraftID)
             ?? RidFlightID.make(aircraftID: track.aircraftID, startedAt: track.flightStartedAt)
+        let snapshotID = RidFlightID.make(aircraftID: track.aircraftID, startedAt: track.flightStartedAt)
+        let pending = pendingConfirmedIdentities[track.aircraftID]
+        let pendingForFlight = pending.flatMap {
+            FlightConfirmationWindow.matches(confirmedAt: $0.confirmedAt, endedAt: $0.endedAt,
+                flightStartedAt: track.flightStartedAt, lastMessageAt: track.lastAircraftMessageAt)
+                ? $0.identity : nil
+        }
+        let flightIdentity = confirmedFlightIdentities[snapshotID] ?? pendingForFlight ?? identityProvider?(track.aircraftID)
+        if pendingForFlight != nil { pendingConfirmedIdentities.removeValue(forKey: track.aircraftID) }
+        if publishFlightEnd { confirmedFlightIdentities.removeValue(forKey: snapshotID) }
         // Snapshot publish gate before flight-end observers clear DCP state.
         let recordingAllowed = flightRecordingAllowed?(track.aircraftID) != false
         let publicationSuppressed = publicationSuppressionProvider?(track.aircraftID) == true
+        let archiveDecision = publicationDecision(for: track.aircraftID)
         let alreadyDeclined =
             (try? await publicationLedger.isDeclinedOrSuppressed(flightID: flightID)) == true
-        let localOnly = !recordingAllowed || publicationSuppressed || alreadyDeclined
-        // Only the local flight owner may upload this archive to the tracker.
-        let archiveDecision = publicationDecision(for: track.aircraftID)
-        let trackerUploadAuthorized = archiveDecision.localOwner && archiveDecision.allowsPublication && !alreadyDeclined
+        let ownership = ownershipContextProvider?(track.aircraftID)
+        let claimPending = ownership?.requiresHold ?? (peerCoordinator?.claimPending(remoteID: track.aircraftID) == true)
+        let flightKey = RidFlightID.make(aircraftID: track.aircraftID, startedAt: track.flightStartedAt)
+        let ownedWhileFlying = !retainingUnconfirmedShadow
+            && (ownedDuringFlight || ownedFlightMayUpload.contains(flightKey))
+        if ownedWhileFlying { ownedFlightMayUpload.remove(flightKey) }
+        if !retainingUnconfirmedShadow { ownedFlightIDs.remove(flightKey) }
+        // A takeover must not downgrade a segment this tablet already owned into a peer file.
+        let ownedForUpload = ownedWhileFlying || archiveDecision.localOwner
+        let handedOff = ownedWhileFlying && !archiveDecision.localOwner
+        let localOnly = retainingUnconfirmedShadow || (!ownedWhileFlying && (!recordingAllowed || publicationSuppressed || alreadyDeclined))
+        let currentOwnerUpload = ownership.map {
+            $0.mayAutoPublish && ownedForUpload && archiveDecision.allowsPublication && !alreadyDeclined
+        } ?? (!claimPending && ownedForUpload && archiveDecision.allowsPublication && !alreadyDeclined)
+        let trackerUploadAuthorized = !retainingUnconfirmedShadow
+            && ((ownedWhileFlying && !alreadyDeclined) || currentOwnerUpload)
+        if let ownership, !retainingUnconfirmedShadow {
+            let flightID = RidFlightID.make(aircraftID: track.aircraftID, startedAt: track.flightStartedAt)
+            try? await waypointAppendJournal.noteContext(ownership, flightID: flightID)
+        }
 
         if track.points.isEmpty {
             let disposition: FlightPublicationLedger.Disposition =
@@ -1755,7 +2101,7 @@ final class RIDTrackViewModel: ObservableObject {
             try? await publicationLedger.remember(flightID: flightID, disposition: disposition)
             try? await waypointAppendJournal.markFinishedAndRemove(flightID: flightID)
             if publishFlightEnd {
-                peerCoordinator?.droneLost(remoteID: track.aircraftID)
+                if !handedOff { peerCoordinator?.droneLost(remoteID: track.aircraftID) }
                 flightEndConsumer?(track.aircraftID)
                 tracks.removeAll { $0.aircraftID == track.aircraftID }
             }
@@ -1769,7 +2115,7 @@ final class RIDTrackViewModel: ObservableObject {
             try? await publicationLedger.remember(flightID: flightID, disposition: disposition)
             try? await waypointAppendJournal.markFinishedAndRemove(flightID: flightID)
             _ = try? await awaitingMapJournal.discard(id: flightID)
-            let identity = identityProvider?(track.aircraftID)
+            let identity = flightIdentity
             let recording = CaltopoRecordingAssociation(track: track, identity: identity)
             let videoURL = peerCoordinator?.capturedVideoURL(
                 matching: recording.designators,
@@ -1800,7 +2146,7 @@ final class RIDTrackViewModel: ObservableObject {
                 id: flightID, remoteID: track.aircraftID, times: track.points.map(\.bindingTime))
             let clues = await clueStore?.archiveClues(flight: flightCandidate, otherFlights: otherFlights) ?? []
             if publishFlightEnd {
-                peerCoordinator?.droneLost(remoteID: track.aircraftID)
+                if !handedOff { peerCoordinator?.droneLost(remoteID: track.aircraftID) }
                 flightEndConsumer?(track.aircraftID)
                 tracks.removeAll { $0.aircraftID == track.aircraftID }
             }
@@ -1813,10 +2159,10 @@ final class RIDTrackViewModel: ObservableObject {
             return
         }
 
-        await recordAwaitingFlight(track, finished: true)?.value
+        await recordAwaitingFlight(track, finished: true, labelOverride: flightIdentity?.displayLabel)?.value
         try? await waypointAppendJournal.markFinishedAndRemove(flightID: flightID)
         await queueCompletedDeferredFlights()
-        let identity = identityProvider?(track.aircraftID)
+        let identity = flightIdentity
         let recording = CaltopoRecordingAssociation(track: track, identity: identity)
         let videoURL = peerCoordinator?.capturedVideoURL(
             matching: recording.designators,
@@ -1838,7 +2184,8 @@ final class RIDTrackViewModel: ObservableObject {
             flightReadiness: identity?.flightReadiness,
             flightID: flightID,
             capturedVideoDescription: CaltopoArchiveDescription.build(capturedVideoURL: videoURL),
-            trackerUploadAuthorized: trackerUploadAuthorized
+            trackerUploadAuthorized: trackerUploadAuthorized,
+            trackerClaimPending: claimPending
         )
         let start = track.points.first?.receivedAt ?? track.lastAircraftMessageAt
         let otherFlights = await archiveStore.archivedFlights(aircraftID: track.aircraftID, around: start)
@@ -1849,7 +2196,8 @@ final class RIDTrackViewModel: ObservableObject {
         if publishFlightEnd {
             // Capture the completed flight's identity/readiness above before observers
             // clear its confirmation. Network archive retries must not delay that reset.
-            peerCoordinator?.droneLost(remoteID: track.aircraftID)
+            // A handoff must not send drone_lost: the other tablet now holds the lease.
+            if !handedOff { peerCoordinator?.droneLost(remoteID: track.aircraftID) }
             flightEndConsumer?(track.aircraftID)
             tracks.removeAll { $0.aircraftID == track.aircraftID }
             AppleLog.info("DroneConfirmation", "Published flight end before archive upload remoteId=\(track.aircraftID)")
@@ -1911,6 +2259,7 @@ final class RIDTrackViewModel: ObservableObject {
         case .malformedArchive: "invalid archive"
         case .localArchiveOnly: "local only"
         case .notUploadAuthorized: "not flight owner"
+        case .claimPending: "ownership review pending"
         case .missingOrganization: "organization missing"
         case .organizationMismatch: "organization mismatch"
         case .unknownTeamAircraft: "aircraft not in team config"
@@ -2219,7 +2568,8 @@ final class RIDTrackViewModel: ObservableObject {
     private func finishPublication(
         track: RidAircraftTrack,
         recording: CaltopoRecordingAssociation,
-        publicationDecision: FlightPublicationDecision
+        publicationDecision: FlightPublicationDecision,
+        ownedDuringFlight: Bool = false
     ) async {
         let remoteID = track.aircraftID
         ownershipActivationTasks.removeValue(forKey: remoteID)?.cancel()
@@ -2231,7 +2581,13 @@ final class RIDTrackViewModel: ObservableObject {
         // would discard a confirmed flight as gated_unconfirmed.
         let blockedByLedger =
             (try? await publicationLedger.isDeclinedOrSuppressed(flightID: flightID)) == true
-        if !publicationDecision.allowsPublication || blockedByLedger {
+        if FlightEndPublication.decide(
+            allowsPublication: publicationDecision.allowsPublication || ownedDuringFlight,
+            coordinatorAllowsPublication: publicationDecision.coordinatorAllowsPublication,
+            claimPending: publicationDecision.claimPending && !ownedDuringFlight,
+            blockedByLedger: blockedByLedger,
+            ownedDuringFlight: ownedDuringFlight
+        ).discardsLiveTrack {
             await caltopoPublisher.discard(remoteID: remoteID)
             return
         }

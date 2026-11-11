@@ -63,6 +63,7 @@ actor AppleTrackArchiveStore {
     static let authorizationRejectedNotification = Notification.Name("trackerArchiveAuthorizationRejected")
     enum ArchiveError: Error {
         case documentsDirectoryUnavailable
+        case recoveredFileIncomplete
     }
 
     private let rootURL: URL?
@@ -125,6 +126,44 @@ actor AppleTrackArchiveStore {
                 kmzFilename: RidTrackGeoJSON.suggestedClueReportFilename(for: track)))
         }
         let result = await process(data: data, file: destination)
+        return AppleTrackArchiveOutcome(url: destination, trackerResult: result)
+    }
+
+    /// Writes a recovered flight file once, then uploads it once when the journal authorized it.
+    /// A file already on disk is not rewritten. `process` skips a file that was already reported.
+    func archiveRecoveredFlight(
+        remoteID: String,
+        flightID: String,
+        label: String,
+        startedAt: Date,
+        observations: [RidObservation],
+        metadata: RidTrackArchiveMetadata
+    ) async throws -> AppleTrackArchiveOutcome {
+        guard let rootURL else { throw ArchiveError.documentsDirectoryUnavailable }
+        guard !observations.isEmpty else { throw ArchiveError.documentsDirectoryUnavailable }
+        let day = AppleFlightStorage.dayName(startedAt)
+        let directory = rootURL.appendingPathComponent(day, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let fileName = AwaitingMapFlightArchive.filenames(remoteID: remoteID, startedAt: startedAt).first { $0.hasSuffix(".json") }
+            ?? RidTrackGeoJSON.suggestedFilenameBase(aircraftID: remoteID, startDate: startedAt) + ".json"
+        let destination = directory.appendingPathComponent(fileName)
+        let data = try RidTrackGeoJSON.encodeRecovered(
+            remoteID: remoteID,
+            observations: observations,
+            title: label,
+            metadata: metadata
+        )
+        let expected = observations.count
+        let existingCount = (try? Data(contentsOf: destination)).flatMap(RecoveredFlightFile.coordinateCount)
+        if existingCount != expected {
+            try RecoveredFlightFile.writeVerified(data, to: destination, expectedPoints: expected)
+            AppleFlightStorage.fileChanged(destination)
+        }
+        let stored = try Data(contentsOf: destination)
+        guard RecoveredFlightFile.coordinateCount(stored) == expected else {
+            throw ArchiveError.recoveredFileIncomplete
+        }
+        let result = await process(data: stored, file: destination)
         return AppleTrackArchiveOutcome(url: destination, trackerResult: result)
     }
 
@@ -421,6 +460,18 @@ actor AppleTrackArchiveStore {
         return failed
     }
 
+    var flightStorageRoot: URL? { rootURL }
+
+    func flightDayDirectory(for date: Date) -> URL? {
+        guard let rootURL else { return nil }
+        return rootURL.appendingPathComponent(dayDirectoryName(for: date), isDirectory: true)
+    }
+
+    func archiveAlreadySaved(remoteID: String, startedAt: Date) -> Bool {
+        guard let rootURL else { return false }
+        return AwaitingMapFlightArchive.fileExists(remoteID: remoteID, startedAt: startedAt, root: rootURL)
+    }
+
     /// Deletes only the GeoJSON and clue KMZ written for this flight.
     func deleteFlightArchive(_ flight: AwaitingMapFlight) -> AwaitingMapArchiveDeletion {
         guard let rootURL else { return AwaitingMapArchiveDeletion(failures: ["archive folder unavailable"]) }
@@ -454,6 +505,14 @@ actor AppleTrackArchiveStore {
         }
     }
 
+    private static func flightID(in data: Data) -> String {
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let feature = (root["features"] as? [[String: Any]])?.first,
+              let properties = feature["properties"] as? [String: Any],
+              let flightID = properties["r2c_flight_id"] as? String else { return "" }
+        return flightID.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     private func processOnce(data: Data, file: URL) async -> AppleTrackArchiveOutcome.TrackerResult {
         // Recheck inside the coalesced operation; replay's directory snapshot can be stale.
         guard !reportedFilenames(in: file.deletingLastPathComponent()).contains(file.lastPathComponent) else {
@@ -461,11 +520,17 @@ actor AppleTrackArchiveStore {
         }
         guard let configuration, configuration.tracker.isConfigured else { return .notConfigured }
         let knownIDs = Set(configuration.identities.keys)
+        let flightID = Self.flightID(in: data)
+        let releaseURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("ownership-review-releases.json")
+        let released = OwnershipReviewReleaseFile.allowsTrackerUpload(flightID: flightID, fileURL: releaseURL)
         let eligibility = TrackerArchiveUploadContract.eligibility(
             geoJSON: data,
             configuration: configuration.tracker,
-            knownRemoteIDs: knownIDs
+            knownRemoteIDs: knownIDs,
+            releasedFlightIDs: released ? [flightID] : []
         )
+        if eligibility == .claimPending { return .pending(0) }
         guard eligibility == .eligible else {
             try? markReported(file)
             AppleLog.info("TrackerArchive", "Skipped \(file.lastPathComponent): \(String(describing: eligibility))")

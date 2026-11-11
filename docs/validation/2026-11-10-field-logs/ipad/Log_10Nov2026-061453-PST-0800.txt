@@ -1,0 +1,281 @@
+########################################################################
+# RID2Caltopo 2.5.13 (442) running on iPadOS 27.0.1 (iPad13,4)
+# Writing logs to: /var/mobile/Containers/Data/Application/B541F20B-C5BC-41E2-8B62-C9E6315009D4/Documents/RID2Caltopo/FlightStorage/2026-11-10/Log_10Nov2026-061453-PST-0800.txt
+########################################################################
+2026-11-10T06:14:53.765 PST -08:00 [INFO][10771-main] [App] Process launched pid=10771 state=background options=[] log=Log_10Nov2026-061453-PST-0800.txt
+2026-11-10T06:14:53.765 PST -08:00 [INFO][10771-4355] [BackupProtection] Private storage excluded; operational Library data remains backup-eligible
+2026-11-10T06:14:53.766 PST -08:00 [INFO][10771-5123] [MappingStorage] Mapping storage: already migrated
+2026-11-10T06:14:53.768 PST -08:00 [INFO][10771-4355] [BackupProtection] Device-bound credential protection checked; pending=0
+2026-11-10T06:14:53.813 PST -08:00 [INFO][10771-4355] [Terms] TermsAcceptanceRestored version=2026-10-24.1 sha256=f8c4b55b49f5ddba2f4bce15604a66d4a0912e67eca0afe751592b9fc19b0a64 acceptedAt=2026-10-25T01:52:08Z scope=local-installation
+2026-11-10T06:14:53.908 PST -08:00 [INFO][10771-main] [AlertCoordinator] Started; alert evaluation runs independently of the UI (evaluate every 1 s, maintenance every 15 s)
+2026-11-10T06:14:53.935 PST -08:00 [INFO][10771-main] [ClueTerrain] diag activeClueTerrainTasks=0 mainHitchCount=0 mapOverlayRebuilds=0
+2026-11-10T06:14:53.935 PST -08:00 [INFO][10771-main] [ProximityAlert] Evaluation stale=0 allAircraft=false enabled=false suspended=false tracks=0 team=0 eligible=
+2026-11-10T06:14:53.936 PST -08:00 [ERROR][10771-main] [MediaMTX] RTMP listener unavailable while server is stopped; starting
+2026-11-10T06:14:54.025 PST -08:00 [INFO][10771-main] [Clue] clue integrity orphans=0 missingPhoto=0 pendingOrFailed=0
+2026-11-10T06:14:54.142 PST -08:00 [DEBUG][10771-4355] [MediaMTX] 2026/11/10 14:14:54 INF MediaMTX v1.16.2-dirty, ios, arm64
+2026-11-10T06:14:54.142 PST -08:00 [DEBUG][10771-4355] [MediaMTX] 2026/11/10 14:14:54 INF configuration loaded from /private/var/mobile/Containers/Data/Application/B541F20B-C5BC-41E2-8B62-C9E6315009D4/tmp/RID2Caltopo-MediaMTX/mediamtx.yml
+2026-11-10T06:14:54.142 PST -08:00 [DEBUG][10771-4355] [MediaMTX] 2026/11/10 14:14:54 INF [metrics] listener opened on 127.0.0.1:9998
+2026-11-10T06:14:54.143 PST -08:00 [DEBUG][10771-4355] [MediaMTX] 2026/11/10 14:14:54 DEB path manager created
+2026-11-10T06:14:54.143 PST -08:00 [DEBUG][10771-4355] [MediaMTX] 2026/11/10 14:14:54 INF [RTSP] listener opened on 127.0.0.1:8554 (TCP/RTSP)
+2026-11-10T06:14:54.143 PST -08:00 [DEBUG][10771-4355] [MediaMTX] 2026/11/10 14:14:54 INF [RTMP] listener opened on :1935
+2026-11-10T06:14:54.143 PST -08:00 [DEBUG][10771-4355] [MediaMTX] 2026/11/10 14:14:54 INF [HLS] listener opened on 127.0.0.1:8888
+2026-11-10T06:14:54.144 PST -08:00 [DEBUG][10771-4355] [MediaMTX] Go runtime asyncpreemptoff=1
+2026-11-10T06:14:55.092 PST -08:00 [INFO][10771-main] [OrganizationAccess] Device owner authenticated
+2026-11-10T06:14:56.249 PST -08:00 [INFO][10771-main] [MapFocus] Automatic focus evaluation follow=true adjusted=false focused=none streams=
+2026-11-10T06:14:56.309 PST -08:00 [INFO][10771-main] [App] Diagnostic logging started
+2026-11-10T06:14:56.309 PST -08:00 [INFO][10771-main] [ClueTerrain] hitch sources mainHitchCount=1 activeClueTerrainTasks=0 mapOverlayRebuilds=1 lastMapOverlayMs=0.0 lastMapOverlayPoints=0 thumbPresence=0 peerRecv=0 mapAnnot=1 recent=map.overlay@75ms
+2026-11-10T06:14:56.386 PST -08:00 [INFO][10771-main] [App] Application UI started
+2026-11-10T06:14:56.386 PST -08:00 [INFO][10771-main] [Location] Background operation enabled for this session
+2026-11-10T06:14:56.387 PST -08:00 [INFO][10771-main] [NetworkChecks] Network path available; refreshing safety data and organization Tracker check-in
+2026-11-10T06:14:56.387 PST -08:00 [INFO][10771-main] [NetworkChecks] connectivity restored → flush clues=0
+2026-11-10T06:14:56.387 PST -08:00 [INFO][10771-main] [BluetoothRID] Waiting
+2026-11-10T06:14:56.388 PST -08:00 [INFO][10771-37411] [NetworkChecks] connectivity restored → flush archives=0 liveTracks=0 clues=wake
+2026-11-10T06:14:56.392 PST -08:00 [INFO][10771-main] [BluetoothRID] Scanning
+2026-11-10T06:14:56.401 PST -08:00 [DEBUG][10771-56331] [MediaMTX] 2026/11/10 14:14:56 INF [RTMP] [conn 127.0.0.1:52885] opened
+2026-11-10T06:14:56.401 PST -08:00 [DEBUG][10771-56331] [MediaMTX] 2026/11/10 14:14:56 DEB [RTMP] [conn 127.0.0.1:52885] RTMP handshake: initializing server connection
+2026-11-10T06:14:56.402 PST -08:00 [DEBUG][10771-8963] [MediaMTX] 2026/11/10 14:14:56 INF [RTMP] [conn 127.0.0.1:52885] RTMP handshake failed during initialization: elapsedMs=0 socketReads=1 socketBytes=0 socketWaitMs=0 maxSocketReadMs=0 error=EOF
+2026-11-10T06:14:56.402 PST -08:00 [DEBUG][10771-8963] [MediaMTX] 2026/11/10 14:14:56 INF [RTMP] [conn 127.0.0.1:52885] closed: EOF
+2026-11-10T06:14:56.420 PST -08:00 [INFO][10771-main] [NetworkDiagnostics] Network snapshotId=net-1 reason=startup ssid=taylorfam2 bssidHash=c423fa9903da ipv4=en0=192.168.68.61 wifiRssiDbm=unavailable status=satisfied interfaces=wifi expensive=false constrained=false
+2026-11-10T06:14:56.423 PST -08:00 [INFO][10771-main] [Location] Authorization: when in use
+2026-11-10T06:14:56.425 PST -08:00 [INFO][10771-main] [Location] Published Core Location cache accuracyMeters=19 ageSeconds=0 provisional=true
+2026-11-10T06:14:56.425 PST -08:00 [INFO][10771-main] [Location] Authorization: when in use
+2026-11-10T06:14:56.432 PST -08:00 [DEBUG][10771-17667] [MapCache] cache index ready files=16710 reason=cache elapsedMs=30
+2026-11-10T06:14:56.435 PST -08:00 [INFO][10771-main] [MapViewport] Initial center set from operator location
+2026-11-10T06:14:56.443 PST -08:00 [INFO][10771-main] [TrackerPeer] Standalone flights stay independent
+2026-11-10T06:14:56.443 PST -08:00 [INFO][10771-main] [Location] ±19 m
+2026-11-10T06:14:56.443 PST -08:00 [INFO][10771-main] [Network] Controller RTMP server rtmp://192.168.68.61 interfaces=en0=192.168.68.61
+2026-11-10T06:14:56.458 PST -08:00 [INFO][10771-main] [Location] Published fresh fix accuracyMeters=19 ageSeconds=3 provisional=false
+2026-11-10T06:14:56.459 PST -08:00 [INFO][10771-main] [Location] Published fresh fix accuracyMeters=19 ageSeconds=0 provisional=false
+2026-11-10T06:14:56.501 PST -08:00 [INFO][10771-17667] [CalTopo] Ignoring duplicate publisher configuration for map id=
+2026-11-10T06:14:57.276 PST -08:00 [INFO][10771-main] [PersonalBrowser] navigation-finished frame=(0.0, 0.0, 0.0, 0.0) window=(0.0, 0.0) zoom=1.0 range=0.25...1.0 offset=(0.0, 0.0) content=(0.0, 0.0)
+2026-11-10T06:14:57.319 PST -08:00 [INFO][10771-main] [OrganizationAccess] Tracker account verification HTTP 200
+2026-11-10T06:14:57.320 PST -08:00 [INFO][10771-main] [OrganizationAccess] Tracker account verification completed; identityPresent=true
+2026-11-10T06:14:57.529 PST -08:00 [INFO][10771-main] [Airspace] FAA Facility Map returned 0 record(s)
+2026-11-10T06:14:58.251 PST -08:00 [INFO][10771-69635] [TerrainPrefetch] S1M preparation tiles=2 operatingRadiusM=1609.344
+2026-11-10T06:14:58.281 PST -08:00 [INFO][10771-main] [Video] Native recording decoder opening 1sar7djmn4pr_09Nov2026_083100_PST.mp4 backend=FFmpeg v2.5.6rc3-45-g4eeb914e / VideoToolbox recording playback
+2026-11-10T06:14:58.281 PST -08:00 [INFO][10771-main] [Video] Local managed-video playback requested file=1sar7djmn4pr_09Nov2026_083100_PST.mp4
+2026-11-10T06:14:58.293 PST -08:00 [INFO][10771-main] [Video] Native recording decoder opening 1sar7djmn4pr_09Nov2026_083006_PST.mp4 backend=FFmpeg v2.5.6rc3-45-g4eeb914e / VideoToolbox recording playback
+2026-11-10T06:14:58.293 PST -08:00 [INFO][10771-main] [Video] Local managed-video playback requested file=1sar7djmn4pr_09Nov2026_083006_PST.mp4
+2026-11-10T06:14:58.310 PST -08:00 [INFO][10771-main] [RecordingCatalog] Read recording metadata file=1sar7djmn4pr_09Nov2026_163647_PST.mp4 sizeBytes=116614769
+2026-11-10T06:14:58.310 PST -08:00 [INFO][10771-main] [RecordingCatalog] Read recording metadata file=1sar7djmn4pr_09Nov2026_165842_PST.mp4 sizeBytes=134877656
+2026-11-10T06:14:58.797 PST -08:00 [INFO][10771-main] [LandRules] Loaded 0 protected-land area(s); sourceErrors=0
+2026-11-10T06:14:59.222 PST -08:00 [DEBUG][10771-main] [TrackerPeer] Managed video thumbnail encode elapsedMs=32 bytes=36747 src=1280x720
+2026-11-10T06:14:59.222 PST -08:00 [DEBUG][10771-main] [TrackerPeer] Managed video thumbnail captured session=123a9e41-d28a-5b75-76c7-58ac5731b66a drone=1sar7djmn4pr revision=1794320099222
+2026-11-10T06:14:59.239 PST -08:00 [DEBUG][10771-main] [TrackerPeer] Managed video thumbnail encode elapsedMs=16 bytes=25092 src=1280x720
+2026-11-10T06:14:59.394 PST -08:00 [INFO][10771-main] [ClueTerrain] hitch sources mainHitchCount=4 activeClueTerrainTasks=0 mapOverlayRebuilds=1 lastMapOverlayMs=0.0 lastMapOverlayPoints=0 thumbPresence=4 peerRecv=0 mapAnnot=1 recent=map.overlay@3160ms,thumb.await@171ms,thumb.apply@171ms/36747B,thumb.await@155ms,thumb.apply@155ms/25092B
+2026-11-10T06:14:59.423 PST -08:00 [INFO][10771-69635] [TerrainPrefetch] Terrain preparation complete=true
+2026-11-10T06:15:00.358 PST -08:00 [INFO][10771-main] [Video] Native recording decoder opening 1sar7djmn4pr_09Nov2026_083225_PST.mp4 backend=FFmpeg v2.5.6rc3-45-g4eeb914e / VideoToolbox recording playback
+2026-11-10T06:15:00.358 PST -08:00 [INFO][10771-main] [Video] Local managed-video playback requested file=1sar7djmn4pr_09Nov2026_083225_PST.mp4
+2026-11-10T06:15:00.368 PST -08:00 [INFO][10771-main] [Video] Native recording decoder opening 1sar7djmn4pr_09Nov2026_070605_PST.mp4 backend=FFmpeg v2.5.6rc3-45-g4eeb914e / VideoToolbox recording playback
+2026-11-10T06:15:00.368 PST -08:00 [INFO][10771-main] [Video] Local managed-video playback requested file=1sar7djmn4pr_09Nov2026_070605_PST.mp4
+2026-11-10T06:15:00.380 PST -08:00 [INFO][10771-main] [RecordingCatalog] Read recording metadata file=1sar7djmn4pr_09Nov2026_163523_PST.mp4 sizeBytes=9842703
+2026-11-10T06:15:00.380 PST -08:00 [INFO][10771-main] [RecordingCatalog] Read recording metadata file=1sar7djmn4pr_09Nov2026_163325_PST.mp4 sizeBytes=112880993
+2026-11-10T06:15:00.530 PST -08:00 [INFO][10771-69635] [TerrainPrefetch] S1M decode warm complete operatingRadiusM=1609.344
+2026-11-10T06:15:00.912 PST -08:00 [INFO][10771-main] [NOTAM] Fetched 62 notices radiusStatuteMiles=1
+2026-11-10T06:15:01.358 PST -08:00 [DEBUG][10771-main] [TrackerPeer] Managed video thumbnail encode elapsedMs=39 bytes=34198 src=1280x720
+2026-11-10T06:15:01.358 PST -08:00 [DEBUG][10771-main] [TrackerPeer] Managed video thumbnail encode elapsedMs=39 bytes=34785 src=1280x720
+2026-11-10T06:15:02.120 PST -08:00 [INFO][10771-main] [ClueTerrain] hitch sources mainHitchCount=6 activeClueTerrainTasks=0 mapOverlayRebuilds=1 lastMapOverlayMs=0.0 lastMapOverlayPoints=0 thumbPresence=8 peerRecv=0 mapAnnot=1 recent=thumb.await@2897ms,thumb.apply@2897ms/36747B,thumb.await@2881ms,thumb.apply@2880ms/25092B,thumb.await@762ms,thumb.await@762ms,thumb.apply@761ms/34198B,thumb.apply@761ms/34785B
+2026-11-10T06:15:02.378 PST -08:00 [INFO][10771-main] [Video] Native recording decoder opening 1sar7djmn4pr_09Nov2026_163647_PST.mp4 backend=FFmpeg v2.5.6rc3-45-g4eeb914e / VideoToolbox recording playback
+2026-11-10T06:15:02.378 PST -08:00 [INFO][10771-main] [Video] Local managed-video playback requested file=1sar7djmn4pr_09Nov2026_163647_PST.mp4
+2026-11-10T06:15:02.392 PST -08:00 [INFO][10771-main] [Video] Native recording decoder opening 1sar7djmn4pr_09Nov2026_163523_PST.mp4 backend=FFmpeg v2.5.6rc3-45-g4eeb914e / VideoToolbox recording playback
+2026-11-10T06:15:02.392 PST -08:00 [INFO][10771-main] [Video] Local managed-video playback requested file=1sar7djmn4pr_09Nov2026_163523_PST.mp4
+2026-11-10T06:15:02.406 PST -08:00 [INFO][10771-main] [RecordingCatalog] Read recording metadata file=1sar7djmn4pr_09Nov2026_083225_PST.mp4 sizeBytes=729336
+2026-11-10T06:15:02.406 PST -08:00 [INFO][10771-main] [RecordingCatalog] Read recording metadata file=1sar7djmn4pr_09Nov2026_083128_PST.mp4 sizeBytes=60288779
+2026-11-10T06:15:03.126 PST -08:00 [INFO][10771-main] [ClueTerrain] hitch sources mainHitchCount=7 activeClueTerrainTasks=0 mapOverlayRebuilds=1 lastMapOverlayMs=0.0 lastMapOverlayPoints=0 thumbPresence=8 peerRecv=0 mapAnnot=1 recent=thumb.await@3903ms,thumb.apply@3903ms/36747B,thumb.await@3887ms,thumb.apply@3887ms/25092B,thumb.await@1768ms,thumb.await@1768ms,thumb.apply@1767ms/34198B,thumb.apply@1767ms/34785B
+2026-11-10T06:15:03.362 PST -08:00 [DEBUG][10771-main] [TrackerPeer] Managed video thumbnail encode elapsedMs=29 bytes=23842 src=1280x720
+2026-11-10T06:15:03.363 PST -08:00 [DEBUG][10771-main] [TrackerPeer] Managed video thumbnail encode elapsedMs=30 bytes=29735 src=1280x720
+2026-11-10T06:15:04.131 PST -08:00 [INFO][10771-main] [ClueTerrain] hitch sources mainHitchCount=8 activeClueTerrainTasks=0 mapOverlayRebuilds=1 lastMapOverlayMs=0.0 lastMapOverlayPoints=0 thumbPresence=12 peerRecv=0 mapAnnot=1 recent=thumb.await@2772ms,thumb.await@2772ms,thumb.apply@2771ms/34198B,thumb.apply@2771ms/34785B,thumb.await@768ms,thumb.apply@768ms/23842B,thumb.await@767ms,thumb.apply@767ms/29735B
+2026-11-10T06:15:04.417 PST -08:00 [INFO][10771-main] [Video] Native recording decoder opening 1sar7djmn4pr_09Nov2026_163325_PST.mp4 backend=FFmpeg v2.5.6rc3-45-g4eeb914e / VideoToolbox recording playback
+2026-11-10T06:15:04.417 PST -08:00 [INFO][10771-main] [Video] Local managed-video playback requested file=1sar7djmn4pr_09Nov2026_163325_PST.mp4
+2026-11-10T06:15:04.431 PST -08:00 [INFO][10771-main] [Video] Native recording decoder opening 1sar7djmn4pr_09Nov2026_083037_PST.mp4 backend=FFmpeg v2.5.6rc3-45-g4eeb914e / VideoToolbox recording playback
+2026-11-10T06:15:04.431 PST -08:00 [INFO][10771-main] [Video] Local managed-video playback requested file=1sar7djmn4pr_09Nov2026_083037_PST.mp4
+2026-11-10T06:15:04.454 PST -08:00 [INFO][10771-main] [RecordingCatalog] Read recording metadata file=1sar7djmn4pr_09Nov2026_083100_PST.mp4 sizeBytes=3371096
+2026-11-10T06:15:04.454 PST -08:00 [INFO][10771-main] [RecordingCatalog] Read recording metadata file=1sar7djmn4pr_09Nov2026_083124_PST.mp4 sizeBytes=932143
+2026-11-10T06:15:05.164 PST -08:00 [INFO][10771-main] [ClueTerrain] hitch sources mainHitchCount=10 activeClueTerrainTasks=0 mapOverlayRebuilds=1 lastMapOverlayMs=0.0 lastMapOverlayPoints=0 thumbPresence=12 peerRecv=0 mapAnnot=1 recent=thumb.await@3806ms,thumb.await@3806ms,thumb.apply@3805ms/34198B,thumb.apply@3805ms/34785B,thumb.await@1801ms,thumb.apply@1801ms/23842B,thumb.await@1801ms,thumb.apply@1800ms/29735B
+2026-11-10T06:15:05.348 PST -08:00 [DEBUG][10771-main] [TrackerPeer] Managed video thumbnail encode elapsedMs=28 bytes=24467 src=1280x720
+2026-11-10T06:15:05.357 PST -08:00 [DEBUG][10771-main] [TrackerPeer] Managed video thumbnail encode elapsedMs=24 bytes=29188 src=1280x720
+2026-11-10T06:15:06.505 PST -08:00 [INFO][10771-main] [Video] Native recording decoder opening 1sar7djmn4pr_09Nov2026_070612_PST.mp4 backend=FFmpeg v2.5.6rc3-45-g4eeb914e / VideoToolbox recording playback
+2026-11-10T06:15:06.505 PST -08:00 [INFO][10771-main] [Video] Local managed-video playback requested file=1sar7djmn4pr_09Nov2026_070612_PST.mp4
+2026-11-10T06:15:06.516 PST -08:00 [INFO][10771-main] [Video] Native recording decoder opening 1sar7djmn4pr_09Nov2026_083128_PST.mp4 backend=FFmpeg v2.5.6rc3-45-g4eeb914e / VideoToolbox recording playback
+2026-11-10T06:15:06.516 PST -08:00 [INFO][10771-main] [Video] Local managed-video playback requested file=1sar7djmn4pr_09Nov2026_083128_PST.mp4
+2026-11-10T06:15:06.531 PST -08:00 [INFO][10771-main] [RecordingCatalog] Read recording metadata file=1sar7djmn4pr_09Nov2026_083051_PST.mp4 sizeBytes=503669
+2026-11-10T06:15:06.531 PST -08:00 [INFO][10771-main] [RecordingCatalog] Read recording metadata file=1sar7djmn4pr_09Nov2026_083043_PST.mp4 sizeBytes=33048
+2026-11-10T06:15:07.489 PST -08:00 [DEBUG][10771-main] [TrackerPeer] Managed video thumbnail encode elapsedMs=30 bytes=31694 src=1280x720
+2026-11-10T06:15:07.489 PST -08:00 [DEBUG][10771-main] [TrackerPeer] Managed video thumbnail encode elapsedMs=30 bytes=34187 src=1280x720
+2026-11-10T06:15:08.548 PST -08:00 [INFO][10771-main] [Video] Native recording decoder opening 1sar7djmn4pr_09Nov2026_070552_PST.mp4 backend=FFmpeg v2.5.6rc3-45-g4eeb914e / VideoToolbox recording playback
+2026-11-10T06:15:08.548 PST -08:00 [INFO][10771-main] [Video] Local managed-video playback requested file=1sar7djmn4pr_09Nov2026_070552_PST.mp4
+2026-11-10T06:15:08.560 PST -08:00 [INFO][10771-main] [Video] Native recording decoder opening 1sar7djmn4pr_09Nov2026_070617_PST.mp4 backend=FFmpeg v2.5.6rc3-45-g4eeb914e / VideoToolbox recording playback
+2026-11-10T06:15:08.560 PST -08:00 [INFO][10771-main] [Video] Local managed-video playback requested file=1sar7djmn4pr_09Nov2026_070617_PST.mp4
+2026-11-10T06:15:08.575 PST -08:00 [INFO][10771-main] [RecordingCatalog] Read recording metadata file=1sar7djmn4pr_09Nov2026_083037_PST.mp4 sizeBytes=95197
+2026-11-10T06:15:08.575 PST -08:00 [INFO][10771-main] [RecordingCatalog] Read recording metadata file=1sar7djmn4pr_09Nov2026_083006_PST.mp4 sizeBytes=23919824
+2026-11-10T06:15:09.294 PST -08:00 [DEBUG][10771-81419] [MediaMTX] 2026/11/10 14:15:09 INF [RTMP] [conn 127.0.0.1:52886] opened
+2026-11-10T06:15:09.295 PST -08:00 [DEBUG][10771-81419] [MediaMTX] 2026/11/10 14:15:09 DEB [RTMP] [conn 127.0.0.1:52886] RTMP handshake: initializing server connection
+2026-11-10T06:15:09.295 PST -08:00 [DEBUG][10771-81419] [MediaMTX] 2026/11/10 14:15:09 INF [RTMP] [conn 127.0.0.1:52886] closed: EOF
+2026-11-10T06:15:09.488 PST -08:00 [DEBUG][10771-main] [TrackerPeer] Managed video thumbnail encode elapsedMs=27 bytes=36931 src=1280x720
+2026-11-10T06:15:09.508 PST -08:00 [DEBUG][10771-main] [TrackerPeer] Managed video thumbnail encode elapsedMs=19 bytes=34134 src=1280x720
+2026-11-10T06:15:10.590 PST -08:00 [INFO][10771-main] [Video] Native recording decoder opening 1sar7djmn4pr_09Nov2026_070637_PST.mp4 backend=FFmpeg v2.5.6rc3-45-g4eeb914e / VideoToolbox recording playback
+2026-11-10T06:15:10.590 PST -08:00 [INFO][10771-main] [Video] Local managed-video playback requested file=1sar7djmn4pr_09Nov2026_070637_PST.mp4
+2026-11-10T06:15:10.603 PST -08:00 [INFO][10771-main] [Video] Native recording decoder opening 1sar7djmn4pr_09Nov2026_083051_PST.mp4 backend=FFmpeg v2.5.6rc3-45-g4eeb914e / VideoToolbox recording playback
+2026-11-10T06:15:10.603 PST -08:00 [INFO][10771-main] [Video] Local managed-video playback requested file=1sar7djmn4pr_09Nov2026_083051_PST.mp4
+2026-11-10T06:15:10.621 PST -08:00 [INFO][10771-main] [RecordingCatalog] Read recording metadata file=1sar7djmn4pr_09Nov2026_070637_PST.mp4 sizeBytes=324625
+2026-11-10T06:15:10.621 PST -08:00 [INFO][10771-main] [RecordingCatalog] Read recording metadata file=1sar7djmn4pr_09Nov2026_070640_PST.mp4 sizeBytes=51948474
+2026-11-10T06:15:11.565 PST -08:00 [DEBUG][10771-main] [TrackerPeer] Managed video thumbnail encode elapsedMs=27 bytes=32830 src=1280x720
+2026-11-10T06:15:11.566 PST -08:00 [DEBUG][10771-main] [TrackerPeer] Managed video thumbnail encode elapsedMs=28 bytes=34478 src=1280x720
+2026-11-10T06:15:12.643 PST -08:00 [INFO][10771-main] [Video] Native recording decoder opening 1sar7djmn4pr_09Nov2026_070555_PST.mp4 backend=FFmpeg v2.5.6rc3-45-g4eeb914e / VideoToolbox recording playback
+2026-11-10T06:15:12.643 PST -08:00 [INFO][10771-main] [Video] Local managed-video playback requested file=1sar7djmn4pr_09Nov2026_070555_PST.mp4
+2026-11-10T06:15:12.654 PST -08:00 [INFO][10771-main] [Video] Native recording decoder opening 1sar7djmn4pr_09Nov2026_070629_PST.mp4 backend=FFmpeg v2.5.6rc3-45-g4eeb914e / VideoToolbox recording playback
+2026-11-10T06:15:12.654 PST -08:00 [INFO][10771-main] [Video] Local managed-video playback requested file=1sar7djmn4pr_09Nov2026_070629_PST.mp4
+2026-11-10T06:15:12.669 PST -08:00 [INFO][10771-main] [RecordingCatalog] Read recording metadata file=1sar7djmn4pr_09Nov2026_070617_PST.mp4 sizeBytes=337906
+2026-11-10T06:15:12.669 PST -08:00 [INFO][10771-main] [RecordingCatalog] Read recording metadata file=1sar7djmn4pr_09Nov2026_070629_PST.mp4 sizeBytes=271756
+2026-11-10T06:15:13.602 PST -08:00 [DEBUG][10771-main] [TrackerPeer] Managed video thumbnail encode elapsedMs=27 bytes=33670 src=1280x720
+2026-11-10T06:15:13.603 PST -08:00 [DEBUG][10771-main] [TrackerPeer] Managed video thumbnail encode elapsedMs=27 bytes=34165 src=1280x720
+2026-11-10T06:15:14.678 PST -08:00 [INFO][10771-main] [Video] Native recording decoder opening 1sar7djmn4pr_09Nov2026_070640_PST.mp4 backend=FFmpeg v2.5.6rc3-45-g4eeb914e / VideoToolbox recording playback
+2026-11-10T06:15:14.678 PST -08:00 [INFO][10771-main] [Video] Local managed-video playback requested file=1sar7djmn4pr_09Nov2026_070640_PST.mp4
+2026-11-10T06:15:14.689 PST -08:00 [INFO][10771-main] [Video] Native recording decoder opening 1sar7djmn4pr_09Nov2026_083124_PST.mp4 backend=FFmpeg v2.5.6rc3-45-g4eeb914e / VideoToolbox recording playback
+2026-11-10T06:15:14.689 PST -08:00 [INFO][10771-main] [Video] Local managed-video playback requested file=1sar7djmn4pr_09Nov2026_083124_PST.mp4
+2026-11-10T06:15:14.704 PST -08:00 [INFO][10771-main] [RecordingCatalog] Read recording metadata file=1sar7djmn4pr_09Nov2026_070605_PST.mp4 sizeBytes=168312
+2026-11-10T06:15:14.704 PST -08:00 [INFO][10771-main] [RecordingCatalog] Read recording metadata file=1sar7djmn4pr_09Nov2026_070612_PST.mp4 sizeBytes=442212
+2026-11-10T06:15:15.605 PST -08:00 [DEBUG][10771-main] [TrackerPeer] Managed video thumbnail encode elapsedMs=19 bytes=35345 src=1280x720
+2026-11-10T06:15:15.618 PST -08:00 [DEBUG][10771-main] [TrackerPeer] Managed video thumbnail encode elapsedMs=15 bytes=37107 src=1280x720
+2026-11-10T06:15:16.749 PST -08:00 [INFO][10771-main] [Video] Native recording decoder opening 1sar7djmn4pr_09Nov2026_165842_PST.mp4 backend=FFmpeg v2.5.6rc3-45-g4eeb914e / VideoToolbox recording playback
+2026-11-10T06:15:16.749 PST -08:00 [INFO][10771-main] [Video] Local managed-video playback requested file=1sar7djmn4pr_09Nov2026_165842_PST.mp4
+2026-11-10T06:15:16.762 PST -08:00 [INFO][10771-main] [Video] Native recording decoder opening 1sar7djmn4pr_09Nov2026_083043_PST.mp4 backend=FFmpeg v2.5.6rc3-45-g4eeb914e / VideoToolbox recording playback
+2026-11-10T06:15:16.762 PST -08:00 [INFO][10771-main] [Video] Local managed-video playback requested file=1sar7djmn4pr_09Nov2026_083043_PST.mp4
+2026-11-10T06:15:16.780 PST -08:00 [INFO][10771-main] [ClueTerrain] hitch sources mainHitchCount=11 activeClueTerrainTasks=0 mapOverlayRebuilds=1 lastMapOverlayMs=0.0 lastMapOverlayPoints=0 thumbPresence=36 peerRecv=0 mapAnnot=1 recent=thumb.await@3178ms,thumb.apply@3178ms/33670B,thumb.await@3177ms,thumb.apply@3177ms/34165B,thumb.await@1175ms,thumb.apply@1175ms/35345B,thumb.await@1162ms,thumb.apply@1162ms/37107B
+2026-11-10T06:15:16.781 PST -08:00 [INFO][10771-main] [RecordingCatalog] Read recording metadata file=1sar7djmn4pr_09Nov2026_070552_PST.mp4 sizeBytes=563884
+2026-11-10T06:15:16.781 PST -08:00 [INFO][10771-main] [RecordingCatalog] Read recording metadata file=1sar7djmn4pr_09Nov2026_070555_PST.mp4 sizeBytes=5607071
+2026-11-10T06:15:17.672 PST -08:00 [DEBUG][10771-main] [TrackerPeer] Managed video thumbnail encode elapsedMs=20 bytes=24196 src=1280x720
+2026-11-10T06:15:17.683 PST -08:00 [DEBUG][10771-main] [TrackerPeer] Managed video thumbnail encode elapsedMs=16 bytes=24705 src=1280x720
+2026-11-10T06:15:21.654 PST -08:00 [INFO][10771-main] [ClueTerrain] hitch sources mainHitchCount=12 activeClueTerrainTasks=0 mapOverlayRebuilds=1 lastMapOverlayMs=0.0 lastMapOverlayPoints=0 thumbPresence=40 peerRecv=0 mapAnnot=1 recent=thumb.await@3981ms,thumb.apply@3981ms/24196B,thumb.await@3970ms,thumb.apply@3970ms/24705B
+2026-11-10T06:15:23.935 PST -08:00 [INFO][10771-main] [ClueTerrain] diag activeClueTerrainTasks=0 mainHitchCount=12 mapOverlayRebuilds=1
+2026-11-10T06:15:24.705 PST -08:00 [DEBUG][10771-8963] [MediaMTX] 2026/11/10 14:15:24 INF [RTMP] [conn 127.0.0.1:52887] opened
+2026-11-10T06:15:24.705 PST -08:00 [DEBUG][10771-8963] [MediaMTX] 2026/11/10 14:15:24 DEB [RTMP] [conn 127.0.0.1:52887] RTMP handshake: initializing server connection
+2026-11-10T06:15:24.705 PST -08:00 [DEBUG][10771-8963] [MediaMTX] 2026/11/10 14:15:24 INF [RTMP] [conn 127.0.0.1:52887] closed: EOF
+2026-11-10T06:15:35.156 PST -08:00 [INFO][10771-main] [Location] Published fresh fix accuracyMeters=11 ageSeconds=0 provisional=false
+2026-11-10T06:15:35.173 PST -08:00 [INFO][10771-main] [Location] ±11 m
+2026-11-10T06:15:40.264 PST -08:00 [DEBUG][10771-81419] [MediaMTX] 2026/11/10 14:15:40 INF [RTMP] [conn 127.0.0.1:52888] opened
+2026-11-10T06:15:40.265 PST -08:00 [DEBUG][10771-81419] [MediaMTX] 2026/11/10 14:15:40 DEB [RTMP] [conn 127.0.0.1:52888] RTMP handshake: initializing server connection
+2026-11-10T06:15:40.265 PST -08:00 [DEBUG][10771-81419] [MediaMTX] 2026/11/10 14:15:40 INF [RTMP] [conn 127.0.0.1:52888] closed: EOF
+2026-11-10T06:15:53.935 PST -08:00 [INFO][10771-main] [ClueTerrain] diag activeClueTerrainTasks=0 mainHitchCount=15 mapOverlayRebuilds=1
+2026-11-10T06:15:55.448 PST -08:00 [DEBUG][10771-38147] [MediaMTX] 2026/11/10 14:15:55 INF [RTMP] [conn 127.0.0.1:52889] opened
+2026-11-10T06:15:55.448 PST -08:00 [DEBUG][10771-38147] [MediaMTX] 2026/11/10 14:15:55 DEB [RTMP] [conn 127.0.0.1:52889] RTMP handshake: initializing server connection
+2026-11-10T06:15:55.448 PST -08:00 [DEBUG][10771-38147] [MediaMTX] 2026/11/10 14:15:55 INF [RTMP] [conn 127.0.0.1:52889] closed: EOF
+2026-11-10T06:16:10.962 PST -08:00 [DEBUG][10771-69635] [MediaMTX] 2026/11/10 14:16:10 INF [RTMP] [conn 127.0.0.1:52890] opened
+2026-11-10T06:16:10.963 PST -08:00 [DEBUG][10771-69635] [MediaMTX] 2026/11/10 14:16:10 DEB [RTMP] [conn 127.0.0.1:52890] RTMP handshake: initializing server connection
+2026-11-10T06:16:10.963 PST -08:00 [DEBUG][10771-69635] [MediaMTX] 2026/11/10 14:16:10 INF [RTMP] [conn 127.0.0.1:52890] RTMP handshake failed during initialization: elapsedMs=0 socketReads=1 socketBytes=0 socketWaitMs=0 maxSocketReadMs=0 error=EOF
+2026-11-10T06:16:10.963 PST -08:00 [DEBUG][10771-69635] [MediaMTX] 2026/11/10 14:16:10 INF [RTMP] [conn 127.0.0.1:52890] closed: EOF
+2026-11-10T06:16:23.935 PST -08:00 [INFO][10771-main] [ClueTerrain] diag activeClueTerrainTasks=0 mainHitchCount=22 mapOverlayRebuilds=1
+2026-11-10T06:16:26.614 PST -08:00 [DEBUG][10771-72371] [MediaMTX] 2026/11/10 14:16:26 INF [RTMP] [conn 127.0.0.1:52891] opened
+2026-11-10T06:16:26.614 PST -08:00 [DEBUG][10771-72371] [MediaMTX] 2026/11/10 14:16:26 DEB [RTMP] [conn 127.0.0.1:52891] RTMP handshake: initializing server connection
+2026-11-10T06:16:26.615 PST -08:00 [DEBUG][10771-72371] [MediaMTX] 2026/11/10 14:16:26 INF [RTMP] [conn 127.0.0.1:52891] closed: EOF
+2026-11-10T06:16:42.177 PST -08:00 [DEBUG][10771-69635] [MediaMTX] 2026/11/10 14:16:42 INF [RTMP] [conn 127.0.0.1:52892] opened
+2026-11-10T06:16:42.177 PST -08:00 [DEBUG][10771-69635] [MediaMTX] 2026/11/10 14:16:42 DEB [RTMP] [conn 127.0.0.1:52892] RTMP handshake: initializing server connection
+2026-11-10T06:16:42.178 PST -08:00 [DEBUG][10771-69635] [MediaMTX] 2026/11/10 14:16:42 INF [RTMP] [conn 127.0.0.1:52892] closed: EOF
+2026-11-10T06:16:53.935 PST -08:00 [INFO][10771-main] [ClueTerrain] diag activeClueTerrainTasks=0 mainHitchCount=29 mapOverlayRebuilds=1
+2026-11-10T06:16:56.603 PST -08:00 [INFO][10771-main] [BluetoothRID] High-priority scan restart=1 callbacks=0
+2026-11-10T06:16:57.681 PST -08:00 [DEBUG][10771-69635] [MediaMTX] 2026/11/10 14:16:57 INF [RTMP] [conn 127.0.0.1:52893] opened
+2026-11-10T06:16:57.681 PST -08:00 [DEBUG][10771-69635] [MediaMTX] 2026/11/10 14:16:57 DEB [RTMP] [conn 127.0.0.1:52893] RTMP handshake: initializing server connection
+2026-11-10T06:16:57.681 PST -08:00 [DEBUG][10771-69635] [MediaMTX] 2026/11/10 14:16:57 INF [RTMP] [conn 127.0.0.1:52893] closed: EOF
+2026-11-10T06:17:13.163 PST -08:00 [DEBUG][10771-38147] [MediaMTX] 2026/11/10 14:17:13 INF [RTMP] [conn 127.0.0.1:52894] opened
+2026-11-10T06:17:13.164 PST -08:00 [DEBUG][10771-38147] [MediaMTX] 2026/11/10 14:17:13 DEB [RTMP] [conn 127.0.0.1:52894] RTMP handshake: initializing server connection
+2026-11-10T06:17:13.164 PST -08:00 [DEBUG][10771-38147] [MediaMTX] 2026/11/10 14:17:13 INF [RTMP] [conn 127.0.0.1:52894] RTMP handshake failed during initialization: elapsedMs=0 socketReads=1 socketBytes=0 socketWaitMs=0 maxSocketReadMs=0 error=EOF
+2026-11-10T06:17:13.164 PST -08:00 [DEBUG][10771-38147] [MediaMTX] 2026/11/10 14:17:13 INF [RTMP] [conn 127.0.0.1:52894] closed: EOF
+2026-11-10T06:17:23.934 PST -08:00 [INFO][10771-main] [ClueTerrain] diag activeClueTerrainTasks=0 mainHitchCount=42 mapOverlayRebuilds=1
+2026-11-10T06:17:28.768 PST -08:00 [DEBUG][10771-69635] [MediaMTX] 2026/11/10 14:17:28 INF [RTMP] [conn 127.0.0.1:52895] opened
+2026-11-10T06:17:28.769 PST -08:00 [DEBUG][10771-69635] [MediaMTX] 2026/11/10 14:17:28 DEB [RTMP] [conn 127.0.0.1:52895] RTMP handshake: initializing server connection
+2026-11-10T06:17:28.769 PST -08:00 [DEBUG][10771-69635] [MediaMTX] 2026/11/10 14:17:28 INF [RTMP] [conn 127.0.0.1:52895] closed: EOF
+2026-11-10T06:17:35.184 PST -08:00 [INFO][10771-main] [Location] Published fresh fix accuracyMeters=6 ageSeconds=0 provisional=false
+2026-11-10T06:17:35.209 PST -08:00 [INFO][10771-main] [Location] ±6 m
+2026-11-10T06:17:44.482 PST -08:00 [DEBUG][10771-14339] [MediaMTX] 2026/11/10 14:17:44 INF [RTMP] [conn 127.0.0.1:52896] opened
+2026-11-10T06:17:44.482 PST -08:00 [DEBUG][10771-14339] [MediaMTX] 2026/11/10 14:17:44 DEB [RTMP] [conn 127.0.0.1:52896] RTMP handshake: initializing server connection
+2026-11-10T06:17:44.482 PST -08:00 [DEBUG][10771-14339] [MediaMTX] 2026/11/10 14:17:44 INF [RTMP] [conn 127.0.0.1:52896] closed: EOF
+2026-11-10T06:17:53.934 PST -08:00 [INFO][10771-main] [ClueTerrain] diag activeClueTerrainTasks=0 mainHitchCount=47 mapOverlayRebuilds=1
+2026-11-10T06:17:59.946 PST -08:00 [DEBUG][10771-69635] [MediaMTX] 2026/11/10 14:17:59 INF [RTMP] [conn 127.0.0.1:52897] opened
+2026-11-10T06:17:59.947 PST -08:00 [DEBUG][10771-69635] [MediaMTX] 2026/11/10 14:17:59 DEB [RTMP] [conn 127.0.0.1:52897] RTMP handshake: initializing server connection
+2026-11-10T06:17:59.947 PST -08:00 [DEBUG][10771-69635] [MediaMTX] 2026/11/10 14:17:59 INF [RTMP] [conn 127.0.0.1:52897] closed: EOF
+2026-11-10T06:18:15.568 PST -08:00 [DEBUG][10771-72371] [MediaMTX] 2026/11/10 14:18:15 INF [RTMP] [conn 127.0.0.1:52898] opened
+2026-11-10T06:18:15.569 PST -08:00 [DEBUG][10771-72371] [MediaMTX] 2026/11/10 14:18:15 DEB [RTMP] [conn 127.0.0.1:52898] RTMP handshake: initializing server connection
+2026-11-10T06:18:15.569 PST -08:00 [DEBUG][10771-72371] [MediaMTX] 2026/11/10 14:18:15 INF [RTMP] [conn 127.0.0.1:52898] RTMP handshake failed during initialization: elapsedMs=0 socketReads=1 socketBytes=0 socketWaitMs=0 maxSocketReadMs=0 error=EOF
+2026-11-10T06:18:15.569 PST -08:00 [DEBUG][10771-72371] [MediaMTX] 2026/11/10 14:18:15 INF [RTMP] [conn 127.0.0.1:52898] closed: EOF
+2026-11-10T06:18:23.933 PST -08:00 [INFO][10771-main] [ClueTerrain] diag activeClueTerrainTasks=0 mainHitchCount=60 mapOverlayRebuilds=1
+2026-11-10T06:18:31.048 PST -08:00 [DEBUG][10771-72371] [MediaMTX] 2026/11/10 14:18:31 INF [RTMP] [conn 127.0.0.1:52899] opened
+2026-11-10T06:18:31.048 PST -08:00 [DEBUG][10771-72371] [MediaMTX] 2026/11/10 14:18:31 DEB [RTMP] [conn 127.0.0.1:52899] RTMP handshake: initializing server connection
+2026-11-10T06:18:31.049 PST -08:00 [DEBUG][10771-72371] [MediaMTX] 2026/11/10 14:18:31 INF [RTMP] [conn 127.0.0.1:52899] closed: EOF
+2026-11-10T06:18:46.761 PST -08:00 [DEBUG][10771-69635] [MediaMTX] 2026/11/10 14:18:46 INF [RTMP] [conn 127.0.0.1:52900] opened
+2026-11-10T06:18:46.762 PST -08:00 [DEBUG][10771-69635] [MediaMTX] 2026/11/10 14:18:46 DEB [RTMP] [conn 127.0.0.1:52900] RTMP handshake: initializing server connection
+2026-11-10T06:18:46.762 PST -08:00 [DEBUG][10771-69635] [MediaMTX] 2026/11/10 14:18:46 INF [RTMP] [conn 127.0.0.1:52900] closed: EOF
+2026-11-10T06:18:53.933 PST -08:00 [INFO][10771-main] [ClueTerrain] diag activeClueTerrainTasks=0 mainHitchCount=70 mapOverlayRebuilds=1
+2026-11-10T06:18:56.653 PST -08:00 [INFO][10771-main] [BluetoothRID] High-priority scan restart=2 callbacks=0
+2026-11-10T06:19:02.352 PST -08:00 [DEBUG][10771-38147] [MediaMTX] 2026/11/10 14:19:02 INF [RTMP] [conn 127.0.0.1:52901] opened
+2026-11-10T06:19:02.352 PST -08:00 [DEBUG][10771-38147] [MediaMTX] 2026/11/10 14:19:02 DEB [RTMP] [conn 127.0.0.1:52901] RTMP handshake: initializing server connection
+2026-11-10T06:19:02.352 PST -08:00 [DEBUG][10771-38147] [MediaMTX] 2026/11/10 14:19:02 INF [RTMP] [conn 127.0.0.1:52901] closed: EOF
+2026-11-10T06:19:17.906 PST -08:00 [DEBUG][10771-69635] [MediaMTX] 2026/11/10 14:19:17 INF [RTMP] [conn 127.0.0.1:52902] opened
+2026-11-10T06:19:17.907 PST -08:00 [DEBUG][10771-69635] [MediaMTX] 2026/11/10 14:19:17 DEB [RTMP] [conn 127.0.0.1:52902] RTMP handshake: initializing server connection
+2026-11-10T06:19:17.907 PST -08:00 [DEBUG][10771-69635] [MediaMTX] 2026/11/10 14:19:17 INF [RTMP] [conn 127.0.0.1:52902] RTMP handshake failed during initialization: elapsedMs=0 socketReads=1 socketBytes=0 socketWaitMs=0 maxSocketReadMs=0 error=EOF
+2026-11-10T06:19:17.907 PST -08:00 [DEBUG][10771-69635] [MediaMTX] 2026/11/10 14:19:17 INF [RTMP] [conn 127.0.0.1:52902] closed: EOF
+2026-11-10T06:19:23.933 PST -08:00 [INFO][10771-main] [ClueTerrain] diag activeClueTerrainTasks=0 mainHitchCount=76 mapOverlayRebuilds=1
+2026-11-10T06:19:33.474 PST -08:00 [DEBUG][10771-69635] [MediaMTX] 2026/11/10 14:19:33 INF [RTMP] [conn 127.0.0.1:52903] opened
+2026-11-10T06:19:33.474 PST -08:00 [DEBUG][10771-69635] [MediaMTX] 2026/11/10 14:19:33 DEB [RTMP] [conn 127.0.0.1:52903] RTMP handshake: initializing server connection
+2026-11-10T06:19:33.475 PST -08:00 [DEBUG][10771-69635] [MediaMTX] 2026/11/10 14:19:33 INF [RTMP] [conn 127.0.0.1:52903] closed: EOF
+2026-11-10T06:19:49.105 PST -08:00 [DEBUG][10771-69635] [MediaMTX] 2026/11/10 14:19:49 INF [RTMP] [conn 127.0.0.1:52904] opened
+2026-11-10T06:19:49.105 PST -08:00 [DEBUG][10771-69635] [MediaMTX] 2026/11/10 14:19:49 DEB [RTMP] [conn 127.0.0.1:52904] RTMP handshake: initializing server connection
+2026-11-10T06:19:49.105 PST -08:00 [DEBUG][10771-69635] [MediaMTX] 2026/11/10 14:19:49 INF [RTMP] [conn 127.0.0.1:52904] closed: EOF
+2026-11-10T06:19:53.932 PST -08:00 [INFO][10771-main] [ClueTerrain] diag activeClueTerrainTasks=0 mainHitchCount=86 mapOverlayRebuilds=1
+2026-11-10T06:20:04.723 PST -08:00 [DEBUG][10771-81419] [MediaMTX] 2026/11/10 14:20:04 INF [RTMP] [conn 127.0.0.1:52905] opened
+2026-11-10T06:20:04.724 PST -08:00 [DEBUG][10771-81419] [MediaMTX] 2026/11/10 14:20:04 DEB [RTMP] [conn 127.0.0.1:52905] RTMP handshake: initializing server connection
+2026-11-10T06:20:04.724 PST -08:00 [DEBUG][10771-37203] [MediaMTX] 2026/11/10 14:20:04 INF [RTMP] [conn 127.0.0.1:52905] closed: EOF
+2026-11-10T06:20:20.448 PST -08:00 [DEBUG][10771-37203] [MediaMTX] 2026/11/10 14:20:20 INF [RTMP] [conn 127.0.0.1:52906] opened
+2026-11-10T06:20:20.449 PST -08:00 [DEBUG][10771-37203] [MediaMTX] 2026/11/10 14:20:20 DEB [RTMP] [conn 127.0.0.1:52906] RTMP handshake: initializing server connection
+2026-11-10T06:20:20.449 PST -08:00 [DEBUG][10771-37203] [MediaMTX] 2026/11/10 14:20:20 INF [RTMP] [conn 127.0.0.1:52906] RTMP handshake failed during initialization: elapsedMs=0 socketReads=1 socketBytes=0 socketWaitMs=0 maxSocketReadMs=0 error=EOF
+2026-11-10T06:20:20.449 PST -08:00 [DEBUG][10771-37203] [MediaMTX] 2026/11/10 14:20:20 INF [RTMP] [conn 127.0.0.1:52906] closed: EOF
+2026-11-10T06:20:23.932 PST -08:00 [INFO][10771-main] [ClueTerrain] diag activeClueTerrainTasks=0 mainHitchCount=100 mapOverlayRebuilds=1
+2026-11-10T06:20:36.204 PST -08:00 [DEBUG][10771-37203] [MediaMTX] 2026/11/10 14:20:36 INF [RTMP] [conn 127.0.0.1:52907] opened
+2026-11-10T06:20:36.204 PST -08:00 [DEBUG][10771-37203] [MediaMTX] 2026/11/10 14:20:36 DEB [RTMP] [conn 127.0.0.1:52907] RTMP handshake: initializing server connection
+2026-11-10T06:20:36.205 PST -08:00 [DEBUG][10771-37203] [MediaMTX] 2026/11/10 14:20:36 INF [RTMP] [conn 127.0.0.1:52907] closed: EOF
+2026-11-10T06:20:51.689 PST -08:00 [DEBUG][10771-93019] [MediaMTX] 2026/11/10 14:20:51 INF [RTMP] [conn 127.0.0.1:52908] opened
+2026-11-10T06:20:51.690 PST -08:00 [DEBUG][10771-93019] [MediaMTX] 2026/11/10 14:20:51 DEB [RTMP] [conn 127.0.0.1:52908] RTMP handshake: initializing server connection
+2026-11-10T06:20:51.690 PST -08:00 [DEBUG][10771-93019] [MediaMTX] 2026/11/10 14:20:51 INF [RTMP] [conn 127.0.0.1:52908] closed: EOF
+2026-11-10T06:20:53.929 PST -08:00 [INFO][10771-main] [ClueTerrain] diag activeClueTerrainTasks=0 mainHitchCount=109 mapOverlayRebuilds=1
+2026-11-10T06:20:56.638 PST -08:00 [INFO][10771-main] [BluetoothRID] High-priority scan restart=3 callbacks=0
+2026-11-10T06:21:07.233 PST -08:00 [DEBUG][10771-69635] [MediaMTX] 2026/11/10 14:21:07 INF [RTMP] [conn 127.0.0.1:52909] opened
+2026-11-10T06:21:07.233 PST -08:00 [DEBUG][10771-69635] [MediaMTX] 2026/11/10 14:21:07 DEB [RTMP] [conn 127.0.0.1:52909] RTMP handshake: initializing server connection
+2026-11-10T06:21:07.234 PST -08:00 [DEBUG][10771-69635] [MediaMTX] 2026/11/10 14:21:07 INF [RTMP] [conn 127.0.0.1:52909] closed: EOF
+2026-11-10T06:21:22.815 PST -08:00 [DEBUG][10771-37203] [MediaMTX] 2026/11/10 14:21:22 INF [RTMP] [conn 127.0.0.1:52910] opened
+2026-11-10T06:21:22.815 PST -08:00 [DEBUG][10771-37203] [MediaMTX] 2026/11/10 14:21:22 DEB [RTMP] [conn 127.0.0.1:52910] RTMP handshake: initializing server connection
+2026-11-10T06:21:22.816 PST -08:00 [DEBUG][10771-37203] [MediaMTX] 2026/11/10 14:21:22 INF [RTMP] [conn 127.0.0.1:52910] RTMP handshake failed during initialization: elapsedMs=0 socketReads=1 socketBytes=0 socketWaitMs=0 maxSocketReadMs=0 error=EOF
+2026-11-10T06:21:22.816 PST -08:00 [DEBUG][10771-37203] [MediaMTX] 2026/11/10 14:21:22 INF [RTMP] [conn 127.0.0.1:52910] closed: EOF
+2026-11-10T06:21:23.928 PST -08:00 [INFO][10771-main] [ClueTerrain] diag activeClueTerrainTasks=0 mainHitchCount=118 mapOverlayRebuilds=1
+2026-11-10T06:21:38.463 PST -08:00 [DEBUG][10771-69635] [MediaMTX] 2026/11/10 14:21:38 INF [RTMP] [conn 127.0.0.1:52911] opened
+2026-11-10T06:21:38.463 PST -08:00 [DEBUG][10771-69635] [MediaMTX] 2026/11/10 14:21:38 DEB [RTMP] [conn 127.0.0.1:52911] RTMP handshake: initializing server connection
+2026-11-10T06:21:38.464 PST -08:00 [DEBUG][10771-69635] [MediaMTX] 2026/11/10 14:21:38 INF [RTMP] [conn 127.0.0.1:52911] closed: EOF
+2026-11-10T06:21:53.928 PST -08:00 [INFO][10771-main] [ClueTerrain] diag activeClueTerrainTasks=0 mainHitchCount=126 mapOverlayRebuilds=1
+2026-11-10T06:21:54.058 PST -08:00 [DEBUG][10771-37203] [MediaMTX] 2026/11/10 14:21:54 INF [RTMP] [conn 127.0.0.1:52912] opened
+2026-11-10T06:21:54.059 PST -08:00 [DEBUG][10771-37203] [MediaMTX] 2026/11/10 14:21:54 DEB [RTMP] [conn 127.0.0.1:52912] RTMP handshake: initializing server connection
+2026-11-10T06:21:54.060 PST -08:00 [DEBUG][10771-37203] [MediaMTX] 2026/11/10 14:21:54 INF [RTMP] [conn 127.0.0.1:52912] closed: EOF
+2026-11-10T06:22:09.750 PST -08:00 [DEBUG][10771-37203] [MediaMTX] 2026/11/10 14:22:09 DEB [RTMP] [conn 127.0.0.1:52913] RTMP handshake: initializing server connection
+2026-11-10T06:22:09.750 PST -08:00 [DEBUG][10771-37203] [MediaMTX] 2026/11/10 14:22:09 INF [RTMP] [conn 127.0.0.1:52913] opened
+2026-11-10T06:22:09.750 PST -08:00 [DEBUG][10771-37203] [MediaMTX] 2026/11/10 14:22:09 INF [RTMP] [conn 127.0.0.1:52913] closed: EOF
+2026-11-10T06:22:23.927 PST -08:00 [INFO][10771-main] [ClueTerrain] diag activeClueTerrainTasks=0 mainHitchCount=135 mapOverlayRebuilds=1
+2026-11-10T06:22:25.289 PST -08:00 [DEBUG][10771-78147] [MediaMTX] 2026/11/10 14:22:25 INF [RTMP] [conn 127.0.0.1:52914] opened
+2026-11-10T06:22:25.290 PST -08:00 [DEBUG][10771-78147] [MediaMTX] 2026/11/10 14:22:25 DEB [RTMP] [conn 127.0.0.1:52914] RTMP handshake: initializing server connection
+2026-11-10T06:22:25.290 PST -08:00 [DEBUG][10771-78147] [MediaMTX] 2026/11/10 14:22:25 INF [RTMP] [conn 127.0.0.1:52914] RTMP handshake failed during initialization: elapsedMs=0 socketReads=1 socketBytes=0 socketWaitMs=0 maxSocketReadMs=0 error=EOF
+2026-11-10T06:22:25.290 PST -08:00 [DEBUG][10771-78147] [MediaMTX] 2026/11/10 14:22:25 INF [RTMP] [conn 127.0.0.1:52914] closed: EOF
+2026-11-10T06:22:40.944 PST -08:00 [DEBUG][10771-37203] [MediaMTX] 2026/11/10 14:22:40 INF [RTMP] [conn 127.0.0.1:52919] opened
+2026-11-10T06:22:40.944 PST -08:00 [DEBUG][10771-37203] [MediaMTX] 2026/11/10 14:22:40 DEB [RTMP] [conn 127.0.0.1:52919] RTMP handshake: initializing server connection
+2026-11-10T06:22:40.945 PST -08:00 [DEBUG][10771-37203] [MediaMTX] 2026/11/10 14:22:40 INF [RTMP] [conn 127.0.0.1:52919] closed: EOF
+2026-11-10T06:22:53.927 PST -08:00 [INFO][10771-main] [ClueTerrain] diag activeClueTerrainTasks=0 mainHitchCount=149 mapOverlayRebuilds=1
+2026-11-10T06:22:56.688 PST -08:00 [INFO][10771-main] [BluetoothRID] High-priority scan restart=4 callbacks=0
+2026-11-10T06:22:56.689 PST -08:00 [DEBUG][10771-69635] [MediaMTX] 2026/11/10 14:22:56 INF [RTMP] [conn 127.0.0.1:52920] opened
+2026-11-10T06:22:56.689 PST -08:00 [DEBUG][10771-69635] [MediaMTX] 2026/11/10 14:22:56 DEB [RTMP] [conn 127.0.0.1:52920] RTMP handshake: initializing server connection
+2026-11-10T06:22:56.690 PST -08:00 [DEBUG][10771-69635] [MediaMTX] 2026/11/10 14:22:56 INF [RTMP] [conn 127.0.0.1:52920] closed: EOF
+2026-11-10T06:23:12.294 PST -08:00 [DEBUG][10771-78147] [MediaMTX] 2026/11/10 14:23:12 INF [RTMP] [conn 127.0.0.1:52921] opened
+2026-11-10T06:23:12.294 PST -08:00 [DEBUG][10771-78147] [MediaMTX] 2026/11/10 14:23:12 DEB [RTMP] [conn 127.0.0.1:52921] RTMP handshake: initializing server connection
+2026-11-10T06:23:12.295 PST -08:00 [DEBUG][10771-78147] [MediaMTX] 2026/11/10 14:23:12 INF [RTMP] [conn 127.0.0.1:52921] closed: EOF
+2026-11-10T06:23:23.925 PST -08:00 [INFO][10771-main] [ClueTerrain] diag activeClueTerrainTasks=0 mainHitchCount=157 mapOverlayRebuilds=1
+2026-11-10T06:23:28.042 PST -08:00 [DEBUG][10771-37203] [MediaMTX] 2026/11/10 14:23:28 INF [RTMP] [conn 127.0.0.1:52922] opened
+2026-11-10T06:23:28.042 PST -08:00 [DEBUG][10771-37203] [MediaMTX] 2026/11/10 14:23:28 DEB [RTMP] [conn 127.0.0.1:52922] RTMP handshake: initializing server connection
+2026-11-10T06:23:28.042 PST -08:00 [DEBUG][10771-37203] [MediaMTX] 2026/11/10 14:23:28 INF [RTMP] [conn 127.0.0.1:52922] RTMP handshake failed during initialization: elapsedMs=0 socketReads=1 socketBytes=0 socketWaitMs=0 maxSocketReadMs=0 error=EOF
+2026-11-10T06:23:28.042 PST -08:00 [DEBUG][10771-37203] [MediaMTX] 2026/11/10 14:23:28 INF [RTMP] [conn 127.0.0.1:52922] closed: EOF
+2026-11-10T06:23:43.463 PST -08:00 [DEBUG][10771-72403] [MediaMTX] 2026/11/10 14:23:43 INF [RTMP] [conn 127.0.0.1:52923] opened
+2026-11-10T06:23:43.463 PST -08:00 [DEBUG][10771-72403] [MediaMTX] 2026/11/10 14:23:43 DEB [RTMP] [conn 127.0.0.1:52923] RTMP handshake: initializing server connection
+2026-11-10T06:23:43.463 PST -08:00 [DEBUG][10771-72403] [MediaMTX] 2026/11/10 14:23:43 INF [RTMP] [conn 127.0.0.1:52923] closed: EOF

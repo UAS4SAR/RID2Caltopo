@@ -24,8 +24,11 @@ internal object FlightPublicationRecoveryGate {
                 FlightPublicationLedger.remember(flightId, FlightPublicationLedger.Disposition.DECLINED)
                 return true
             }
-            // Already finished in awaiting-map (including a prior recovery): do not re-promote.
-            if (entry.optBoolean("finished")) return true
+            // A finished review that never started on the map is not promoted again.
+            // publicationStarted survives the load() rewrite that marks every row finished.
+            // That rewrite is not proof the flight file was written, so a started flight
+            // falls through and the journal stays until the file verifies.
+            if (entry.optBoolean("finished") && !entry.optBoolean("publicationStarted")) return true
         }
         return false
     }

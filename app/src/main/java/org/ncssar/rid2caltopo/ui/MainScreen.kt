@@ -1808,10 +1808,13 @@ fun MainScreen(
     }, { showAboutPrivacyDialog = true }, { showWorkspaceStats = true })
     if (showWorkspaceStats) {
         val drones by localViewModel.drones.collectAsState()
-        WorkspaceBluetoothStats(drones = drones, focusRemoteId = aircraftReceptionFocusRemoteId, onDismiss = { showWorkspaceStats = false }, onDrone = { drone ->
+        WorkspaceBluetoothStats(drones = drones, focusRemoteId = aircraftReceptionFocusRemoteId, onDismiss = { showWorkspaceStats = false }, onInspect = { drone ->
             showWorkspaceStats = false
-            if (drone.mappedId == drone.remoteId) addRidMapRemoteId = drone.remoteId
-            else localViewModel.requestDroneConfirmation(drone)
+            streamsViewModel.inspectDrone(drone.remoteId)
+            localViewModel.showStreams()
+        }, onDrone = { drone ->
+            showWorkspaceStats = false
+            localViewModel.requestDroneConfirmation(drone)
         })
     }
 

@@ -210,15 +210,39 @@ fun AwaitingMapPublicationPanel(onChooseMap: () -> Unit = {}) {
         val destinationName = remember(flight) { if (flight.optString("map").isNotBlank() && flight.optString("map") != mapId) "Original incident map" else mapName }
         val team = remember(flight) { if (flight.optString("map").isNotBlank()) flight.optString("team") else AwaitingMapFlights.selectedPublicationScope() }
         AlertDialog(onDismissRequest = { selected = null }, title = { Text("Publish earlier flight?") },
-            text = { Text("${flight.optString("label")}\nTo $destinationName ($destination)\nIncludes the recorded track and associated clues marked for publication. Clues kept local stay local.") },
-            confirmButton = { TextButton(onClick = {
+            text = { Text("${flight.optString("label")}\nTo $destinationName ($destination)\n" +
+                (if (org.ncssar.rid2caltopo.data.FlightOwnershipContext.isLostToAnotherTablet(flight.optString("claim")))
+                    "Another tablet owned this flight. Publishing will not assign an RPIC.\n"
+                else if (flight.optBoolean("ownershipReviewPending") || flight.optBoolean("automaticPublicationBlocked"))
+                    org.ncssar.rid2caltopo.data.FlightOwnershipContext.reviewMessage(
+                        flight.optBoolean("ownershipContextKnown"),
+                        flight.optString("claim"),
+                        flight.optString("recordedPilot"),
+                        flight.optBoolean("automaticPublicationBlocked")) + "\n"
+                else "") +
+                "Includes the recorded track and associated clues marked for publication. Clues kept local stay local.") },
+            confirmButton = {
+                val lost = org.ncssar.rid2caltopo.data.FlightOwnershipContext.isLostToAnotherTablet(flight.optString("claim"))
+                TextButton(onClick = {
                 selected = null
+                val held = flight.optBoolean("ownershipReviewPending")
+                val flightId = flight.getString("id")
                 scope.launch {
-                    awaitingMapStorage { AwaitingMapFlights.decide(flight.getString("id"), destination, team) }
-                        .onFailure { CaltopoClient.ShowToast("Publication choice could not be saved; please retry.") }
+                    awaitingMapStorage {
+                        if (held && !AwaitingMapFlights.authorizeOwnershipReview(flightId, lost)) {
+                            error("Ownership review was not authorized")
+                        }
+                        AwaitingMapFlights.decide(flightId, destination, team)
+                    }.onFailure { CaltopoClient.ShowToast("Publication choice could not be saved; please retry.") }
                     refreshPending()
                 }
-            }, enabled = destination.isNotBlank() && team.isNotBlank()) { Text("Publish") } },
+            }, enabled = destination.isNotBlank() && team.isNotBlank() && !flight.optBoolean("automaticPublicationBlocked")) {
+                Text(when {
+                    lost -> "Publish this flight anyway"
+                    flight.optBoolean("ownershipReviewPending") -> "Confirm and publish"
+                    else -> "Publish"
+                })
+            } },
             dismissButton = { TextButton(onClick = {
                 selected = null
                 scope.launch {
@@ -278,15 +302,7 @@ private fun discardFlight(context: android.content.Context, flight: JSONObject, 
     val current = AwaitingMapFlights.allEntries().firstOrNull {
         it.optString("id") == id && it.optString("decision") in decisions
     }
-    if (current == null) {
-        if (id.isNotEmpty()) WaypointTrackJournal.removeNow(id)
-        return AwaitingMapFlightDiscarder.Result(
-            entryRemoved = true,
-            deletedClueIds = emptyList(),
-            deletedArchiveFiles = emptyList(),
-            failures = emptyList(),
-        )
-    }
+    val subject = current ?: flight
     val store = AndroidClueStore.shared(context)
     val archiveRoot = CaltopoClient.GetArchiveDir()
     val archive = archiveRoot?.let { root ->
@@ -301,15 +317,47 @@ private fun discardFlight(context: android.content.Context, flight: JSONObject, 
     }
     if (archive == null) CaltopoClient.CTInfo(TAG, "Discard: no archive folder available; no archive files to delete")
     val result = AwaitingMapFlightDiscarder.discard(
-        flight = current,
+        flight = subject,
         clueIds = clueIds,
         deleteClue = { store.delete(it) },
         archive = archive,
         removeEntry = { AwaitingMapFlights.discard(it) },
     )
+    val byId = deleteArchivesContainingFlightId(context, archiveRoot, id)
+    if (byId.isNotEmpty()) {
+        CaltopoClient.CTInfo(TAG, "Discard removed by flight id $id files=${byId.joinToString(",")}")
+    }
     // Always finalize the journal synchronously so cold start cannot re-promote this id.
     WaypointTrackJournal.removeNow(id)
-    return result
+    return result.copy(deletedArchiveFiles = result.deletedArchiveFiles + byId)
+}
+
+/** Deletes a flight's GeoJSON and KMZ when the derived filename does not match the file on disk. */
+private fun deleteArchivesContainingFlightId(
+    context: android.content.Context,
+    root: androidx.documentfile.provider.DocumentFile?,
+    flightId: String,
+): List<String> {
+    if (root == null || flightId.isEmpty()) return emptyList()
+    val removed = mutableListOf<String>()
+    for (day in root.listFiles() ?: emptyArray()) {
+        if (!day.isDirectory || day.name?.startsWith("tracks-") != true) continue
+        val files = day.listFiles() ?: continue
+        for (file in files) {
+            val name = file.name ?: continue
+            if (!file.isFile || !name.endsWith(".json")) continue
+            val text = runCatching {
+                context.contentResolver.openInputStream(file.uri)?.use { it.bufferedReader().readText() }
+            }.getOrNull() ?: continue
+            if (!text.contains(flightId)) continue
+            val kmzName = name.removeSuffix(".json") + ".kmz"
+            if (file.delete()) removed += "${day.name}/$name"
+            files.firstOrNull { it.name == kmzName }?.let { kmz ->
+                if (kmz.delete()) removed += "${day.name}/$kmzName"
+            }
+        }
+    }
+    return removed
 }
 
 @Composable
@@ -480,7 +528,7 @@ private fun FlightGroup(
                 proximity = location?.let { AwaitingMapFlightProximity.forFlight(flight, it.latitude, it.longitude) },
                 cluePhotoCount = cluePhotoCounts[id] ?: 0,
                 nearIc = nearIc[id] == true,
-                canPublish = mapId.isNotBlank(),
+                canPublish = mapId.isNotBlank() && !flight.optBoolean("automaticPublicationBlocked"),
                 wide = wide,
                 onPublish = { onPublish(flight) },
                 onDiscard = { onDiscard(flight) },

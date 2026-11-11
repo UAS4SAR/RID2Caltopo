@@ -153,11 +153,25 @@ public final class CaltopoInterruptedTrackJournal {
             String liveTrackId = entry.optString("liveTrackId");
             JSONArray points = entry.optJSONArray("points");
             if (liveTrackId.isEmpty() || points == null || points.length() == 0) continue;
+            // The waypoint journal can hold points that were not in this snapshot yet.
+            // Same flight id only; a different shape id is never substituted.
+            JSONArray journalPoints = WaypointTrackJournal.pointsForFlight(liveTrackId);
+            if (journalPoints != null && journalPoints.length() > points.length()) {
+                points = journalPoints;
+            }
             recovering.add(liveTrackId);
             if (CaltopoLiveTrack.hasActivePublication(liveTrackId) || !inFlight.add(liveTrackId)) continue;
             try {
-                if (entry.optBoolean("archiveUploaded") || archiveContainsPoints(archivedFeatures.get(liveTrackId), points)) {
-                    finishArchiveCleanup(mapId, liveTrackId, runtime);
+                JSONObject existingShape = archivedFeatures.get(liveTrackId);
+                boolean shapeHasFullFlight = archiveContainsPoints(existingShape, points);
+                // A deleted shape that this tablet already archived is not recreated.
+                // A shape that is still here, including one another tablet archived,
+                // is updated in place when it does not yet hold every point.
+                if (shapeHasFullFlight || (existingShape == null && entry.optBoolean("archiveUploaded"))) {
+                    // A shape that already holds this flight is left in place. Deleting
+                    // /LiveTrack/{id} after that post removed the shape when the id was
+                    // already a Shape. A missing shape still stops a leftover LiveTrack.
+                    finishArchiveCleanup(mapId, liveTrackId, runtime, shapeHasFullFlight);
                     continue;
                 }
                 long flightStartedAtMs = entry.optLong("flightStartedAtMs", 0L);
@@ -168,7 +182,13 @@ public final class CaltopoInterruptedTrackJournal {
                             "Interrupted LiveTrack archive deferred — dated folder unavailable id=" + liveTrackId);
                     continue;
                 }
-                JSONObject feature = archiveFeature(entry, archiveFolderId);
+                JSONObject posting = new JSONObject(entry.toString());
+                posting.put("points", points);
+                JSONObject feature = archiveFeature(posting, archiveFolderId);
+                if (!liveTrackId.equals(feature.optString("id"))) {
+                    inFlight.remove(liveTrackId);
+                    continue;
+                }
                 runtime.getCalTopoSessionGateway().editObjectOnMap(
                         mapId, "Shape", liveTrackId, feature, editOp -> CaltopoRecoveryWork.offMainArchive(() -> {
                             if (!editOp.success()) {
@@ -176,7 +196,7 @@ public final class CaltopoInterruptedTrackJournal {
                                 CaltopoClient.CTWarn(TAG, "Interrupted LiveTrack conversion deferred id=" + liveTrackId);
                                 return;
                             }
-                            finishArchiveCleanup(mapId, liveTrackId, runtime);
+                            finishArchiveCleanup(mapId, liveTrackId, runtime, existingShape != null);
                         }));
             } catch (Exception error) {
                 inFlight.remove(liveTrackId);
@@ -206,7 +226,13 @@ public final class CaltopoInterruptedTrackJournal {
         return true;
     }
 
-    private static void finishArchiveCleanup(String mapId, String liveTrackId, R2cRuntime runtime) {
+    /**
+     * @param shapeAlreadyOnMap when true the id is already a Shape. Do not DELETE
+     *        /LiveTrack/{id}: that delete removed the shape in the field. Clue photos
+     *        and clue records are not deleted here.
+     */
+    private static void finishArchiveCleanup(String mapId, String liveTrackId, R2cRuntime runtime,
+                                            boolean shapeAlreadyOnMap) {
         try {
             // Persist completion before cleanup: a cleanup retry must never POST
             // the Shape again, including after a restart or manual map deletion.
@@ -232,6 +258,12 @@ public final class CaltopoInterruptedTrackJournal {
             }
             AwaitingMapFlights.confirmArchive(liveTrackId, null, liveTrackId, null);
             CaltopoClient.CTInfo(TAG, "CalTopo track archived id=" + liveTrackId + " folder=(recovery)");
+            if (shapeAlreadyOnMap) {
+                remove(liveTrackId);
+                inFlight.remove(liveTrackId);
+                CaltopoClient.CTInfo(TAG, "Recovered shape without deleting id=" + liveTrackId);
+                return;
+            }
             runtime.getCalTopoSessionGateway().deleteLiveTrackOnMap(mapId, liveTrackId, deleteOp -> CaltopoRecoveryWork.offMainArchive(() -> {
                 // Match Apple's already-gone handling. Standalone archives never
                 // created a LiveTrack, for which CalTopo returns 400 (or 404).
@@ -246,6 +278,60 @@ public final class CaltopoInterruptedTrackJournal {
         } catch (Exception error) {
             inFlight.remove(liveTrackId);
             CaltopoClient.CTError(TAG, "Could not finish archive cleanup id=" + liveTrackId, error);
+        }
+    }
+
+    /** True when this flight's own live-track id is already in the interrupted journal. */
+    public static boolean hasLiveTrack(@NonNull String liveTrackId) {
+        if (liveTrackId.isEmpty()) return false;
+        synchronized (LOCK) {
+            JSONArray entries = mutableRootLocked().optJSONArray("entries");
+            if (entries == null) return false;
+            for (int index = 0; index < entries.length(); index++) {
+                JSONObject entry = entries.optJSONObject(index);
+                if (entry != null && liveTrackId.equals(entry.optString("liveTrackId"))) return true;
+            }
+            return false;
+        }
+    }
+
+    /**
+     * Replace points on the entry whose id is exactly {@code liveTrackId}.
+     * Does not create an entry and does not modify any other flight.
+     */
+    public static boolean replacePointsIfSameFlight(@NonNull String liveTrackId, @NonNull JSONArray points) {
+        CaltopoRecoveryWork.requireOffMain();
+        if (liveTrackId.isEmpty() || points.length() == 0) return false;
+        final JSONObject toWrite;
+        synchronized (LOCK) {
+            try {
+                JSONObject root = mutableRootLocked();
+                JSONArray entries = root.optJSONArray("entries");
+                if (entries == null) return false;
+                JSONObject entry = null;
+                for (int index = 0; index < entries.length(); index++) {
+                    JSONObject candidate = entries.optJSONObject(index);
+                    if (candidate != null && liveTrackId.equals(candidate.optString("liveTrackId"))) {
+                        entry = candidate;
+                        break;
+                    }
+                }
+                if (entry == null) return false;
+                entry.put("points", new JSONArray(points.toString()));
+                cachedRoot = root;
+                toWrite = copyRoot(root);
+            } catch (Exception error) {
+                CaltopoClient.CTError(TAG, "Could not expand interrupted LiveTrack " + liveTrackId, error);
+                return false;
+            }
+        }
+        try {
+            writeRoot(toWrite);
+            return true;
+        } catch (Exception error) {
+            synchronized (LOCK) { cachedRoot = null; }
+            CaltopoClient.CTError(TAG, "Could not expand interrupted LiveTrack " + liveTrackId, error);
+            return false;
         }
     }
 

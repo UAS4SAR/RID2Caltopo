@@ -20,12 +20,49 @@ import "C"
 
 import (
 	"bufio"
+	"fmt"
 	"os"
+	"runtime"
+	"strconv"
 	"sync"
+	"sync/atomic"
 	"unsafe"
 
 	"github.com/bluenviron/mediamtx/internal/core"
+	"github.com/bluenviron/mediamtx/internal/r2cingress"
 )
+
+// asyncpreemptoff is not a //go:debug key in Go 1.25. It is also not an atomic
+// runtime dbgvar, so os.Setenv("GODEBUG") after schedinit does not change it.
+// A C constructor setenv does not reach the c-archive either: on Darwin and
+// iOS, _rt0_arm64_ios_lib reads the envp block dyld passed in, and setenv
+// installs a new environ instead of editing that block.
+//
+// parsegodebug is the same parser schedinit uses. With a nil seen map it
+// writes non-atomic dbgvars, including asyncpreemptoff, and the preemption
+// sites read that variable on every attempt. The iOS c-archive link passes
+// -checklinkname=0 so this internal reference is allowed.
+//
+//go:linkname parsegodebug runtime.parsegodebug
+func parsegodebug(godebug string, seen map[string]bool)
+
+// runtime.debug field order in Go 1.25.6. asyncpreemptoff is the 20th int32.
+// The read is only for the startup log. The write goes through parsegodebug
+// by name, so a future field reorder cannot flip the setting itself.
+//
+//go:linkname runtimeDebug runtime.debug
+var runtimeDebug [20]int32
+
+func init() {
+	parsegodebug("asyncpreemptoff=1", nil)
+}
+
+func asyncPreemptOffLabel() string {
+	if runtime.Version() != "go1.25.6" {
+		return "unverified"
+	}
+	return strconv.Itoa(int(runtimeDebug[19]))
+}
 
 var instance struct {
 	sync.Mutex
@@ -69,6 +106,7 @@ func R2CMediaMTXStart(configPath *C.char) C.int {
 
 	instance.server = server
 	instance.logWriter = logWriter
+	fmt.Fprintf(logWriter, "Go runtime asyncpreemptoff=%s\n", asyncPreemptOffLabel())
 	go forwardLogLines(logReader)
 	return 0
 }
@@ -93,21 +131,49 @@ func R2CMediaMTXStop() {
 func forwardLogLines(reader *os.File) {
 	defer reader.Close()
 
+	// The scanner must keep the stdout pipe empty. A full pipe blocks whichever
+	// MediaMTX goroutine is logging, including the RTMP reader between reads.
+	lines := make(chan string, 256)
+	var dropped atomic.Uint64
+	var reported atomic.Uint64
+	go deliverLogLines(lines, &dropped, &reported)
+
 	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
 	for scanner.Scan() {
-		instance.Lock()
-		callback := instance.logCallback
-		context := instance.logContext
-		instance.Unlock()
-		if callback == nil {
-			continue
+		line := scanner.Text()
+		select {
+		case lines <- line:
+		default:
+			next := dropped.Add(1)
+			r2cingress.NoteLogOverflow(next)
 		}
-
-		line := C.CString(scanner.Text())
-		C.R2CMediaMTXInvokeLogCallback(callback, context, line)
-		C.free(unsafe.Pointer(line))
 	}
+	close(lines)
+}
+
+func deliverLogLines(lines <-chan string, dropped, reported *atomic.Uint64) {
+	for line := range lines {
+		invokeLogLine(line)
+		overflow := dropped.Load()
+		if overflow != reported.Load() {
+			reported.Store(overflow)
+			invokeLogLine(fmt.Sprintf("RTMP log buffer overflow dropped=%d", overflow))
+		}
+	}
+}
+
+func invokeLogLine(line string) {
+	instance.Lock()
+	callback := instance.logCallback
+	context := instance.logContext
+	instance.Unlock()
+	if callback == nil {
+		return
+	}
+	owned := C.CString(line)
+	C.R2CMediaMTXInvokeLogCallback(callback, context, owned)
+	C.free(unsafe.Pointer(owned))
 }
 
 func main() {}

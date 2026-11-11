@@ -9,6 +9,7 @@ public struct RidAircraftIdentity: Sendable, Equatable {
     public let pilotCallsign: String
     public let droneDescription: String
     public let mappedIDOverride: String?
+    public let peerConfirmed: Bool
 
     public init(
         remoteID: String,
@@ -18,9 +19,11 @@ public struct RidAircraftIdentity: Sendable, Equatable {
         droneDescription: String,
         mappedIDOverride: String? = nil,
         readiness: AircraftReadiness = AircraftReadiness(),
-        flightReadiness: FlightReadiness? = nil
+        flightReadiness: FlightReadiness? = nil,
+        peerConfirmed: Bool = false
     ) {
         self.flightReadiness = flightReadiness
+        self.peerConfirmed = peerConfirmed
         self.readiness = readiness
         self.remoteID = remoteID.trimmingCharacters(in: .whitespacesAndNewlines)
         self.organization = organization.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -35,7 +38,7 @@ public struct RidAircraftIdentity: Sendable, Equatable {
         guard let local, local.remoteID == remoteID, local.flightReadiness != nil else { return self }
         return RidAircraftIdentity(remoteID: remoteID, organization: organization, ownerName: ownerName,
             pilotCallsign: pilotCallsign, droneDescription: droneDescription, mappedIDOverride: mappedIDOverride,
-            readiness: local.readiness, flightReadiness: local.flightReadiness)
+            readiness: local.readiness, flightReadiness: local.flightReadiness, peerConfirmed: peerConfirmed)
     }
 
     /// Repair the two known legacy import fallbacks when exporting against the
@@ -49,7 +52,7 @@ public struct RidAircraftIdentity: Sendable, Equatable {
         let repairedCallsign = sourceCallsign.isEmpty && pilotCallsign == published["mappedId"] as? String ? "" : pilotCallsign
         return RidAircraftIdentity(remoteID: remoteID, organization: organization, ownerName: repairedName,
             pilotCallsign: repairedCallsign, droneDescription: droneDescription, mappedIDOverride: mappedIDOverride,
-            readiness: readiness, flightReadiness: flightReadiness)
+            readiness: readiness, flightReadiness: flightReadiness, peerConfirmed: peerConfirmed)
     }
 
     public var isComplete: Bool {
@@ -69,8 +72,21 @@ public struct RidAircraftIdentity: Sendable, Equatable {
 
     /// Operator-visible aircraft label. `mappedID` remains the stable stream routing key.
     public var displayLabel: String {
-        if !mappedID.isEmpty { return mappedID }
-        return remoteID
+        guard flightReadiness != nil || peerConfirmed else { return mappedID }
+        return Self.flightLabel(mappedID: mappedID, pilotCallsign: pilotCallsign)
+    }
+
+    /// Keep the equipment suffix and stable routing ID while showing the confirmed RPIC.
+    public static func flightLabel(mappedID: String, pilotCallsign: String) -> String {
+        let callsign = pilotCallsign.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !callsign.isEmpty else { return mappedID }
+        if let prefix = mappedID.range(of: callsign, options: [.anchored, .caseInsensitive]),
+           (prefix.upperBound == mappedID.endIndex || !mappedID[prefix.upperBound].isNumber) { return mappedID }
+        if let prefix = mappedID.range(of: #"^(?:[0-9]+[a-z]+|sar)[0-9]+"#, options: [.regularExpression, .caseInsensitive]) {
+            return callsign + mappedID[prefix.upperBound...]
+        }
+        if mappedID.caseInsensitiveCompare(callsign) == .orderedSame { return mappedID }
+        return mappedID.isEmpty ? callsign : callsign + "-" + mappedID
     }
 
     /// Mirrors Android CtDroneSpec.GuessPilotCallsign so imported rid_map
@@ -120,6 +136,13 @@ public struct RidAircraftIdentity: Sendable, Equatable {
             }
         }
         return String(result.suffix(10))
+    }
+}
+
+/// A confirmation made before telemetry must not attach to a later flight.
+public enum FlightConfirmationWindow {
+    public static func matches(confirmedAt: Date, endedAt: Date?, flightStartedAt: Date, lastMessageAt: Date) -> Bool {
+        lastMessageAt >= confirmedAt && (endedAt.map { flightStartedAt <= $0 } ?? true)
     }
 }
 

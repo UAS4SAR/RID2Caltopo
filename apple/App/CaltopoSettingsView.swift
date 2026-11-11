@@ -54,6 +54,36 @@ struct CaltopoSettingsView: View {
     @State private var showingTeamMaps = false
     @State private var showingIncidentSelection = false
     @State private var connectMapAfterIncidentSelection = false
+    @State private var showOwnershipChoices = false
+    @State private var ownershipBusy = false
+    @State private var ownershipMessage = ""
+
+    @MainActor private func openDroneOwnership() async {
+        guard !ownershipBusy else { return }
+        ownershipBusy = true
+        defer { ownershipBusy = false }
+        if AppleAircraftOrganizationAccess.belongsToOrganization {
+            _ = await AppleAircraftOrganizationAccess.refresh(baseURL: orgSettings.trackerURLPrefix)
+        }
+        guard AppleAircraftOrganizationAccess.canEdit else {
+            ownershipMessage = "Read-only. This organization account cannot change Drone Ownership."
+            return
+        }
+        showOwnershipChoices = true
+    }
+
+    @MainActor private func saveDroneOwnership(_ mode: String) {
+        let before = orgSettings.droneOwnership
+        orgSettings.setDroneOwnership(mode)
+        guard orgSettings.droneOwnership == DroneOwnershipPolicy.normalize(mode) else {
+            ownershipMessage = "Read-only. This organization account cannot change Drone Ownership."
+            return
+        }
+        ownershipMessage = AppleAircraftOrganizationAccess.belongsToOrganization
+            ? "Saved on this device. Upload organization configuration from System Admin to distribute it."
+            : "Saved on this device."
+        _ = before
+    }
 
     private var hasChanges: Bool {
         draft.edits.hasChanges || teamsDraft.normalized != initialTeamsDraft.normalized ||
@@ -117,6 +147,25 @@ struct CaltopoSettingsView: View {
                     .font(.footnote)
             }
             Section("Organization and operational defaults") {
+                Button { Task { await openDroneOwnership() } } label: { LabeledContent("Drone Ownership", value: {
+                    switch orgSettings.droneOwnership {
+                    case "streaming_device": "Drones streaming to this device"
+                    case "streaming_shared_incident": "Drones streaming to this device w/in same incident"
+                    default: "All detected drones"
+                    }
+                }()) }.disabled(ownershipBusy)
+                .confirmationDialog("Drone Ownership", isPresented: $showOwnershipChoices, titleVisibility: .visible) {
+                    Button("All detected drones") { Task { await saveDroneOwnership("all_detected") } }
+                    Button("Drones streaming to this device") { Task { await saveDroneOwnership("streaming_device") } }
+                    Button("Drones streaming to this device w/in same incident") { Task { await saveDroneOwnership("streaming_shared_incident") } }
+                    Button("Cancel", role: .cancel) { }
+                } message: { Text("Saved on this device and takes effect immediately.") }
+                Text(AppleAircraftOrganizationAccess.belongsToOrganization
+                     ? "Saved on this device. A config administrator distributes it by uploading organization configuration from System Admin."
+                     : "Saved on this device.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                if !ownershipMessage.isEmpty { Text(ownershipMessage).font(.footnote) }
                 SettingsTextField(
                     "Organization designator",
                     text: draft.binding("orgSettings.organizationName", Binding(

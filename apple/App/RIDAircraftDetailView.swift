@@ -1,6 +1,45 @@
 import CoreLocation
 import R2CCore
 import SwiftUI
+import UIKit
+
+private struct RPICSelectedTextField: UIViewRepresentable {
+    @Binding var text: String
+    func makeCoordinator() -> Coordinator { Coordinator(text: $text) }
+    func makeUIView(context: Context) -> UITextField {
+        let field = InitialFocusTextField()
+        field.placeholder = "Callsign"
+        field.textAlignment = .right
+        field.font = .preferredFont(forTextStyle: .body)
+        field.adjustsFontForContentSizeCategory = true
+        field.autocapitalizationType = .allCharacters
+        field.text = text
+        field.addTarget(context.coordinator, action: #selector(Coordinator.changed(_:)), for: .editingChanged)
+        return field
+    }
+    func updateUIView(_ field: UITextField, context: Context) {
+        context.coordinator.text = $text
+        if field.text != text { field.text = text }
+    }
+    @MainActor final class Coordinator: NSObject {
+        var text: Binding<String>
+        init(text: Binding<String>) { self.text = text }
+        @objc func changed(_ field: UITextField) { text.wrappedValue = field.text ?? "" }
+    }
+    final class InitialFocusTextField: UITextField {
+        private var selectedInitially = false
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            guard window != nil, !selectedInitially else { return }
+            selectedInitially = true
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.window != nil else { return }
+                self.becomeFirstResponder()
+                self.selectAll(nil)
+            }
+        }
+    }
+}
 
 struct RIDAircraftSummaryRow: View {
     @AppStorage(DisplayUnits.storageKey) private var displayUnitsPreference = DisplayUnits.imperial.rawValue
@@ -85,6 +124,7 @@ struct RIDAircraftDetailView: View {
     let operatorLocation: CLLocation?
     @ObservedObject var identityStore: AppleDroneConfirmationStore
     let onConfirm: (RidAircraftIdentity) -> Void
+    let onIgnore: () -> Void
     @State private var showConfirmation = false
 
     var body: some View {
@@ -95,8 +135,8 @@ struct RIDAircraftDetailView: View {
                 } label: {
                     Label(
                         identityStore.isCurrentFlightConfirmed(track.aircraftID)
-                            ? "Update Saved Drone"
-                            : "Save Drone for This Flight",
+                            ? "Review ownership"
+                            : "Claim ownership",
                         systemImage: identityStore.isCurrentFlightConfirmed(track.aircraftID)
                             ? "checkmark.circle.fill"
                             : "square.and.arrow.down"
@@ -190,7 +230,8 @@ struct RIDAircraftDetailView: View {
                 remoteID: track.aircraftID,
                 existing: identityStore.identity(for: track.aircraftID),
                 identityStore: identityStore,
-                onConfirm: onConfirm
+                onConfirm: onConfirm,
+                onIgnore: onIgnore
             )
         }
     }
@@ -233,6 +274,9 @@ private enum AircraftMappingBackupWriter {
 final class AppleDroneConfirmationStore: ObservableObject {
     @Published private var sessionIdentities: [String: RidAircraftIdentity] = [:]
     @Published private var peerIdentities: [String: RidAircraftIdentity] = [:]
+    @Published private var leases = ForeignLeaseBook()
+    private var acceptedClaimChanges: [String: TrackerCoordinationIdentity] = [:]
+    private var seenVideoSessions: [String: Set<String>] = [:]
     @Published private var importedIdentities: [String: RidAircraftIdentity] = [:]
     @Published private(set) var preferredPilotCallsign: String
     private var confirmationLifecycle = CurrentFlightConfirmationLifecycle()
@@ -266,8 +310,14 @@ final class AppleDroneConfirmationStore: ObservableObject {
     }
 
     func isCurrentFlightConfirmed(_ remoteID: String) -> Bool {
-        sessionIdentities[remoteID] != nil || peerIdentities[remoteID] != nil
+        FlightOwnershipContext.countsAsLocalMine(
+            sessionConfirmed: sessionIdentities[remoteID] != nil,
+            peerConfirmed: peerIdentities[remoteID] != nil)
     }
+
+    func peerClaim(for remoteID: String) -> TrackerCoordinationIdentity? { leases.claim(for: remoteID) }
+    func acceptClaimChange(_ claim: TrackerCoordinationIdentity) { acceptedClaimChanges[claim.remoteID] = claim }
+    func takeAcceptedClaim(remoteID: String) -> TrackerCoordinationIdentity? { acceptedClaimChanges.removeValue(forKey: remoteID) }
 
     /// Active operator approvals only; imported mappings and peer approvals do not grant local consent.
     var localCurrentFlightIdentities: [RidAircraftIdentity] { Array(sessionIdentities.values) }
@@ -293,10 +343,24 @@ final class AppleDroneConfirmationStore: ObservableObject {
         aircraftReceivedAt: [String: Date] = [:],
         videoSessions: [String: Set<String>] = [:],
         allowPrompt: Bool = true,
+        promptEligibleRemoteIDs: Set<String>? = nil,
         mediaDiagnostics: String = "media=unavailable",
         onFlightEnded: (String) -> Void = { _ in }
     ) -> String? {
         completedFlightGuard.updateSessions(videoSessions)
+        releaseSaveAwaitingGrantForNewVideo(videoSessions)
+        let foreignClaims = leases.remoteIDs.subtracting(saveAwaitingGrantRemoteIDs)
+        for remoteID in TakeoverClaimNotice.remoteIDsRearmedByNewPublisher(
+            locallyConfirmed: Set(sessionIdentities.keys),
+            ignored: ignoredRemoteIDs,
+            previous: seenVideoSessions,
+            current: videoSessions,
+            foreignClaims: foreignClaims,
+            saveAwaitingGrant: saveAwaitingGrantRemoteIDs
+        ) {
+            confirmationLifecycle.rearmPrompt(remoteID: remoteID)
+        }
+        seenVideoSessions = videoSessions
         var rearmedRemoteIDs: Set<String> = []
         let eligible = orderedRemoteIDs.filter { remoteID in
             completedFlightGuard.allows(remoteID: remoteID, receivedAt: aircraftReceivedAt[remoteID]) {
@@ -304,18 +368,25 @@ final class AppleDroneConfirmationStore: ObservableObject {
                 AppleLog.info("DroneConfirmation", "\($0) \(mediaDiagnostics)")
             }
         }
-        let confirmedRemoteIDs = Set(sessionIdentities.keys).union(peerIdentities.keys)
+        // A peer claim is not this tablet's Mine. A new video publisher can offer takeover.
+        let confirmedRemoteIDs = Set(sessionIdentities.keys).union(saveAwaitingGrantRemoteIDs)
+            .subtracting(leases.remoteIDs.subtracting(saveAwaitingGrantRemoteIDs))
         let reconciliation = confirmationLifecycle.reconcile(
             orderedRemoteIDs: eligible,
             confirmedRemoteIDs: confirmedRemoteIDs,
             ignoredRemoteIDs: ignoredRemoteIDs,
-            allowPrompt: allowPrompt
+            allowPrompt: allowPrompt,
+            promptEligibleRemoteIDs: promptEligibleRemoteIDs
         )
         for remoteID in reconciliation.endedRemoteIDs {
             onFlightEnded(remoteID)
             completedFlightGuard.end(remoteID: remoteID, at: Date()) { AppleLog.info("DroneConfirmation", "\($0) \(mediaDiagnostics)") }
             sessionIdentities.removeValue(forKey: remoteID)
             peerIdentities.removeValue(forKey: remoteID)
+            saveAwaitingGrantRemoteIDs.remove(remoteID)
+            saveAwaitingGrantSessions.removeValue(forKey: remoteID)
+            // Another tablet may still hold the lease. The next Save has to name it.
+            acceptedClaimChanges.removeValue(forKey: remoteID)
             publicationGateLogged.remove(remoteID)
         }
         if !reconciliation.endedRemoteIDs.isEmpty {
@@ -335,7 +406,7 @@ final class AppleDroneConfirmationStore: ObservableObject {
             for remoteID in rearmedRemoteIDs where confirmedRemoteIDs.contains(remoteID) {
                 AppleLog.info(
                     "DroneConfirmation",
-                    "Panel path=rearm_already_confirmed remoteId=\(remoteID) publication=\(CurrentFlightPublicationGate.decide(confirmed: true, ignored: false).logLabel)"
+                    "Panel path=rearm_already_confirmed remoteId=\(remoteID) publication=\(CurrentFlightPublicationGate.decide(confirmed: isCurrentFlightConfirmed(remoteID), ignored: false).logLabel)"
                 )
             }
             return nil
@@ -353,8 +424,16 @@ final class AppleDroneConfirmationStore: ObservableObject {
         confirmationLifecycle.endFlight(remoteID: remoteID)
         sessionIdentities.removeValue(forKey: remoteID)
         peerIdentities.removeValue(forKey: remoteID)
+        saveAwaitingGrantRemoteIDs.remove(remoteID)
+        saveAwaitingGrantSessions.removeValue(forKey: remoteID)
+        leases.endFlight(remoteID: remoteID)
+        acceptedClaimChanges.removeValue(forKey: remoteID)
         publicationGateLogged.remove(remoteID)
         AppleLog.info("DroneConfirmation", "Cleared confirmation at telemetry track end remoteId=\(remoteID)")
+    }
+
+    func rearmAutomaticPrompt(remoteID: String) {
+        confirmationLifecycle.rearmPrompt(remoteID: remoteID)
     }
 
     /// Once per current flight: whether map/tracker publication is gated or allowed.
@@ -464,10 +543,30 @@ final class AppleDroneConfirmationStore: ObservableObject {
         return !Task.isCancelled && mappingRevision == revision + 1
     }
 
+    private var saveAwaitingGrantRemoteIDs: Set<String> = []
+    private var saveAwaitingGrantSessions: [String: Set<String>] = [:]
+
+    func saveProtectsPanel(_ remoteID: String) -> Bool { saveAwaitingGrantRemoteIDs.contains(remoteID) }
+
+    private func releaseSaveAwaitingGrantForNewVideo(_ videoSessions: [String: Set<String>]) {
+        for remoteID in Array(saveAwaitingGrantRemoteIDs) {
+            let prior = saveAwaitingGrantSessions[remoteID] ?? []
+            let fresh = (videoSessions[remoteID] ?? []).contains { token in
+                !token.hasSuffix("|unknown") && !prior.contains(token)
+            }
+            if fresh {
+                saveAwaitingGrantRemoteIDs.remove(remoteID)
+                saveAwaitingGrantSessions.removeValue(forKey: remoteID)
+            }
+        }
+    }
+
     func confirm(_ identity: RidAircraftIdentity, recordUnresolvedPilot: Bool = false) {
         // Recording incomplete evidence never establishes pilot qualification.
         guard identity.isComplete || (recordUnresolvedPilot && !identity.remoteID.isEmpty) else { return }
         ignoredRemoteIDs.remove(identity.remoteID)
+        saveAwaitingGrantRemoteIDs.insert(identity.remoteID)
+        saveAwaitingGrantSessions[identity.remoteID] = seenVideoSessions[identity.remoteID] ?? []
         sessionIdentities[identity.remoteID] = identity
         publicationGateLogged.remove(identity.remoteID)
         AppleLog.info(
@@ -538,6 +637,12 @@ final class AppleDroneConfirmationStore: ObservableObject {
         // Peer authority is map-scoped. Local pilot/readiness and confirmation belong
         // to the physical flight and are cleared only by endFlight/reconciliation.
         peerIdentities.removeAll()
+        leases.removeAll()
+        acceptedClaimChanges.removeAll()
+    }
+
+    func noteForeignOwner(remoteID: String, zoneID: String) {
+        leases.noteZone(remoteID: remoteID, zoneID: zoneID)
     }
 
     func applyPeerConfirmation(_ identity: TrackerCoordinationIdentity) {
@@ -551,12 +656,15 @@ final class AppleDroneConfirmationStore: ObservableObject {
             ownerName: identity.ownerName,
             pilotCallsign: identity.ownerName,
             droneDescription: identity.model,
-            mappedIDOverride: identity.mappedID
+            mappedIDOverride: identity.mappedID,
+            peerConfirmed: true
         )
+        leases.noteConfirmation(identity)
     }
 
     func clearPeerConfirmation(remoteID: String) {
         peerIdentities.removeValue(forKey: remoteID)
+        leases.clear(remoteID: remoteID)
     }
 
     func resetPersistedState() {
@@ -565,6 +673,8 @@ final class AppleDroneConfirmationStore: ObservableObject {
         editableImportedMappings.removeAll()
         sessionIdentities.removeAll()
         peerIdentities.removeAll()
+        leases.removeAll()
+        acceptedClaimChanges.removeAll()
         confirmationLifecycle.reset()
         completedFlightGuard = CompletedFlightConfirmationGuard()
         ignoredRemoteIDs.removeAll()
@@ -651,6 +761,9 @@ struct DroneConfirmationView: View {
                     }
                 }
                 if let pairingSaveError { Text(pairingSaveError).foregroundStyle(.red) }
+                if !pairingOnly, let claim = identityStore.peerClaim(for: remoteID) {
+                    Text(TakeoverClaimNotice.message(callsign: claim.ownerName, deviceName: claim.confirmedByDeviceName))
+                }
                 if let bootstrapDesignator {
                     Section(pairingOnly ? "Pair this drone" : "Add and confirm this drone") {
                         LabeledContent("Remote ID", value: remoteID)
@@ -660,7 +773,7 @@ struct DroneConfirmationView: View {
                 }
                 Section {
                     LabeledContent("Pilot Callsign / RPIC") {
-                        TextField("Callsign", text: $pilotCallsign).multilineTextAlignment(.trailing)
+                        RPICSelectedTextField(text: $pilotCallsign)
                     }
                     LabeledContent("Drone model") {
                         TextField("Model", text: $droneDescription).multilineTextAlignment(.trailing)
@@ -721,14 +834,14 @@ struct DroneConfirmationView: View {
                 applyReadinessState()
             }
             .onChange(of: pilotCallsign) { _, _ in matchReportedPilot() }
-            .navigationTitle(existingIdentity == nil ? "Add New Drone" : "Publish?")
+            .navigationTitle(existingIdentity == nil ? "Add New Drone" : "Drone Ownership")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     if pairingOnly {
                         Button("Cancel") { dismiss() }
                     } else if let onIgnore {
-                        Button(bootstrapDesignator == nil ? "Don’t publish" : "Pair video only") {
+                        Button("Not Mine") {
                             onIgnore()
                             dismiss()
                         }
@@ -742,10 +855,20 @@ struct DroneConfirmationView: View {
                     }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button(pairingOnly ? "Save mapping" : (bootstrapDesignator == nil ? "Publish track" : "Save and publish track")) {
-                        guard !savingPairing else { return }
-                        savingPairing = true
-                        pairingTask = Task { @MainActor in
+                    Button(pairingOnly ? "Save mapping" : "Mine") {
+                        beginConfirmation(replacing: pairingOnly ? nil : identityStore.peerClaim(for: remoteID))
+                    }
+                    .onDisappear { pairingTask?.cancel() }
+                    .disabled(savingPairing || (bootstrapDesignator != nil && pilotCallsign.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty))
+                }
+            }
+        }
+    }
+
+    private func beginConfirmation(replacing claim: TrackerCoordinationIdentity?) {
+        guard !savingPairing else { return }
+        savingPairing = true
+        pairingTask = Task { @MainActor in
                         defer { savingPairing = false }
                         let scope = AppleAircraftOrganizationAccess.scope
                         if pairingOnly {
@@ -787,16 +910,20 @@ struct DroneConfirmationView: View {
                             }
                         }
                         guard !Task.isCancelled, scope == AppleAircraftOrganizationAccess.scope else { return }
+                        if let claim {
+                            guard identityStore.peerClaim(for: remoteID) == claim else {
+                                pairingSaveError = "The existing claim changed. Tap Mine again to take ownership."
+                                return
+                            }
+                            identityStore.acceptClaimChange(claim)
+                        } else if identityStore.peerClaim(for: remoteID) != nil {
+                            pairingSaveError = "Another device claimed this drone. Tap Mine again to take ownership."
+                            return
+                        }
                         identityStore.confirm(confirmedIdentity, recordUnresolvedPilot: true)
                         identityStore.setPreferredPilotCallsign(confirmedIdentity.pilotCallsign)
                         onConfirm(confirmedIdentity)
                         dismiss()
-                        }
-                    }
-                    .onDisappear { pairingTask?.cancel() }
-                    .disabled(savingPairing || (bootstrapDesignator != nil && pilotCallsign.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty))
-                }
-            }
         }
     }
 

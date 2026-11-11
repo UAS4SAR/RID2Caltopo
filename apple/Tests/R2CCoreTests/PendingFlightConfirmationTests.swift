@@ -2,6 +2,23 @@ import XCTest
 @testable import R2CCore
 
 final class PendingFlightConfirmationTests: XCTestCase {
+    func testAutomaticPromptCanBeWithdrawnAndRearmedWithoutEndingFlight() {
+        var lifecycle = CurrentFlightConfirmationLifecycle()
+        var panel = PendingFlightConfirmation()
+        let candidate = lifecycle.reconcile(orderedRemoteIDs: ["RID1"], confirmedRemoteIDs: [], ignoredRemoteIDs: []).candidateRemoteID
+        panel.present(remoteID: candidate, automatic: true)
+        XCTAssertTrue(panel.isAutomatic)
+        lifecycle.rearmPrompt(remoteID: "RID1")
+        panel.present(remoteID: nil)
+        let waiting = lifecycle.reconcile(orderedRemoteIDs: ["RID1"], confirmedRemoteIDs: [], ignoredRemoteIDs: [], promptEligibleRemoteIDs: [])
+        XCTAssertNil(waiting.candidateRemoteID)
+        XCTAssertTrue(waiting.endedRemoteIDs.isEmpty)
+        let video = lifecycle.reconcile(orderedRemoteIDs: ["RID1"], confirmedRemoteIDs: [], ignoredRemoteIDs: [], promptEligibleRemoteIDs: ["RID1"])
+        XCTAssertEqual(video.candidateRemoteID, "RID1")
+        panel.present(remoteID: "RID1")
+        XCTAssertFalse(panel.isAutomatic)
+    }
+
     func testUnansweredPanelIsRetiredWithFlightAndCannotSurviveReturnToScreen() {
         var lifecycle = CurrentFlightConfirmationLifecycle()
         var panel = PendingFlightConfirmation()

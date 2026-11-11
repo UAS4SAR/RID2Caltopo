@@ -2,6 +2,7 @@ package org.ncssar.rid2caltopo.data
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -29,6 +30,34 @@ class LiveTrackOwnershipContractTest {
         assertTrue(shouldArchiveDuplicate(createdByThisZone = true, peerLeaseActive = false))
         // Orphan with no peer lease → archive as stale.
         assertTrue(shouldArchiveDuplicate(createdByThisZone = false, peerLeaseActive = false))
+    }
+
+    @Test
+    fun archivedShapeIsNotAdoptable() {
+        val device = CaltopoSession.liveTrackDeviceId("DRONESHAPE", "connect-key")
+        CaltopoMap.noteArchivedShape("already-shape")
+        CaltopoMap.rememberAdoptableLiveTrack("already-shape", "old-title", device, "zone-bravo")
+        assertFalse(CaltopoMap.isArchivedShape("still-live"))
+        assertNull(CaltopoMap.peekAdoptableLiveTrack(device))
+        CaltopoMap.rememberAdoptableLiveTrack("still-live", "live-title", device, "zone-bravo")
+        CaltopoMap.noteArchivedShape("still-live")
+        assertNull(CaltopoMap.takeAdoptableLiveTrack(device))
+    }
+
+    @Test
+    fun round10TakeoverMintsANewShapeAndDoesNotReuseThePreviousOwners() {
+        val ipadShape = "dca603b1-20bc-5a24-8ebf-7f6c4198760a"
+        val device = CaltopoSession.liveTrackDeviceId("1581F8HGX255S00A0FZT", "connect-key")
+        CaltopoMap.noteArchivedShape(ipadShape)
+        CaltopoMap.rememberAdoptableLiveTrack(ipadShape, "1sar7DjMtrc4td_170805Nov10", device, "f6cbd6d2")
+        assertNull(CaltopoMap.takeAdoptableLiveTrack(device))
+        assertFalse(OwnedFlightLiveTrack.mayAttach(ipadShape, false, true))
+        val a5 = OwnedFlightLiveTrack.shapeIdForArchive(ipadShape, false, true, "a5-shape")
+        assertEquals("a5-shape", a5)
+        val third = OwnedFlightLiveTrack.shapeIdForArchive(a5, false, true, "ipad-third")
+        assertEquals("ipad-third", third)
+        assertEquals(ipadShape, OwnedFlightLiveTrack.shapeIdForArchive(ipadShape, true, false, "unused"))
+        assertFalse(a5 == ipadShape || third == ipadShape || a5 == third)
     }
 
     @Test

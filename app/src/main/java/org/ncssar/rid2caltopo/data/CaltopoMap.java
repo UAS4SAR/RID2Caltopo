@@ -223,6 +223,8 @@ public class CaltopoMap {
             new Hashtable<>();
     /** LiveTrack ids minted by this device's zone for this process. */
     private static final HashSet<String> LocallyCreatedLiveTrackIds = new HashSet<>();
+    /** Shape ids already on the map. They are not reused or edited by a later flight. */
+    private static final java.util.Set<String> ArchivedShapeIds = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
     static final class AdoptableLiveTrack {
         @NonNull final String trackId;
@@ -780,11 +782,21 @@ public class CaltopoMap {
         return trackId != null && !trackId.isEmpty() && LocallyCreatedLiveTrackIds.contains(trackId);
     }
 
+    public static void noteArchivedShape(@Nullable String trackId) {
+        if (trackId == null || trackId.isEmpty()) return;
+        ArchivedShapeIds.add(trackId);
+        AdoptableLiveTracksByDeviceId.entrySet().removeIf(entry -> trackId.equals(entry.getValue().trackId));
+    }
+
+    public static boolean isArchivedShape(@Nullable String trackId) {
+        return trackId != null && !trackId.isEmpty() && ArchivedShapeIds.contains(trackId);
+    }
+
     public static void rememberAdoptableLiveTrack(@NonNull String trackId,
                                                   @NonNull String title,
                                                   @NonNull String deviceId,
                                                   @NonNull String creatorZoneId) {
-        if (trackId.isEmpty() || deviceId.isEmpty()) return;
+        if (trackId.isEmpty() || deviceId.isEmpty() || isArchivedShape(trackId)) return;
         if (LiveTracksById.containsKey(trackId)) return;
         AdoptableLiveTracksByDeviceId.put(deviceId, new AdoptableLiveTrack(
                 trackId, title, deviceId, creatorZoneId));
@@ -792,8 +804,10 @@ public class CaltopoMap {
 
     @Nullable
     public static AdoptableLiveTrack takeAdoptableLiveTrack(@NonNull String deviceId) {
+        // A peer LiveTrack belongs to that tablet's flight. A granted lease mints its own id.
         if (deviceId.isEmpty()) return null;
-        return AdoptableLiveTracksByDeviceId.remove(deviceId);
+        AdoptableLiveTracksByDeviceId.remove(deviceId);
+        return null;
     }
 
     @Nullable
@@ -858,9 +872,8 @@ public class CaltopoMap {
         boolean peerLeaseActive = !remoteId.isEmpty() && peers.hasActivePeerOwner(remoteId);
         // Archive only own-zone duplicates, or orphans with no active peer owner lease.
         if (!createdByThisZone) {
-            rememberAdoptableLiveTrack(trackId, title, featureDeviceId, creatorZoneId);
+            // Another tablet's LiveTrack is not ours to adopt or append to.
             if (peerLeaseActive) return false;
-            // No active peer lease: orphan stale duplicate may be archived below.
         }
 
         if (!DuplicateLiveTrackArchivePending.add(trackId)) return true;
@@ -1307,11 +1320,6 @@ public class CaltopoMap {
                 } else if (archiveDuplicateLiveTrackIfNeeded(feature, prop, classString, idString, title)) {
                     CTDebug(TAG, "parseMapUpdate(): duplicate liveTrack matched local publisher - archiving");
                 } else {
-                    String deviceId = prop.optString("deviceId", "");
-                    if (!deviceId.isEmpty()) {
-                        rememberAdoptableLiveTrack(
-                                idString, title, deviceId, prop.optString("r2cZoneId", ""));
-                    }
                     CTDebug(TAG, "parseMapUpdate(): liveTrack is not one of ours - ignoring");
                     ignoreCount++;
                 }
@@ -2283,6 +2291,22 @@ public class CaltopoMap {
                 if (onComplete != null) onComplete.accept(false);
                 return;
             }
+            boolean createdHere = wasLocallyCreatedLiveTrack(trackId);
+            String archiveId = OwnedFlightLiveTrack.shapeIdForArchive(
+                    trackId, createdHere, isArchivedShape(trackId), java.util.UUID.randomUUID().toString());
+            final String featureClassForArchive;
+            if (!archiveId.equals(trackId)) {
+                CTWarn(TAG, String.format(Locale.US,
+                        "archiveFeature(): live-track id %s belongs to another flight; minting shape %s",
+                        trackId, archiveId));
+                feature.put("id", archiveId);
+                noteLocallyCreatedLiveTrackId(archiveId);
+                trackId = archiveId;
+                featureClassForArchive = "Shape";
+            } else {
+                featureClassForArchive = featureClass;
+            }
+            final String archivedTrackId = trackId;
             JSONObject prop = feature.optJSONObject("properties");
             if (null == prop) {
                 prop = new JSONObject();
@@ -2298,25 +2322,31 @@ public class CaltopoMap {
             prop.put("class", "Shape");  // convert from LiveTrack to shape.
             AtomicReference<CaltopoOp> deleteOp = new AtomicReference<>();
             CaltopoOp op = runtime.getCalTopoSessionGateway()
-                    .editObjectOnMap(destinationMapId, "Shape", trackId, feature, archiveOp -> {
-                        onArchiveFeatureEditFinished(trackId, archiveOp);
+                    .editObjectOnMap(destinationMapId, "Shape", archivedTrackId, feature, archiveOp -> {
+                        onArchiveFeatureEditFinished(archivedTrackId, archiveOp);
                         if (!archiveOp.success()) {
                             if (onComplete != null) onComplete.accept(false);
                             return;
                         }
-                        if (!featureClass.equals("LiveTrack")) {
-                            if (destinationMapId.equals(GetMapId())) refreshArtifactsAfterArchiveFinished(trackId, true);
+                        if (!featureClassForArchive.equals("LiveTrack")) {
+                            // The id is already a Shape, or it was minted for this flight.
+                            // Do not DELETE /LiveTrack/{id}. That delete removes the shape
+                            // when the object is already a Shape. A LiveTrack this tablet
+                            // just created still takes the branch below: the Shape POST
+                            // converts it, and the LiveTrack DELETE then 400s, which is
+                            // why a normal handoff keeps its shape.
+                            if (destinationMapId.equals(GetMapId())) refreshArtifactsAfterArchiveFinished(archivedTrackId, true);
                             if (onComplete != null) onComplete.accept(true);
                             return;
                         }
-                        CTInfo(TAG, String.format(Locale.US, "archiveFeature(): Stopping liveTrack %s....", trackId));
+                        CTInfo(TAG, String.format(Locale.US, "archiveFeature(): Stopping liveTrack %s....", archivedTrackId));
                         deleteOp.set(runtime.getCalTopoSessionGateway()
-                                .deleteLiveTrackOnMap(destinationMapId, trackId, finishedDeleteOp -> {
+                                .deleteLiveTrackOnMap(destinationMapId, archivedTrackId, finishedDeleteOp -> {
                                     CTInfo(TAG, String.format(Locale.US,
                                             "archiveFeature(): delete liveTrackId=%s success=%s responseCode=%d",
-                                            trackId, finishedDeleteOp.success(), finishedDeleteOp.responseCode));
+                                            archivedTrackId, finishedDeleteOp.success(), finishedDeleteOp.responseCode));
                                     if (destinationMapId.equals(GetMapId())) refreshArtifactsAfterArchiveFinished(
-                                            trackId, finishedDeleteOp.success());
+                                            archivedTrackId, finishedDeleteOp.success());
                                     if (onComplete != null) onComplete.accept(finishedDeleteOp.success());
                                 }));
                     });
@@ -2701,6 +2731,7 @@ public class CaltopoMap {
         if (properties != null) {
             featureClass = properties.optString("class");
         }
+        if ("Shape".equals(featureClass)) noteArchivedShape(featureId);
         CTDebug(TAG, String.format(Locale.US,
                 "notifyArtifactFeature(): source=%s id=%s class=%s cached=%d listeners=%d",
                 source, featureId, featureClass, artifactCount, listeners.size()));
@@ -2829,8 +2860,8 @@ public class CaltopoMap {
             String mine=GetMyUUID();
             for(DeviceMarkerJournal.Entry entry:markerJournal().entries()) {
                 if(!entry.domain.equals(domain))continue;
-                // Actively publishing to this map: reuse the journaled marker id (do not invent a second feature).
-                if(publishingCurrentMap&&entry.map.equals(currentMap)&&provenOwnDeviceMarker(entry,mine)) {
+                // This map's own device marker is updated in place. Deleting it returns HTTP 400.
+                if(currentMap!=null&&!currentMap.isEmpty()&&entry.map.equals(currentMap)&&provenOwnDeviceMarker(entry,mine)) {
                     activeMarkerKeys.add(entry.key());
                     if(ResolvedMyDeviceMarkerId==null||ResolvedMyDeviceMarkerId.isEmpty())
                         ResolvedMyDeviceMarkerId=entry.marker;
