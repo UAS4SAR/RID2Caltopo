@@ -326,9 +326,56 @@ object BtrxProtocol {
         return Detect(u32(p, 0), i8(p, 4), i8(p, 5), i16(p, 6), u8(p, 8), u8(p, 9), records)
     }
 
-    // ---- payloads R2C sends (M1 only needs ROLE_GET; the rest arrive with later milestones) ----
+    // ---- payloads R2C sends ----
 
     fun roleGetFrame(seq: Int): ByteArray = encodeFrame(ROLE_GET, seq = seq)
+
+    const val PAIR_CONFIRM_LEN = 61
+    const val PSK_MAX = 32
+    const val NAME_LEN = 12
+
+    /**
+     * PAIR_CONFIRM (0x11), 61 bytes: pod_id u32, nonce 8, role_a, role_b, confirm,
+     * channel, psk_len, psk 32, name 12 (protocol.py pack_pair_confirm). Version 1
+     * always sends channel 0 with no key: a key moves the starboard board to a
+     * channel the Desk Pod does not have. [channel] and [psk] exist only so the
+     * firmware test vector can be reproduced.
+     */
+    fun pairConfirmPayload(
+        podId: Long, nonce: ByteArray, roleA: Int = ROLE_STARBOARD, roleB: Int = ROLE_PORT,
+        confirm: Int = 1, channel: Int = 0, psk: ByteArray = ByteArray(0), name: String = "",
+    ): ByteArray {
+        require(nonce.size == NONCE_LEN) { "nonce must be $NONCE_LEN bytes" }
+        require(psk.size == 0 || psk.size == 16 || psk.size == PSK_MAX) { "psk must be empty, 16 or 32 bytes" }
+        val out = ByteArray(PAIR_CONFIRM_LEN)
+        putU32(out, 0, podId)
+        nonce.copyInto(out, 4)
+        out[12] = roleA.toByte(); out[13] = roleB.toByte(); out[14] = confirm.toByte()
+        out[15] = channel.toByte(); out[16] = psk.size.toByte()
+        psk.copyInto(out, 17)
+        val ascii = name.map { if (it.code in 0x20..0x7E) it.code.toByte() else '?'.code.toByte() }.take(NAME_LEN)
+        ascii.forEachIndexed { i, b -> out[49 + i] = b }
+        return out
+    }
+
+    /** A complete PAIR_CONFIRM frame; the header carries the pod_id being assigned, as r2c_sim does. */
+    fun pairConfirmFrame(seq: Int, podId: Long, nonce: ByteArray, roleA: Int = ROLE_STARBOARD, roleB: Int = ROLE_PORT, confirm: Int = 1): ByteArray =
+        encodeFrame(PAIR_CONFIRM, seq = seq, podId = podId, payload = pairConfirmPayload(podId, nonce, roleA, roleB, confirm))
+
+    /**
+     * The pod_id R2C gives a Drone Pod at pairing: FNV-1a (32 bit) over dev_a's four
+     * little-endian bytes, never 0 (0 means "keep the current id" and marks unpaired
+     * frames). The same on iPad (BtrxProtocol.podId(forDevA:)), so both tablets name a
+     * pod the same way. Brief section 6 suggests "the low 32 bits of a hash of dev_a".
+     */
+    fun podIdFor(devA: Long): Long {
+        var h = 0x811C9DC5L
+        for (i in 0 until 4) {
+            h = h xor ((devA ushr (8 * i)) and 0xFF)
+            h = (h * 0x01000193L) and 0xFFFFFFFFL
+        }
+        return if (h == 0L) 1L else h
+    }
 
     // ---- little-endian helpers ----
 

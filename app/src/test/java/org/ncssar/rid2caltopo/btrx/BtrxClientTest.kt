@@ -196,4 +196,60 @@ class BtrxClientTest {
         assertTrue(warns.any { it.startsWith("serial: undecodable FromRadio") })
         assertEquals(FromRadio.Other(0), MeshtasticSerial.parseFromRadio(ByteArray(0)))
     }
+
+    // ---- Bluetooth framing and the connect burst ----
+
+    private fun packetClient(clock: () -> Long, metas: MutableList<BtrxClient.RadioMeta>, out: MutableList<ByteArray>) = BtrxClient(
+        send = { out += it }, log = logger, random = Random(3), framing = BtrxClient.Framing.PACKET,
+        clock = clock, connectBurstMs = BtrxClient.CONNECT_BURST_MS,
+        listener = object : BtrxClient.Listener {
+            override fun onFrame(frame: P.Frame, meta: BtrxClient.RadioMeta) { metas += meta }
+        },
+    )
+
+    @Test
+    fun bluetoothFramingSendsBareProtobufsWithoutWakeBytes() {
+        val out = mutableListOf<ByteArray>()
+        val c = packetClient({ 0L }, mutableListOf(), out)
+        c.start()
+        assertEquals(1, out.size)
+        assertEquals(0x18, out[0][0].toInt()) // ToRadio field 3 (want_config_id), no 0x94 0xC3 header
+        val configId = MeshtasticSerial.ProtoReader(out[0]).let { r -> r.tag(); r.varint() }
+        c.onFromRadio(ProtoWriter().bytesField(3, ProtoWriter().varint(1, deskNode).bytes()).bytes())
+        c.onFromRadio(ProtoWriter().varint(7, configId).bytes())
+        assertEquals(BtrxClient.State.READY, c.state)
+        // ROLE_GET goes out as a bare ToRadio.packet
+        assertEquals(0x0A, out.last()[0].toInt())
+        c.sendHeartbeat()
+        assertEquals("3a00", P.hex(out.last()))
+    }
+
+    @Test
+    fun emptyFromRadioReadIsIgnored() {
+        val c = packetClient({ 0L }, mutableListOf(), mutableListOf())
+        c.start()
+        c.onFromRadio(ByteArray(0))
+        assertEquals(BtrxClient.State.CONFIGURING, c.state)
+        assertTrue(warns.isEmpty())
+    }
+
+    @Test
+    fun framesInTheFirstTwoSecondsAfterConfigCompleteAreBacklog() {
+        var now = 10_000L
+        val metas = mutableListOf<BtrxClient.RadioMeta>()
+        val out = mutableListOf<ByteArray>()
+        val c = packetClient({ now }, metas, out)
+        c.start()
+        val configId = MeshtasticSerial.ProtoReader(out[0]).let { r -> r.tag(); r.varint() }
+        c.onFromRadio(ProtoWriter().bytesField(3, ProtoWriter().varint(1, deskNode).bytes()).bytes())
+        c.onFromRadio(ProtoWriter().varint(7, configId).bytes())
+        val detect = P.fromHex(BtrxProtocolTest.EXAMPLES.getValue("DETECT"))
+        now += 500; c.onFromRadio(btrxPacket(starboard, detect))
+        now += 1_400; c.onFromRadio(btrxPacket(starboard, detect))
+        now += 200; c.onFromRadio(btrxPacket(starboard, detect))
+        assertEquals(listOf(true, true, false), metas.map { it.backlog })
+        assertEquals(2, c.backlogCount("DETECT"))
+        assertEquals(1, c.frameCount("DETECT"))
+        assertEquals(12_100L, metas.last().arrivalMs)
+    }
 }

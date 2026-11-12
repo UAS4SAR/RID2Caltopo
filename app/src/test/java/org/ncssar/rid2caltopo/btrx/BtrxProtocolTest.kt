@@ -303,6 +303,48 @@ class BtrxProtocolTest {
         assertFalse(line, line.contains("665544"))
     }
 
+    // ---- PAIR_CONFIRM and pod_id (R2C sends) ----
+
+    @Test
+    fun pairConfirmEncodesToTheBriefExample() {
+        val nonce = h("570b73e9475dfe3f")
+        assertEquals(EXAMPLES["PAIR_CONFIRM"], P.hex(P.pairConfirmFrame(seq = 6, podId = 0, nonce = nonce)))
+    }
+
+    @Test
+    fun pairConfirmWithAssignedPodIdMatchesProtocolPy() {
+        // protocol.py: encode_frame(PAIR_CONFIRM, seq=7, pod_id=0x45d35af0, payload=pack_pair_confirm(0x45d35af0, nonce))
+        val nonce = h("570b73e9475dfe3f")
+        assertEquals(PAIR_CONFIRM_POD_ID, P.hex(P.pairConfirmFrame(seq = 7, podId = 0x45D35AF0L, nonce = nonce)))
+    }
+
+    @Test
+    fun pairConfirmPayloadReproducesTheFirmwareVector() {
+        val f = P.decodeFrame(h(PAIR_CONFIRM_FIRMWARE))
+        val payload = P.pairConfirmPayload(
+            podId = 9, nonce = h("0102030405060708"), roleA = 2, roleB = 1, confirm = 1,
+            channel = 1, psk = ByteArray(16) { 0xAB.toByte() }, name = "btrx",
+        )
+        assertEquals(P.hex(f.payload), P.hex(payload))
+    }
+
+    @Test
+    fun pairConfirmRejectsABadNonce() {
+        try {
+            P.pairConfirmPayload(1, ByteArray(7))
+            fail("7-byte nonce accepted")
+        } catch (_: IllegalArgumentException) {
+        }
+    }
+
+    @Test
+    fun podIdIsFnv1aOfDevAAndNeverZero() {
+        assertEquals(0x45D35AF0L, P.podIdFor(0x4C8C125BL))
+        assertEquals(0xEBEE7337L, P.podIdFor(2))
+        assertEquals(0x4B95F515L, P.podIdFor(0))
+        for (d in listOf(0L, 1L, 0xFFFFFFFFL, 0x018968BEL)) assertTrue(P.podIdFor(d) != 0L)
+    }
+
     @Test
     fun encodeRejectsOversizedPayload() {
         assertArrayEquals(h(EXAMPLES.getValue("ROLE_GET")), P.encodeFrame(P.ROLE_GET))
@@ -327,6 +369,8 @@ class BtrxProtocolTest {
             "HEALTH" to "b7520180af00000000001e4c010000000102020140000000011805000600e20c000000000000020001d190",
             "HELLO" to "b752010101d4c3b2a1000c425452580102000144332211ccbb",
         )
+        const val PAIR_CONFIRM_POD_ID = "b752011107f05ad345003df05ad345570b73e9475dfe3f0201010000000000000000000000000000" +
+            "00000000000000000000000000000000000000000000000000000000000000009498"
         const val PAIR_CONFIRM_FIRMWARE = "b75201110309000000003d" +
             "0900000001020304050607080201010110" +
             "abababababababababababababababab" +

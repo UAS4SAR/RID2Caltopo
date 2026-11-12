@@ -11,14 +11,17 @@ import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.TimeUnit
 
 /**
- * USB CDC-ACM link to one Desk Pod (usb-serial-for-android, MIT). Reads and
- * writes run on the library's own I/O threads; timers run on a private
- * scheduler. Nothing here runs on, or waits for, the main thread.
+ * USB CDC-ACM link to one Desk Pod (usb-serial-for-android, MIT), the debug link on
+ * Android; Bluetooth ([BtrxBleLink]) is the primary one. Reads and writes run on the
+ * library's own I/O threads; timers run on a private scheduler. Nothing here runs
+ * on, or waits for, the main thread. While this link is open the Desk Pod firmware
+ * keeps Bluetooth off, so [BtrxManager] stops the Bluetooth link first.
  */
 class BtrxUsbLink(
     private val usbManager: UsbManager,
     val device: UsbDevice,
     private val log: BtrxClient.Logger,
+    private val forward: BtrxClient.Listener = object : BtrxClient.Listener {},
     private val onClosed: (BtrxUsbLink, String) -> Unit,
 ) {
     private var port: UsbSerialPort? = null
@@ -31,13 +34,19 @@ class BtrxUsbLink(
     val client = BtrxClient(
         send = { bytes -> io?.writeAsync(bytes) ?: log.warn("write dropped: link not open") },
         log = log,
+        framing = BtrxClient.Framing.SERIAL,
+        connectBurstMs = BtrxClient.CONNECT_BURST_MS,
         listener = object : BtrxClient.Listener {
+            override fun onConfigured(localNode: Long) = forward.onConfigured(localNode)
             override fun onLocalRoleReport(report: BtrxProtocol.RoleReport) {
+                forward.onLocalRoleReport(report)
                 if (report.role != BtrxProtocol.ROLE_DESK_POD) {
                     // All three boards share VID/PID; only the Desk Pod may be used.
                     timers.execute { close("not a Desk Pod (role=${report.role})") }
                 }
             }
+            override fun onFrame(frame: BtrxProtocol.Frame, meta: BtrxClient.RadioMeta) = forward.onFrame(frame, meta)
+            override fun onVersionRefused(fromNode: Long, version: Int) = forward.onVersionRefused(fromNode, version)
         },
     )
 

@@ -6,24 +6,36 @@ import org.ncssar.rid2caltopo.btrx.BtrxProtocol as P
 import org.ncssar.rid2caltopo.btrx.MeshtasticSerial.FromRadio
 
 /**
- * Minimal Desk Pod client (btrx milestone 1, "Connect and decode"): the
- * Meshtastic serial handshake, send/receive on app port 256, every btrx frame
- * decoded into the log, and ROLE_GET to the Desk Pod itself (`^local`).
+ * Desk Pod client: the Meshtastic phone-API handshake, send/receive on app port
+ * 256, every btrx frame decoded into the log, and ROLE_GET to the Desk Pod itself
+ * (`^local`). The same client runs over USB and Bluetooth; only [framing] differs:
  *
- * Transport-agnostic so it runs in JVM unit tests: [send] writes bytes to the
- * serial port without blocking, and the transport feeds received bytes into
- * [onBytes]. All entry points are synchronized and only touch memory.
+ * - [Framing.SERIAL] (USB): wake bytes, then 0x94 0xC3 + length framing; the
+ *   transport feeds raw serial bytes into [onBytes].
+ * - [Framing.PACKET] (Bluetooth): each ToRadio write and each FromRadio read is
+ *   one bare protobuf; the transport feeds each read into [onFromRadio].
  *
- * Later milestones hook in through [Listener]: pairing (DESK_PAIR / PAIR_REQ /
- * PAIR_ACK), HEALTH status, TIME_PING clock checks, detections to clues and the
- * FILTER_LIST ignore list are not built yet.
+ * Transport-agnostic so it runs in JVM unit tests: [send] hands bytes to the link
+ * without blocking. All entry points are synchronized and only touch memory.
+ * Pairing, status and link health live in [BtrxDeskPodModel], fed by [Listener].
  */
 class BtrxClient(
     private val send: (ByteArray) -> Unit,
     private val log: Logger,
     private val listener: Listener = object : Listener {},
     private val random: Random = SecureRandom(),
-) {
+    val framing: Framing = Framing.SERIAL,
+    private val clock: () -> Long = System::currentTimeMillis,
+    /**
+     * Frames arriving within this many ms after config_complete_id are also tagged
+     * backlog. The Desk Pod drains up to 32 queued frames in the first 1-2 s of a
+     * session and they carry no timestamp; links pass [CONNECT_BURST_MS]. 0 keeps the
+     * M1 rule (only frames before config_complete_id are backlog).
+     */
+    private val connectBurstMs: Long = 0,
+) : BtrxFrameSender {
+    enum class Framing { SERIAL, PACKET }
+
     interface Logger {
         fun info(message: String)
         fun warn(message: String)
@@ -52,11 +64,9 @@ class BtrxClient(
         /** A board sent a frame version this app does not understand (pilot alert in M2). */
         fun onVersionRefused(fromNode: Long, version: Int) {}
 
-        // M3 pairing hook (not built yet): DESK_PAIR arrives on port 256 with from = to = the
-        // Desk Pod node; PAIR_REQ / PAIR_ACK come from the starboard board.
-        // TODO(btrx M3): PAIR_CONFIRM should assign a non-zero pod_id (for example the low
-        //  32 bits of a hash of dev_a) so later frames say which Drone Pod sent them.
-        //  Frames sent before pairing carry pod_id 0. Only pod_id 0 has been tried on the boards.
+        // Pairing (DESK_PAIR from the Desk Pod itself, PAIR_REQ / PAIR_ACK from the starboard
+        // board) is handled by BtrxDeskPodModel from onFrame. PAIR_CONFIRM assigns a non-zero
+        // pod_id (BtrxProtocol.podIdFor); only pod_id 0 had been tried on the boards before.
     }
 
     enum class State { IDLE, CONFIGURING, READY, CLOSED }
@@ -75,6 +85,7 @@ class BtrxClient(
 
     private var configId = 0L
     private var seq = 0
+    private var readyAtMs = 0L
     private val decoder = MeshtasticSerial.StreamDecoder(::onProto) { skipped ->
         log.info("serial: skipped $skipped byte(s) of non-API output")
     }
@@ -90,22 +101,34 @@ class BtrxClient(
         if (state != State.IDLE) return
         configId = (random.nextInt() and 0x7FFFFFFF).toLong().coerceAtLeast(1)
         state = State.CONFIGURING
-        send(MeshtasticSerial.wakeBytes())
-        send(MeshtasticSerial.frame(MeshtasticSerial.toRadioWantConfig(configId)))
+        if (framing == Framing.SERIAL) send(MeshtasticSerial.wakeBytes())
+        sendToRadio(MeshtasticSerial.toRadioWantConfig(configId))
         log.info("handshake: want_config_id=$configId sent")
     }
 
+    /** USB: raw serial bytes, split into protobufs by the 0x94 0xC3 framing. */
     @Synchronized
     fun onBytes(data: ByteArray, length: Int = data.size) {
         if (state == State.CLOSED) return
         decoder.feed(data, length)
     }
 
+    /** Bluetooth: one FromRadio protobuf per characteristic read (an empty read means drained). */
+    @Synchronized
+    fun onFromRadio(proto: ByteArray) {
+        if (state == State.CLOSED || proto.isEmpty()) return
+        onProto(proto)
+    }
+
+    private fun sendToRadio(proto: ByteArray) {
+        send(if (framing == Framing.SERIAL) MeshtasticSerial.frame(proto) else proto)
+    }
+
     /** Keep-alive; the transport calls this about every 5 minutes. */
     @Synchronized
     fun sendHeartbeat() {
         if (state != State.READY) return
-        send(MeshtasticSerial.frame(MeshtasticSerial.toRadioHeartbeat()))
+        sendToRadio(MeshtasticSerial.toRadioHeartbeat())
     }
 
     /** Asks a board what it is. [to] null means the Desk Pod itself (`^local`). */
@@ -120,15 +143,18 @@ class BtrxClient(
         return true
     }
 
-    /** Sends one btrx frame on port 256. Later milestones build PAIR_CONFIRM, TIME_PING and FILTER_LIST on this. */
+    /** Sends one btrx frame on port 256 (hop_limit 0). PAIR_CONFIRM, TIME_PING and FILTER_LIST build on this. */
     @Synchronized
-    fun sendFrame(to: Long, frame: ByteArray) {
+    override fun sendFrame(to: Long, frame: ByteArray) {
         val id = (random.nextInt().toLong() and 0xFFFFFFFFL).let { if (it == 0L) 1L else it }
-        send(MeshtasticSerial.frame(MeshtasticSerial.toRadioPacket(to, id, P.PRIVATE_APP_PORT, frame)))
+        sendToRadio(MeshtasticSerial.toRadioPacket(to, id, P.PRIVATE_APP_PORT, frame))
     }
 
+    @get:Synchronized
+    override val isReady: Boolean get() = state == State.READY
+
     @Synchronized
-    fun nextSeq(): Int {
+    override fun nextSeq(): Int {
         seq = (seq + 1) and 0xFF
         return seq
     }
@@ -137,6 +163,10 @@ class BtrxClient(
     fun close() {
         state = State.CLOSED
     }
+
+    /** Live and backlog frame counts by type since connecting (copies). */
+    @Synchronized
+    fun counts(): Pair<Map<String, Int>, Map<String, Int>> = HashMap(frameCounts) to HashMap(backlogCounts)
 
     /** Frame counts by type since connecting, for comparing with an r2c_sim run. */
     @Synchronized
@@ -174,6 +204,7 @@ class BtrxClient(
                     return
                 }
                 state = State.READY
+                readyAtMs = clock()
                 val node = localNode
                 log.info("handshake: config complete, Desk Pod node ${node?.let(::nodeName) ?: "unknown"}")
                 if (node != null) listener.onConfigured(node)
@@ -189,8 +220,9 @@ class BtrxClient(
             otherPorts++
             return
         }
-        val backlog = state != State.READY
-        val meta = RadioMeta(packet.from, packet.to, packet.rxRssi, packet.rxSnr, System.currentTimeMillis(), backlog)
+        val now = clock()
+        val backlog = state != State.READY || (connectBurstMs > 0 && now - readyAtMs < connectBurstMs)
+        val meta = RadioMeta(packet.from, packet.to, packet.rxRssi, packet.rxSnr, now, backlog)
         val radio = (if (backlog) "backlog " else "") +
             "from=${nodeName(packet.from)} rssi=${packet.rxRssi} snr=${"%.1f".format(packet.rxSnr)}"
         if (packet.from in refusedNodes) {
@@ -238,6 +270,8 @@ class BtrxClient(
     }
 
     companion object {
+        const val CONNECT_BURST_MS = 2_000L
+
         fun nodeName(node: Long): String = "!%08x".format(node and 0xFFFFFFFFL)
     }
 }
