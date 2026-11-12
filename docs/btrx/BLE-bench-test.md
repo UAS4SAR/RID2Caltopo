@@ -1,7 +1,8 @@
 # btrx bench test: Desk Pod over Bluetooth, link health and Pair drone pod (Android and iPad)
 
 Bluetooth is the primary Desk Pod link on both platforms. USB
-(`M1-bench-test.md`) stays as an Android debug link. Main menu > **Desk Pod**
+(`M1-bench-test.md`) stays as an Android debug link, used only when
+**Use USB link (debug)** is on (off by default; see section 5). Main menu > **Desk Pod**
 shows the link, the Desk Pod's role and firmware, link health and the
 **Pair drone pod** flow. The panel looks and behaves the same on Android and
 the iPad. **Dismiss** only hides the panel; the link keeps running.
@@ -38,13 +39,18 @@ Bench facts: Desk Pod `Meshtastic_42ca` (node `!66c842ca`), Drone Pod
    *pairing with the Desk Pod (enter the PIN)* on first use, *connecting*,
    *reading configuration*, *connected*.
 3. First use only: the system asks for the Bluetooth PIN. Enter `123456`.
-   On Android the panel says so while bonding; on the iPad the system sheet
-   appears when the app first touches the encrypted characteristic.
+   On Android the panel says so while bonding. On the iPad the system PIN sheet
+   appears when the app enables notifications (an encrypted write); the panel
+   shows *pairing with the Desk Pod (enter the PIN)* and the app waits up to
+   90 s for the PIN to be typed before giving up and retrying.
 4. Expect in the app log (tag/category `Btrx`):
    - `ble: found Meshtastic_42ca rssi=...`
    - `ble: connected to Meshtastic_42ca`
    - `handshake: want_config_id=... sent`, `handshake: config complete, Desk Pod node !66c842ca`
-   - `tx ROLE_GET to !66c842ca`
+   - `rx backlog from=...` for each frame the Desk Pod queued while the app was away,
+     then `connect backlog drained: N frame(s) queued while R2C was away`
+     (everything read before the first empty FromRadio read is backlog)
+   - `tx ROLE_GET to !66c842ca` (sent only after the backlog, so its answer is live)
    - `Desk Pod confirmed: role=3 build_hash=0x0100 (supported)`
 5. The panel shows **Role: Desk Pod** and **Firmware build: 0x0100 (supported)**.
 
@@ -70,21 +76,36 @@ how many frames were tagged backlog right after connecting.
 3. Nod the drone pod twice (hold still 3 s, tip at least 25° and back, twice).
 4. Step 3 shows the pod (`!018968be`, dev_a, dev_b, imu_ok, RSSI, SNR) and
    any warning (port board missing, motion sensor not OK). Nothing is sent yet.
-5. Tap **Confirm pod**. Log: `tx PAIR_CONFIRM to !018968be ... pod_id=<non-zero>`.
+5. Tap **Confirm pod** while the pod is still asking (its PAIR_REQ repeats every
+   2 s inside its own 60 s nod window). Log:
+   `pairing: PAIR_CONFIRM to !018968be nonce=... pod_id=<non-zero>`.
+   If the pod stops asking for more than 5 s, step 3 says *Not asking any more:
+   nod the drone pod twice again*, **Confirm pod** is hidden, and a new nod
+   brings it back.
 6. Expect step 4 ✓ with `a_ok=1 b_ok=1` and *Drone Pod paired.* The panel
    shows *Paired Drone Pod: !018968be, pod_id ...*. It survives an app restart.
 
-Pass: PAIR_ACK `a_ok=1`; HEALTH continues with `confirmed=1`.
+Pass: PAIR_ACK `a_ok=1`; HEALTH continues with `confirmed=1`. From now on link
+health, RSSI and detections come only from `!018968be`; other pods are only
+counted (*Other Drone Pods heard on the channel*).
 
 Also check, one at a time:
 - **Tap before connecting.** Turn Bluetooth off, tap the Desk Pod button, turn
   Bluetooth on within about 30 s, then start pairing. The window opened by the
   backlog tap still counts (*The Desk Pod pairing window is open*), and the
   flow starts at step 2. Record whether the DESK_PAIR frame was tagged backlog.
+  This works only while the Desk Pod's queue has room: with the Drone Pod
+  running it fills about 90 s after the last disconnect and later frames,
+  including the tap, are dropped. If the window does not show, tap the Desk Pod
+  button again.
 - **Cancel.** Start pairing, nod, then **Cancel pairing** at step 3. Nothing is
-  sent (no `tx PAIR_CONFIRM`). The pod times out on its own.
-- **Window runs out.** Tap the button and do not nod for 60 s: step 2 fails with
-  *The pairing window ran out.*
+  sent (no `pairing: PAIR_CONFIRM`); confirm=0 would unpair, so it is never sent.
+  The pod keeps sending PAIR_REQ until its own window ends, and holds its
+  DETECTs back for up to 60 s after the nod.
+- **Window runs out.** Tap the button and do not nod for 60 s: step 2 fails.
+  The Desk Pod's window-closed frame arrives just before the app's own 60 s
+  timer, so the message is usually *The Desk Pod closed its pairing window…*
+  rather than *The pairing window ran out.*
 - **Button not tapped.** Start pairing and wait 2 minutes: step 1 fails.
 
 ## 4. Reconnect
@@ -96,15 +117,27 @@ Also check, one at a time:
    service keeps the process alive; iPad: `bluetooth-central` background mode).
 3. **Forget this Desk Pod** disconnects and scans for any Desk Pod again.
 
-## 5. USB and Bluetooth together (Android only)
+## 5. USB debug link (Android only)
 
-1. With the Bluetooth link up, plug the Desk Pod into the A5 Pro by USB.
-2. The panel shows *Desk Pod is attached by USB; Bluetooth paused* and the
-   link line reads *USB (debug)*. The log shows the Bluetooth session close
-   before `USB open`.
-3. Unplug. About 3 s later Bluetooth reconnects.
+The Desk Pod has no battery. A tablet's USB-C port may be what powers it, so USB
+is opt-in: **Use USB link (debug)** in the Desk Pod panel, off by default.
 
-Pass: never both links open at once.
+1. Switch off: plug the Desk Pod into the A5 Pro. Android does not offer to open
+   RID2Caltopo, the log says `... left alone: USB debug link is off, so it is
+   power only`, and Bluetooth stays the link (it connects once the Desk Pod has
+   booted).
+2. Switch on with the Desk Pod plugged in and the Bluetooth link up: the panel
+   shows *Desk Pod is attached by USB; Bluetooth paused* and the link line reads
+   *USB (debug)*. The log shows the Bluetooth session close before `USB open`.
+3. Switch off again: the log shows `USB: sent disconnect so the Desk Pod
+   re-enables Bluetooth`, and Bluetooth reconnects within seconds.
+4. Switch on, then unplug. Unplugging powers the Desk Pod off (no battery), so
+   Bluetooth reconnects only once it is powered again. With the disconnect sent
+   on a clean USB close it comes back in seconds; without it (cable pulled while
+   the USB link was open) the firmware may keep Bluetooth off for up to 15 min.
+
+Pass: never both links open at once; with the switch off a plugged-in Desk Pod
+never pauses Bluetooth.
 
 ## Notes
 

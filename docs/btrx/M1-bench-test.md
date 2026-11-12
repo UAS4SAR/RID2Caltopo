@@ -5,8 +5,12 @@ in UAS4SAR/btrx, section 13). Android only. The app finds the Desk Pod on
 USB, runs the Meshtastic serial handshake, decodes every btrx frame on app
 port 256 into the app log (tag `Btrx`), and sends `ROLE_GET` to the Desk Pod
 (`^local`). USB is now the Android debug link; Bluetooth, the Desk Pod panel
-and pairing on both platforms are covered in `BLE-bench-test.md`. With
-Bluetooth on, plugging in USB pauses Bluetooth first.
+and pairing on both platforms are covered in `BLE-bench-test.md`. **Turn on
+"Use USB link (debug)" in Main menu > Desk Pod first**; with it off (the
+default) a plugged-in Desk Pod is treated as power only. With Bluetooth on,
+opening USB pauses Bluetooth first. Over USB, only frames before
+config_complete are tagged backlog (no empty-read signal on serial); queued
+frames that follow config_complete count as live.
 
 ## Setup
 
@@ -50,7 +54,8 @@ the Mac mini. Leave the starboard and port boards powered.
    - `rx from=!xxxxxxxx ... ROLE_REPORT ... role=3(desk-pod) ... build_hash=0x0100`
    - `Desk Pod confirmed: role=3 build_hash=0x0100 (supported)`
 4. Right after connecting, a burst of older DETECT/HEALTH frames the Desk
-   Pod queued may appear, tagged `backlog`. That is expected (brief section 4.2).
+   Pod queued may appear. Over USB they arrive after config_complete and are
+   not tagged `backlog` (see the note above); they are old regardless.
 
 Pass: `ROLE_GET` returns `role=3`.
 
@@ -61,9 +66,10 @@ the app asks again after 10 s and, 10 s later, logs
 The link stays open and the listen test below still applies. Record which of
 the two happened, and report a missing ROLE_REPORT to the btrx firmware side.
 
-Frames the Desk Pod had queued are delivered before the handshake finishes.
-They are logged as `rx backlog from=...` and counted separately in the
-summary (`backlog: DETECT=...`); they are old and display-only.
+Frames the Desk Pod had queued are delivered right after config_complete
+(BT RX review, November 11, 2026). Over Bluetooth they are tagged `backlog`
+up to the first empty FromRadio read; over USB only frames before
+config_complete are, so expect the connect-time burst in the live counts here.
 
 ## 4. 120 s listen
 

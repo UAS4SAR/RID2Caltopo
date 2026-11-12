@@ -26,9 +26,17 @@ Project-only engineering record; do not package in the app, copy into store meta
   mirrored (`BtrxDeskPodModelTest.kt` / `BtrxDeskPodModelTests.swift`, and the
   protocol, client and GATT tests).
 - Remaining planned difference: USB stays an Android-only debug link (an iPad
-  cannot open a generic USB serial device). On Android, USB attach pauses
-  Bluetooth ("Desk Pod is attached by USB; Bluetooth paused"); the iPad has no
-  such state.
+  cannot open a generic USB serial device), now opt-in behind "Use USB link
+  (debug)" (off by default; the Desk Pod has no battery and may just be powered
+  from the tablet). With it on, USB attach pauses Bluetooth ("Desk Pod is
+  attached by USB; Bluetooth paused"); the iPad has neither the switch nor that
+  state.
+- BT RX review fixes, both platforms: backlog is the first Bluetooth drain after
+  config_complete (ROLE_GET waits for it); backlog frames never update live
+  health, RSSI or the Desk Pod's role; once paired only the paired pod's node is
+  accepted; a pod that stops repeating PAIR_REQ is marked stale; ToRadio size
+  limits for the 247-byte MTU; distinct heartbeats. iPad only: 90 s for the first
+  PIN entry. Android only: USB sends ToRadio{disconnect} before closing.
 - Native difference: Android bonds explicitly (createBond, PIN prompt from the
   app's request); iPadOS shows its own PIN sheet when the app first reads an
   encrypted characteristic.
