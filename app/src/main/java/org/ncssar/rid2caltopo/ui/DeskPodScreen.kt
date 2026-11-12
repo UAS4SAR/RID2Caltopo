@@ -37,7 +37,7 @@ import org.ncssar.rid2caltopo.btrx.BtrxDeskPodText.StepStatus
 import org.ncssar.rid2caltopo.btrx.BtrxManager
 
 /**
- * Main menu > Desk Pod: the btrx Desk Pod link (Bluetooth, or USB for debugging),
+ * Main menu > BTRX: the btrx Desk Pod link (Bluetooth, or USB for debugging),
  * its status and link health, and the "Pair drone pod" flow. Same sections, order
  * and wording as the iPad's DeskPodView. "Dismiss" only hides this panel; the link
  * keeps running (a calibration in progress too). "Cancel pairing" ends a pairing in

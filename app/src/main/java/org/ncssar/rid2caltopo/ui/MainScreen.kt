@@ -1752,7 +1752,7 @@ fun MainScreen(
                                 menuExpanded = false
                                 showWorkspaceStats = true
                             })
-                            DropdownMenuItem(text = { Text("Desk Pod") }, onClick = {
+                            DropdownMenuItem(text = { Text("BTRX") }, onClick = {
                                 menuExpanded = false
                                 showDeskPod = true
                             })

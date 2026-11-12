@@ -11,7 +11,8 @@ import org.ncssar.rid2caltopo.btrx.BtrxProtocol as P
  * thing (the iPad copy is R2CCore BtrxDeskPodText.swift; keep them matching).
  */
 object BtrxDeskPodText {
-    const val TITLE = "Desk Pod"
+    /** Main menu item and screen title (the btrx receiver system; the pods keep their names inside). */
+    const val TITLE = "BTRX"
     const val USB_PAUSED = "Desk Pod is attached by USB; Bluetooth paused"
     const val BLUETOOTH_TOGGLE = "Connect over Bluetooth"
     const val POD_STALE_HINT = "Not asking any more: nod the drone pod twice again."
