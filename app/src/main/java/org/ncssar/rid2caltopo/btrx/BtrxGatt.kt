@@ -13,7 +13,11 @@ object MeshtasticBle {
     const val FROM_RADIO_UUID = "2c55e69e-4993-11ed-b878-0242ac120002"
     const val FROM_NUM_UUID = "ed9da18c-a800-4f66-a670-aa7547e34453"
     const val CCCD_UUID = "00002902-0000-1000-8000-00805f9b34fb"
-    const val MTU = 512
+    /**
+     * ATT MTU to request: the Desk Pod's maximum is 247 and it rejects long (queued)
+     * writes, so every ToRadio must fit in MTU - 3 = 244 bytes ([BtrxClient.MAX_TO_RADIO_BLE]).
+     */
+    const val MTU = 247
     /** Desk Pods advertise as Meshtastic_xxxx (the last 4 hex digits of the node number). */
     const val NAME_PREFIX = "Meshtastic"
     /** Printed-PIN placeholder until each unit gets its own (btrx provisioning, planned). */

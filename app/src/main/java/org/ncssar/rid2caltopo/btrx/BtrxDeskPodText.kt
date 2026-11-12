@@ -14,6 +14,10 @@ object BtrxDeskPodText {
     const val TITLE = "Desk Pod"
     const val USB_PAUSED = "Desk Pod is attached by USB; Bluetooth paused"
     const val BLUETOOTH_TOGGLE = "Connect over Bluetooth"
+    const val POD_STALE_HINT = "Not asking any more: nod the drone pod twice again."
+    /** Android only: USB is a debug link (an iPad cannot open a USB serial device). */
+    const val USB_DEBUG_TOGGLE = "Use USB link (debug)"
+    const val USB_DEBUG_HINT = "Off: a Desk Pod plugged into this tablet only draws power and Bluetooth stays the link. On: a plugged-in Desk Pod is opened over USB and Bluetooth pauses."
     val PIN_HINT = "Bluetooth PIN: printed on the Desk Pod (${MeshtasticBle.DEFAULT_PIN} by default for now)."
 
     enum class StepStatus { PENDING, ACTIVE, DONE, FAILED }
@@ -112,7 +116,10 @@ object BtrxDeskPodText {
                     StepStatus.ACTIVE -> "${p.windowSecondsLeft} s left in the pairing window. Hold the pod still for 3 s, then tip it at least 25° and back, twice."
                     else -> ""
                 })
-                PairStep.POD_FOUND -> Step("Confirm the Drone Pod", status, c?.let { candidateLine(it) } ?: "")
+                PairStep.POD_FOUND -> Step(
+                    "Confirm the Drone Pod", status,
+                    (c?.let { candidateLine(it) } ?: "") + if (p.podStale && status == StepStatus.ACTIVE) "\n$POD_STALE_HINT" else "",
+                )
                 else -> Step("Drone Pod acknowledges", status, when {
                     p.aOk != null -> "a_ok=${p.aOk} b_ok=${p.bOk}" + (p.ackFlags?.let { " flags=${P.statusFlagNames(it)}" } ?: "")
                     status == StepStatus.ACTIVE -> "PAIR_CONFIRM sent (try ${p.confirmTries}); waiting for PAIR_ACK."

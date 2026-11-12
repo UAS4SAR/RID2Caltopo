@@ -8,9 +8,25 @@ import org.ncssar.rid2caltopo.btrx.BtrxLinkArbiter.Action
 import org.ncssar.rid2caltopo.btrx.BtrxLinkArbiter.Link
 
 class BtrxLinkPolicyTest {
+    private fun usbDebugArbiter() = BtrxLinkArbiter().apply { assertEquals(emptyList<Action>(), update(usbDebugEnabled = true)) }
+
+    @Test
+    fun withUsbDebugOffAPluggedInDeskPodIsPowerOnly() {
+        val a = BtrxLinkArbiter()
+        assertFalse(a.usbDebugEnabled) // off by default
+        assertEquals(listOf(Action.START_BLUETOOTH), a.update(bluetoothEnabled = true))
+        assertEquals(emptyList<Action>(), a.update(usbAttached = true))
+        assertEquals(Link.BLUETOOTH, a.active)
+        assertFalse(a.bluetoothPausedForUsb)
+        // Turning the debug switch on with the Desk Pod plugged in hands over to USB.
+        assertEquals(listOf(Action.STOP_BLUETOOTH, Action.OPEN_USB), a.update(usbDebugEnabled = true))
+        // And off again gives the link back to Bluetooth.
+        assertEquals(listOf(Action.CLOSE_USB, Action.START_BLUETOOTH), a.update(usbDebugEnabled = false))
+    }
+
     @Test
     fun usbAttachStopsBluetoothBeforeOpeningUsb() {
-        val a = BtrxLinkArbiter()
+        val a = usbDebugArbiter()
         assertEquals(listOf(Action.START_BLUETOOTH), a.update(bluetoothEnabled = true))
         assertEquals(listOf(Action.STOP_BLUETOOTH, Action.OPEN_USB), a.update(usbAttached = true))
         assertEquals(Link.USB, a.active)
@@ -21,7 +37,7 @@ class BtrxLinkPolicyTest {
 
     @Test
     fun neverBothLinksOpenInAnySequence() {
-        val a = BtrxLinkArbiter()
+        val a = usbDebugArbiter()
         var ble = false
         var usb = false
         val inputs = listOf(true to false, true to true, false to true, false to false, true to true, true to false, false to false, true to true)
@@ -41,7 +57,7 @@ class BtrxLinkPolicyTest {
 
     @Test
     fun turningBluetoothOffWhileUsbIsAttachedChangesNothing() {
-        val a = BtrxLinkArbiter()
+        val a = usbDebugArbiter()
         a.update(bluetoothEnabled = true, usbAttached = true)
         assertEquals(emptyList<Action>(), a.update(bluetoothEnabled = false))
         assertFalse(a.bluetoothPausedForUsb)

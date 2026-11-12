@@ -146,9 +146,12 @@
                 <data android:scheme="${appAuthRedirectScheme}" />
             </intent-filter>
         </activity>
-        <!-- btrx Desk Pod on USB: grants USB permission when the board is plugged in. -->
+        <!-- btrx Desk Pod on USB: grants USB permission when the board is plugged in.
+             Disabled until the operator turns on "Use USB link (debug)" (BtrxManager);
+             otherwise a Desk Pod powered from the tablet is left alone. -->
         <activity
             android:name=".btrx.BtrxUsbAttachActivity"
+            android:enabled="false"
             android:exported="true"
             android:excludeFromRecents="true"
             android:noHistory="true"

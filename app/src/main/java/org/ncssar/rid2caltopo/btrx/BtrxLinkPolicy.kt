@@ -4,8 +4,9 @@ package org.ncssar.rid2caltopo.btrx
  * Which Desk Pod link may be open. Any USB client makes the Desk Pod firmware turn
  * Bluetooth off and drop the Bluetooth client (back within seconds after a clean USB
  * close; up to 15 min if the USB client vanishes), so R2C never holds both: USB
- * (debug, Android only) wins while a Desk Pod is attached, otherwise Bluetooth runs
- * if the operator turned it on. [update] returns the steps in order: the old link is
+ * (debug, Android only) wins while a Desk Pod is attached and the operator turned
+ * on the USB debug link, otherwise Bluetooth runs if the operator turned it on. With
+ * USB debug off a plugged-in Desk Pod is only drawing power and changes nothing. [update] returns the steps in order: the old link is
  * always stopped before the new one starts.
  */
 class BtrxLinkArbiter {
@@ -18,16 +19,23 @@ class BtrxLinkArbiter {
         private set
     var usbAttached = false
         private set
+    var usbDebugEnabled = false
+        private set
 
     /** True when the operator wants Bluetooth but a USB Desk Pod holds the link. */
     val bluetoothPausedForUsb: Boolean get() = bluetoothEnabled && active == Link.USB
 
     @Synchronized
-    fun update(bluetoothEnabled: Boolean = this.bluetoothEnabled, usbAttached: Boolean = this.usbAttached): List<Action> {
+    fun update(
+        bluetoothEnabled: Boolean = this.bluetoothEnabled,
+        usbAttached: Boolean = this.usbAttached,
+        usbDebugEnabled: Boolean = this.usbDebugEnabled,
+    ): List<Action> {
         this.bluetoothEnabled = bluetoothEnabled
         this.usbAttached = usbAttached
+        this.usbDebugEnabled = usbDebugEnabled
         val want = when {
-            usbAttached -> Link.USB
+            usbAttached && usbDebugEnabled -> Link.USB
             bluetoothEnabled -> Link.BLUETOOTH
             else -> Link.NONE
         }

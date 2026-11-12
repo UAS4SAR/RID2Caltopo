@@ -40,7 +40,7 @@ import org.ncssar.rid2caltopo.btrx.BtrxDeskPodModel.LinkPhase
  * callbacks arrive on binder threads and are posted there; every GATT operation goes
  * through one [BtrxGattQueue], so a heartbeat and a command never overlap.
  *
- * Session: connect, MTU 512, discover, enable FromNum notifications, write
+ * Session: connect, MTU 247 (the Desk Pod's maximum), discover, enable FromNum notifications, write
  * want_config_id, then drain FromRadio until empty ([BtrxFromRadioDrain]) after the
  * handshake and after every FromNum notification. The phone API is the one USB
  * uses, so [BtrxClient] decodes the frames unchanged ([BtrxClient.Framing.PACKET]).
@@ -89,6 +89,8 @@ class BtrxBleLink(
     private var toRadio: BluetoothGattCharacteristic? = null
     private var fromRadio: BluetoothGattCharacteristic? = null
     private var handshakeWritten = false
+    /** ATT MTU of the current session; 23 until onMtuChanged reports the negotiated one. */
+    private var attMtu = 23
     private var scanning = false
     private var scanRound = 0
     private var directTries = 0
@@ -305,6 +307,7 @@ class BtrxBleLink(
     private fun openGatt(dev: BluetoothDevice, name: String?) {
         events.onStatus(LinkPhase.CONNECTING, "Connecting to ${name ?: "the Desk Pod"}.", name)
         handshakeWritten = false
+        attMtu = 23
         val serial = ++sessionSerial
         val g = dev.connectGatt(context, false, GattCallback(serial), BluetoothDevice.TRANSPORT_LE)
         if (g == null) { retryLater(LinkPhase.RETRY_WAIT, "Android could not open a Bluetooth connection."); return }
@@ -329,10 +332,14 @@ class BtrxBleLink(
 
         override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) = on {
             if (newState == BluetoothProfile.STATE_CONNECTED && status == BluetoothGatt.GATT_SUCCESS) onConnected(g)
+            // Any non-success status (e.g. 133, 8, 22) ends the attempt now instead of after the 30 s timeout.
+            else if (status != BluetoothGatt.GATT_SUCCESS) sessionLost(authHint(status, "connection failed"))
             else if (newState == BluetoothProfile.STATE_DISCONNECTED) sessionLost("disconnected (status $status)")
         }
         override fun onMtuChanged(g: BluetoothGatt, mtu: Int, status: Int) = on {
             log.info("ble: mtu=$mtu status=$status")
+            if (status == BluetoothGatt.GATT_SUCCESS) attMtu = mtu
+            if (attMtu < BtrxClient.MIN_USABLE_MTU) log.warn("ERROR: ble: negotiated MTU $attMtu is below ${BtrxClient.MIN_USABLE_MTU}; btrx writes may not fit")
             completeOp()
         }
         override fun onServicesDiscovered(g: BluetoothGatt, status: Int) = on { onDiscovered(g, status) }
@@ -397,7 +404,6 @@ class BtrxBleLink(
             send = { bytes -> handler.post { queue?.enqueue(Op.Write(bytes)) } },
             log = log,
             framing = BtrxClient.Framing.PACKET,
-            connectBurstMs = BtrxClient.CONNECT_BURST_MS,
             listener = object : BtrxClient.Listener {
                 override fun onConfigured(localNode: Long) {
                     handler.post { self.onReady() }
@@ -415,6 +421,7 @@ class BtrxBleLink(
             },
         )
         client = c
+        c.setAttMtu(attMtu)
         events.onSessionStarted(c)
         c.start()
         handler.postDelayed({ checkRole(c, retry = true) }, ROLE_TIMEOUT_MS)
@@ -465,7 +472,9 @@ class BtrxBleLink(
             sessionLost(authHint(status, "a FromRadio read failed"))
             return
         }
-        if (d.onRead(value)) client?.onFromRadio(value)
+        d.onRead(value)
+        // Empty reads too: the first one after config_complete ends the connect backlog.
+        client?.onFromRadio(value)
     }
 
     @Suppress("DEPRECATION")

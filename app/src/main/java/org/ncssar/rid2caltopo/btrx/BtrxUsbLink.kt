@@ -35,7 +35,6 @@ class BtrxUsbLink(
         send = { bytes -> io?.writeAsync(bytes) ?: log.warn("write dropped: link not open") },
         log = log,
         framing = BtrxClient.Framing.SERIAL,
-        connectBurstMs = BtrxClient.CONNECT_BURST_MS,
         listener = object : BtrxClient.Listener {
             override fun onConfigured(localNode: Long) = forward.onConfigured(localNode)
             override fun onLocalRoleReport(report: BtrxProtocol.RoleReport) {
@@ -119,6 +118,7 @@ class BtrxUsbLink(
         if (closed) return
         closed = true
         log.info("USB close ($reason); ${client.summary()}")
+        if (reason != "detached") sendDisconnect()
         client.close()
         runCatching { io?.stop() }
         runCatching { port?.close() }
@@ -128,7 +128,20 @@ class BtrxUsbLink(
         onClosed(this, reason)
     }
 
+    /**
+     * ToRadio{disconnect=true} before the port closes: the firmware ends the API session
+     * and turns Bluetooth back on within seconds instead of after its serial timeout
+     * (up to 15 min). Written synchronously so it is not lost when the I/O thread stops.
+     */
+    private fun sendDisconnect() {
+        val p = port ?: return
+        runCatching { p.write(MeshtasticSerial.frame(MeshtasticSerial.toRadioDisconnect()), DISCONNECT_WRITE_TIMEOUT_MS) }
+            .onSuccess { log.info("USB: sent disconnect so the Desk Pod re-enables Bluetooth") }
+            .onFailure { log.warn("USB: disconnect not sent (${it.message}); the Desk Pod may keep Bluetooth off for up to 15 min") }
+    }
+
     companion object {
+        const val DISCONNECT_WRITE_TIMEOUT_MS = 200
         const val BAUD = 115200
         const val ROLE_TIMEOUT_S = 10L
         const val MAX_CONFIG_WAITS = 6

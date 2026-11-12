@@ -183,15 +183,55 @@ class BtrxDeskPodModelTest {
     }
 
     @Test
-    fun windowRunningOutBeforeConfirmFails() {
+    fun deskWindowEndingDoesNotFailWhileThePodKeepsAsking() {
+        // The pod's own window decides; the Desk Pod's is advisory once a pod has asked.
         model.startPairing(); deskPair(1, seconds = 10); pairReq()
-        advance(10_000)
-        val p = model.snapshot().pairing
-        assertEquals(PairStep.FAILED, p.step)
-        assertEquals(PairStep.POD_FOUND, p.failedAt)
-        assertTrue(p.message.startsWith("The pairing window ran out"))
+        repeat(6) { advance(2_000); pairReq() }
+        deskPair(0)
+        assertEquals(PairStep.POD_FOUND, step)
+        assertFalse(model.snapshot().pairing.podStale)
+        model.confirmPod()
+        assertEquals(PairStep.CONFIRMING, step)
+        assertEquals(1, sender.sent.size)
+    }
+
+    @Test
+    fun podThatStopsAskingIsMarkedStaleAndNotConfirmed() {
+        model.startPairing(); deskPair(1); pairReq()
+        advance(BtrxDeskPodModel.POD_REQUEST_STALE_MS + 1_000)
+        var p = model.snapshot().pairing
+        assertEquals(PairStep.POD_FOUND, p.step)
+        assertTrue(p.podStale)
+        assertEquals(BtrxDeskPodModel.STALE_MESSAGE, p.message)
+        assertTrue(BtrxDeskPodText.steps(p)[2].detail.endsWith(BtrxDeskPodText.POD_STALE_HINT))
+        model.confirmPod()
+        assertTrue(sender.sent.isEmpty()) // no 30 s wait for a PAIR_ACK that cannot come
+        assertEquals(PairStep.POD_FOUND, step)
+        // Another nod: a fresh PAIR_REQ with a new nonce.
+        pairReq(nonce = "0102030405060708")
+        p = model.snapshot().pairing
+        assertFalse(p.podStale)
+        model.confirmPod()
+        assertEquals("0102030405060708", P.hex(P.decodeFrame(sender.sent.single().second).payload.copyOfRange(4, 12)))
+    }
+
+    @Test
+    fun confirmRightAfterTheRequestsStopIsRefusedBeforeTheTick() {
+        model.startPairing(); deskPair(1); pairReq()
+        now += BtrxDeskPodModel.POD_REQUEST_STALE_MS + 1 // no tick yet
         model.confirmPod()
         assertTrue(sender.sent.isEmpty())
+        assertTrue(model.snapshot().pairing.podStale)
+    }
+
+    @Test
+    fun anotherPodMayTakeOverAStaleCandidate() {
+        model.startPairing(); deskPair(1); pairReq()
+        advance(6_000)
+        pairReq(from = 0x11112222L)
+        val p = model.snapshot().pairing
+        assertEquals(0x11112222L, p.candidate!!.node)
+        assertFalse(p.podStale)
     }
 
     @Test
@@ -313,5 +353,49 @@ class BtrxDeskPodModelTest {
         val s = model.snapshot()
         assertTrue(s.liveCounts.isEmpty())
         assertTrue(s.windowOpen)
+    }
+
+    // ---- backlog and paired-pod filtering ----
+
+    private fun podFrame(name: String, podId: Long = 0): P.Frame {
+        val ex = P.decodeFrame(P.fromHex(BtrxProtocolTest.EXAMPLES.getValue(name)))
+        return P.decodeFrame(P.encodeFrame(ex.type, seq = ex.seq, podId = podId, payload = ex.payload))
+    }
+
+    @Test
+    fun backlogHealthAndRssiAreNotShownAsCurrent() {
+        model.onFrame(podFrame("HEALTH"), meta(pod, backlog = true))
+        model.onFrame(podFrame("DETECT"), meta(0x22223333L, backlog = true))
+        val s = model.snapshot()
+        assertNull(s.dronePodHealth)
+        assertNull(s.lastPacketRssi)
+        assertEquals(0, s.otherPodNodes)
+        assertEquals(0, s.detectsLastMinute)
+        assertEquals(1, s.backlogCounts["HEALTH"])
+    }
+
+    @Test
+    fun oncePairedOnlyThePairedNodeCounts() {
+        model.restorePairedPod(BtrxDeskPodModel.PairedPod(pod, 0x45D35AF0L, 0x4C8C125BL, 0x351C2971L))
+        model.onFrame(podFrame("DETECT"), meta(0x22223333L))        // another pod: refused
+        model.onFrame(podFrame("DETECT"), meta(pod))                // queued before pairing: pod_id 0, right node
+        model.onFrame(podFrame("DETECT", 0x45D35AF0L), meta(pod))   // the paired pod_id
+        model.onFrame(podFrame("DETECT", 0x12345678L), meta(pod))   // a different pod_id: refused
+        model.onFrame(podFrame("HEALTH", 0x12345678L), meta(pod))
+        val s = model.snapshot()
+        assertEquals(2, s.detectsLastMinute)
+        assertEquals(1, s.otherPodNodes)
+        assertNull(s.dronePodHealth)
+        model.onFrame(podFrame("HEALTH", 0x45D35AF0L), meta(pod))
+        assertEquals(pod, model.snapshot().dronePodHealth!!.node)
+    }
+
+    @Test
+    fun rssiComesOnlyFromThePairedPod() {
+        model.restorePairedPod(BtrxDeskPodModel.PairedPod(pod, 1, 2, 3))
+        model.onFrame(podFrame("DETECT"), BtrxClient.RadioMeta(0x22223333L, 0xFFFFFFFFL, -90, 1f, now, false))
+        assertNull(model.snapshot().lastPacketRssi)
+        model.onFrame(podFrame("DETECT"), meta(pod))
+        assertEquals(-45, model.snapshot().lastPacketRssi)
     }
 }

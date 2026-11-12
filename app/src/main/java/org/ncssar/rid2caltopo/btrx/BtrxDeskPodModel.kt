@@ -17,12 +17,19 @@ import org.ncssar.rid2caltopo.btrx.BtrxProtocol as P
  *     in the connect backlog, counts while its window is open; see [BtrxDeskWindow]).
  *  2. "Nod the drone pod twice": wait for a live PAIR_REQ while the window is open.
  *     PAIR_REQ outside an open window, or in the connect backlog, is never acted on.
- *  3. The operator confirms the pod shown (dev_a / dev_b, imu_ok, RSSI/SNR).
+ *  3. The operator confirms the pod shown (dev_a / dev_b, imu_ok, RSSI/SNR). The pod
+ *     only takes PAIR_CONFIRM inside its own 60 s nod window, while it repeats PAIR_REQ
+ *     every 2 s; the Desk Pod's window is advisory here. No PAIR_REQ for
+ *     [POD_REQUEST_STALE_MS] marks the pod stale and asks for another nod.
  *  4. PAIR_CONFIRM to that node, nonce echoed, non-zero pod_id ([P.podIdFor]);
  *     answered again if the same PAIR_REQ repeats (up to [MAX_CONFIRM_TRIES]); then
  *     wait up to [ACK_TIMEOUT_MS] for PAIR_ACK and show a_ok / b_ok.
- * DESK_PAIR open=0 or the window running out ends steps 1-3 with a failure. Nothing
- * here ever makes a clue.
+ * DESK_PAIR open=0 or the window running out ends steps 1-2 with a failure.
+ *
+ * Pod traffic (HEALTH, DETECT, RSSI/SNR) counts only when live: backlog frames can be
+ * minutes old. Once a pod is paired, only its node is accepted (the Desk Pod does not
+ * filter by pod_id); a non-zero header pod_id other than the paired one is refused.
+ * Nothing here ever makes a clue.
  */
 class BtrxDeskPodModel(
     private val log: BtrxClient.Logger,
@@ -47,6 +54,8 @@ class BtrxDeskPodModel(
     data class Candidate(
         val node: Long, val assignedPodId: Long, val devA: Long, val devB: Long, val buildA: Int, val buildB: Int,
         val imuOk: Int, val roleA: Int, val roleB: Int, val nonceHex: String, val rssi: Int, val snr: Float,
+        /** Arrival of the latest PAIR_REQ from this pod (they repeat every 2 s inside its nod window). */
+        val lastRequestMs: Long = 0,
     ) {
         /** Brief section 6 failure cases: the port board missing or its motion sensor not OK. */
         val warnings: List<String>
@@ -67,6 +76,8 @@ class BtrxDeskPodModel(
         val bOk: Int? = null,
         val ackFlags: Int? = null,
         val confirmTries: Int = 0,
+        /** The pod stopped repeating PAIR_REQ: its own window has probably closed. Nod again. */
+        val podStale: Boolean = false,
     )
 
     data class HealthReading(val node: Long, val arrivalMs: Long, val rxRssi: Int, val rxSnr: Float, val health: P.Health)
@@ -167,21 +178,40 @@ class BtrxDeskPodModel(
         val counts = if (meta.backlog) backlogCounts else liveCounts
         counts[frame.typeName] = (counts[frame.typeName] ?: 0) + 1
         val fromDesk = localNode == null || meta.fromNode == localNode
-        if (!fromDesk) { lastRssi = meta.rxRssi; lastSnr = meta.rxSnr }
         try {
             when (frame.type) {
                 P.DESK_PAIR -> if (fromDesk) onDeskPair(frame, meta)
+                // Pairing frames come from whichever pod is being paired, so they are not filtered.
                 P.PAIR_REQ -> onPairReq(P.parsePairReq(frame.payload), meta)
                 P.PAIR_ACK -> onPairAck(P.parsePairAck(frame.payload), meta)
-                P.HEALTH -> onHealth(P.parseHealth(frame.payload), meta)
-                P.DETECT -> if (!meta.backlog) {
-                    detectTimes.addLast(meta.arrivalMs)
-                    lastDetectMs = meta.arrivalMs
-                    trimDetects(meta.arrivalMs)
-                }
+                else -> if (meta.fromNode != localNode && acceptsPodTraffic(frame, meta)) onPodTraffic(frame, meta)
             }
         } catch (_: P.PayloadException) {
             // Logged with decode-error by BtrxFrameLog; nothing to act on.
+        }
+    }
+
+    /** Live frames only; once paired, only the paired node (pod_id 0 or the paired one). */
+    private fun acceptsPodTraffic(frame: P.Frame, meta: BtrxClient.RadioMeta): Boolean {
+        if (meta.backlog) return false
+        val paired = pairedPod ?: return true
+        if (meta.fromNode != paired.node) {
+            otherPods += meta.fromNode
+            return false
+        }
+        // Frames queued before pairing still carry pod_id 0 from the right node; accept by node.
+        return frame.podId == 0L || frame.podId == paired.podId
+    }
+
+    private fun onPodTraffic(frame: P.Frame, meta: BtrxClient.RadioMeta) {
+        lastRssi = meta.rxRssi; lastSnr = meta.rxSnr
+        when (frame.type) {
+            P.HEALTH -> lastHealth = HealthReading(meta.fromNode, meta.arrivalMs, meta.rxRssi, meta.rxSnr, P.parseHealth(frame.payload))
+            P.DETECT -> {
+                detectTimes.addLast(meta.arrivalMs)
+                lastDetectMs = meta.arrivalMs
+                trimDetects(meta.arrivalMs)
+            }
         }
     }
 
@@ -197,7 +227,7 @@ class BtrxDeskPodModel(
             when (pairing.step) {
                 PairStep.WAIT_BUTTON -> Unit // an old close; keep waiting for the tap
                 PairStep.WAIT_NOD -> fail(PairStep.WAIT_NOD, "The Desk Pod closed its pairing window before a Drone Pod asked to pair. Tap the Desk Pod button and nod the drone pod again.")
-                PairStep.POD_FOUND -> fail(PairStep.POD_FOUND, "The Desk Pod closed its pairing window before the pod was confirmed. Tap the Desk Pod button and start again.")
+                // POD_FOUND: the pod's own window decides (see onPairReq / tick); the Desk Pod's is advisory.
                 else -> Unit
             }
         }
@@ -209,24 +239,33 @@ class BtrxDeskPodModel(
             log.info("pairing: PAIR_REQ from ${BtrxClient.nodeName(meta.fromNode)} in the connect backlog ignored (stale)")
             return
         }
-        if (!window.isOpen(now)) {
-            log.info("pairing: PAIR_REQ from ${BtrxClient.nodeName(meta.fromNode)} ignored: no Desk Pod window open")
-            return
-        }
         val nonce = P.hex(req.nonce)
-        when (pairing.step) {
-            PairStep.WAIT_NOD -> {
-                val c = Candidate(
-                    meta.fromNode, P.podIdFor(req.devA), req.devA, req.devB, req.buildA, req.buildB,
-                    req.imuOk, req.roleA, req.roleB, nonce, meta.rxRssi, meta.rxSnr,
-                )
-                pairing = pairing.copy(step = PairStep.POD_FOUND, candidate = c, message = "Drone Pod ${BtrxClient.nodeName(c.node)} asked to pair. Confirm it is the pod in your hand.")
-                log.info("pairing: PAIR_REQ from ${BtrxClient.nodeName(c.node)} dev_a=%08x dev_b=%08x imu_ok=%d; waiting for the operator".format(c.devA, c.devB, c.imuOk))
+        val open = window.isOpen(now)
+        fun newCandidate(): Boolean {
+            if (!open) {
+                log.info("pairing: PAIR_REQ from ${BtrxClient.nodeName(meta.fromNode)} ignored: no Desk Pod window open")
+                return false
             }
+            val c = Candidate(
+                meta.fromNode, P.podIdFor(req.devA), req.devA, req.devB, req.buildA, req.buildB,
+                req.imuOk, req.roleA, req.roleB, nonce, meta.rxRssi, meta.rxSnr, lastRequestMs = now,
+            )
+            pairing = pairing.copy(step = PairStep.POD_FOUND, candidate = c, podStale = false, message = askedMessage(c))
+            log.info("pairing: PAIR_REQ from ${BtrxClient.nodeName(c.node)} dev_a=%08x dev_b=%08x imu_ok=%d; waiting for the operator".format(c.devA, c.devB, c.imuOk))
+            return true
+        }
+        when (pairing.step) {
+            PairStep.WAIT_NOD -> newCandidate()
             PairStep.POD_FOUND -> {
                 val c = pairing.candidate ?: return
                 if (meta.fromNode == c.node) {
-                    pairing = pairing.copy(candidate = c.copy(nonceHex = nonce, rssi = meta.rxRssi, snr = meta.rxSnr))
+                    if (pairing.podStale) log.info("pairing: ${BtrxClient.nodeName(c.node)} is asking to pair again")
+                    pairing = pairing.copy(
+                        candidate = c.copy(nonceHex = nonce, rssi = meta.rxRssi, snr = meta.rxSnr, lastRequestMs = now),
+                        podStale = false, message = askedMessage(c),
+                    )
+                } else if (pairing.podStale) {
+                    newCandidate()
                 } else {
                     log.info("pairing: another Drone Pod ${BtrxClient.nodeName(meta.fromNode)} also asked to pair; ignored")
                 }
@@ -239,9 +278,11 @@ class BtrxDeskPodModel(
                     queueConfirm(c)
                 }
             }
-            else -> Unit
+            else -> if (!open) log.info("pairing: PAIR_REQ from ${BtrxClient.nodeName(meta.fromNode)} ignored: no Desk Pod window open")
         }
     }
+
+    private fun askedMessage(c: Candidate) = "Drone Pod ${BtrxClient.nodeName(c.node)} asked to pair. Confirm it is the pod in your hand."
 
     private fun onPairAck(ack: P.PairAck, meta: BtrxClient.RadioMeta) {
         if (meta.backlog || pairing.step != PairStep.CONFIRMING) return
@@ -258,16 +299,6 @@ class BtrxDeskPodModel(
             pairing = pairing.copy(aOk = ack.aOk, bOk = ack.bOk, ackFlags = ack.flags)
             fail(PairStep.CONFIRMING, "The Drone Pod did not take the pairing (a_ok=0, flags=${P.statusFlagNames(ack.flags)}).")
         }
-    }
-
-    private fun onHealth(h: P.Health, meta: BtrxClient.RadioMeta) {
-        if (meta.fromNode == localNode) return
-        val paired = pairedPod
-        if (paired != null && meta.fromNode != paired.node) {
-            otherPods += meta.fromNode
-            return
-        }
-        lastHealth = HealthReading(meta.fromNode, meta.arrivalMs, meta.rxRssi, meta.rxSnr, h)
     }
 
     // ---- pairing actions ----
@@ -293,8 +324,8 @@ class BtrxDeskPodModel(
             val now = clock()
             val c = pairing.candidate
             if (pairing.step != PairStep.POD_FOUND || c == null) return
-            if (!window.isOpen(now)) {
-                fail(PairStep.POD_FOUND, "The pairing window ran out before the pod was confirmed. Tap the Desk Pod button and start again.")
+            if (pairing.podStale || now - c.lastRequestMs > POD_REQUEST_STALE_MS) {
+                markStale(c)
                 return
             }
             pairing = pairing.copy(step = PairStep.CONFIRMING, confirmTries = 1, message = "Waiting for the Drone Pod to acknowledge.")
@@ -330,7 +361,9 @@ class BtrxDeskPodModel(
         when (pairing.step) {
             PairStep.WAIT_BUTTON -> if (now >= stepDeadlineMs) fail(PairStep.WAIT_BUTTON, "The Desk Pod button was not tapped. Tap it, then start again.")
             PairStep.WAIT_NOD -> if (!open) fail(PairStep.WAIT_NOD, windowEndedMessage("No Drone Pod asked to pair. Nod the drone pod twice within the window."))
-            PairStep.POD_FOUND -> if (!open) fail(PairStep.POD_FOUND, windowEndedMessage("The pod was not confirmed in time."))
+            PairStep.POD_FOUND -> pairing.candidate?.let { c ->
+                if (!pairing.podStale && now - c.lastRequestMs > POD_REQUEST_STALE_MS) markStale(c)
+            }
             PairStep.CONFIRMING -> if (now >= stepDeadlineMs) fail(PairStep.CONFIRMING, "No PAIR_ACK from the Drone Pod within ${ACK_TIMEOUT_MS / 1000} s. Tap the Desk Pod button and try again.")
             else -> Unit
         }
@@ -357,6 +390,11 @@ class BtrxDeskPodModel(
     private fun enterWaitNod(now: Long) {
         pairing = pairing.copy(step = PairStep.WAIT_NOD, windowSecondsLeft = window.secondsLeft(now), message = "Nod the drone pod twice.")
         log.info("pairing: Desk Pod window open, ${window.secondsLeft(now)} s left; waiting for PAIR_REQ")
+    }
+
+    private fun markStale(c: Candidate) {
+        if (!pairing.podStale) log.info("pairing: no PAIR_REQ from ${BtrxClient.nodeName(c.node)} for over ${POD_REQUEST_STALE_MS / 1000} s; asking for another nod")
+        pairing = pairing.copy(podStale = true, message = STALE_MESSAGE)
     }
 
     private fun windowEndedMessage(fallback: String): String = when (window.lastClose) {
@@ -396,6 +434,9 @@ class BtrxDeskPodModel(
         const val ACK_TIMEOUT_MS = 30_000L
         const val MAX_CONFIRM_TRIES = 8
         const val DETECT_WINDOW_MS = 60_000L
+        /** PAIR_REQ repeats every 2 s while the pod's own window is open. */
+        const val POD_REQUEST_STALE_MS = 5_000L
+        const val STALE_MESSAGE = "The Drone Pod stopped asking to pair; its own pairing window has probably closed. Nod the drone pod twice again, then confirm."
         val ACTIVE_STEPS = setOf(PairStep.WAIT_BUTTON, PairStep.WAIT_NOD, PairStep.POD_FOUND, PairStep.CONFIRMING)
     }
 }

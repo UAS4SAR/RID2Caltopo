@@ -45,6 +45,7 @@ import org.ncssar.rid2caltopo.btrx.BtrxManager
 fun DeskPodScreen(onDismiss: () -> Unit) {
     val s by BtrxManager.snapshot.collectAsState()
     val bluetoothOn by BtrxManager.bluetoothEnabled.collectAsState()
+    val usbDebugOn by BtrxManager.usbDebugEnabled.collectAsState()
     val config = LocalConfiguration.current
     androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Surface(
@@ -72,6 +73,12 @@ fun DeskPodScreen(onDismiss: () -> Unit) {
                     if (bluetoothOn) {
                         OutlinedButton(onClick = { BtrxManager.forgetDeskPod() }) { Text("Forget this Desk Pod") }
                     }
+                    // Android only: the iPad has no USB link.
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(BtrxDeskPodText.USB_DEBUG_TOGGLE, Modifier.weight(1f))
+                        Switch(checked = usbDebugOn, onCheckedChange = { BtrxManager.setUsbDebugEnabled(it) })
+                    }
+                    Text(BtrxDeskPodText.USB_DEBUG_HINT, style = MaterialTheme.typography.bodySmall)
 
                     HorizontalDivider(Modifier.padding(vertical = 6.dp))
                     SectionTitle("Desk Pod")
@@ -141,7 +148,7 @@ private fun PairingSection(s: org.ncssar.rid2caltopo.btrx.BtrxDeskPodModel.Snaps
     }
     Spacer(Modifier.height(4.dp))
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        if (p.step == PairStep.POD_FOUND) Button(onClick = { BtrxManager.confirmPod() }) { Text("Confirm pod") }
+        if (p.step == PairStep.POD_FOUND && !p.podStale) Button(onClick = { BtrxManager.confirmPod() }) { Text("Confirm pod") }
         if (active) OutlinedButton(onClick = { BtrxManager.cancelPairing() }) { Text("Cancel pairing") }
         if (!active) {
             Button(onClick = { BtrxManager.startPairing() }) { Text(if (p.step == PairStep.PAIRED) "Pair another" else "Try again") }

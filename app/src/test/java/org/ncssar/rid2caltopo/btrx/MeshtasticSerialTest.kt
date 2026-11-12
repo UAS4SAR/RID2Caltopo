@@ -23,6 +23,15 @@ class MeshtasticSerialTest {
         assertEquals("18f8acd19101", hex(MeshtasticSerial.toRadioWantConfig(0x12345678)))
         // field 7, empty Heartbeat message
         assertEquals("3a00", hex(MeshtasticSerial.toRadioHeartbeat()))
+        // Heartbeat.nonce (field 1) makes each heartbeat distinct
+        assertEquals("3a020801", hex(MeshtasticSerial.toRadioHeartbeat(1)))
+    }
+
+    @Test
+    fun disconnectEncodingAndSerialFrame() {
+        // ToRadio.disconnect (field 4, varint) = true
+        assertEquals("2001", hex(MeshtasticSerial.toRadioDisconnect()))
+        assertEquals("94c300022001", hex(MeshtasticSerial.frame(MeshtasticSerial.toRadioDisconnect())))
     }
 
     @Test

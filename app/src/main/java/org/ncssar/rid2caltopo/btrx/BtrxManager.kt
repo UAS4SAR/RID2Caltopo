@@ -2,9 +2,11 @@ package org.ncssar.rid2caltopo.btrx
 
 import android.app.PendingIntent
 import android.content.BroadcastReceiver
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.PackageManager
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
 import android.os.Build
@@ -24,10 +26,14 @@ import org.ncssar.rid2caltopo.data.CaltopoClient
  *
  * - Bluetooth ([BtrxBleLink]) is the primary link. It runs only after the operator
  *   turns it on in the Desk Pod screen (remembered), then reconnects by itself.
- * - USB ([BtrxUsbLink]) is for debugging. Plugging a Desk Pod in stops Bluetooth
- *   first and opens USB ([BtrxLinkArbiter]); the screen says "Desk Pod is attached
- *   by USB; Bluetooth paused". Unplugging resumes Bluetooth after a few seconds, the
- *   time the firmware takes to advertise again. R2C never holds both links.
+ * - USB ([BtrxUsbLink]) is an opt-in debug link ("Use USB link (debug)", off by
+ *   default). The Desk Pod has no battery, so a tablet's USB-C port is often just its
+ *   power: with the switch off a plugged-in Desk Pod is never opened, the USB attach
+ *   activity is disabled, and Bluetooth stays the link. With it on, plugging a Desk
+ *   Pod in stops Bluetooth first and opens USB ([BtrxLinkArbiter]); the screen says
+ *   "Desk Pod is attached by USB; Bluetooth paused". Closing USB sends
+ *   ToRadio{disconnect} so the firmware re-enables Bluetooth, which resumes after a
+ *   few seconds. R2C never holds both links.
  *
  * All link work runs on [worker] or the links' own threads; UI calls only post to it.
  */
@@ -41,6 +47,7 @@ object BtrxManager {
     private const val KEY_ADDRESS = "ble_address"
     private const val KEY_NAME = "ble_name"
     private const val KEY_PAIRED = "paired_pod"
+    private const val KEY_USB_DEBUG = "usb_debug"
     /** Time the Desk Pod takes to advertise again after a clean USB close. */
     private const val BLE_RESUME_AFTER_USB_MS = 3_000L
 
@@ -69,6 +76,11 @@ object BtrxManager {
 
     private val _bluetoothEnabled = MutableStateFlow(false)
     val bluetoothEnabled: StateFlow<Boolean> = _bluetoothEnabled.asStateFlow()
+
+    private val _usbDebugEnabled = MutableStateFlow(false)
+    /** "Use USB link (debug)": off by default; a plugged-in Desk Pod is then power only. */
+    val usbDebugEnabled: StateFlow<Boolean> = _usbDebugEnabled.asStateFlow()
+    @Volatile private var powerOnlyLogged = false
 
     private val modelListener = object : BtrxClient.Listener {
         override fun onConfigured(localNode: Long) = model.onConfigured(localNode)
@@ -100,8 +112,11 @@ object BtrxManager {
             model.restorePairedPod(loadPairedPod())
             val enabled = p.getBoolean(KEY_BLE_ENABLED, false)
             _bluetoothEnabled.value = enabled
-            if (usbHost) scanAttached()
-            applyArbiter(arbiter.update(bluetoothEnabled = enabled))
+            val usbDebug = p.getBoolean(KEY_USB_DEBUG, false)
+            _usbDebugEnabled.value = usbDebug
+            setAttachActivityEnabled(usbDebug)
+            if (usbHost && usbDebug) scanAttached()
+            applyArbiter(arbiter.update(bluetoothEnabled = enabled, usbDebugEnabled = usbDebug))
             publish()
         }
         worker.scheduleWithFixedDelay({
@@ -117,6 +132,30 @@ object BtrxManager {
         logger.info("Desk Pod Bluetooth link turned ${if (enabled) "on" else "off"}")
         applyArbiter(arbiter.update(bluetoothEnabled = enabled))
         publish()
+    }
+
+    /** The USB debug switch. Off closes an open USB link (Bluetooth then resumes). */
+    fun setUsbDebugEnabled(enabled: Boolean) = worker.execute {
+        prefs().edit().putBoolean(KEY_USB_DEBUG, enabled).apply()
+        _usbDebugEnabled.value = enabled
+        powerOnlyLogged = false
+        logger.info("Desk Pod USB debug link turned ${if (enabled) "on" else "off"}")
+        setAttachActivityEnabled(enabled)
+        if (!enabled) link?.close("USB debug link turned off")
+        applyArbiter(arbiter.update(usbDebugEnabled = enabled))
+        if (enabled && usbHost) scanAttached()
+        publish()
+    }
+
+    /** Keeps Android from offering RID2Caltopo (and granting it the port) on every plug-in while USB debug is off. */
+    private fun setAttachActivityEnabled(enabled: Boolean) {
+        runCatching {
+            appContext.packageManager.setComponentEnabledSetting(
+                ComponentName(appContext, BtrxUsbAttachActivity::class.java),
+                if (enabled) PackageManager.COMPONENT_ENABLED_STATE_ENABLED else PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
+                PackageManager.DONT_KILL_APP,
+            )
+        }.onFailure { logger.warn("USB attach activity not ${if (enabled) "enabled" else "disabled"}: ${it.message}") }
     }
 
     /** Forgets the remembered Desk Pod so the next connection scans for any Desk Pod. */
@@ -155,7 +194,7 @@ object BtrxManager {
                 "USB or off",
                 if (arbiter.bluetoothPausedForUsb) LinkPhase.PAUSED_FOR_USB else LinkPhase.OFF,
             )
-            BtrxLinkArbiter.Action.START_BLUETOOTH -> bleLink().start(if (link == null && lastUsbCloseMs > 0) BLE_RESUME_AFTER_USB_MS else 0)
+            BtrxLinkArbiter.Action.START_BLUETOOTH -> bleLink().start(if (link != null || lastUsbCloseMs > 0) BLE_RESUME_AFTER_USB_MS else 0)
             BtrxLinkArbiter.Action.CLOSE_USB, BtrxLinkArbiter.Action.OPEN_USB -> Unit // USB opens and closes with the cable
         }
         updateLinkStatus()
@@ -221,6 +260,13 @@ object BtrxManager {
     }
 
     private fun connect(device: UsbDevice) {
+        if (!_usbDebugEnabled.value) {
+            if (!powerOnlyLogged) {
+                powerOnlyLogged = true
+                logger.info("Desk Pod on USB (${BtrxUsbLink.describe(device)}) left alone: USB debug link is off, so it is power only")
+            }
+            return
+        }
         synchronized(this) {
             if (link != null || device.deviceName in rejected) return
         }

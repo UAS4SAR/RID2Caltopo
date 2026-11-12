@@ -4,6 +4,7 @@ import java.util.Random
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.ncssar.rid2caltopo.btrx.BtrxProtocol as P
@@ -197,15 +198,24 @@ class BtrxClientTest {
         assertEquals(FromRadio.Other(0), MeshtasticSerial.parseFromRadio(ByteArray(0)))
     }
 
-    // ---- Bluetooth framing and the connect burst ----
+    // ---- Bluetooth framing and the connect backlog ----
 
     private fun packetClient(clock: () -> Long, metas: MutableList<BtrxClient.RadioMeta>, out: MutableList<ByteArray>) = BtrxClient(
         send = { out += it }, log = logger, random = Random(3), framing = BtrxClient.Framing.PACKET,
-        clock = clock, connectBurstMs = BtrxClient.CONNECT_BURST_MS,
+        clock = clock,
         listener = object : BtrxClient.Listener {
             override fun onFrame(frame: P.Frame, meta: BtrxClient.RadioMeta) { metas += meta }
         },
     )
+
+    private fun packetHandshake(c: BtrxClient, out: List<ByteArray>) {
+        c.start()
+        val configId = MeshtasticSerial.ProtoReader(out[0]).let { r -> r.tag(); r.varint() }
+        c.onFromRadio(ProtoWriter().bytesField(3, ProtoWriter().varint(1, deskNode).bytes()).bytes())
+        c.onFromRadio(ProtoWriter().varint(7, configId).bytes())
+    }
+
+    private fun isRoleGet(toRadio: ByteArray) = toRadio[0].toInt() == 0x0A && P.hex(toRadio).contains(P.hex(P.roleGetFrame(1)).substring(0, 8))
 
     @Test
     fun bluetoothFramingSendsBareProtobufsWithoutWakeBytes() {
@@ -218,10 +228,21 @@ class BtrxClientTest {
         c.onFromRadio(ProtoWriter().bytesField(3, ProtoWriter().varint(1, deskNode).bytes()).bytes())
         c.onFromRadio(ProtoWriter().varint(7, configId).bytes())
         assertEquals(BtrxClient.State.READY, c.state)
-        // ROLE_GET goes out as a bare ToRadio.packet
-        assertEquals(0x0A, out.last()[0].toInt())
+        assertEquals(1, out.size) // ROLE_GET waits for the end of the connect backlog
+        c.onFromRadio(ByteArray(0))
+        assertEquals(0x0A, out.last()[0].toInt()) // ROLE_GET as a bare ToRadio.packet
+        assertTrue(isRoleGet(out.last()))
+    }
+
+    @Test
+    fun heartbeatsAreDistinct() {
+        val out = mutableListOf<ByteArray>()
+        val c = packetClient({ 0L }, mutableListOf(), out)
+        packetHandshake(c, out)
         c.sendHeartbeat()
-        assertEquals("3a00", P.hex(out.last()))
+        c.sendHeartbeat()
+        assertEquals("3a020801", P.hex(out[out.size - 2]))
+        assertEquals("3a020802", P.hex(out.last()))
     }
 
     @Test
@@ -234,22 +255,68 @@ class BtrxClientTest {
     }
 
     @Test
-    fun framesInTheFirstTwoSecondsAfterConfigCompleteAreBacklog() {
+    fun firstDrainAfterConfigCompleteIsBacklogUntilTheFirstEmptyRead() {
         var now = 10_000L
         val metas = mutableListOf<BtrxClient.RadioMeta>()
         val out = mutableListOf<ByteArray>()
         val c = packetClient({ now }, metas, out)
-        c.start()
-        val configId = MeshtasticSerial.ProtoReader(out[0]).let { r -> r.tag(); r.varint() }
-        c.onFromRadio(ProtoWriter().bytesField(3, ProtoWriter().varint(1, deskNode).bytes()).bytes())
-        c.onFromRadio(ProtoWriter().varint(7, configId).bytes())
+        packetHandshake(c, out)
         val detect = P.fromHex(BtrxProtocolTest.EXAMPLES.getValue("DETECT"))
+        // The queued burst can take up to 3 s; time does not matter, the empty read does.
         now += 500; c.onFromRadio(btrxPacket(starboard, detect))
-        now += 1_400; c.onFromRadio(btrxPacket(starboard, detect))
-        now += 200; c.onFromRadio(btrxPacket(starboard, detect))
-        assertEquals(listOf(true, true, false), metas.map { it.backlog })
+        now += 2_500; c.onFromRadio(btrxPacket(starboard, detect))
+        c.onFromRadio(ByteArray(0))
+        now += 100; c.onFromRadio(btrxPacket(starboard, detect))
+        c.onFromRadio(ByteArray(0)) // later drains change nothing
+        now += 3_000; c.onFromRadio(btrxPacket(starboard, detect))
+        assertEquals(listOf(true, true, false, false), metas.map { it.backlog })
         assertEquals(2, c.backlogCount("DETECT"))
-        assertEquals(1, c.frameCount("DETECT"))
-        assertEquals(12_100L, metas.last().arrivalMs)
+        assertEquals(2, c.frameCount("DETECT"))
+        assertTrue(infos.contains("connect backlog drained: 2 frame(s) queued while R2C was away"))
+        assertEquals(1, out.count(::isRoleGet))
+    }
+
+    @Test
+    fun staleRoleReportInTheBacklogIsNotTaken() {
+        val out = mutableListOf<ByteArray>()
+        val roles = mutableListOf<P.RoleReport>()
+        val c = BtrxClient(send = { out += it }, log = logger, random = Random(4), framing = BtrxClient.Framing.PACKET,
+            listener = object : BtrxClient.Listener {
+                override fun onLocalRoleReport(report: P.RoleReport) { roles += report }
+            })
+        packetHandshake(c, out)
+        val report = P.encodeFrame(P.ROLE_REPORT, seq = 4, payload = P.fromHex("030500000000015b128c4c00000000000000000002"))
+        val fromDesk = MeshtasticSerialTest.fromRadioPacket(deskNode, deskNode, 0, 0f, 256, report)
+        c.onFromRadio(fromDesk)
+        assertNull(c.localRole)
+        assertTrue(roles.isEmpty())
+        assertTrue(infos.any { it.startsWith("stale ROLE_REPORT in the connect backlog ignored") })
+        c.onFromRadio(ByteArray(0))
+        c.onFromRadio(fromDesk)
+        assertEquals(P.ROLE_DESK_POD, c.localRole?.role)
+        assertEquals(1, roles.size)
+    }
+
+    @Test
+    fun toRadioMustFitOneBluetoothWrite() {
+        val out = mutableListOf<ByteArray>()
+        val c = packetClient({ 0L }, mutableListOf(), out)
+        c.setAttMtu(247)
+        packetHandshake(c, out)
+        c.onFromRadio(ByteArray(0))
+        val before = out.size
+        c.sendFrame(starboard, ByteArray(BtrxClient.MAX_SEND_FRAME + 1))
+        assertEquals(before, out.size)
+        assertTrue(warns.any { it.startsWith("ERROR: btrx frame of 201 bytes not sent") })
+        c.sendFrame(starboard, ByteArray(BtrxClient.MAX_SEND_FRAME))
+        assertEquals(before + 1, out.size)
+        assertTrue(out.last().size <= BtrxClient.MAX_TO_RADIO_BLE)
+        // A smaller negotiated MTU lowers the limit for the whole ToRadio.
+        c.setAttMtu(100)
+        c.sendFrame(starboard, ByteArray(150))
+        assertEquals(before + 1, out.size)
+        assertTrue(warns.any { it.contains("at most 97 per Bluetooth write") })
+        c.setAttMtu(64)
+        assertTrue(warns.any { it.startsWith("ERROR: Bluetooth MTU 64 is too small") })
     }
 }

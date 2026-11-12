@@ -37,7 +37,12 @@ object MeshtasticSerial {
 
     fun toRadioWantConfig(configId: Long): ByteArray = ProtoWriter().varint(3, configId).bytes()
 
-    fun toRadioHeartbeat(): ByteArray = ProtoWriter().bytesField(7, ByteArray(0)).bytes()
+    /** ToRadio.heartbeat (field 7); a non-zero [nonce] (Heartbeat.nonce, field 1) makes each one distinct. */
+    fun toRadioHeartbeat(nonce: Long = 0): ByteArray =
+        ProtoWriter().bytesField(7, if (nonce == 0L) ByteArray(0) else ProtoWriter().varint(1, nonce).bytes()).bytes()
+
+    /** ToRadio.disconnect (field 4) = true: the firmware closes the API session and re-enables Bluetooth at once. */
+    fun toRadioDisconnect(): ByteArray = ProtoWriter().varint(4, 1).bytes()
 
     fun toRadioPacket(to: Long, packetId: Long, portnum: Int, payload: ByteArray, channel: Int = 0, hopLimit: Int = 0): ByteArray {
         val data = ProtoWriter().varint(1, portnum.toLong()).bytesField(2, payload).bytes()
