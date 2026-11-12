@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
@@ -23,6 +24,9 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -41,7 +45,9 @@ import org.ncssar.rid2caltopo.btrx.BtrxManager
  * its status and link health, and the "Pair drone pod" flow. Same sections, order
  * and wording as the iPad's DeskPodView. "Dismiss" only hides this panel; the link
  * keeps running (a calibration in progress too). "Cancel pairing" ends a pairing in
- * progress; "Cancel calibration" ends the IMU calibration flow.
+ * progress; "Cancel calibration" ends the IMU calibration flow. One Desk Pod and one
+ * Drone Pod per app: "Replace Desk Pod" / "Replace Drone Pod" ask first, then forget or
+ * unpair the current one; there is no "Pair another".
  */
 @Composable
 fun DeskPodScreen(onDismiss: () -> Unit) {
@@ -49,6 +55,21 @@ fun DeskPodScreen(onDismiss: () -> Unit) {
     val bluetoothOn by BtrxManager.bluetoothEnabled.collectAsState()
     val usbDebugOn by BtrxManager.usbDebugEnabled.collectAsState()
     val config = LocalConfiguration.current
+    var replacing by remember { mutableStateOf<Replacing?>(null) }
+    replacing?.let { r ->
+        AlertDialog(
+            onDismissRequest = { replacing = null },
+            title = { Text(if (r == Replacing.DRONE_POD) BtrxDeskPodText.REPLACE_POD_TITLE else BtrxDeskPodText.REPLACE_DESK_TITLE) },
+            text = { Text(if (r == Replacing.DRONE_POD) BtrxDeskPodText.replacePodMessage(s) else BtrxDeskPodText.replaceDeskMessage(s)) },
+            confirmButton = {
+                Button(onClick = {
+                    replacing = null
+                    if (r == Replacing.DRONE_POD) BtrxManager.replacePairedPod() else BtrxManager.forgetDeskPod()
+                }) { Text(if (r == Replacing.DRONE_POD) BtrxDeskPodText.REPLACE_POD_OK else BtrxDeskPodText.REPLACE_DESK_OK) }
+            },
+            dismissButton = { TextButton(onClick = { replacing = null }) { Text(BtrxDeskPodText.REPLACE_KEEP) } },
+        )
+    }
     androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Surface(
             Modifier.widthIn(max = minOf(720, config.screenWidthDp - 24).dp).heightIn(max = (config.screenHeightDp - 48).dp),
@@ -73,7 +94,7 @@ fun DeskPodScreen(onDismiss: () -> Unit) {
                     BtrxDeskPodText.deviceLine(s)?.let { Text(it) }
                     Text(BtrxDeskPodText.PIN_HINT, style = MaterialTheme.typography.bodySmall)
                     if (bluetoothOn) {
-                        OutlinedButton(onClick = { BtrxManager.forgetDeskPod() }) { Text("Forget this Desk Pod") }
+                        OutlinedButton(onClick = { replacing = Replacing.DESK_POD }) { Text(BtrxDeskPodText.REPLACE_DESK) }
                     }
                     // Android only: the iPad has no USB link.
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -96,10 +117,7 @@ fun DeskPodScreen(onDismiss: () -> Unit) {
                     HorizontalDivider(Modifier.padding(vertical = 6.dp))
                     SectionTitle("Pair drone pod")
                     BtrxDeskPodText.pairedLine(s)?.let { line ->
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(line, Modifier.weight(1f))
-                            TextButton(onClick = { BtrxManager.forgetPairedPod() }) { Text("Forget") }
-                        }
+                        Text(line)
                         BtrxDeskPodText.pairedPodWarnings(s).forEach {
                             Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
                         }
@@ -107,7 +125,7 @@ fun DeskPodScreen(onDismiss: () -> Unit) {
                     if (s.windowOpen && s.pairing.step == PairStep.IDLE) {
                         Text("The Desk Pod pairing window is open (${s.windowSecondsLeft} s left).", style = MaterialTheme.typography.bodySmall)
                     }
-                    PairingSection(s)
+                    PairingSection(s, onReplace = { replacing = Replacing.DRONE_POD })
 
                     HorizontalDivider(Modifier.padding(vertical = 6.dp))
                     SectionTitle(BtrxDeskPodText.IMU_CAL_TITLE)
@@ -198,12 +216,21 @@ private fun SectionTitle(text: String) {
     Text(text, style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 4.dp))
 }
 
+private enum class Replacing { DESK_POD, DRONE_POD }
+
+/** "Pair drone pod" with none paired; "Replace Drone Pod" (asks first) once one is paired. */
 @Composable
-private fun PairingSection(s: org.ncssar.rid2caltopo.btrx.BtrxDeskPodModel.Snapshot) {
+private fun PairOrReplaceButton(s: org.ncssar.rid2caltopo.btrx.BtrxDeskPodModel.Snapshot, onReplace: () -> Unit, retry: Boolean = false) {
+    if (s.pairedPod != null) Button(onClick = onReplace) { Text(BtrxDeskPodText.REPLACE_POD) }
+    else Button(onClick = { BtrxManager.startPairing() }) { Text(if (retry) "Try again" else BtrxDeskPodText.PAIR_POD) }
+}
+
+@Composable
+private fun PairingSection(s: org.ncssar.rid2caltopo.btrx.BtrxDeskPodModel.Snapshot, onReplace: () -> Unit) {
     val p = s.pairing
     val active = p.step in org.ncssar.rid2caltopo.btrx.BtrxDeskPodModel.ACTIVE_STEPS
     if (p.step == PairStep.IDLE) {
-        Button(onClick = { BtrxManager.startPairing() }) { Text("Pair drone pod") }
+        PairOrReplaceButton(s, onReplace)
         return
     }
     BtrxDeskPodText.steps(p).forEachIndexed { i, step ->
@@ -235,7 +262,7 @@ private fun PairingSection(s: org.ncssar.rid2caltopo.btrx.BtrxDeskPodModel.Snaps
         if (p.step == PairStep.POD_FOUND && !p.podStale) Button(onClick = { BtrxManager.confirmPod() }) { Text("Confirm pod") }
         if (active) OutlinedButton(onClick = { BtrxManager.cancelPairing() }) { Text("Cancel pairing") }
         if (!active) {
-            Button(onClick = { BtrxManager.startPairing() }) { Text(if (p.step == PairStep.PAIRED) "Pair another" else "Try again") }
+            PairOrReplaceButton(s, onReplace, retry = p.step == PairStep.FAILED)
             TextButton(onClick = { BtrxManager.clearPairingResult() }) { Text("Clear result") }
         }
     }

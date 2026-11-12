@@ -492,6 +492,52 @@ class BtrxDeskPodModelTest {
     // ---- steering (STEER / STEER_MUTE) ----
 
     private val pairedPodId = 0x45D35AF0L
+    // ---- one Drone Pod per app ----
+
+    @Test
+    fun pairingIsNotStartedWhileADronePodIsPaired() {
+        model.restorePairedPod(BtrxDeskPodModel.PairedPod(pod, 0x45D35AF0L, 0x4C8C125BL, 0x351C2971L))
+        model.startPairing()
+        assertEquals(PairStep.IDLE, step)
+        assertTrue(logs.any { it.contains("is paired; use Replace Drone Pod") })
+    }
+
+    @Test
+    fun replaceUnpairsTheCurrentPodThenRunsTheWholePairingFlow() {
+        val old = BtrxDeskPodModel.PairedPod(0x0BADF00DL, 0x11111111L, 0x4C8C125BL, 0x351C2971L)
+        model.restorePairedPod(old)
+        model.replacePairedPod()
+        assertNull(model.snapshot().pairedPod) // unpaired first
+        assertEquals(PairStep.WAIT_BUTTON, step)
+        assertTrue(logs.any { it.contains("Drone Pod !0badf00d pod_id=11111111 unpaired in this app to replace it") })
+        assertTrue(sender.sent.isEmpty()) // firmware 0x0102 has no unpair message to send
+        deskPair(1)
+        pairReq()
+        model.confirmPod()
+        pairAck(1, 1)
+        val done = model.snapshot()
+        assertEquals(PairStep.PAIRED, done.pairing.step)
+        assertEquals(pod, done.pairedPod!!.node)
+        assertEquals(1, paired.size)
+        // The old pod keeps sending with its old pod_id: ignored now.
+        model.onFrame(P.decodeFrame(P.encodeFrame(P.STEER, seq = ++podSeq, podId = 0x11111111L, payload = P.fromHex(BtrxProtocolTest.STEER_PAYLOAD))), meta(0x0BADF00DL))
+        assertNull(model.snapshot().lastSteer)
+    }
+
+    @Test
+    fun replaceWithNothingPairedJustStartsPairing() {
+        model.replacePairedPod()
+        assertEquals(PairStep.WAIT_BUTTON, step)
+    }
+
+    @Test
+    fun replaceTextNamesThePodAndWhatThePodStillHolds() {
+        model.restorePairedPod(BtrxDeskPodModel.PairedPod(pod, 0x45D35AF0L, 0x4C8C125BL, 0x351C2971L))
+        val msg = BtrxDeskPodText.replacePodMessage(model.snapshot())
+        assertTrue(msg, msg.startsWith("Drone Pod !018968be (pod_id 45d35af0) will be unpaired from this app"))
+        assertTrue(msg.contains("keeps its own pairing"))
+    }
+
     private fun ready() = model.setLink(BtrxDeskPodModel.LinkStatus(BtrxDeskPodModel.LinkKind.BLUETOOTH, BtrxDeskPodModel.LinkPhase.READY))
     private fun steerFrame(podId: Long = pairedPodId, src: Int = 0xBEEF): P.Frame {
         val s = P.parseSteer(P.fromHex(BtrxProtocolTest.STEER_PAYLOAD))

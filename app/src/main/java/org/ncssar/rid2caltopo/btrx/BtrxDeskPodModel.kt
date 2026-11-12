@@ -196,6 +196,26 @@ class BtrxDeskPodModel(
         quietWatchSinceMs = clock()
     }
 
+    /**
+     * "Replace Drone Pod" (after the operator confirmed): unpair the current pod in this app,
+     * then start pairing. Pod side (firmware 0x0102, btrx af2549e): there is no unpair message.
+     * A pod drops its pairing only on PAIR_CONFIRM with confirm=0, which it takes only inside
+     * its own nod-opened pair window with that window's nonce, or on a factory reset. So the
+     * old pod stays confirmed with its pod_id and keeps sending; this app ignores it from now on,
+     * and pairing the same pod again simply gives it a new pod_id.
+     */
+    fun replacePairedPod() {
+        synchronized(this) {
+            val old = pairedPod
+            forgetPairedPod()
+            if (old != null) {
+                log.debug("pairing: Drone Pod ${BtrxClient.nodeName(old.node)} pod_id=%08x unpaired in this app to replace it; ".format(old.podId) +
+                    "the pod keeps its own pairing until it is paired again or factory reset")
+            }
+        }
+        startPairing()
+    }
+
     @Synchronized
     fun forgetPairedPod() {
         pairedPod = null; lastHealth = null; otherPods.clear()
@@ -383,10 +403,17 @@ class BtrxDeskPodModel(
 
     // ---- pairing actions ----
 
-    /** "Pair drone pod". */
+    /**
+     * "Pair drone pod". One app pairs exactly one Drone Pod: with a pod already paired this
+     * does nothing; the screen offers [replacePairedPod] instead.
+     */
     fun startPairing() {
         synchronized(this) {
             val now = clock()
+            pairedPod?.let {
+                log.debug("pairing: not started: Drone Pod ${BtrxClient.nodeName(it.node)} is paired; use Replace Drone Pod")
+                return
+            }
             val s = sender
             if (s == null || !s.isReady) {
                 pairing = Pairing(step = PairStep.FAILED, failedAt = PairStep.WAIT_BUTTON, message = "The Desk Pod is not connected.")

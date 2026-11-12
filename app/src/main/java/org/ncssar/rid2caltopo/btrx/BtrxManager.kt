@@ -171,7 +171,10 @@ object BtrxManager {
         }.onFailure { logger.warn("USB attach activity not ${if (enabled) "enabled" else "disabled"}: ${it.message}") }
     }
 
-    /** Forgets the remembered Desk Pod so the next connection scans for any Desk Pod. */
+    /**
+     * "Replace Desk Pod" after its confirmation: forgets the remembered Desk Pod so the next
+     * connection scans for any Desk Pod. One app uses one Desk Pod at a time.
+     */
     fun forgetDeskPod() = worker.execute {
         prefs().edit().remove(KEY_ADDRESS).remove(KEY_NAME).apply()
         logger.info("Desk Pod forgotten; the next Bluetooth connection scans for any Desk Pod")
@@ -189,6 +192,12 @@ object BtrxManager {
     }
 
     fun startPairing() = worker.execute { model.startPairing(); publish() }
+    /** "Replace Drone Pod" after its confirmation: unpair the current pod here, then pair. */
+    fun replacePairedPod() = worker.execute {
+        prefs().edit().remove(KEY_PAIRED).apply()
+        model.replacePairedPod()
+        publish()
+    }
     fun confirmPod() = worker.execute { model.confirmPod(); publish() }
     fun cancelPairing() = worker.execute { model.cancelPairing(); publish() }
     fun clearPairingResult() = worker.execute { model.clearPairingResult(); publish() }

@@ -106,6 +106,29 @@ object BtrxDeskPodText {
 
     const val MUTE = "Mute"
     const val CLEAR_MUTES = "Clear mutes"
+    // One Desk Pod and one Drone Pod per app: replace, never add another.
+    const val PAIR_POD = "Pair drone pod"
+    const val REPLACE_POD = "Replace Drone Pod"
+    const val REPLACE_POD_TITLE = "Replace Drone Pod?"
+    const val REPLACE_POD_OK = "Unpair and pair new"
+    const val REPLACE_DESK = "Replace Desk Pod"
+    const val REPLACE_DESK_TITLE = "Replace Desk Pod?"
+    const val REPLACE_DESK_OK = "Forget and scan"
+    const val REPLACE_KEEP = "Keep current"
+
+    /** Body of the "Replace Drone Pod?" confirmation. */
+    fun replacePodMessage(s: BtrxDeskPodModel.Snapshot): String {
+        val pod = s.pairedPod?.let { "Drone Pod ${BtrxClient.nodeName(it.node)} (pod_id %08x)".format(Locale.US, it.podId) } ?: "The current Drone Pod"
+        return "$pod will be unpaired from this app, then pairing starts for the new pod. " +
+            "The old pod keeps its own pairing and keeps sending until it is paired again or factory reset; this app ignores it."
+    }
+
+    /** Body of the "Replace Desk Pod?" confirmation. */
+    fun replaceDeskMessage(s: BtrxDeskPodModel.Snapshot): String {
+        val desk = s.link.deviceName?.let { "Desk Pod $it" } ?: "The current Desk Pod"
+        return "$desk will be forgotten and the app will connect to the next Desk Pod it finds. The paired Drone Pod stays paired."
+    }
+
     const val STEER_PICK = "Drone Pod is on this drone"
     const val STEER_CHOOSE_AGAIN = "Choose another drone"
     const val STEER_ROLL = "Roll correction (debug; only after the bench roll check)"
