@@ -588,8 +588,11 @@ public final class BtrxDeskPodCenter: ObservableObject {
 
     @Published public private(set) var snapshot = Model.Snapshot()
     @Published public private(set) var bluetoothEnabled: Bool
+    /// Steering overlay card shown on the stream tile (hide/show; persisted). Same as Android.
+    @Published public private(set) var overlayShown: Bool
 
     private static let keyEnabled = "btrx.desk_pod.ble_enabled"
+    private static let keyOverlayShown = "btrx.steer_overlay_shown"
     private static let keyPeripheral = "btrx.desk_pod.peripheral"
     private static let keyName = "btrx.desk_pod.name"
     private static let keyPaired = "btrx.desk_pod.paired_pod"
@@ -600,6 +603,7 @@ public final class BtrxDeskPodCenter: ObservableObject {
     public init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         bluetoothEnabled = defaults.bool(forKey: Self.keyEnabled)
+        overlayShown = defaults.object(forKey: Self.keyOverlayShown) as? Bool ?? true
         let paired = defaults.data(forKey: Self.keyPaired).flatMap { try? JSONDecoder().decode(Model.PairedPod.self, from: $0) }
         let events = BtrxBleCentral.Events(
             snapshot: { [weak self] s in Task { @MainActor in self?.snapshot = s } },
@@ -615,6 +619,14 @@ public final class BtrxDeskPodCenter: ObservableObject {
     }
 
     public var rememberedPeripheral: UUID? { defaults.string(forKey: Self.keyPeripheral).flatMap(UUID.init(uuidString:)) }
+
+    /// Hide or show the steering overlay card on the stream tile. Only the card: the link,
+    /// STEER and DETECT handling, mutes and the Steering section keep working. Persisted.
+    public func setOverlayShown(_ shown: Bool) {
+        overlayShown = shown
+        defaults.set(shown, forKey: Self.keyOverlayShown)
+        OperationalBridgePacketLog.write?("INFO", "Btrx", "steering overlay \(shown ? "shown" : "hidden") (link, STEER and mutes unaffected)")
+    }
 
     public func setBluetoothEnabled(_ on: Bool) {
         bluetoothEnabled = on

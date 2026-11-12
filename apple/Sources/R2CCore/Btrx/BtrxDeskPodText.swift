@@ -38,6 +38,12 @@ public enum BtrxDeskPodText {
         return "\(desk) will be forgotten and the app will connect to the next Desk Pod it finds. The paired Drone Pod stays paired."
     }
 
+    // Steering overlay hide/show (only the card on the stream tile). Same as Android.
+    public static let overlayToggle = "Show steering overlay on the stream"
+    public static let overlayToggleHint = "Off hides only the card on the stream tile; the Drone Pod stays connected, mutes and this Steering section keep working. Tap \"BTRX hidden\" on the tile to show it again."
+    public static let overlayHide = "Hide"
+    public static let overlayHidden = "BTRX hidden"
+
     public static let steerPick = "Drone Pod is on this drone"
     public static let steerChooseAgain = "Choose another drone"
     public static let steerRoll = "Roll correction (debug; only after the bench roll check)"

@@ -287,6 +287,19 @@ final class BtrxSteeringTests: XCTestCase {
 
     // MARK: which tile (the drone carrying the pod)
 
+    func testHiddenOverlayShowsOnlyTheBtrxHiddenChip() {
+        func mode(_ tile: String, _ live: Set<String>, _ chosen: String?, _ hasView: Bool, shown: Bool) -> BtrxSteeringTarget.TileOverlay {
+            BtrxSteeringTarget.tileOverlay(tile: tile, live: live, chosen: chosen, hasView: hasView, shown: shown)
+        }
+        XCTAssertEqual(.card, mode("A", ["A"], nil, true, shown: true))
+        XCTAssertEqual(.hiddenChip, mode("A", ["A"], nil, true, shown: false))
+        XCTAssertEqual(BtrxSteeringTarget.TileOverlay.none, mode("A", ["A"], nil, false, shown: false))
+        XCTAssertEqual(.pick, mode("A", ["A", "B"], nil, true, shown: true))
+        XCTAssertEqual(.hiddenChip, mode("A", ["A", "B"], nil, true, shown: false))
+        XCTAssertEqual(BtrxSteeringTarget.TileOverlay.none, mode("B", ["A", "B"], "A", true, shown: true))
+        XCTAssertEqual(BtrxSteeringTarget.TileOverlay.none, mode("B", ["A", "B"], "A", true, shown: false))
+    }
+
     func testOneLiveStreamShowsTheOverlayWithoutAPick() {
         let live: Set = ["A"]
         XCTAssertTrue(BtrxSteeringTarget.showsOverlay(tile: "A", live: live, chosen: nil))

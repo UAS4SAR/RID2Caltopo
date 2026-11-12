@@ -65,6 +65,8 @@ struct DeskPodView: View {
 
                     Divider().padding(.vertical, 6)
                     section("Steering")
+                    Toggle(Text_.overlayToggle, isOn: Binding(get: { center.overlayShown }, set: { center.setOverlayShown($0) }))
+                    Text(Text_.overlayToggleHint).font(.footnote).foregroundStyle(.secondary)
                     if let st = s.lastSteer {
                         HStack {
                             SteeringMark(view: st, size: 36)
@@ -251,21 +253,40 @@ private struct AppleSteeringOverlayContent: View {
     var body: some View {
         let live = AppleStreamRegistry.shared.liveSteeringStreamIDs
         let chosen = center.steeringStreamID
-        if center.snapshot.steerOverlay != nil, !BtrxSteeringTarget.showsOverlay(tile: tile, live: live, chosen: chosen) {
-            // Several live streams and none marked yet: offer the pick on each live tile.
-            if BtrxSteeringTarget.offersPick(tile: tile, live: live, chosen: chosen) {
-                Button { center.chooseSteeringStream(tile) } label: {
-                    Text(BtrxDeskPodText.steerPick)
-                        .font(.system(size: 13))
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 6)
-                        .background(.black.opacity(0.55), in: RoundedRectangle(cornerRadius: 10))
-                }
-                .buttonStyle(.plain)
+        let mode = BtrxSteeringTarget.tileOverlay(tile: tile, live: live, chosen: chosen,
+                                                  hasView: center.snapshot.steerOverlay != nil, shown: center.overlayShown)
+        if mode == .hiddenChip {
+            // Hidden by the operator: a small chip says so (the pod has not gone quiet); tap shows it again.
+            Button { center.setOverlayShown(true) } label: {
+                Text(BtrxDeskPodText.overlayHidden)
+                    .font(.system(size: 12))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(.black.opacity(0.55), in: RoundedRectangle(cornerRadius: 10))
             }
-        } else if let v = center.snapshot.steerOverlay {
+            .buttonStyle(.plain)
+        } else if mode == .pick {
+            // Several live streams and none marked yet: offer the pick on each live tile.
+            Button { center.chooseSteeringStream(tile) } label: {
+                Text(BtrxDeskPodText.steerPick)
+                    .font(.system(size: 13))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .background(.black.opacity(0.55), in: RoundedRectangle(cornerRadius: 10))
+            }
+            .buttonStyle(.plain)
+        } else if mode == .card, let v = center.snapshot.steerOverlay {
             VStack(spacing: 2) {
+                // Hide only this card (link, STEER and mutes keep working); "BTRX hidden" brings it back.
+                HStack {
+                    Spacer(minLength: 0)
+                    Button(BtrxDeskPodText.overlayHide) { center.setOverlayShown(false) }
+                        .font(.system(size: 11))
+                        .foregroundStyle(.white.opacity(0.85))
+                        .buttonStyle(.plain)
+                }
                 // The arrow carries the meaning; the word is a small secondary label only.
                 SteeringMark(view: v, size: 132)
                     .contentShape(Circle())

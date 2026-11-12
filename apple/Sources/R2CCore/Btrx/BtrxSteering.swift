@@ -444,6 +444,19 @@ public final class BtrxSteering {
 /// marked "Drone Pod is on this drone". The choice ends when that stream does. Same as
 /// Android's BtrxSteeringTarget.
 public enum BtrxSteeringTarget {
+    /// What a stream tile shows for the steering overlay.
+    public enum TileOverlay: Sendable, Equatable { case none, card, hiddenChip, pick }
+
+    /// The tile's overlay: the card, or the small "BTRX hidden" chip while the operator has
+    /// hidden the overlay (only the card is hidden; link, STEER, mutes and the Steering
+    /// section keep working), or the "Drone Pod is on this drone" pick. Same as Android.
+    public static func tileOverlay(tile: String, live: Set<String>, chosen: String?, hasView: Bool, shown: Bool) -> TileOverlay {
+        if !hasView { return .none }
+        if showsOverlay(tile: tile, live: live, chosen: chosen) { return shown ? .card : .hiddenChip }
+        if offersPick(tile: tile, live: live, chosen: chosen) { return shown ? .pick : .hiddenChip }
+        return .none
+    }
+
     public static func showsOverlay(tile: String, live: Set<String>, chosen: String?) -> Bool {
         live.contains(tile) && (live.count == 1 || chosen == tile)
     }
