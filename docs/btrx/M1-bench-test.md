@@ -4,9 +4,9 @@ Milestone 1 of the btrx receiver integration (`firmware/R2C_INTEGRATION.md`
 in UAS4SAR/btrx, section 13). Android only. The app finds the Desk Pod on
 USB, runs the Meshtastic serial handshake, decodes every btrx frame on app
 port 256 into the app log (tag `Btrx`), and sends `ROLE_GET` to the Desk Pod
-(`^local`). USB is now the Android debug link; Bluetooth, the Desk Pod panel
+(`^local`). USB is now the Android debug link; Bluetooth, the BTRX panel
 and pairing on both platforms are covered in `BLE-bench-test.md`. **Turn on
-"Use USB link (debug)" in Main menu > Desk Pod first**; with it off (the
+"Use USB link (debug)" in Main menu > BTRX first**; with it off (the
 default) a plugged-in Desk Pod is treated as power only. With Bluetooth on,
 opening USB pauses Bluetooth first. Over USB (no empty-read signal on
 serial), frames before config_complete, and the burst right after it up to

@@ -12,6 +12,15 @@ Project-only engineering record; do not package in the app, copy into store meta
 
 ## Cumulative release history
 
+### 2.6.0 (445) — Main menu "Desk Pod" renamed "BTRX" (November 12, 2026)
+
+- Both: the main menu item and the screen's title read **BTRX** (Android
+  `BtrxDeskPodText.TITLE` and the MainScreen menu item; iPad
+  `BtrxDeskPodText.title`, used by the ContentView menu button and the nav title).
+  Inside the screen the pods keep their names (Desk Pod, Drone Pod). Code names
+  (`DeskPodScreen`, `DeskPodView`, `BtrxDeskPod*`) unchanged. Bench docs now say
+  Main menu > BTRX.
+
 ### 2.6.0 (445) — btrx Drone Pod IMU calibration (November 12, 2026)
 
 - Both platforms, same logic and words: `BtrxImuCal.kt` / `BtrxImuCal.swift`

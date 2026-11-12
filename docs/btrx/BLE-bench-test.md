@@ -2,7 +2,7 @@
 
 Bluetooth is the primary Desk Pod link on both platforms. USB
 (`M1-bench-test.md`) stays as an Android debug link, used only when
-**Use USB link (debug)** is on (off by default; see section 5). Main menu > **Desk Pod**
+**Use USB link (debug)** is on (off by default; see section 5). Main menu > **BTRX**
 shows the link, the Desk Pod's role and firmware, link health and the
 **Pair drone pod** flow. The panel looks and behaves the same on Android and
 the iPad. **Dismiss** only hides the panel; the link keeps running.
@@ -36,7 +36,7 @@ see section 7.
 
 ## 1. Connect (each tablet)
 
-1. Main menu > **Desk Pod**. Turn on **Connect over Bluetooth**.
+1. Main menu > **BTRX**. Turn on **Connect over Bluetooth**.
    - Android asks for the Nearby devices permission if it was not granted.
    - The iPad asks for Bluetooth permission the first time.
 2. The link line goes through *looking for the Desk Pod (scan 1 of 3)*,
@@ -133,7 +133,7 @@ Also check, one at a time:
 ## 5. USB debug link (Android only)
 
 The Desk Pod has no battery. A tablet's USB-C port may be what powers it, so USB
-is opt-in: **Use USB link (debug)** in the Desk Pod panel, off by default.
+is opt-in: **Use USB link (debug)** in the BTRX panel, off by default.
 
 1. Switch off: plug the Desk Pod into the A5 Pro. Android does not offer to open
    RID2Caltopo, the log says `... left alone: USB debug link is off, so it is
@@ -160,7 +160,7 @@ never pauses Bluetooth.
 
 ## 6. Steering overlay (firmware 0x0101)
 
-Needs both pods on firmware build 0x0101 (the Desk Pod panel's firmware line
+Needs both pods on firmware build 0x0101 (the BTRX panel's firmware line
 reads *supported*), the Drone Pod paired, and the Desk Pod link up. **Pod B units
 flashed with the earlier PR #18 UF2 must be reflashed with 4a68518 or later**
 (roll sign fix). The map does not change in this build. Reference: `python
@@ -171,7 +171,7 @@ before testing the tablet).
 pod. With exactly one live stream (Android: LIVE, not local playback; iPad: live,
 not the demo tile) it appears there by itself. With more than one live, each live
 tile shows a **Drone Pod is on this drone** button at the top instead; tap it on
-the right drone and the overlay appears on that tile only. The Desk Pod panel's
+the right drone and the overlay appears on that tile only. The BTRX panel's
 Steering section shows *Steering overlay on: ...* and **Choose another drone**
 (clears the pick so the buttons come back). The pick clears by itself when that
 stream ends.
@@ -203,7 +203,7 @@ range). Smoothed as §17.2 says: EMA 0.3 per report and at most 10% of full scal
 per second, so a fade or a single odd report cannot make it jump; held while
 faded, gated or LOST; a new source starts at its own length. Circle shape by device kind: solid phone, ringed wearable or
 audio, dashed tracker, plain otherwise. Each new source takes the next of 8
-colors (Okabe-Ito with white); gray is only for LEVEL. The Desk Pod panel's
+colors (Okabe-Ito with white); gray is only for LEVEL. The BTRX panel's
 **Steering** section shows the last STEER (swatch, src, kind, word, age),
 **Clear mutes**, and the **Roll correction (debug)** switch (off by default). Each
 STEER is written to the btrx log at debug level (`rx ... STEER ...`, address last
@@ -246,7 +246,7 @@ STEER is written to the btrx log at debug level (`rx ... STEER ...`, address las
    Mutes live only in the pod's memory: up to 8, cleared when the pod restarts,
    and a muted source unheard for 60 s is forgotten and comes back unmuted under
    a new src_id (new color).
-6. **Clear mutes** in the Desk Pod panel: log `steering: STEER_MUTE clear to
+6. **Clear mutes** in the BTRX panel: log `steering: STEER_MUTE clear to
    !018968be`; the muted line goes away and the first source can return.
 7. **2 s fade**: with a target showing, unplug or power off the Desk Pod (or walk
    the tablet out of Bluetooth range). Within 2 s of the last STEER the circle and
@@ -282,7 +282,7 @@ the same steps from a laptop (disconnect it before testing the
 tablet).
 
 Procedure (btrx design doc §29.3). Calibrate once after the lid goes on, and
-again whenever the IMU board is refitted. The Desk Pod panel's **Drone Pod IMU**
+again whenever the IMU board is refitted. The BTRX panel's **Drone Pod IMU**
 section, between *Pair drone pod* and *Steering*, is the same on both tablets:
 
 - A status line: *IMU calibration: a saved calibration is in use (STEER)*, *none
