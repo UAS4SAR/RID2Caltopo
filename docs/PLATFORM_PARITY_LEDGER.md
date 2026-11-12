@@ -37,9 +37,19 @@ Project-only engineering record; do not package in the app, copy into store meta
   accepted; a pod that stops repeating PAIR_REQ is marked stale; ToRadio size
   limits for the 247-byte MTU; distinct heartbeats. iPad only: 90 s for the first
   PIN entry. Android only: USB sends ToRadio{disconnect} before closing.
+- BT RX second review, both platforms: heartbeat nonces start at 2 and skip 0
+  and 1 (nonce 1 makes Meshtastic broadcast node info over LoRa); a stale pod is
+  revived only by the same pod, a different pod needs a new Desk Pod tap; a stale
+  pod ends the flow when the Desk Pod window closes or 2 min after it was found;
+  stale after 7 s; paired-node frames with an unexpected pod_id are counted and
+  shown ("re-pair"); "No HEALTH from the paired Drone Pod for over 2 min;
+  re-pair?" hint. Serial framing (Android USB debug; the Swift core matches for
+  parity) treats the burst after config_complete as backlog up to the first
+  300 ms quiet gap, then sends ROLE_GET.
 - Native difference: Android bonds explicitly (createBond, PIN prompt from the
-  app's request); iPadOS shows its own PIN sheet when the app first reads an
-  encrypted characteristic.
+  app's request); iPadOS shows its own PIN sheet when the app enables
+  notifications (an encrypted write to the FromNum CCCD), not on a first
+  encrypted read; the iPad allows 90 s for it.
 - Evidence: Android unit suite and debug build; Swift package tests and the
   unsigned iOS build. Board test plan `docs/btrx/BLE-bench-test.md` (not yet run).
 

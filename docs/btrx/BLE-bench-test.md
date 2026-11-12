@@ -79,15 +79,24 @@ how many frames were tagged backlog right after connecting.
 5. Tap **Confirm pod** while the pod is still asking (its PAIR_REQ repeats every
    2 s inside its own 60 s nod window). Log:
    `pairing: PAIR_CONFIRM to !018968be nonce=... pod_id=<non-zero>`.
-   If the pod stops asking for more than 5 s, step 3 says *Not asking any more:
-   nod the drone pod twice again*, **Confirm pod** is hidden, and a new nod
-   brings it back.
+   If the pod stops asking for more than 7 s, step 3 says *Not asking any more:
+   nod the drone pod twice again*, **Confirm pod** is hidden, and a new nod of
+   the same pod brings it back. A different pod is ignored until the Desk Pod
+   button is tapped again (back to step 2). A stale pod ends the flow (step 3
+   fails: *... Tap the Desk Pod button and nod the drone pod twice again.*) once
+   the Desk Pod window has closed, or 2 min after the pod was found.
 6. Expect step 4 ✓ with `a_ok=1 b_ok=1` and *Drone Pod paired.* The panel
    shows *Paired Drone Pod: !018968be, pod_id ...*. It survives an app restart.
 
 Pass: PAIR_ACK `a_ok=1`; HEALTH continues with `confirmed=1`. From now on link
 health, RSSI and detections come only from `!018968be`; other pods are only
-counted (*Other Drone Pods heard on the channel*).
+counted (*Other Drone Pods heard on the channel*). Under the paired line, red
+hints appear if `!018968be` sends a pod_id other than its own (*Paired Drone
+Pod is sending pod_id ... ; re-pair it.*, log `paired node ... sending pod_id
+...; re-pair`), or if no HEALTH arrives from it for over 2 min while connected
+(*No HEALTH from the paired Drone Pod for over 2 min; re-pair?*). Holding the
+pod still for 10 s resets it to pod_id 0, unconfirmed, and it stops
+transmitting, so the second hint is what to expect after that.
 
 Also check, one at a time:
 - **Tap before connecting.** Turn Bluetooth off, tap the Desk Pod button, turn
@@ -126,15 +135,21 @@ is opt-in: **Use USB link (debug)** in the Desk Pod panel, off by default.
    RID2Caltopo, the log says `... left alone: USB debug link is off, so it is
    power only`, and Bluetooth stays the link (it connects once the Desk Pod has
    booted).
-2. Switch on with the Desk Pod plugged in and the Bluetooth link up: the panel
-   shows *Desk Pod is attached by USB; Bluetooth paused* and the link line reads
-   *USB (debug)*. The log shows the Bluetooth session close before `USB open`.
+2. Switch on with the Desk Pod plugged in and the Bluetooth link up. The first
+   time after turning the switch on, Android shows its USB permission dialog
+   (*Allow RID2Caltopo to access ...?*); allow it. The panel then shows *Desk Pod
+   is attached by USB; Bluetooth paused* and the link line reads *USB (debug)*.
+   The log shows the Bluetooth session close before `USB open`, then
+   `connect backlog drained after a 300 ms quiet gap: N frame(s) ...` and
+   `tx ROLE_GET`.
 3. Switch off again: the log shows `USB: sent disconnect so the Desk Pod
    re-enables Bluetooth`, and Bluetooth reconnects within seconds.
-4. Switch on, then unplug. Unplugging powers the Desk Pod off (no battery), so
-   Bluetooth reconnects only once it is powered again. With the disconnect sent
-   on a clean USB close it comes back in seconds; without it (cable pulled while
-   the USB link was open) the firmware may keep Bluetooth off for up to 15 min.
+4. Switch on, then unplug. The app sees a detached close and sends no
+   disconnect, but unplugging also powers the Desk Pod off (no battery), and it
+   boots with Bluetooth on, so Bluetooth reconnects once the Desk Pod is powered
+   again. The firmware's 15 min Bluetooth-off case applies only if the Desk Pod
+   stays powered while the USB link disappears without a disconnect (for
+   example, the app is killed while the USB link is open).
 
 Pass: never both links open at once; with the switch off a plugged-in Desk Pod
 never pauses Bluetooth.

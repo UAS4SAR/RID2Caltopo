@@ -8,9 +8,10 @@ port 256 into the app log (tag `Btrx`), and sends `ROLE_GET` to the Desk Pod
 and pairing on both platforms are covered in `BLE-bench-test.md`. **Turn on
 "Use USB link (debug)" in Main menu > Desk Pod first**; with it off (the
 default) a plugged-in Desk Pod is treated as power only. With Bluetooth on,
-opening USB pauses Bluetooth first. Over USB, only frames before
-config_complete are tagged backlog (no empty-read signal on serial); queued
-frames that follow config_complete count as live.
+opening USB pauses Bluetooth first. Over USB (no empty-read signal on
+serial), frames before config_complete, and the burst right after it up to
+the first 300 ms with no bytes, are tagged backlog; ROLE_GET goes out after
+that gap.
 
 ## Setup
 
@@ -50,12 +51,13 @@ the Mac mini. Leave the starboard and port boards powered.
    - `handshake: want_config_id=... sent`
    - `handshake: my_info node=!xxxxxxxx`
    - `handshake: config complete, Desk Pod node !xxxxxxxx`
+   - `connect backlog drained after a 300 ms quiet gap: N frame(s) queued while R2C was away`
    - `tx ROLE_GET to !xxxxxxxx`
    - `rx from=!xxxxxxxx ... ROLE_REPORT ... role=3(desk-pod) ... build_hash=0x0100`
    - `Desk Pod confirmed: role=3 build_hash=0x0100 (supported)`
 4. Right after connecting, a burst of older DETECT/HEALTH frames the Desk
-   Pod queued may appear. Over USB they arrive after config_complete and are
-   not tagged `backlog` (see the note above); they are old regardless.
+   Pod queued may appear, tagged `backlog` (see the note above). That is
+   expected.
 
 Pass: `ROLE_GET` returns `role=3`.
 
@@ -68,8 +70,9 @@ the two happened, and report a missing ROLE_REPORT to the btrx firmware side.
 
 Frames the Desk Pod had queued are delivered right after config_complete
 (BT RX review, November 11, 2026). Over Bluetooth they are tagged `backlog`
-up to the first empty FromRadio read; over USB only frames before
-config_complete are, so expect the connect-time burst in the live counts here.
+up to the first empty FromRadio read; over USB up to the first 300 ms quiet
+gap. If the burst has a longer pause inside it, its remainder is counted as
+live; record it if you see that.
 
 ## 4. 120 s listen
 
