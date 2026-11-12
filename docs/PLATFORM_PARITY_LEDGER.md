@@ -12,6 +12,31 @@ Project-only engineering record; do not package in the app, copy into store meta
 
 ## Cumulative release history
 
+### 2.6.0 (445) — btrx steering arrow instead of words (November 12, 2026)
+
+- Both platforms, same logic and geometry (`BtrxSteering.arrowGeometry`,
+  `lengthFor`, `smoothLength` in `BtrxSteering.kt` / `BtrxSteering.swift`; tests
+  mirrored, 35 each): the overlay's meaning moves from the word to a large arrow
+  in the source's color. Up = straight, 45° = left/right, flat = hard turn, a
+  second chevron = CLOSER, a U-turn arrow = FARTHER (turn around). LEVEL: gray
+  arrow plus a wings-level badge; LOST: no arrow, slashed circle with a dashed
+  ring; muted on the pod: crossed-out speaker badge. The word stays only as a
+  small label and the accessibility label. Mark 132 dp / 132 pt (was 64).
+- Arrow length = relative distance, from the original combined target vector
+  (btrx design doc §17.2, Ken v0.6: long while weak, shorter as the signal
+  rises; §41.2's first build had a fixed length). Sum signal = the stronger patch
+  mean (peak if neither mean was heard); length 0 at -50 dBm or stronger, 1 at
+  -100 dBm or weaker, linear in dB (log range) rather than §17.2's metres from a
+  fixed P0, which would keep the arrow near its minimum for anything this
+  receiver hears. §17.2 smoothing: EMA 0.3 per report, slew 10% of full scale per
+  second (30 m/s of 300 m), held while faded/gated/LOST, restarted per source.
+  Thresholds are [EST], to tune in flight test 2.
+- Unchanged: 2 s fade, LOST at 5 s, hidden at 12 s, the tile pick, roll
+  correction off by default.
+- Evidence: Android unit suite and debug build; Swift package tests and the signed
+  iPad debug build; installed on the A5 Pro and the iPad Pro 11-inch. Bench role
+  check per `docs/btrx/BLE-bench-test.md` section 6.
+
 ### 2.6.0 (445) — btrx steering overlay (November 11, 2026)
 
 - Both platforms, same logic (`BtrxSteering.kt` / `BtrxSteering.swift`, tests

@@ -175,9 +175,32 @@ Steering section shows *Steering overlay on: ...* and **Choose another drone**
 (clears the pick so the buttons come back). The pick clears by itself when that
 stream ends.
 
-What the pilot sees: at the top center of the video, one circle and an arrow in
-the source's color and one word: LEFT, RIGHT, STRAIGHT, CLOSER, FARTHER, LEVEL or
-LOST. No numbers. Circle shape by device kind: solid phone, ringed wearable or
+What the pilot sees: at the top center of the video, one circle and a large
+arrow in the source's color. **The arrow carries the meaning, not a word** (Ken,
+Nov 12: left/right words need extra processing for some people). The word
+(LEFT, RIGHT, STRAIGHT, CLOSER, FARTHER, LEVEL or LOST) is only a small label
+under the arrow and the accessibility label. No numbers.
+
+| Hint | Arrow |
+| --- | --- |
+| STRAIGHT | points straight up |
+| LEFT / RIGHT | up and 45° to that side |
+| hard left / right (8 dB+, or one patch with 2+ hits) | flat, pointing to that side |
+| CLOSER | straight up with a second chevron behind the head |
+| FARTHER | U-turn arrow (up, over to the right, back down): turn around |
+| LEVEL | the held arrow turns gray; wings-level badge (ring with a level line) at bottom left |
+| LOST | no arrow; the faded circle gets a slash and a dashed ring |
+| a source muted on the pod | crossed-out speaker badge at bottom right |
+
+**Arrow length = relative distance.** Long while the source is weak (far),
+shorter as it gets stronger, as in the original combined target vector (btrx
+design doc §17.2, Ken v0.6: "long while the signal is weak and shortens as the
+signal strengthens"); §41.2's first build had a fixed length. The length follows
+the stronger of the two patch means: -50 dBm or stronger is the shortest arrow,
+-100 dBm or weaker the longest, linear in dB between (that is linear in log
+range). Smoothed as §17.2 says: EMA 0.3 per report and at most 10% of full scale
+per second, so a fade or a single odd report cannot make it jump; held while
+faded, gated or LOST; a new source starts at its own length. Circle shape by device kind: solid phone, ringed wearable or
 audio, dashed tracker, plain otherwise. Each new source takes the next of 8
 colors (Okabe-Ito with white); gray is only for LEVEL. The Desk Pod panel's
 **Steering** section shows the last STEER (swatch, src, kind, word, age),
@@ -189,11 +212,16 @@ STEER is written to the btrx log at debug level (`rx ... STEER ...`, address las
    swap (DETECT's rssi_port/rssi_stbd were swapped); the app decodes DETECT and
    STEER as sent. Hold the Drone Pod level, nose away from you, and place a
    phone about 3 m off its **port** (left) side with Bluetooth on. Within a few
-   seconds the overlay must read **LEFT** with the arrow pointing left (hard left
-   when the difference is 8 dB or more, or heard on the port patch only with 2+
-   hits). Move the phone to the starboard side: **RIGHT**. Directly ahead or
-   behind: **STRAIGHT**. If the sides come out reversed, stop and report it to
-   BT RX (the firmware fix or the board roles, not the app).
+   seconds the arrow must point **left** (flat when the difference is 8 dB or
+   more, or heard on the port patch only with 2+ hits). Move the phone to the
+   starboard side: the arrow points right. Directly ahead or behind: straight
+   up. If the sides come out reversed, stop and report it to BT RX (the firmware
+   fix or the board roles, not the app).
+   *Desk Pod as the source:* with the Desk Pod's Bluetooth antenna right in front
+   of the Drone Pod's **port** patch and the starboard patch facing 90° away, the
+   Desk Pod (Meshtastic_42ca) is usually the strongest source: `rssi_port` must
+   be clearly above `rssi_stbd`, `hits_port` >= `hits_stbd`, and the arrow points
+   left (flat) and short (strong signal).
 2. **Roll sign** (r2c_sim `steer`, or the app's debug log): level, `roll_x2` and
    `pitch_x2` read about 0. Tilt pod B starboard side down by about 10°:
    `roll_x2` must go to about **+20**. If it goes negative, pod B's IMU is
@@ -202,16 +230,18 @@ STEER is written to the btrx log at debug level (`rx ... STEER ...`, address las
    this check passes may the switch be turned on (it is off by default and resets
    to off when the app restarts); with it on, 10° starboard down shifts the
    hint by about 2 dB toward LEFT.
-3. Walk the phone steadily toward the pod from ahead for 10 s or more:
-   **CLOSER** once the peak rises at 0.5 dB/s or more, clearly above the noise
-   (it needs 6 reports, so not before about 6 s); away: **FARTHER** (arrow points
-   back: turn around). Standing still clears it.
-4. Tilt the pod past its attitude gate: **LEVEL** at once, arrow gray, the
-   previous word holds underneath once level again.
-5. **Mute**: tap the circle (or **Mute** under the word). The log shows
+3. Walk the phone steadily toward the pod from ahead for 10 s or more: the arrow
+   shortens, and the CLOSER chevron appears once the peak rises at 0.5 dB/s or
+   more, clearly above the noise (it needs 6 reports, so not before about 6 s);
+   away: the arrow lengthens and turns into the U-turn arrow (FARTHER: turn
+   around). Standing still clears the chevron or U-turn.
+4. Tilt the pod past its attitude gate: at once the arrow turns gray and the
+   wings-level badge shows (LEVEL); once level again the previous arrow returns in
+   color.
+5. **Mute**: tap the circle (or **Mute** under the arrow). The log shows
    `steering: STEER_MUTE mute src=N to !018968be`; the pod moves to the next
    strongest source (new color) and the panel shows *A steering source is muted
-   on the Drone Pod.* Check with r2c_sim `steer` that the muted flag is set.
+   on the Drone Pod.* The crossed-out speaker badge shows on the overlay. Check with r2c_sim `steer` that the muted flag is set.
    Mutes live only in the pod's memory: up to 8, cleared when the pod restarts,
    and a muted source unheard for 60 s is forgotten and comes back unmuted under
    a new src_id (new color).
@@ -219,12 +249,13 @@ STEER is written to the btrx log at debug level (`rx ... STEER ...`, address las
    !018968be`; the muted line goes away and the first source can return.
 7. **2 s fade**: with a target showing, unplug or power off the Desk Pod (or walk
    the tablet out of Bluetooth range). Within 2 s of the last STEER the circle and
-   word fade (same look as a no-target report) while the word stays; at 5 s it
-   reads **LOST**; after 12 s with no STEER the overlay goes away.
+   arrow fade (same look as a no-target report) while the arrow stays; at 5 s the
+   arrow goes and the slashed circle (LOST) shows; after 12 s with no STEER the
+   overlay goes away.
 8. **LOST**: switch the phone's Bluetooth off (and nothing else nearby). A
    report with bit 0 clear means nothing was heard in that 1 s window: the
-   circle fades at once and the word holds, then **LOST** with no arrow 5 s after
-   the last report with a target. The pod repeats the no-target STEER at most
+   circle fades at once and the arrow holds, then the slashed circle (LOST) with
+   no arrow 5 s after the last report with a target. The pod repeats the no-target STEER at most
    every 5 s.
 9. **Pod restart**: power-cycle the Drone Pod while the overlay shows. The log
    shows `steering: window_end_ms went back ...: the Drone Pod restarted`; src ids
@@ -233,7 +264,8 @@ STEER is written to the btrx log at debug level (`rx ... STEER ...`, address las
     disappears. It never shows before a pod is paired, from another pod's node,
     with another pod_id, or from the connect backlog.
 
-Pass: the port-side phone reads LEFT on both tablets; the roll sign reads
+Pass: the port-side phone (or the Desk Pod in front of the port patch) points
+the arrow left on both tablets; the roll sign reads
 positive starboard side down; the 2 s fade, Mute and Clear mutes behave as
 above; the overlay is only on the pod drone's tile; nothing is ever posted as a
 clue.
