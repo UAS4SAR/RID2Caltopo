@@ -130,6 +130,16 @@ Also check, one at a time:
   timer, so the message is usually *The Desk Pod closed its pairing window…*
   rather than *The pairing window ran out.*
 - **Button not tapped.** Start pairing and wait 2 minutes: step 1 fails.
+- **Replace Drone Pod.** One app pairs one Drone Pod; there is no *Pair
+  another*. With a pod paired the section offers only **Replace Drone Pod**. It
+  asks first (*Replace Drone Pod?* names the pod and pod_id and says it will be
+  unpaired from this app). **Keep current** changes nothing. **Unpair and pair
+  new** clears the paired line at once (log `pairing: Drone Pod !... pod_id=...
+  unpaired in this app to replace it`) and starts at step 1. Nothing is sent to
+  the old pod: firmware 0x0102 has no unpair message (it drops its pairing only on
+  a confirm=0 inside its own nod window, or a factory reset), so the old pod keeps
+  sending STEER and HEALTH with its old pod_id, and the app ignores them.
+  Re-pairing the same pod this way gives it a new pod_id.
 
 ## 4. Reconnect
 
@@ -138,7 +148,9 @@ Also check, one at a time:
 2. Lock the tablet for 2 minutes with the link up. Unlock: the link is still
    connected and the live DETECT count kept growing (Android: the scanning
    service keeps the process alive; iPad: `bluetooth-central` background mode).
-3. **Forget this Desk Pod** disconnects and scans for any Desk Pod again.
+3. **Replace Desk Pod** asks first (*Replace Desk Pod?*; **Keep current** leaves
+   everything as it was). **Forget and scan** disconnects and scans for any Desk
+   Pod again. The paired Drone Pod stays paired.
 
 ## 5. USB debug link (Android only)
 
@@ -271,7 +283,7 @@ STEER is written to the btrx log at debug level (`rx ... STEER ...`, address las
 9. **Pod restart**: power-cycle the Drone Pod while the overlay shows. The log
    shows `steering: window_end_ms went back ...: the Drone Pod restarted`; src ids
    start again at 1, so colors restart from the first and the muted line clears.
-10. Turn **Connect over Bluetooth** off (or forget the paired pod): the overlay
+10. Turn **Connect over Bluetooth** off (or replace the paired pod): the overlay
     disappears. It never shows before a pod is paired, from another pod's node,
     with another pod_id, or from the connect backlog.
 

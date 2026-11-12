@@ -12,6 +12,19 @@ Project-only engineering record; do not package in the app, copy into store meta
 
 ## Cumulative release history
 
+### 2.6.0 (445) — BTRX: one Desk Pod and one Drone Pod per app (November 12, 2026)
+
+- Both, same words: *Pair another* and the inline *Forget* next to the paired pod are
+  gone. With a Drone Pod paired the only action is **Replace Drone Pod**: a
+  confirmation (*Replace Drone Pod?*, **Unpair and pair new** / **Keep current**), then
+  `BtrxDeskPodModel.replacePairedPod()` unpairs it in the app and starts pairing.
+  `startPairing()` does nothing while a pod is paired. *Forget this Desk Pod* is
+  **Replace Desk Pod** with its own confirmation (**Forget and scan**).
+- Pod side: btrx af2549e has no unpair message. The pod clears `confirmed` only on a
+  PAIR_CONFIRM with confirm=0 that it accepts inside its own nod-opened pair window
+  (nonce must match), or on a factory reset. The app sends nothing to the old pod;
+  it stays confirmed with its pod_id and keeps sending, and the app ignores it.
+
 ### 2.6.0 (445) — btrx Desk Pod "report for duty" timing (November 12, 2026)
 
 - Both, same logic and words: `BtrxClient.roleCheck(retried)` drives the link's
