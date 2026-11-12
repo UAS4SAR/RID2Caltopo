@@ -74,6 +74,8 @@ fun BtrxSteeringOverlay(tile: String, liveTiles: Set<String>, chosenTile: String
                 .clickable(enabled = v.canMute) { BtrxManager.muteSteeringSource() },
         )
         Text(v.hint.word, color = Color.White.copy(alpha = 0.75f), fontSize = 10.sp)
+        // Clue from STEER company_id and dev_class, e.g. "Apple · wearable".
+        Text(v.clue, color = Color.White, fontSize = 12.sp, maxLines = 1)
         if (v.canMute) {
             Text(
                 BtrxDeskPodText.MUTE,

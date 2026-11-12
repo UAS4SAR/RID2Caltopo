@@ -94,7 +94,12 @@ class BtrxSteering {
         val length: Double = LENGTH_DEFAULT,
         /** CLOSER while STRAIGHT: draw the closing chevron on the arrow. */
         val closer: Boolean = false,
-    )
+        /** The target's STEER company_id (0 none); with [devClass] gives [clue]. */
+        val companyId: Int = 0,
+    ) {
+        /** One short clue line, e.g. "Apple · wearable" ([BtrxMakers.clue]). */
+        val clue: String get() = BtrxMakers.clue(companyId, devClass)
+    }
 
     /** A point in mark units (half the mark's size), centre (0, 0), y down. */
     data class Pt(val x: Double, val y: Double)
@@ -128,6 +133,7 @@ class BtrxSteering {
     private var lastSteerMs: Long? = null
     private var lastTargetMs: Long? = null
     private var targetDevClass = P.DEV_UNKNOWN
+    private var targetCompanyId = 0
     /** Smoothed arrow length (0..1) and the window_end_ms it was last updated at. */
     private var length: Double? = null
     private var lengthWindowMs: Long? = null
@@ -141,6 +147,7 @@ class BtrxSteering {
         src = 0; clearHint()
         last = null; lastSteerMs = null; lastTargetMs = null
         targetDevClass = P.DEV_UNKNOWN
+        targetCompanyId = 0
     }
 
     /** Color for a src_id: each new id takes the next palette entry, cycling after 8. */
@@ -173,6 +180,7 @@ class BtrxSteering {
         }
         colorFor(src)
         targetDevClass = s.devClass
+        targetCompanyId = s.companyId
         if (s.gated) return restarted // hold the last hint (LEVEL); not in the fit
         if (s.portBoardSilent) return restarted // pod B missing: no direction (NO_PORT)
         updateSide(s)
@@ -210,6 +218,7 @@ class BtrxSteering {
             faded = lost || !s.target || stale, devClass = targetDevClass,
             muted = s.muted, steerSeq = s.steerSeq, ageMs = nowMs - seen, canMute = !lost && src != 0,
             length = length ?: LENGTH_DEFAULT, closer = !lost && side == Side.STRAIGHT && along == Along.CLOSER,
+            companyId = targetCompanyId,
         )
     }
 

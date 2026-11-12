@@ -141,6 +141,7 @@ fun DeskPodScreen(onDismiss: () -> Unit) {
                             SteeringMark(st, 36.dp)
                             Text(BtrxDeskPodText.steerLine(st), Modifier.padding(start = 8.dp))
                         }
+                        Text(st.clue, fontWeight = FontWeight.SemiBold)
                         if (st.muted) Text(BtrxDeskPodText.STEER_MUTED, fontWeight = FontWeight.SemiBold)
                     }
                     Text(BtrxDeskPodText.STEER_MUTE_HINT, style = MaterialTheme.typography.bodySmall)
