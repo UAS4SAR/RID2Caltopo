@@ -106,6 +106,18 @@ class BtrxBleLink(
     private val opTimeout = Runnable { sessionLost("a Bluetooth operation timed out") }
     private val connectTimeout = Runnable { sessionLost("connection timed out") }
     private val bondTimeout = Runnable { bondFinished(false, "bonding did not finish within ${BOND_TIMEOUT_MS / 1000} s") }
+    /**
+     * Bond state poll while bonding. Samsung (A5 Pro, Android 15) never delivered
+     * ACTION_BOND_STATE_CHANGED to the receiver: the bond finished 12 s after the PIN dialog
+     * opened and the link sat out the full 90 s timeout. Polling makes the receiver optional.
+     */
+    private val bondPoll = object : Runnable {
+        override fun run() {
+            if (bondReceiver == null) return
+            if (device?.bondState == BluetoothDevice.BOND_BONDED) bondFinished(true, "bonded (state poll)")
+            else handler.postDelayed(this, BOND_POLL_MS)
+        }
+    }
     private val heartbeat = object : Runnable {
         override fun run() { client?.sendHeartbeat(); handler.postDelayed(this, HEARTBEAT_MS) }
     }
@@ -254,6 +266,7 @@ class BtrxBleLink(
             events.onStatus(LinkPhase.BONDING, "Pairing with ${name ?: "the Desk Pod"}: enter the PIN printed on the Desk Pod (${MeshtasticBle.DEFAULT_PIN} by default).", name)
             registerBondReceiver(dev)
             handler.postDelayed(bondTimeout, BOND_TIMEOUT_MS)
+            handler.postDelayed(bondPoll, BOND_POLL_MS)
             if (!dev.createBond() && dev.bondState != BluetoothDevice.BOND_BONDING) {
                 bondFinished(false, "Android refused to start bonding")
             }
@@ -281,13 +294,16 @@ class BtrxBleLink(
             }
         }
         bondReceiver = r
-        ContextCompat.registerReceiver(context, r, IntentFilter(BluetoothDevice.ACTION_BOND_STATE_CHANGED), ContextCompat.RECEIVER_NOT_EXPORTED)
+        // The Bluetooth stack (not the system UID) sends this protected broadcast, so a
+        // RECEIVER_NOT_EXPORTED receiver may never get it; only the system can send it anyway.
+        ContextCompat.registerReceiver(context, r, IntentFilter(BluetoothDevice.ACTION_BOND_STATE_CHANGED), ContextCompat.RECEIVER_EXPORTED)
     }
 
     private fun unregisterBondReceiver() {
         bondReceiver?.let { runCatching { context.unregisterReceiver(it) } }
         bondReceiver = null
         handler.removeCallbacks(bondTimeout)
+        handler.removeCallbacks(bondPoll)
     }
 
     private fun bondFinished(ok: Boolean, why: String) {
@@ -373,6 +389,11 @@ class BtrxBleLink(
     private fun onConnected(g: BluetoothGatt) {
         handler.removeCallbacks(connectTimeout)
         log.info("ble: connected to ${device?.name ?: "Desk Pod"}")
+        // The config dump and the Desk Pod's queued frames (up to 32) are read one FromRadio
+        // per round trip; a short connection interval cuts that from tens of seconds. Back
+        // to balanced once the Desk Pod has answered ROLE_GET.
+        val fast = runCatching { g.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH) }.getOrDefault(false)
+        log.info("ble: connection priority high ${if (fast) "requested" else "refused"}")
         events.onStatus(LinkPhase.CONFIGURING, "Connected; reading the Desk Pod's configuration.", device?.name)
         val q = BtrxGattQueue<Op>(start = { startOp(g, it) }, onStartFailed = { handler.post { sessionLost("Android refused a Bluetooth operation") } })
         queue = q
@@ -424,7 +445,7 @@ class BtrxBleLink(
         c.setAttMtu(attMtu)
         events.onSessionStarted(c)
         c.start()
-        handler.postDelayed({ checkRole(c, retry = true) }, ROLE_TIMEOUT_MS)
+        handler.postDelayed({ checkRole(c, retried = false) }, BtrxClient.ROLE_POLL_MS)
         handler.postDelayed(heartbeat, HEARTBEAT_MS)
         handler.postDelayed(summary, SUMMARY_MS)
     }
@@ -437,13 +458,21 @@ class BtrxBleLink(
         events.onStatus(LinkPhase.READY, "Connected over Bluetooth.", dev.name)
     }
 
-    private fun checkRole(c: BtrxClient, retry: Boolean) {
+    /** The ROLE_REPORT wait (timing in [BtrxClient.roleCheck]: from ROLE_GET, after the connect backlog). */
+    private fun checkRole(c: BtrxClient, retried: Boolean) {
         if (client !== c) return
-        when {
-            c.state != BtrxClient.State.READY -> log.warn("ble: no Meshtastic config_complete after ${ROLE_TIMEOUT_MS / 1000}s")
-            c.localRole != null -> Unit
-            retry -> { log.warn("ble: no ROLE_REPORT from the Desk Pod; asking again"); c.sendRoleGet(); handler.postDelayed({ checkRole(c, false) }, ROLE_TIMEOUT_MS) }
-            else -> log.warn("ble: no ROLE_REPORT from the Desk Pod after a retry; keeping the link open and decoding frames.")
+        val r = c.roleCheck(retried)
+        when (r.action) {
+            BtrxClient.RoleWait.DONE -> gatt?.let { g ->
+                runCatching { g.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_BALANCED) }
+            }
+            BtrxClient.RoleWait.WAIT -> handler.postDelayed({ checkRole(c, retried) }, r.delayMs)
+            BtrxClient.RoleWait.RETRY -> {
+                log.warn("ble: no ROLE_REPORT from the Desk Pod within ${BtrxClient.ROLE_TIMEOUT_MS / 1000} s of ROLE_GET; asked again")
+                handler.postDelayed({ checkRole(c, true) }, r.delayMs)
+            }
+            BtrxClient.RoleWait.GIVE_UP -> log.warn("ble: no ROLE_REPORT from the Desk Pod after a retry; keeping the link open and decoding frames.")
+            BtrxClient.RoleWait.NO_CONFIG -> log.warn("ble: no Meshtastic config_complete after ${BtrxClient.CONFIG_TIMEOUT_MS / 1000}s")
         }
     }
 
@@ -541,7 +570,7 @@ class BtrxBleLink(
         const val CONNECT_TIMEOUT_MS = 30_000L
         const val BOND_TIMEOUT_MS = 90_000L
         const val OP_TIMEOUT_MS = 10_000L
-        const val ROLE_TIMEOUT_MS = 10_000L
+        const val BOND_POLL_MS = 1_000L
         const val HEARTBEAT_MS = 300_000L
         const val SUMMARY_MS = 60_000L
         private const val GATT_INSUFFICIENT_AUTHENTICATION = 5

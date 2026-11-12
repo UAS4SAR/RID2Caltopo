@@ -16,10 +16,12 @@ class BtrxClientTest {
     private val sent = mutableListOf<ByteArray>()
     private val infos = mutableListOf<String>()
     private val warns = mutableListOf<String>()
+    private val debugs = mutableListOf<String>()
     private val refused = mutableListOf<Pair<Long, Int>>()
     private val logger = object : BtrxClient.Logger {
         override fun info(message: String) { infos += message }
         override fun warn(message: String) { warns += message }
+        override fun debug(message: String) { debugs += message }
     }
     private var now = 50_000L
     private val client = BtrxClient(
@@ -209,7 +211,7 @@ class BtrxClientTest {
         val deskPair = P.fromHex(BtrxProtocolTest.EXAMPLES.getValue("DESK_PAIR"))
         feed(MeshtasticSerialTest.fromRadioPacket(deskNode, deskNode, 0, 0f, 256, deskPair))
         assertEquals(1, client.frameCount("DESK_PAIR"))
-        assertTrue(infos.any { it.contains("DESK_PAIR seq=37") && it.contains("open=1 source=button seconds=60") })
+        assertTrue(debugs.any { it.contains("DESK_PAIR seq=37") && it.contains("open=1 source=button seconds=60") })
     }
 
     @Test
@@ -340,6 +342,104 @@ class BtrxClientTest {
         assertEquals(2, c.frameCount("DETECT"))
         assertTrue(infos.contains("connect backlog drained at the first empty read: 2 frame(s) queued while R2C was away"))
         assertEquals(1, out.count(::isRoleGet))
+    }
+
+    // ---- the ROLE_REPORT wait (A5 Pro, Nov 12: a full Desk Pod queue took 10 s to drain) ----
+
+    private val deskRoleReport = MeshtasticSerialTest.fromRadioPacket(deskNode, deskNode, 0, 0f, 256,
+        P.encodeFrame(P.ROLE_REPORT, seq = 4, payload = P.fromHex("030500000000015b128c4c00000000000000000002")))
+
+    @Test
+    fun roleWaitStartsAtRoleGetNotAtConnect() {
+        var now = 0L
+        val out = mutableListOf<ByteArray>()
+        val c = packetClient({ now }, mutableListOf(), out)
+        c.start()
+        assertEquals(BtrxClient.RoleCheck(BtrxClient.RoleWait.WAIT, BtrxClient.ROLE_POLL_MS), c.roleCheck(false))
+        now = 10_000 // the config dump took 10 s
+        val configId = MeshtasticSerial.ProtoReader(out[0]).let { r -> r.tag(); r.varint() }
+        c.onFromRadio(ProtoWriter().bytesField(3, ProtoWriter().varint(1, deskNode).bytes()).bytes())
+        c.onFromRadio(ProtoWriter().varint(7, configId).bytes())
+        val steer = P.fromHex(BtrxProtocolTest.STEER_FRAME)
+        // 37 queued frames over 10 s: still draining, so no ROLE_GET and no retry yet.
+        repeat(37) { now += 270; c.onFromRadio(btrxPacket(starboard, steer)); assertEquals(BtrxClient.RoleWait.WAIT, c.roleCheck(false).action) }
+        assertTrue(c.connectBacklogPending)
+        assertEquals(0, out.count(::isRoleGet))
+        assertTrue(warns.none { it.contains("ROLE") })
+        c.onFromRadio(ByteArray(0)) // drained: ROLE_GET goes out now
+        assertEquals(1, out.count(::isRoleGet))
+        now += 9_999
+        assertEquals(BtrxClient.RoleCheck(BtrxClient.RoleWait.WAIT, 1), c.roleCheck(false))
+        c.onFromRadio(deskRoleReport) // the live answer
+        assertEquals(BtrxClient.RoleWait.DONE, c.roleCheck(false).action)
+        assertTrue(infos.any { it.startsWith("Desk Pod confirmed: role=3 build_hash=0x0100 (supported) 30.0 s after connect") })
+    }
+
+    @Test
+    fun roleGetIsRetriedOnceThenGivenUp() {
+        var now = 0L
+        val out = mutableListOf<ByteArray>()
+        val c = packetClient({ now }, mutableListOf(), out)
+        packetHandshake(c, out)
+        c.onFromRadio(ByteArray(0))
+        assertEquals(1, out.count(::isRoleGet))
+        now += BtrxClient.ROLE_TIMEOUT_MS
+        assertEquals(BtrxClient.RoleCheck(BtrxClient.RoleWait.RETRY, BtrxClient.ROLE_TIMEOUT_MS), c.roleCheck(false))
+        assertEquals(2, out.count(::isRoleGet))
+        now += BtrxClient.ROLE_TIMEOUT_MS - 1
+        assertEquals(BtrxClient.RoleWait.WAIT, c.roleCheck(true).action)
+        now += 1
+        assertEquals(BtrxClient.RoleWait.GIVE_UP, c.roleCheck(true).action)
+        assertEquals(2, out.count(::isRoleGet))
+    }
+
+    @Test
+    fun aBacklogThatNeverEndsIsCutOffSoRoleGetStillGoesOut() {
+        var now = 0L
+        val metas = mutableListOf<BtrxClient.RadioMeta>()
+        val out = mutableListOf<ByteArray>()
+        val c = packetClient({ now }, metas, out)
+        packetHandshake(c, out)
+        now += BtrxClient.MAX_CONNECT_BACKLOG_MS - 1
+        assertEquals(BtrxClient.RoleWait.WAIT, c.roleCheck(false).action)
+        now += 1
+        assertEquals(BtrxClient.RoleCheck(BtrxClient.RoleWait.WAIT, BtrxClient.ROLE_TIMEOUT_MS), c.roleCheck(false))
+        assertFalse(c.connectBacklogPending)
+        assertEquals(1, out.count(::isRoleGet))
+        assertTrue(warns.any { it.startsWith("connect backlog still draining 30 s after config_complete") })
+        c.onFromRadio(btrxPacket(starboard, P.fromHex(BtrxProtocolTest.STEER_FRAME)))
+        assertFalse(metas.last().backlog)
+    }
+
+    @Test
+    fun noConfigCompleteIsReportedAfterThirtySeconds() {
+        var now = 0L
+        val c = packetClient({ now }, mutableListOf(), mutableListOf())
+        c.start()
+        now += BtrxClient.CONFIG_TIMEOUT_MS - 1
+        assertEquals(BtrxClient.RoleWait.WAIT, c.roleCheck(false).action)
+        now += 1
+        assertEquals(BtrxClient.RoleWait.NO_CONFIG, c.roleCheck(false).action)
+    }
+
+    @Test
+    fun imuCalAckAndSteerFlagChangesShowAtEveryLogLevel() {
+        val out = mutableListOf<ByteArray>()
+        val c = packetClient({ 0L }, mutableListOf(), out)
+        packetHandshake(c, out)
+        c.onFromRadio(ByteArray(0))
+        val ack = P.encodeFrame(P.IMU_CAL_ACK, seq = 5, payload = P.fromHex(BtrxProtocolTest.IMU_CAL_ACK_PAYLOAD))
+        c.onFromRadio(btrxPacket(starboard, ack))
+        assertTrue(debugs.any { it.contains("IMU_CAL_ACK") && it.contains("status=") && it.contains("gyro_bias_x10=") })
+        val steer = P.decodeFrame(P.fromHex(BtrxProtocolTest.STEER_FRAME)).payload
+        fun steerWith(flags: Int) = P.encodeFrame(P.STEER, seq = 6, payload = steer.copyOf().also { it[1] = flags.toByte() })
+        c.onFromRadio(btrxPacket(starboard, steerWith(P.STEER_F_TARGET or P.STEER_F_IMU_OK)))
+        c.onFromRadio(btrxPacket(starboard, steerWith(P.STEER_F_TARGET or P.STEER_F_IMU_OK)))
+        c.onFromRadio(btrxPacket(starboard, steerWith(P.STEER_F_TARGET or P.STEER_F_IMU_OK or P.STEER_F_IMU_CAL)))
+        val changes = debugs.filter { it.startsWith("steer flags from") }
+        assertEquals(2, changes.size)
+        assertTrue(changes[0].endsWith("(first) -> target,imu (imu_cal=no)"))
+        assertTrue(changes[1].endsWith("target,imu -> target,imu,cal (imu_cal=yes)"))
     }
 
     @Test

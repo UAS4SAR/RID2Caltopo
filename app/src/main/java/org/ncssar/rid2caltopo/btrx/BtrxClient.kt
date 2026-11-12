@@ -1,6 +1,7 @@
 package org.ncssar.rid2caltopo.btrx
 
 import java.security.SecureRandom
+import java.util.Locale
 import java.util.Random
 import org.ncssar.rid2caltopo.btrx.BtrxProtocol as P
 import org.ncssar.rid2caltopo.btrx.MeshtasticSerial.FromRadio
@@ -68,6 +69,22 @@ class BtrxClient(
 
     enum class State { IDLE, CONFIGURING, READY, CLOSED }
 
+    /** What the link should do next while waiting for the Desk Pod's ROLE_REPORT (see [roleCheck]). */
+    enum class RoleWait {
+        /** The Desk Pod answered. */
+        DONE,
+        /** Check again after [RoleCheck.delayMs]. */
+        WAIT,
+        /** No answer within [ROLE_TIMEOUT_MS] of ROLE_GET: ROLE_GET was sent again; check after [ROLE_TIMEOUT_MS]. */
+        RETRY,
+        /** No answer after the retry either. */
+        GIVE_UP,
+        /** No config_complete_id within [CONFIG_TIMEOUT_MS]. */
+        NO_CONFIG,
+    }
+
+    data class RoleCheck(val action: RoleWait, val delayMs: Long = 0)
+
     @get:Synchronized
     var state = State.IDLE
         private set
@@ -82,6 +99,10 @@ class BtrxClient(
 
     private var configId = 0L
     private var seq = 0
+    private var startedMs = 0L
+    private var readyMs = 0L
+    /** When this session's latest ROLE_GET to the Desk Pod went out (null: none yet). */
+    private var roleGetSentMs: Long? = null
     /**
      * True from config_complete_id until the connect backlog ends. The Desk Pod delivers
      * its queue right after config_complete (0.5-3 s on the bench), so everything in it
@@ -111,6 +132,7 @@ class BtrxClient(
         if (state != State.IDLE) return
         configId = (random.nextInt() and 0x7FFFFFFF).toLong().coerceAtLeast(1)
         state = State.CONFIGURING
+        startedMs = clock()
         if (framing == Framing.SERIAL) send(MeshtasticSerial.wakeBytes())
         sendToRadio(MeshtasticSerial.toRadioWantConfig(configId))
         log.info("handshake: want_config_id=$configId sent")
@@ -134,6 +156,40 @@ class BtrxClient(
     fun checkQuietGap() {
         if (framing != Framing.SERIAL || state != State.READY || !firstDrainPending) return
         if (clock() - lastSerialRxMs >= SERIAL_QUIET_GAP_MS) endConnectBacklog("after a ${SERIAL_QUIET_GAP_MS} ms quiet gap")
+    }
+
+    /** True from config_complete_id until the connect backlog has drained. */
+    @get:Synchronized
+    val connectBacklogPending: Boolean get() = firstDrainPending
+
+    /**
+     * The link's ROLE_REPORT wait, about once a second from session start. The 10 s answer
+     * timeout runs from this session's ROLE_GET, which goes out only when the connect backlog
+     * has drained (a ROLE_REPORT arriving inside the backlog counts as stale). A Desk Pod
+     * whose queue is full (Meshtastic keeps 32) can take 10 s or more to drain over Bluetooth,
+     * so the wait does not start at connect. A backlog still draining after
+     * [MAX_CONNECT_BACKLOG_MS] is ended here so ROLE_GET still goes out. [retried]: ROLE_GET
+     * was already repeated once.
+     */
+    @Synchronized
+    fun roleCheck(retried: Boolean): RoleCheck {
+        val now = clock()
+        if (localRole != null) return RoleCheck(RoleWait.DONE)
+        if (state != State.READY) {
+            return if (now - startedMs >= CONFIG_TIMEOUT_MS) RoleCheck(RoleWait.NO_CONFIG) else RoleCheck(RoleWait.WAIT, ROLE_POLL_MS)
+        }
+        if (firstDrainPending) {
+            if (now - readyMs < MAX_CONNECT_BACKLOG_MS) return RoleCheck(RoleWait.WAIT, ROLE_POLL_MS)
+            log.warn("connect backlog still draining ${MAX_CONNECT_BACKLOG_MS / 1000} s after config_complete ($firstDrainFrames frame(s)); treating what follows as live")
+            endConnectBacklog("by the ${MAX_CONNECT_BACKLOG_MS / 1000} s limit")
+            return RoleCheck(RoleWait.WAIT, ROLE_TIMEOUT_MS)
+        }
+        val sent = roleGetSentMs ?: return RoleCheck(RoleWait.WAIT, ROLE_POLL_MS)
+        val waited = now - sent
+        if (waited < ROLE_TIMEOUT_MS) return RoleCheck(RoleWait.WAIT, ROLE_TIMEOUT_MS - waited)
+        if (retried) return RoleCheck(RoleWait.GIVE_UP)
+        sendRoleGet()
+        return RoleCheck(RoleWait.RETRY, ROLE_TIMEOUT_MS)
     }
 
     private fun endConnectBacklog(how: String) {
@@ -195,6 +251,7 @@ class BtrxClient(
             return false
         }
         sendFrame(dest, P.roleGetFrame(nextSeq()))
+        if (dest == localNode) roleGetSentMs = clock()
         log.info("tx ROLE_GET to ${nodeName(dest)}")
         return true
     }
@@ -275,6 +332,7 @@ class BtrxClient(
                 firstDrainPending = true
                 firstDrainFrames = 0
                 lastSerialRxMs = clock()
+                readyMs = clock()
             }
             is FromRadio.Packet -> onPacket(msg)
             is FromRadio.Other -> Unit
@@ -315,9 +373,11 @@ class BtrxClient(
             return
         }
         count(if (backlog) backlogCounts else frameCounts, frame.typeName)
-        // STEER arrives every second: debug level, so the log stays readable.
-        if (frame.type == P.STEER) log.debug("rx $radio ${BtrxFrameLog.format(frame)}")
+        // STEER (every second) and the rare frames a bench test needs are logged at debug,
+        // which shows at every app log level; the rest (DETECT, HEALTH...) at info.
+        if (frame.type in ALWAYS_LOGGED) log.debug("rx $radio ${BtrxFrameLog.format(frame)}")
         else log.info("rx $radio ${BtrxFrameLog.format(frame)}")
+        if (frame.type == P.STEER) logSteerFlagChange(packet.from, frame)
         if (frame.type == P.ROLE_REPORT && packet.from == localNode && backlog) {
             log.info("stale ROLE_REPORT in the connect backlog ignored; waiting for the answer to this session's ROLE_GET")
         } else if (frame.type == P.ROLE_REPORT && packet.from == localNode) {
@@ -326,7 +386,8 @@ class BtrxClient(
                 localRole = report
                 if (report.role == P.ROLE_DESK_POD) {
                     val build = if (report.buildHash in P.SUPPORTED_BUILDS) "supported" else "not in the supported list"
-                    log.info("Desk Pod confirmed: role=3 build_hash=0x%04x (%s)".format(report.buildHash, build))
+                    val since = " %.1f s after connect".format(Locale.US, (clock() - startedMs) / 1000.0)
+                    log.info("Desk Pod confirmed: role=3 build_hash=0x%04x (%s)%s".format(report.buildHash, build, since))
                 } else {
                     log.warn("this board answered role=${report.role} (${P.roleName(report.role)}), not a Desk Pod (role=3)")
                 }
@@ -336,6 +397,18 @@ class BtrxClient(
             }
         }
         listener.onFrame(frame, meta)
+    }
+
+    private val steerFlags = HashMap<Long, Int>()
+
+    /** One line whenever a Drone Pod's STEER flags change (bit 6: IMU calibration in use). */
+    private fun logSteerFlagChange(from: Long, frame: P.Frame) {
+        val flags = runCatching { P.parseSteer(frame.payload).flags }.getOrNull() ?: return
+        val old = steerFlags.put(from, flags)
+        if (old != flags) {
+            log.debug("steer flags from ${nodeName(from)}: ${old?.let { P.steerFlagNames(it) } ?: "(first)"} -> ${P.steerFlagNames(flags)}" +
+                " (imu_cal=${if (flags and P.STEER_F_IMU_CAL != 0) "yes" else "no"})")
+        }
     }
 
     private fun count(map: MutableMap<String, Int>, key: String) {
@@ -351,6 +424,17 @@ class BtrxClient(
         const val MIN_USABLE_MTU = 100
         /** USB: the connect backlog ends at the first gap this long with no serial bytes. */
         const val SERIAL_QUIET_GAP_MS = 300L
+        /** Frame types logged at debug (shown at every app log level): STEER, and the rare
+         *  frames that pairing, the role check and IMU calibration turn on. */
+        val ALWAYS_LOGGED = setOf(P.STEER, P.PAIR_REQ, P.PAIR_ACK, P.DESK_PAIR, P.ROLE_REPORT, P.IMU_CAL_ACK)
+        /** ROLE_REPORT answer timeout, counted from this session's ROLE_GET. */
+        const val ROLE_TIMEOUT_MS = 10_000L
+        /** How often the link checks the role wait. */
+        const val ROLE_POLL_MS = 1_000L
+        /** No config_complete_id this long after want_config_id: the Desk Pod is not answering. */
+        const val CONFIG_TIMEOUT_MS = 30_000L
+        /** A connect backlog still draining this long after config_complete is ended (ROLE_GET goes out). */
+        const val MAX_CONNECT_BACKLOG_MS = 30_000L
 
         /** Heartbeat nonce after [previous]: wraps at 32 bits and skips 0 and 1. */
         fun nextHeartbeatNonce(previous: Long): Long {
