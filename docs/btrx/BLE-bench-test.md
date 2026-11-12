@@ -55,7 +55,17 @@ see section 7.
      then `connect backlog drained: N frame(s) queued while R2C was away`
      (everything read before the first empty FromRadio read is backlog)
    - `tx ROLE_GET to !66c842ca` (sent only after the backlog, so its answer is live)
-   - `Desk Pod confirmed: role=3 build_hash=0x0100 (supported)`
+   - `Desk Pod confirmed: role=3 build_hash=0x0100 (supported) N.N s after connect`
+     (record N.N)
+   - The ROLE_REPORT wait (10 s, one retry) starts when ROLE_GET goes out after the
+     backlog, not at connect. A backlog still draining 30 s after config complete is
+     cut off (`connect backlog still draining 30 s after config_complete`) so ROLE_GET
+     still goes out.
+   - Android only: `ble: connection priority high requested` right after connecting
+     (faster FromRadio reads while the config and backlog drain; it drops back to
+     balanced once the role is confirmed). On first use the app also checks the bond
+     state every second, so it goes on within about 1 s of the PIN being accepted
+     instead of waiting for the 90 s bonding timeout.
 5. The panel shows **Role: Desk Pod** and **Firmware build: 0x0100 (supported)**.
 
 Pass: connected within about 30 s; role 3.

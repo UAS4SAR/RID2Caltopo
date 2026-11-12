@@ -12,6 +12,30 @@ Project-only engineering record; do not package in the app, copy into store meta
 
 ## Cumulative release history
 
+### 2.6.0 (445) — btrx Desk Pod "report for duty" timing (November 12, 2026)
+
+- Both, same logic and words: `BtrxClient.roleCheck(retried)` drives the link's
+  ROLE_REPORT wait. The 10 s answer timeout (one retry) now runs from this
+  session's ROLE_GET, which goes out after the connect backlog drains, instead of
+  from connect; the old timer fired mid-backlog, so the retry's answer came back
+  as stale backlog. A backlog still draining 30 s after config_complete is ended
+  so ROLE_GET still goes out; no config_complete 30 s after want_config_id is
+  reported. "Desk Pod confirmed" now says how long after connect it took.
+  Android `BtrxBleLink.checkRole`, iPad `BtrxBleCentral.checkRole`.
+- Android only (no iOS equivalent): the bond receiver is exported (the
+  BOND_STATE_CHANGED broadcast comes from the Bluetooth process, so a
+  not-exported receiver missed it on a Galaxy A5 Pro and the link sat out the 90 s
+  bonding timeout), plus a 1 s bond-state poll as a backstop; and
+  `requestConnectionPriority(HIGH)` while the config dump and backlog drain (the A5
+  Pro got a 90 ms interval, about 180 ms per FromRadio read), back to BALANCED once
+  the role is confirmed. iOS handles bonding itself and has no priority API.
+- Both, logging: PAIR_REQ, PAIR_ACK, DESK_PAIR, ROLE_REPORT and IMU_CAL_ACK rx lines
+  (`BtrxClient.ALWAYS_LOGGED` / `alwaysLogged`) and the model's `pairing:` and
+  `imu cal:` lines are logged at debug, which shows at every app log level (at the
+  default level the decoded IMU_CAL_ACK and every pairing step were hidden). New line
+  `steer flags from !node: old -> new (imu_cal=yes|no)` whenever a Drone Pod's STEER
+  flags change.
+
 ### 2.6.0 (445) — Main menu "Desk Pod" renamed "BTRX" (November 12, 2026)
 
 - Both: the main menu item and the screen's title read **BTRX** (Android
