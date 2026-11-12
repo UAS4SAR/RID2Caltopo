@@ -38,6 +38,10 @@ import org.ncssar.rid2caltopo.btrx.BtrxProtocol as P
  *   [ALONG_SIGMA] x its standard error, FARTHER likewise negative (vector points back:
  *   turn around); cleared below [ALONG_EXIT_DB_S] dB/s.
  * - LEVEL at once while the latest report is gated: vector gray, last hint held.
+ * - NO_PORT at once while pod B is missing from the latest report (port -128 and IMU-ok
+ *   clear, [P.Steer.portBoardSilent]): vector gray, last hint and length held. Such a
+ *   report used to count as "heard on starboard only" and gave a hard RIGHT (A5 bench,
+ *   Nov 12 2026: 10:45:21-10:47:05, port board off the link, every source RIGHT).
  * - Faded at once when the latest report has no target, or no STEER for [STALE_MS].
  * - LOST at once after [LOST_MS] without a target: no vector, circle faded.
  * A new src_id, or the same one after LOST, starts the hint afresh.
@@ -56,7 +60,9 @@ import org.ncssar.rid2caltopo.btrx.BtrxProtocol as P
  */
 class BtrxSteering {
     enum class Hint(val word: String) {
-        LEFT("LEFT"), RIGHT("RIGHT"), STRAIGHT("STRAIGHT"), CLOSER("CLOSER"), FARTHER("FARTHER"), LEVEL("LEVEL"), LOST("LOST")
+        LEFT("LEFT"), RIGHT("RIGHT"), STRAIGHT("STRAIGHT"), CLOSER("CLOSER"), FARTHER("FARTHER"), LEVEL("LEVEL"), LOST("LOST"),
+        /** Pod B silent ([P.Steer.portBoardSilent]): no direction, last hint held, vector gray. */
+        NO_PORT("NO PORT")
     }
 
     enum class Side { LEFT, STRAIGHT, RIGHT }
@@ -168,6 +174,7 @@ class BtrxSteering {
         colorFor(src)
         targetDevClass = s.devClass
         if (s.gated) return restarted // hold the last hint (LEVEL); not in the fit
+        if (s.portBoardSilent) return restarted // pod B missing: no direction (NO_PORT)
         updateSide(s)
         updateAlong(s)
         updateLength(s)
@@ -190,6 +197,7 @@ class BtrxSteering {
         val hint = when {
             lost -> Hint.LOST
             s.gated -> Hint.LEVEL
+            s.target && s.portBoardSilent -> Hint.NO_PORT
             else -> heldHint()
         }
         val vector = if (lost) null else when (side) {
@@ -198,7 +206,7 @@ class BtrxSteering {
             else -> if (along == Along.FARTHER) Vector.BEHIND else Vector.AHEAD
         }
         return View(
-            srcId = src, colorIndex = colors[src], hint = hint, vector = vector, gray = hint == Hint.LEVEL,
+            srcId = src, colorIndex = colors[src], hint = hint, vector = vector, gray = hint == Hint.LEVEL || hint == Hint.NO_PORT,
             faded = lost || !s.target || stale, devClass = targetDevClass,
             muted = s.muted, steerSeq = s.steerSeq, ageMs = nowMs - seen, canMute = !lost && src != 0,
             length = length ?: LENGTH_DEFAULT, closer = !lost && side == Side.STRAIGHT && along == Along.CLOSER,

@@ -80,20 +80,35 @@ class BtrxSteeringTest {
 
     @Test
     fun heardOnOnePatchWithTwoHitsIsThatSideAtOnceAndHard() {
-        assertEquals(Hint.RIGHT, steer(P.RSSI_NOT_HEARD, -80, hitsPort = 0, hitsStbd = 2))
+        assertEquals(Hint.RIGHT, steer(P.RSSI_NOT_HEARD, -80, imu = true, hitsPort = 0, hitsStbd = 2))
         assertEquals(Vector.HARD_RIGHT, vector())
         tick(); assertEquals(Hint.LEFT, steer(-80, P.RSSI_NOT_HEARD, hitsPort = 2, hitsStbd = 0))
         assertEquals(Vector.HARD_LEFT, vector())
     }
 
     @Test
+    fun portBoardSilentIsNoDirectionNotAHardRight() {
+        // A5 bench 10:45:26: port -128, hits 0/7, IMU-ok clear (pod B off the link), stbd -24.
+        assertEquals(Hint.NO_PORT, steer(P.RSSI_NOT_HEARD, -24, hitsPort = 0, hitsStbd = 7))
+        val v = st.view(now)!!
+        assertTrue(v.gray)
+        assertEquals(Vector.AHEAD, v.vector) // nothing learnt: no side
+        // Pod B back with both patches: the hint works from there.
+        tick(); assertEquals(Hint.LEFT, steer(-60, -66, imu = true))
+        // Pod B drops out again: the LEFT is held (gray), not flipped to RIGHT.
+        repeat(3) { tick(); assertEquals(Hint.NO_PORT, steer(P.RSSI_NOT_HEARD, -24, hitsPort = 0, hitsStbd = 7)) }
+        assertEquals(Vector.LEFT, vector())
+        tick(); assertEquals(Hint.LEFT, steer(-60, -66, imu = true))
+    }
+
+    @Test
     fun heardOnOnePatchWithOneHitNeedsConfirming() {
         steer(-60, -64)
         assertEquals(Hint.LEFT, hint())
-        tick(); assertEquals(Hint.LEFT, steer(P.RSSI_NOT_HEARD, -80, hitsPort = 0, hitsStbd = 1)) // weak: not yet
-        tick(); assertEquals(Hint.RIGHT, steer(P.RSSI_NOT_HEARD, -80, hitsPort = 0, hitsStbd = 1)) // confirmed
+        tick(); assertEquals(Hint.LEFT, steer(P.RSSI_NOT_HEARD, -80, imu = true, hitsPort = 0, hitsStbd = 1)) // weak: not yet
+        tick(); assertEquals(Hint.RIGHT, steer(P.RSSI_NOT_HEARD, -80, imu = true, hitsPort = 0, hitsStbd = 1)) // confirmed
         assertEquals(Vector.RIGHT, vector()) // not hard on 1 hit
-        tick(); steer(P.RSSI_NOT_HEARD, -80, hitsPort = 0, hitsStbd = 2)
+        tick(); steer(P.RSSI_NOT_HEARD, -80, imu = true, hitsPort = 0, hitsStbd = 2)
         assertEquals(Vector.HARD_RIGHT, vector())
     }
 

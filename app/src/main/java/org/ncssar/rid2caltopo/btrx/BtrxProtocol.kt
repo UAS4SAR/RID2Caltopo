@@ -421,6 +421,12 @@ object BtrxProtocol {
         /** Bit 6: pod B uses a saved IMU calibration (set only with the IMU ok). */
         val imuCal: Boolean get() = flags and STEER_F_IMU_CAL != 0
         val portHeard: Boolean get() = rssiPort != RSSI_NOT_HEARD
+        /**
+         * Pod B (the port patch and the IMU) is missing from this report: port not heard and
+         * the IMU-ok flag clear. That is the board-to-board link, not a direction: a source
+         * heard at -20 dBm on starboard is not inaudible on port 10 cm away.
+         */
+        val portBoardSilent: Boolean get() = !portHeard && !imuOk
         val stbdHeard: Boolean get() = rssiStbd != RSSI_NOT_HEARD
         /** Last 4 characters of the address: never log or show the full address. */
         val addressTail: String get() = macLsbFirst.reversed().joinToString("") { "%02X".format(it.toInt() and 0xFF) }.takeLast(4)
