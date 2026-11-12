@@ -12,12 +12,36 @@ Project-only engineering record; do not package in the app, copy into store meta
 
 ## Cumulative release history
 
+### 2.6.0 (445) — btrx Desk Pod over Bluetooth, link health and pairing (November 11, 2026)
+
+- Resolves the "Android only" difference below: the btrx Desk Pod link is now on
+  both platforms over Bluetooth (Meshtastic phone API service). Owner decision,
+  relayed by BT RX: build Android and iPad together.
+- Both: Main menu > Desk Pod with the same sections, order and wording (shared
+  text in `BtrxDeskPodText.kt` / `BtrxDeskPodText.swift`): Connect over Bluetooth
+  (off by default), link state, Desk Pod role and firmware, link health (Drone Pod
+  HEALTH, RSSI/SNR both ways, detections per minute, live and backlog counts) and
+  Pair drone pod (tap button, nod twice, confirm, PAIR_ACK). Same timeouts, GATT
+  queue, FromRadio drain, reconnect backoff and pairing rules; the unit tests are
+  mirrored (`BtrxDeskPodModelTest.kt` / `BtrxDeskPodModelTests.swift`, and the
+  protocol, client and GATT tests).
+- Remaining planned difference: USB stays an Android-only debug link (an iPad
+  cannot open a generic USB serial device). On Android, USB attach pauses
+  Bluetooth ("Desk Pod is attached by USB; Bluetooth paused"); the iPad has no
+  such state.
+- Native difference: Android bonds explicitly (createBond, PIN prompt from the
+  app's request); iPadOS shows its own PIN sheet when the app first reads an
+  encrypted characteristic.
+- Evidence: Android unit suite and debug build; Swift package tests and the
+  unsigned iOS build. Board test plan `docs/btrx/BLE-bench-test.md` (not yet run).
+
 ### 2.6.0 (445) — btrx receiver, milestone 1 (November 11, 2026)
 
 - Planned difference, owner decision (btrx brief section 15, decision 1):
   version 1 of the btrx Desk Pod link is Android only. An iPad cannot open a
   generic USB serial device; Apple follows once the Desk Pod has a Bluetooth
-  link (btrx firmware work, not scheduled).
+  link (btrx firmware work, not scheduled). Superseded by the Bluetooth entry
+  above.
 - Android: USB CDC-ACM link to the Desk Pod (usb-serial-for-android), the
   Meshtastic serial handshake on app port 256, every btrx frame decoded into the
   app log, and ROLE_GET to the Desk Pod. No UI. Host unit tests cover the brief's
