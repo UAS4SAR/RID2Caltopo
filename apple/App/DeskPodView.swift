@@ -72,6 +72,12 @@ struct DeskPodView: View {
                     if s.pairedPod != nil {
                         Button(Text_.clearMutes) { center.clearSteeringMutes() }.buttonStyle(.bordered)
                     }
+                    Text(Text_.steerTileLine(chosen: center.steeringStreamID, liveCount: center.liveSteeringStreams.count)).font(.footnote)
+                    if center.steeringStreamID != nil {
+                        Button(Text_.steerChooseAgain) { center.chooseSteeringStream(nil) }.buttonStyle(.bordered)
+                    }
+                    Toggle(Text_.steerRoll, isOn: Binding(get: { s.steeringRollCorrection }, set: { center.setSteeringRollCorrection($0) }))
+                        .font(.footnote)
                 }
                 .frame(maxWidth: 720, alignment: .leading)
                 .padding()
@@ -156,20 +162,39 @@ extension EnvironmentValues {
 /// The pilot's steering overlay on a live stream tile: one circle and vector in the
 /// source's color and one hint word, no numbers. Tapping the circle (or "Mute") mutes
 /// that source on the pod. Shows only while the Desk Pod link is up, a Drone Pod is
-/// paired and STEER keeps arriving. Same as Android's BtrxSteeringOverlay.
+/// paired and STEER keeps arriving, and only on the drone carrying the pod
+/// (BtrxSteeringTarget): the single live tile, or with several live the one marked
+/// "Drone Pod is on this drone". Same as Android's BtrxSteeringOverlay.
 struct AppleSteeringOverlay: View {
+    let tile: String
     @Environment(\.btrxDeskPod) private var center
 
     var body: some View {
-        if let center { AppleSteeringOverlayContent(center: center) }
+        if let center { AppleSteeringOverlayContent(center: center, tile: tile) }
     }
 }
 
 private struct AppleSteeringOverlayContent: View {
     @ObservedObject var center: BtrxDeskPodCenter
+    let tile: String
 
     var body: some View {
-        if let v = center.snapshot.steerOverlay {
+        let live = AppleStreamRegistry.shared.liveSteeringStreamIDs
+        let chosen = center.steeringStreamID
+        if center.snapshot.steerOverlay != nil, !BtrxSteeringTarget.showsOverlay(tile: tile, live: live, chosen: chosen) {
+            // Several live streams and none marked yet: offer the pick on each live tile.
+            if BtrxSteeringTarget.offersPick(tile: tile, live: live, chosen: chosen) {
+                Button { center.chooseSteeringStream(tile) } label: {
+                    Text(BtrxDeskPodText.steerPick)
+                        .font(.system(size: 13))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .background(.black.opacity(0.55), in: RoundedRectangle(cornerRadius: 10))
+                }
+                .buttonStyle(.plain)
+            }
+        } else if let v = center.snapshot.steerOverlay {
             VStack(spacing: 2) {
                 SteeringMark(view: v, size: 64)
                     .contentShape(Circle())

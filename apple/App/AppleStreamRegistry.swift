@@ -95,6 +95,11 @@ final class AppleStreamRegistry: ObservableObject {
 
     private static let placeholderID = LiveStreamSelectionPolicy.placeholderID
 
+    /// Live tiles that can carry the btrx steering overlay (BtrxSteeringTarget).
+    var liveSteeringStreamIDs: Set<String> {
+        Set(sessions.filter { $0.state == .live && $0.id != Self.placeholderID && $0.id != "demo" }.map(\.id))
+    }
+
     func handle(_ event: MediaServerEvent) {
         let observedAt = Date()
         switch event {
@@ -884,7 +889,8 @@ private struct AppleStreamTile: View {
             if session.state == .live && session.id != "demo" {
                 // btrx steering overlay (section 41): top center, clear of the requested-by
                 // label (bottom leading), the alert overlay (top leading) and the crosshair.
-                AppleSteeringOverlay()
+                // Only on the drone carrying the pod: the single live tile, or the one picked.
+                AppleSteeringOverlay(tile: session.id)
                     .padding(.top, 8)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             }

@@ -148,6 +148,7 @@ final class BtrxBleCentral: NSObject, @unchecked Sendable {
     func clearPairingResult() { queue.async { [self] in model.clearPairingResult(); publish() } }
     func muteSteeringSource() { queue.async { [self] in model.muteSteeringSource(); publish() } }
     func clearSteeringMutes() { queue.async { [self] in model.clearSteeringMutes(); publish() } }
+    func setSteeringRollCorrection(_ on: Bool) { queue.async { [self] in model.setSteeringRollCorrection(on); publish() } }
 
     // MARK: connection
 
@@ -631,6 +632,27 @@ public final class BtrxDeskPodCenter: ObservableObject {
     public func muteSteeringSource() { central.muteSteeringSource() }
     /// "Clear mutes" on the Desk Pod screen.
     public func clearSteeringMutes() { central.clearSteeringMutes() }
+    /// Debug: steering roll correction (off until the bench roll check).
+    public func setSteeringRollCorrection(_ on: Bool) { central.setSteeringRollCorrection(on) }
+
+    /// The stream the operator marked "Drone Pod is on this drone" (see BtrxSteeringTarget).
+    @Published public private(set) var steeringStreamID: String?
+    /// Live stream ids last reported by the app (the tiles that can carry the overlay).
+    @Published public private(set) var liveSteeringStreams: Set<String> = []
+
+    public func chooseSteeringStream(_ id: String?) {
+        if steeringStreamID != id { OperationalBridgePacketLog.write?("INFO", "Btrx", "steering: overlay drone \(id ?? "cleared")") }
+        steeringStreamID = id
+    }
+
+    /// Called about once a second with the live stream ids; the choice ends with its stream.
+    public func updateLiveSteeringStreams(_ live: Set<String>) {
+        if live != liveSteeringStreams { liveSteeringStreams = live }
+        if let chosen = steeringStreamID, BtrxSteeringTarget.retained(chosen, live: live) == nil {
+            OperationalBridgePacketLog.write?("INFO", "Btrx", "steering: stream \(chosen) ended; overlay drone choice cleared")
+            steeringStreamID = nil
+        }
+    }
 
     private func remember(_ id: UUID, _ name: String?) {
         defaults.set(id.uuidString, forKey: Self.keyPeripheral)

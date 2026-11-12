@@ -1395,6 +1395,13 @@ struct ContentView: View {
             // Bound from body, not monitoredRoot: the access gate replaces
             // monitoredRoot while the app is inactive or in background.
             .task { startAlertCoordinator() }
+            // Live tiles for the btrx steering overlay; a picked drone's choice ends with its stream.
+            .task {
+                while !Task.isCancelled {
+                    deskPod.updateLiveSteeringStreams(AppleStreamRegistry.shared.liveSteeringStreamIDs)
+                    try? await Task.sleep(for: .seconds(1))
+                }
+            }
             .onChange(of: credentialMutations.isBusy) { _, busy in
                 guard !busy else { return }
                 // Publish the completed configuration together. Observers skip

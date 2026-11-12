@@ -113,6 +113,8 @@ public final class BtrxDeskPodModel {
         public var steerOverlay: BtrxSteering.View?
         /// The latest STEER whatever the link state, for the Desk Pod screen's bench line.
         public var lastSteer: BtrxSteering.View?
+        /// Debug: roll correction of the steering hint (off until the bench roll check).
+        public var steeringRollCorrection = BtrxSteering.rollCorrectionDefault
         public init() {}
         public var roleSupported: Bool { role.map { BtrxProtocol.supportedBuilds.contains($0.buildHash) } ?? false }
     }
@@ -249,7 +251,12 @@ public final class BtrxDeskPodModel {
             trimDetects(meta.arrivalMs)
         // The pod sends STEER only once confirmed; before pairing it is not ours to steer by.
         case BtrxProtocol.STEER:
-            if pairedPod != nil { steering.onSteer(try BtrxProtocol.parseSteer(frame.payload), nowMs: meta.arrivalMs) }
+            if pairedPod != nil {
+                let st = try BtrxProtocol.parseSteer(frame.payload)
+                if steering.onSteer(st, nowMs: meta.arrivalMs) {
+                    log.info("steering: window_end_ms went back to \(st.windowEndMs): the Drone Pod restarted; src ids, colors and mutes reset")
+                }
+            }
         default: break
         }
     }
@@ -432,6 +439,7 @@ public final class BtrxDeskPodModel {
         s.pairedPodQuiet = pairedQuiet(now)
         s.steerOverlay = steeringLinkUp ? steering.view(nowMs: now) : nil
         s.lastSteer = steering.lastView(nowMs: now)
+        s.steeringRollCorrection = steering.rollCorrection
         return s
     }
 
@@ -446,6 +454,12 @@ public final class BtrxDeskPodModel {
         guard let s = sender, s.isReady else { log.warn("steering: Mute not sent: the Desk Pod is not connected"); return }
         log.info("steering: STEER_MUTE mute src=\(v.srcId) to \(BtrxClient.nodeName(pod.node))")
         s.sendFrame(to: pod.node, frame: BtrxProtocol.steerMuteFrame(seq: s.nextSeq(), podId: pod.podId, op: BtrxProtocol.MUTE_ADD, srcId: v.srcId))
+    }
+
+    /// Debug switch on the Desk Pod screen; off by default until the bench roll check.
+    public func setSteeringRollCorrection(_ on: Bool) {
+        if steering.rollCorrection != on { log.info("steering: roll correction \(on ? "on" : "off") (debug)") }
+        steering.rollCorrection = on
     }
 
     /// "Clear mutes": STEER_MUTE op 0, to the paired pod.

@@ -7,43 +7,50 @@ final class BtrxSteeringTests: XCTestCase {
     typealias H = BtrxSteering.Hint
 
     var now: Int64 = 1_000_000
+    /// The pod's clock (window_end_ms), advancing with `now`.
+    var podMs: UInt32 = 50_000
     var seq = 0
     var st = BtrxSteering()
 
     @discardableResult
     func steer(_ port: Int, _ stbd: Int, peak: Int? = nil, src: Int = 7, gated: Bool = false, imu: Bool = false, rollX2: Int = 0,
-               target: Bool = true, devClass: Int = P.DEV_PHONE, muted: Bool = false) -> H? {
+               target: Bool = true, devClass: Int = P.DEV_PHONE, muted: Bool = false, hitsPort: Int = 3, hitsStbd: Int = 3) -> H? {
         var f = 0
         if target { f |= P.STEER_F_TARGET }
         if gated { f |= P.STEER_F_GATED }
         if imu { f |= P.STEER_F_IMU_OK }
         if muted { f |= P.STEER_F_MUTED }
         seq += 1
-        let s = P.Steer(steerSeq: seq & 0xFF, flags: f, windowEndMs: 0, ageMs: 100, srcId: target ? src : 0,
+        let s = P.Steer(steerSeq: seq & 0xFF, flags: f, windowEndMs: podMs, ageMs: 100, srcId: target ? src : 0,
                         rssiPort: target ? port : -128, rssiStbd: target ? stbd : -128, peakRssi: target ? (peak ?? max(port, stbd)) : -128,
-                        hitsPort: 3, hitsStbd: 3, companyId: 0x4C, devClass: devClass, addrType: 1, macLsbFirst: [1, 2, 3, 4, 5, 6],
-                        rollX2: rollX2, pitchX2: 0)
+                        hitsPort: target ? hitsPort : 0, hitsStbd: target ? hitsStbd : 0, companyId: 0x4C, devClass: devClass, addrType: 1,
+                        macLsbFirst: [1, 2, 3, 4, 5, 6], rollX2: rollX2, pitchX2: 0)
         st.onSteer(s, nowMs: now)
         return st.view(nowMs: now)?.hint
     }
 
-    func tick(_ ms: Int64 = 1_000) { now += ms }
+    func tick(_ ms: Int64 = 1_000) { now += ms; podMs += UInt32(ms) }
     var hint: H? { st.view(nowMs: now)?.hint }
     var vector: BtrxSteering.Vector? { st.view(nowMs: now)?.vector }
 
+    func plain(_ seq: Int, src: Int, windowEndMs: UInt32) -> P.Steer {
+        P.Steer(steerSeq: seq, flags: P.STEER_F_TARGET, windowEndMs: windowEndMs, ageMs: 0, srcId: src, rssiPort: -62, rssiStbd: -61,
+                peakRssi: -61, hitsPort: 3, hitsStbd: 3, companyId: 0, devClass: P.DEV_PHONE, addrType: 1, macLsbFirst: [0, 0, 0, 0, 0, 0],
+                rollX2: 0, pitchX2: 0)
+    }
+
     func testSteerHintMatchesTheSimulatorOnTheFirmwareVector() throws {
-        // test_protocol.py STEER_PAYLOAD: port -61, stbd -70 -> r2c_sim steer_hint "left".
         st.onSteer(try P.parseSteer(P.fromHex(BtrxProtocolTests.steerPayload)), nowMs: now)
         XCTAssertEqual(.left, hint)
-        XCTAssertEqual(.hardLeft, vector) // 9 dB >= 8: hard left
+        XCTAssertEqual(.hardLeft, vector)
     }
 
     func testEnterAtThreeLeaveOnlyBelowTwo() {
         XCTAssertEqual(.straight, steer(-60, -62))
         tick(); steer(-60, -63); tick(); steer(-60, -63)
         XCTAssertEqual(.left, hint)
-        tick(); XCTAssertEqual(.left, steer(-60, -62)) // dead band holds LEFT
-        tick(); XCTAssertEqual(.left, steer(-60, -61)) // 1 dB once: not yet
+        tick(); XCTAssertEqual(.left, steer(-60, -62))
+        tick(); XCTAssertEqual(.left, steer(-60, -61))
         tick(); XCTAssertEqual(.straight, steer(-60, -61))
     }
 
@@ -65,13 +72,32 @@ final class BtrxSteeringTests: XCTestCase {
         XCTAssertEqual(.hardRight, vector)
     }
 
-    func testHeardOnOnePatchOnlyIsThatSide() {
-        XCTAssertEqual(.right, steer(P.rssiNotHeard, -80))
+    func testHeardOnOnePatchWithTwoHitsIsThatSideAtOnceAndHard() {
+        XCTAssertEqual(.right, steer(P.rssiNotHeard, -80, hitsPort: 0, hitsStbd: 2))
         XCTAssertEqual(.hardRight, vector)
-        tick(); XCTAssertEqual(.left, steer(-80, P.rssiNotHeard))
+        tick(); XCTAssertEqual(.left, steer(-80, P.rssiNotHeard, hitsPort: 2, hitsStbd: 0))
+        XCTAssertEqual(.hardLeft, vector)
     }
 
-    func testRollIsCorrectedOnlyWithTheImuFlag() {
+    func testHeardOnOnePatchWithOneHitNeedsConfirming() {
+        steer(-60, -64)
+        XCTAssertEqual(.left, hint)
+        tick(); XCTAssertEqual(.left, steer(P.rssiNotHeard, -80, hitsPort: 0, hitsStbd: 1))
+        tick(); XCTAssertEqual(.right, steer(P.rssiNotHeard, -80, hitsPort: 0, hitsStbd: 1))
+        XCTAssertEqual(.right, vector)
+        tick(); steer(P.rssiNotHeard, -80, hitsPort: 0, hitsStbd: 2)
+        XCTAssertEqual(.hardRight, vector)
+    }
+
+    func testRollCorrectionIsOffByDefault() {
+        XCTAssertFalse(BtrxSteering.rollCorrectionDefault)
+        XCTAssertFalse(st.rollCorrection)
+        steer(-60, -62, imu: true, rollX2: 20); tick()
+        XCTAssertEqual(.straight, steer(-60, -62, imu: true, rollX2: 20))
+    }
+
+    func testRollIsCorrectedWhenEnabledAndOnlyWithTheImuFlag() {
+        st.rollCorrection = true
         XCTAssertEqual(.straight, steer(-60, -62, rollX2: 20))
         tick(); steer(-60, -62, imu: true, rollX2: 20); tick()
         XCTAssertEqual(.left, steer(-60, -62, imu: true, rollX2: 20))
@@ -79,28 +105,88 @@ final class BtrxSteeringTests: XCTestCase {
             P.Steer(steerSeq: 0, flags: P.STEER_F_TARGET | P.STEER_F_IMU_OK, windowEndMs: 0, ageMs: 0, srcId: 1, rssiPort: -60, rssiStbd: -62,
                     peakRssi: -60, hitsPort: 1, hitsStbd: 1, companyId: 0, devClass: 0, addrType: 0, macLsbFirst: [0, 0, 0, 0, 0, 0], rollX2: roll, pitchX2: 0)
         }
-        XCTAssertEqual(3.2, BtrxSteering.deltaDb(s(20)), accuracy: 1e-9)
-        XCTAssertEqual(0.8, BtrxSteering.deltaDb(s(-20)), accuracy: 1e-9)
+        XCTAssertEqual(4.0, BtrxSteering.deltaDb(s(20), rollCorrection: true), accuracy: 1e-9)
+        XCTAssertEqual(0.0, BtrxSteering.deltaDb(s(-20), rollCorrection: true), accuracy: 1e-9)
+        XCTAssertEqual(2.0, BtrxSteering.deltaDb(s(20), rollCorrection: false), accuracy: 1e-9)
+        XCTAssertEqual(0.2, BtrxSteering.rollDbPerDeg)
     }
 
-    func testCloserAndFartherComeFromThePeakSlopeWhileStraight() {
-        steer(-70, -70, peak: -70); tick()
-        steer(-69, -69, peak: -69); tick()
-        XCTAssertEqual(.closer, steer(-68, -68, peak: -68))
+    @discardableResult
+    func ramp(_ start: Int, _ step: Int, n: Int = 6) -> H? {
+        var h: H?
+        for i in 0..<n {
+            h = steer(-60, -60, peak: start + i * step)
+            if i < n - 1 { tick() }
+        }
+        return h
+    }
+
+    func testCloserNeedsSixReportsAndASignificantSlopeAgainstPodTime() {
+        steer(-60, -60, peak: -75); tick()
+        steer(-60, -60, peak: -74); tick()
+        steer(-60, -60, peak: -73); tick()
+        steer(-60, -60, peak: -72); tick()
+        XCTAssertEqual(.straight, steer(-60, -60, peak: -71))
+        tick(); XCTAssertEqual(.closer, steer(-60, -60, peak: -70))
         XCTAssertEqual(.ahead, vector)
-        tick(); XCTAssertEqual(.closer, steer(-68, -68, peak: -68))
-        tick(); steer(-68, -68, peak: -68)
-        tick(); steer(-68, -68, peak: -68)
-        tick(); XCTAssertEqual(.straight, steer(-68, -68, peak: -68))
-        tick(); steer(-69, -69, peak: -69); tick(); steer(-70, -70, peak: -70); tick()
-        XCTAssertEqual(.farther, steer(-71, -71, peak: -71))
+    }
+
+    func testFartherPointsBack() {
+        XCTAssertEqual(.farther, ramp(-60, -1))
         XCTAssertEqual(.behind, vector)
     }
 
-    func testSlopeIsLeastSquares() {
-        XCTAssertEqual(1.0, BtrxSteering.slope([-70, -69, -68]), accuracy: 1e-9)
-        XCTAssertEqual(-0.5, BtrxSteering.slope([-60, -60, -61, -61, -62]), accuracy: 1e-9)
-        XCTAssertEqual(0.0, BtrxSteering.slope([-60]), accuracy: 1e-9)
+    func testTheSlopeIsPerSecondOfPodTimeNotPerReport() {
+        for i in 0..<6 {
+            steer(-60, -60, peak: -75 + i)
+            if i < 5 { now += 1_000; podMs += 3_000 }
+        }
+        XCTAssertEqual(.straight, hint)
+    }
+
+    func testANoisySlopeIsNotCalled() throws {
+        let peaks = [-72, -62, -72, -62, -70, -63]
+        for (i, p) in peaks.enumerated() { steer(-60, -60, peak: p); if i < peaks.count - 1 { tick() } }
+        let fit = try XCTUnwrap(BtrxSteering.fit(peaks.enumerated().map { (UInt32($0.offset * 1000), $0.element) }))
+        XCTAssertGreaterThanOrEqual(fit.slopeDbPerS, 0.5)
+        XCTAssertLessThan(fit.slopeDbPerS, 2 * fit.stdErr)
+        XCTAssertEqual(.straight, hint)
+    }
+
+    func testCloserClearsBelowAQuarterDbPerSecond() throws {
+        XCTAssertEqual(.closer, ramp(-75, 1))
+        var h: H? = .closer
+        var n = 0
+        while h == .closer && n < 15 { tick(); h = steer(-60, -60, peak: -70); n += 1 }
+        XCTAssertEqual(.straight, h)
+        let fit = try XCTUnwrap(BtrxSteering.fit([(0, -70), (1000, -70), (2000, -70)]))
+        XCTAssertEqual(0.0, fit.slopeDbPerS, accuracy: 1e-9)
+    }
+
+    func testOnlyTheLastTenSecondsOfPodTimeCount() {
+        XCTAssertEqual(.closer, ramp(-75, 1))
+        tick(11_000)
+        XCTAssertEqual(.straight, steer(-60, -60, peak: -70))
+    }
+
+    func testGatedAndEmptyReportsAreLeftOutOfTheFit() {
+        steer(-60, -60, peak: -75); tick()
+        steer(-60, -60, peak: -74); tick()
+        steer(-60, -60, peak: -20, gated: true); tick()
+        steer(0, 0, target: false); tick()
+        steer(-60, -60, peak: -73); tick()
+        steer(-60, -60, peak: -72); tick()
+        steer(-60, -60, peak: -71); tick()
+        XCTAssertEqual(.closer, steer(-60, -60, peak: -70))
+    }
+
+    func testFitGivesSlopeInDbPerSecondAndStandardError() throws {
+        let exact = try XCTUnwrap(BtrxSteering.fit([(0, -70), (1000, -69), (2000, -68), (3000, -67)]))
+        XCTAssertEqual(1.0, exact.slopeDbPerS, accuracy: 1e-9)
+        XCTAssertEqual(0.0, exact.stdErr, accuracy: 1e-9)
+        let half = try XCTUnwrap(BtrxSteering.fit([(0, -60), (2000, -61), (4000, -62)]))
+        XCTAssertEqual(-0.5, half.slopeDbPerS, accuracy: 1e-9)
+        XCTAssertNil(BtrxSteering.fit([(0, -60), (1000, -60)]))
     }
 
     func testGatedShowsLevelInGrayAndHoldsTheLastHint() {
@@ -111,6 +197,20 @@ final class BtrxSteeringTests: XCTestCase {
         XCTAssertTrue(v.gray)
         XCTAssertEqual(.left, v.vector)
         tick(); XCTAssertEqual(.left, steer(-60, -64))
+    }
+
+    func testNoReportsForTwoSecondsFadesButKeepsTheHint() {
+        steer(-60, -66)
+        XCTAssertFalse(st.view(nowMs: now)!.faded)
+        now += 1_999
+        XCTAssertFalse(st.view(nowMs: now)!.faded)
+        now += 1
+        let v = st.view(nowMs: now)!
+        XCTAssertTrue(v.faded)
+        XCTAssertEqual(.left, v.hint)
+        XCTAssertNotNil(v.vector)
+        now += 3_000
+        XCTAssertEqual(.lost, hint)
     }
 
     func testLostAfterFiveSecondsWithoutATarget() {
@@ -136,6 +236,22 @@ final class BtrxSteeringTests: XCTestCase {
         tick(); XCTAssertEqual(.straight, steer(-60, -63, src: 9))
     }
 
+    func testPodRestartResetsColorsHintAndMutedFlag() {
+        steer(-60, -66, src: 1, muted: true)
+        tick(); steer(-60, -66, src: 2, muted: true)
+        XCTAssertEqual(1, st.view(nowMs: now)?.colorIndex)
+        XCTAssertEqual(true, st.view(nowMs: now)?.muted)
+        tick()
+        podMs = 3_000
+        XCTAssertTrue(st.onSteer(plain(1, src: 2, windowEndMs: podMs), nowMs: now))
+        let v = st.view(nowMs: now)!
+        XCTAssertEqual(0, v.colorIndex)
+        XCTAssertEqual(.straight, v.hint)
+        XCTAssertFalse(v.muted)
+        XCTAssertEqual(1, st.restarts)
+        tick(); XCTAssertFalse(st.onSteer(plain(2, src: 2, windowEndMs: podMs), nowMs: now))
+    }
+
     func testColorsAreStableAndWrapAfterEight() {
         let ids = [5, 9, 11, 12, 40, 41, 42, 43, 44]
         let first = ids.map { st.colorFor($0) }
@@ -155,5 +271,31 @@ final class BtrxSteeringTests: XCTestCase {
         XCTAssertTrue(v.muted)
         XCTAssertEqual(0, v.colorIndex)
         XCTAssertTrue(v.canMute)
+    }
+
+    // MARK: which tile (the drone carrying the pod)
+
+    func testOneLiveStreamShowsTheOverlayWithoutAPick() {
+        let live: Set = ["A"]
+        XCTAssertTrue(BtrxSteeringTarget.showsOverlay(tile: "A", live: live, chosen: nil))
+        XCTAssertFalse(BtrxSteeringTarget.offersPick(tile: "A", live: live, chosen: nil))
+        XCTAssertFalse(BtrxSteeringTarget.showsOverlay(tile: "B", live: live, chosen: nil))
+    }
+
+    func testSeveralLiveStreamsNeedAPick() {
+        let live: Set = ["A", "B"]
+        XCTAssertFalse(BtrxSteeringTarget.showsOverlay(tile: "A", live: live, chosen: nil))
+        XCTAssertTrue(BtrxSteeringTarget.offersPick(tile: "A", live: live, chosen: nil))
+        XCTAssertTrue(BtrxSteeringTarget.offersPick(tile: "B", live: live, chosen: nil))
+        XCTAssertTrue(BtrxSteeringTarget.showsOverlay(tile: "B", live: live, chosen: "B"))
+        XCTAssertFalse(BtrxSteeringTarget.showsOverlay(tile: "A", live: live, chosen: "B"))
+        XCTAssertFalse(BtrxSteeringTarget.offersPick(tile: "A", live: live, chosen: "B"))
+    }
+
+    func testTheChoiceEndsWithItsStream() {
+        XCTAssertEqual("B", BtrxSteeringTarget.retained("B", live: ["A", "B"]))
+        XCTAssertNil(BtrxSteeringTarget.retained("B", live: ["A"]))
+        XCTAssertNil(BtrxSteeringTarget.retained(nil, live: ["A"]))
+        XCTAssertTrue(BtrxSteeringTarget.showsOverlay(tile: "A", live: ["A"], chosen: BtrxSteeringTarget.retained("B", live: ["A"])))
     }
 }

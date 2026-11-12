@@ -14,9 +14,17 @@ public enum BtrxDeskPodText {
     public static let pinHint = "Bluetooth PIN: printed on the Desk Pod (\(MeshtasticPhoneAPI.defaultPIN) by default for now)."
     public static let mute = "Mute"
     public static let clearMutes = "Clear mutes"
+    public static let steerPick = "Drone Pod is on this drone"
+    public static let steerChooseAgain = "Choose another drone"
+    public static let steerRoll = "Roll correction (debug; only after the bench roll check)"
+    public static func steerTileLine(chosen: String?, liveCount: Int) -> String {
+        if let chosen { return "Steering overlay on: \(chosen)" }
+        if liveCount > 1 { return "Several streams are live: tap \"\(steerPick)\" on the drone carrying the pod." }
+        return "Steering overlay on the live stream (one live)."
+    }
     public static let steerNone = "No STEER yet (firmware 0x0101 sends one about every second once the pod is paired)."
     public static let steerMuted = "A steering source is muted on the Drone Pod."
-    public static let steerMuteHint = "Tap the overlay on the stream view to mute its source (for example a search team); the next strongest takes its place. Mutes clear when the pod restarts."
+    public static let steerMuteHint = "Tap the overlay on the stream view to mute its source (for example a search team); the next strongest takes its place. The pod holds up to 8 mutes; they clear when it restarts, and a muted source unheard for 60 s comes back under a new color."
 
     /// Bench line for the Desk Pod screen: src, hint word, kind, age (the swatch is drawn beside it).
     public static func steerLine(_ v: BtrxSteering.View) -> String {
