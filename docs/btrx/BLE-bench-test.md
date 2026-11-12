@@ -14,7 +14,8 @@ Bench facts: Desk Pod `Meshtastic_42ca` (node `!66c842ca`), Drone Pod
 1 s of ROLE_GET, a DETECT about every 3 s (every 5 s from firmware 0x0101)
 and a HEALTH about every 60 s. Firmware 0x0101 (btrx PR #18, branch
 `steering-report`) adds STEER about every second once the pod is paired; see
-section 6.
+section 6. Firmware 0x0102 (same branch, af2549e) adds in-app IMU calibration;
+see section 7.
 
 ## Setup
 
@@ -269,6 +270,78 @@ the arrow left on both tablets; the roll sign reads
 positive starboard side down; the 2 s fade, Mute and Clear mutes behave as
 above; the overlay is only on the pod drone's tile; nothing is ever posted as a
 clue.
+
+## 7. Drone Pod IMU calibration (firmware 0x0102)
+
+Needs both Drone Pod boards on firmware build 0x0102 (btrx `steering-report`
+af2549e or later), the Drone Pod paired and the Desk Pod link up. A pod on
+0x0101 ignores IMU_CAL, so every step ends in *no answer ... within 8 s* (the
+message names 0x0102). Reference: `python r2c_sim.py --ble Meshtastic_42ca
+imu-cal level` (then `imu-cal starboard`, `imu-cal status`, `imu-cal clear`) runs
+the same steps from a laptop (disconnect it before testing the
+tablet).
+
+Procedure (btrx design doc §29.3). Calibrate once after the lid goes on, and
+again whenever the IMU board is refitted. The Desk Pod panel's **Drone Pod IMU**
+section, between *Pair drone pod* and *Steering*, is the same on both tablets:
+
+- A status line: *IMU calibration: a saved calibration is in use (STEER)*, *none
+  saved; the pod uses the mounting set in its firmware build*, or *not known yet
+  (tap Check)*. It comes from STEER flags bit 6 (counted only while bit 4, IMU
+  ok, is set) or from the newest IMU_CAL_ACK.
+- **Calibrate** sends the level step (IMU_CAL op 1) at once and shows *Hold the
+  pod level and still. Measuring for about 2 seconds…*
+- After a good level step: *Level step done (board N° from flat in the lid).*
+  and **Start starboard step**. Tapping it shows *Tip the starboard side down
+  about 20° and hold it still.* with a 3 s countdown (*Measuring in 3 s*), then
+  sends the starboard step (op 2): *Hold the tip still. Measuring for about 1
+  second…*
+- Success: *Calibrated. The pod read roll +N° for the tip (pitch N°). It is saved
+  on the pod.* (about +20° expected), and **Close**.
+- A failure shows the step and the status in words (status 1 to 9, for example
+  *The tip was too small (under 8°) ...*). If the pod still holds the level step
+  (ACK flags bit 1), **Retry starboard step** repeats only the starboard step;
+  otherwise **Start again**.
+- **Cancel calibration** ends the flow and sends nothing. If the starboard step
+  was already sent, the message says the pod may still have saved it: tap
+  **Check**.
+- **Check** (op 3) reports the calibration in use and the board's facing and Y
+  arrow as found. **Clear saved calibration** (op 0) goes back to the mounting
+  set in the build.
+- **Dismiss** only hides the panel: a calibration in progress keeps running.
+
+IMU_CAL goes to the paired Drone Pod's node with its pod_id in the header (as
+STEER_MUTE); one request at a time, tagged 1..255; only the paired pod's live
+IMU_CAL_ACK with the same tag and op counts. No answer within 8 s fails the step
+(pod A itself answers *no motion sensor* after 6 s when pod B is silent). The
+btrx log shows `imu cal: ...` lines and, at debug level, the IMU_CAL / IMU_CAL_ACK
+frames.
+
+1. **Happy path**: pod level and still on the bench. Tap **Calibrate**; keep still
+   about 2 s. Tap **Start starboard step**, tip the starboard side down about 20°
+   before the countdown ends and hold it. Expect *Calibrated* with roll about
+   +20°, and within a few seconds the status line reads *a saved calibration is
+   in use (STEER)*.
+2. **Too small**: repeat with only about 5° of tip. Expect *Starboard step: The tip
+   was too small ...* and **Retry starboard step**; retry with 20°: *Calibrated*.
+3. **Moved**: tap **Calibrate** and move the pod during the 2 s. Expect *Level step:
+   The pod moved too much ...* and **Start again** (no retry of the starboard
+   step).
+4. **Not a roll**: tip the nose down instead. Expect *That was not a roll ...*.
+5. **Cancel**: tap **Calibrate**, then **Cancel calibration** during the countdown:
+   *Calibration cancelled ...*, nothing more is sent (log).
+6. **Check** and **Clear saved calibration**: Check describes the saved calibration;
+   Clear says *Saved calibration cleared*, and the status line turns to *none
+   saved* (STEER bit 6 clears too).
+7. **No pod B**: unplug the cable between the boards and tap **Calibrate**: *No
+   answer from the motion sensor ...* at once (pod B unheard for 3 s) or within
+   about 6 s.
+8. **Old firmware or no link**: with the Desk Pod link off, **Calibrate** says *The
+   Desk Pod is not connected.*; with no pod paired, *No Drone Pod is paired.*
+
+Pass: both tablets show the same steps and words; *Calibrated* with roll about
++20° on the happy path; Retry starboard only when the level step is held; the
+status line follows STEER bit 6; nothing is ever posted as a clue.
 
 ## Notes
 

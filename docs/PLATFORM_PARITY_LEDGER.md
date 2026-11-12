@@ -12,6 +12,31 @@ Project-only engineering record; do not package in the app, copy into store meta
 
 ## Cumulative release history
 
+### 2.6.0 (445) — btrx Drone Pod IMU calibration (November 12, 2026)
+
+- Both platforms, same logic and words: `BtrxImuCal.kt` / `BtrxImuCal.swift`
+  (flow state machine), IMU_CAL (0x75) and IMU_CAL_ACK (0x76) in `BtrxProtocol`
+  and `BtrxFrameLog`, STEER flags bit 6 (`Steer.imuCal`), build 0x0102 supported.
+  Spec: btrx `steering-report` af2549e, firmware/PROTOCOL.md "IMU_CAL" and design
+  doc §29.3. Desk Pod panel: new **Drone Pod IMU** section between *Pair drone
+  pod* and *Steering* (Calibrate / Start starboard step with a 3 s countdown /
+  Retry starboard step / Cancel calibration / Close / Check / Clear saved
+  calibration, and a calibrated line from STEER bit 6 or the last ACK).
+- Model (`BtrxDeskPodModel`): IMU_CAL to the paired pod's node with its pod_id
+  (as STEER_MUTE, through the serialized sender); IMU_CAL_ACK counts only from
+  the paired pod (live, node, pod_id 0 or paired) with the request's tag and op;
+  tags 1..255; one request at a time; 8 s answer timeout; link loss fails a step
+  in progress; forgetting or replacing the pod resets it. Cancel sends nothing.
+- STEER src_id against firmware 7f17ac5 (stable src_id across clock-sync): no
+  change needed. Colors, the hint restart, the arrow length and Mute key on the
+  current src_id; nothing assumed a fresh id per window.
+- Tests mirrored: state machine 18 Android / 19 iPad (the iPad adds a words
+  check), protocol vectors 6 each (protocol.py `IMU_CAL_FRAME`,
+  `IMU_CAL_ACK_PAYLOAD`), model 5 each.
+- Evidence: Android unit suite; Swift package tests and the signed iPad debug
+  build. Not installed on any device (Drone Pod board was being reflashed). Bench
+  check per `docs/btrx/BLE-bench-test.md` section 7.
+
 ### 2.6.0 (445) — btrx steering arrow instead of words (November 12, 2026)
 
 - Both platforms, same logic and geometry (`BtrxSteering.arrowGeometry`,
