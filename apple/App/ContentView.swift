@@ -3666,7 +3666,7 @@ private struct MainScreenMenu: View, Equatable {
         #endif
         Menu {
             Button("Aircraft and Reception", systemImage: "antenna.radiowaves.left.and.right") { showWorkspaceStats = true }
-            Button("Desk Pod", systemImage: "dot.radiowaves.left.and.right") { showDeskPod = true }
+            Button(BtrxDeskPodText.title, systemImage: "dot.radiowaves.left.and.right") { showDeskPod = true }
             Button("Settings", systemImage: "gearshape") { showCaltopoSettings = true }
             Button("Release Notes", systemImage: "doc.text") { showReleaseNotes = true }
             Divider()

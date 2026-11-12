@@ -2,7 +2,7 @@ import R2CAppleRadios
 import R2CCore
 import SwiftUI
 
-/// Main menu > Desk Pod: the btrx Desk Pod Bluetooth link, its status and link health,
+/// Main menu > BTRX: the btrx Desk Pod Bluetooth link, its status and link health,
 /// and the "Pair drone pod" flow. Same sections, order and wording as Android's
 /// DeskPodScreen. "Dismiss" only hides this panel; the link keeps running (a calibration
 /// in progress too). "Cancel pairing" ends a pairing in progress; "Cancel calibration"

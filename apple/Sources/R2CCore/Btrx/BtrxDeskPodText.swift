@@ -4,7 +4,8 @@ import Foundation
 /// thing (Android: BtrxDeskPodText.kt; keep them matching).
 public enum BtrxDeskPodText {
     public typealias Model = BtrxDeskPodModel
-    public static let title = "Desk Pod"
+    /// Main menu item and screen title (the btrx receiver system; the pods keep their names inside).
+    public static let title = "BTRX"
     public static let usbPaused = "Desk Pod is attached by USB; Bluetooth paused"
     public static let bluetoothToggle = "Connect over Bluetooth"
     public static let podStaleHint = "Not asking any more: nod the drone pod twice again."
