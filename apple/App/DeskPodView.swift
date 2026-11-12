@@ -70,6 +70,7 @@ struct DeskPodView: View {
                             SteeringMark(view: st, size: 36)
                             Text(Text_.steerLine(st))
                         }
+                        Text(st.clue).fontWeight(.semibold)
                         if st.muted { Text(Text_.steerMuted).fontWeight(.semibold) }
                     } else {
                         Text(Text_.steerNone).font(.footnote)
@@ -275,6 +276,11 @@ private struct AppleSteeringOverlayContent: View {
                 Text(v.hint.word)
                     .font(.system(size: 10))
                     .foregroundStyle(.white.opacity(0.75))
+                // Clue from STEER company_id and dev_class, e.g. "Apple · wearable".
+                Text(v.clue)
+                    .font(.system(size: 12))
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
                 if v.canMute {
                     Button { center.muteSteeringSource() } label: {
                         Text(BtrxDeskPodText.mute)

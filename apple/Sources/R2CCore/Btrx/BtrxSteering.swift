@@ -87,6 +87,10 @@ public final class BtrxSteering {
         public var length: Double = BtrxSteering.lengthDefault
         /// CLOSER while STRAIGHT: draw the closing chevron on the arrow.
         public var closer: Bool = false
+        /// The target's STEER company_id (0 none); with ``devClass`` gives ``clue``.
+        public var companyId: Int = 0
+        /// One short clue line, e.g. "Apple · wearable" (``BtrxMakers/clue(companyId:devClass:)``).
+        public var clue: String { BtrxMakers.clue(companyId: companyId, devClass: devClass) }
     }
 
     /// A point in mark units (half the mark's size), centre (0, 0), y down.
@@ -126,6 +130,7 @@ public final class BtrxSteering {
     private var lastSteerMs: Int64?
     private var lastTargetMs: Int64?
     private var targetDevClass = BtrxProtocol.DEV_UNKNOWN
+    private var targetCompanyId = 0
     /// Smoothed arrow length (0..1) and the window_end_ms it was last updated at.
     private var length: Double?
     private var lengthWindowMs: UInt32?
@@ -141,6 +146,7 @@ public final class BtrxSteering {
         src = 0; clearHint()
         last = nil; lastSteerMs = nil; lastTargetMs = nil
         targetDevClass = BtrxProtocol.DEV_UNKNOWN
+        targetCompanyId = 0
     }
 
     /// Color for a src_id: each new id takes the next palette entry, cycling after 8.
@@ -176,6 +182,7 @@ public final class BtrxSteering {
         }
         colorFor(src)
         targetDevClass = s.devClass
+        targetCompanyId = s.companyId
         if s.gated { return restarted } // hold the last hint (LEVEL); not in the fit
         if s.portBoardSilent { return restarted } // pod B missing: no direction (NO_PORT)
         updateSide(s)
@@ -207,7 +214,7 @@ public final class BtrxSteering {
         return View(srcId: src, colorIndex: colors[src], hint: hint, vector: vector, gray: hint == .level || hint == .noPort,
                     faded: lost || !s.target || stale, devClass: targetDevClass, muted: s.muted, steerSeq: s.steerSeq,
                     ageMs: nowMs - seen, canMute: !lost && src != 0,
-                    length: length ?? Self.lengthDefault, closer: !lost && side == .straight && along == .closer)
+                    length: length ?? Self.lengthDefault, closer: !lost && side == .straight && along == .closer, companyId: targetCompanyId)
     }
 
     private func heldHint() -> Hint {
