@@ -298,4 +298,112 @@ final class BtrxSteeringTests: XCTestCase {
         XCTAssertNil(BtrxSteeringTarget.retained(nil, live: ["A"]))
         XCTAssertTrue(BtrxSteeringTarget.showsOverlay(tile: "A", live: ["A"], chosen: BtrxSteeringTarget.retained("B", live: ["A"])))
     }
+
+    // MARK: Arrow (Ken, Nov 12 2026): direction and length instead of words. Same cases as Android.
+
+    typealias V = BtrxSteering.Vector
+    var len: Double { st.view(nowMs: now)!.length }
+
+    func testArrowPointsUpForAheadSidewaysForATurnAndFlatForAHardTurn() {
+        let ahead = BtrxSteering.arrowGeometry(.ahead, length: 0).tip
+        XCTAssertEqual(0, ahead.x, accuracy: 1e-9); XCTAssertLessThan(ahead.y, 0)
+        let left = BtrxSteering.arrowGeometry(.left, length: 0).tip
+        XCTAssertTrue(left.x < 0 && left.y < 0); XCTAssertEqual(-left.x, -left.y, accuracy: 1e-9)
+        let right = BtrxSteering.arrowGeometry(.right, length: 0).tip
+        XCTAssertTrue(right.x > 0 && right.y < 0); XCTAssertEqual(right.x, -right.y, accuracy: 1e-9)
+        let hardLeft = BtrxSteering.arrowGeometry(.hardLeft, length: 0).tip
+        XCTAssertLessThan(hardLeft.x, 0); XCTAssertEqual(0, hardLeft.y, accuracy: 1e-9)
+        let hardRight = BtrxSteering.arrowGeometry(.hardRight, length: 0).tip
+        XCTAssertGreaterThan(hardRight.x, 0); XCTAssertEqual(0, hardRight.y, accuracy: 1e-9)
+    }
+
+    func testBehindIsATurnAroundArrowWhoseHeadPointsDown() {
+        let a = BtrxSteering.arrowGeometry(.behind, length: 0.5)
+        XCTAssertLessThan(a.shaft[1].y, a.shaft[0].y)
+        XCTAssertLessThan(a.shaft.map(\.y).min()!, -BtrxSteering.markCircleR)
+        XCTAssertGreaterThan(a.tip.y, a.head[1].y)
+        XCTAssertGreaterThan(a.tip.x, 0)
+        let all: [V] = [.hardLeft, .left, .ahead, .right, .hardRight, .behind]
+        for l in [0.0, 1.0] { for v in all {
+            let g = BtrxSteering.arrowGeometry(v, length: l, closer: true)
+            for p in g.shaft + g.head + g.chevron { XCTAssertTrue(abs(p.x) <= 1 && abs(p.y) <= 1, "\(v) \(l) \(p)") }
+        } }
+    }
+
+    func testArrowIsLongerWhenTheSourceIsFarther() {
+        XCTAssertEqual(BtrxSteering.arrowMinReach, BtrxSteering.arrowReach(0), accuracy: 1e-9)
+        XCTAssertEqual(BtrxSteering.arrowMaxReach, BtrxSteering.arrowReach(1), accuracy: 1e-9)
+        for v in [V.hardLeft, .left, .ahead, .right, .hardRight] {
+            let near = BtrxSteering.arrowGeometry(v, length: 0).tip, far = BtrxSteering.arrowGeometry(v, length: 1).tip
+            XCTAssertGreaterThan(far.x * far.x + far.y * far.y, near.x * near.x + near.y * near.y)
+        }
+        XCTAssertLessThan(BtrxSteering.arrowGeometry(.behind, length: 1).shaft.map(\.y).min()!,
+                          BtrxSteering.arrowGeometry(.behind, length: 0).shaft.map(\.y).min()!)
+    }
+
+    func testLengthIsLinearInTheSumSignalBetweenMinus50AndMinus100() {
+        XCTAssertEqual(0, BtrxSteering.lengthFor(-40), accuracy: 1e-9)
+        XCTAssertEqual(0, BtrxSteering.lengthFor(-50), accuracy: 1e-9)
+        XCTAssertEqual(0.5, BtrxSteering.lengthFor(-75), accuracy: 1e-9)
+        XCTAssertEqual(1, BtrxSteering.lengthFor(-100), accuracy: 1e-9)
+        XCTAssertEqual(1, BtrxSteering.lengthFor(-115), accuracy: 1e-9)
+    }
+
+    func testSumSignalIsTheStrongerPatchMean() {
+        steer(-70, -80, peak: -60)
+        XCTAssertEqual(BtrxSteering.lengthFor(-70), len, accuracy: 1e-9)
+        let one = P.Steer(steerSeq: 1, flags: P.STEER_F_TARGET, windowEndMs: 1, ageMs: 0, srcId: 9, rssiPort: -128, rssiStbd: -90,
+                          peakRssi: -85, hitsPort: 0, hitsStbd: 2, companyId: 0, devClass: 0, addrType: 1, macLsbFirst: [0, 0, 0, 0, 0, 0],
+                          rollX2: 0, pitchX2: 0)
+        XCTAssertEqual(-90, BtrxSteering.sumDbm(one)!, accuracy: 1e-9)
+        let peakOnly = P.Steer(steerSeq: 1, flags: P.STEER_F_TARGET, windowEndMs: 1, ageMs: 0, srcId: 9, rssiPort: -128, rssiStbd: -128,
+                               peakRssi: -85, hitsPort: 0, hitsStbd: 0, companyId: 0, devClass: 0, addrType: 1, macLsbFirst: [0, 0, 0, 0, 0, 0],
+                               rollX2: 0, pitchX2: 0)
+        XCTAssertEqual(-85, BtrxSteering.sumDbm(peakOnly)!, accuracy: 1e-9)
+    }
+
+    func testLengthIsSmoothedAndSlewLimited() {
+        steer(-95, -95)
+        XCTAssertEqual(0.9, len, accuracy: 1e-9)
+        tick(); steer(-50, -50)
+        XCTAssertEqual(0.8, len, accuracy: 1e-9)
+        tick(); steer(-50, -50)
+        XCTAssertEqual(0.7, len, accuracy: 1e-9)
+        XCTAssertEqual(0.73, BtrxSteering.smoothLength(0.7, 0.8, dtS: 1), accuracy: 1e-9)
+        XCTAssertEqual(0.5, BtrxSteering.smoothLength(nil, 0.5, dtS: 1), accuracy: 1e-9)
+    }
+
+    func testLengthFreezesWhileGatedOrFadedAndRestartsWithANewSource() {
+        steer(-60, -60)
+        let l = len
+        tick(); steer(-95, -95, gated: true)
+        XCTAssertEqual(l, len, accuracy: 1e-9)
+        tick(); steer(-95, -95, target: false)
+        XCTAssertEqual(l, len, accuracy: 1e-9)
+        tick(); steer(-95, -95, src: 8)
+        XCTAssertEqual(0.9, len, accuracy: 1e-9)
+    }
+
+    func testCloserShowsTheChevronAndFartherTheTurnAround() {
+        XCTAssertEqual(.closer, ramp(-75, 1))
+        let v = st.view(nowMs: now)!
+        XCTAssertTrue(v.closer)
+        XCTAssertEqual(3, BtrxSteering.arrowGeometry(v.vector!, length: v.length, closer: v.closer).chevron.count)
+        XCTAssertTrue(BtrxSteering.arrowGeometry(.ahead, length: 0.5).chevron.isEmpty)
+        st.reset()
+        tick(); XCTAssertEqual(.farther, ramp(-60, -1))
+        XCTAssertFalse(st.view(nowMs: now)!.closer)
+        XCTAssertEqual(.behind, vector)
+    }
+
+    func testPortStrongerPointsTheArrowLeft() {
+        // Bench role check: the Desk Pod's BLE right in front of the port patch.
+        steer(-45, -72, hitsPort: 8, hitsStbd: 3)
+        XCTAssertEqual(.left, hint)
+        let v = st.view(nowMs: now)!
+        XCTAssertLessThan(BtrxSteering.arrowGeometry(v.vector!, length: v.length).tip.x, 0)
+        XCTAssertEqual(.hardLeft, v.vector)
+        XCTAssertEqual(0, v.length, accuracy: 1e-9)
+    }
 }
+

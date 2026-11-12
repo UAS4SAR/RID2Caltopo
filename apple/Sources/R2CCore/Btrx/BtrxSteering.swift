@@ -1,7 +1,7 @@
 import Foundation
 
 /// The pilot's steering overlay (btrx design doc section 41): one source, one circle and
-/// vector in its color, one hint word. Fed live STEER frames from the paired Drone Pod by
+/// arrow in its color (hint word as a small label only). Fed live STEER frames from the paired Drone Pod by
 /// ``BtrxDeskPodModel``. Same as Android's BtrxSteering.kt; keep them matching. Not
 /// thread-safe: the model's queue confines it. Nothing here ever makes a clue.
 ///
@@ -33,6 +33,18 @@ import Foundation
 /// - Faded at once when the latest report has no target, or no STEER for ``staleMs``.
 /// - LOST at once after ``lostMs`` without a target: no vector, circle faded.
 /// A new src_id, or the same one after LOST, starts the hint afresh.
+///
+/// Arrow (Ken, Nov 12 2026: arrows instead of words, length for relative distance). The pilot
+/// reads the arrow, not a word: it points in ``Vector``'s direction and its length follows the
+/// original combined-vector rule (design doc section 17.2, Ken v0.6): long while the signal is
+/// weak, shorter as it rises. Section 41.2's first build had a fixed length; this brings the
+/// 17.2 length back. ``View/length`` is 0 (strong, near) to 1 (weak, far), linear in the sum
+/// signal (max of the two patch means, as section 17.2's Sigma-bar) between ``lengthNearDbm``
+/// and ``lengthFarDbm``. That is linear in log range under the section 8.3 path-loss model; a
+/// fixed-P0 range in metres would pin the arrow near its minimum for every source this
+/// receiver can hear. Smoothed as in section 17.2: EMA ``lengthAlpha`` per report,
+/// slew-limited to ``lengthSlewPerS`` of full scale per second (17.2: 30 m/s of 300 m), frozen
+/// while faded, gated or LOST, restarted with the hint.
 public final class BtrxSteering {
     public enum Hint: String, Sendable {
         case left = "LEFT", right = "RIGHT", straight = "STRAIGHT", closer = "CLOSER", farther = "FARTHER", level = "LEVEL", lost = "LOST"
@@ -67,6 +79,22 @@ public final class BtrxSteering {
         public let ageMs: Int64
         /// A source to mute (not LOST, src_id non-zero).
         public let canMute: Bool
+        /// Arrow length, 0 = strong (near, shortest) to 1 = weak (far, longest); see the class doc.
+        public var length: Double = BtrxSteering.lengthDefault
+        /// CLOSER while STRAIGHT: draw the closing chevron on the arrow.
+        public var closer: Bool = false
+    }
+
+    /// A point in mark units (half the mark's size), centre (0, 0), y down.
+    public struct Pt: Sendable, Equatable {
+        public let x: Double, y: Double
+        public init(_ x: Double, _ y: Double) { self.x = x; self.y = y }
+    }
+
+    /// The arrow to draw: shaft polyline, filled head (tip first), optional CLOSER chevron polyline.
+    public struct Arrow: Sendable, Equatable {
+        public let shaft: [Pt], head: [Pt], chevron: [Pt]
+        public var tip: Pt { head[0] }
     }
 
     /// Least-squares fit of peak RSSI against time: slope in dB/s and its standard error.
@@ -94,6 +122,9 @@ public final class BtrxSteering {
     private var lastSteerMs: Int64?
     private var lastTargetMs: Int64?
     private var targetDevClass = BtrxProtocol.DEV_UNKNOWN
+    /// Smoothed arrow length (0..1) and the window_end_ms it was last updated at.
+    private var length: Double?
+    private var lengthWindowMs: UInt32?
 
     public init() {}
 
@@ -144,6 +175,7 @@ public final class BtrxSteering {
         if s.gated { return restarted } // hold the last hint (LEVEL); not in the fit
         updateSide(s)
         updateAlong(s)
+        updateLength(s)
         return restarted
     }
 
@@ -169,7 +201,8 @@ public final class BtrxSteering {
         }
         return View(srcId: src, colorIndex: colors[src], hint: hint, vector: vector, gray: hint == .level,
                     faded: lost || !s.target || stale, devClass: targetDevClass, muted: s.muted, steerSeq: s.steerSeq,
-                    ageMs: nowMs - seen, canMute: !lost && src != 0)
+                    ageMs: nowMs - seen, canMute: !lost && src != 0,
+                    length: length ?? Self.lengthDefault, closer: !lost && side == .straight && along == .closer)
     }
 
     private func heldHint() -> Hint {
@@ -188,6 +221,14 @@ public final class BtrxSteering {
     private func clearHint() {
         side = nil; pendingSide = nil; pendingCount = 0; hard = false
         along = .none; peaks = []
+        length = nil; lengthWindowMs = nil
+    }
+
+    private func updateLength(_ s: BtrxProtocol.Steer) {
+        guard let sum = Self.sumDbm(s) else { return }
+        let dtS = lengthWindowMs.map { min(max(Double(Int64(s.windowEndMs) - Int64($0)) / 1000, 0), Self.lengthMaxDtS) } ?? 1
+        length = Self.smoothLength(length, Self.lengthFor(sum), dtS: dtS)
+        lengthWindowMs = s.windowEndMs
     }
 
     private func updateSide(_ s: BtrxProtocol.Steer) {
@@ -272,6 +313,94 @@ public final class BtrxSteering {
     /// No STEER at all for this long hides the overlay (a no-target STEER comes at most every 5 s).
     public static let showMs: Int64 = 12_000
     public static let maxRemembered = 64
+
+    /// Sum signal at or above this: shortest arrow (source near) [EST: tune in flight test 2].
+    public static let lengthNearDbm = -50.0
+    /// Sum signal at or below this: longest arrow (about the RAK4631's BLE floor) [EST].
+    public static let lengthFarDbm = -100.0
+    /// Section 17.2: EMA alpha 0.3 per 1 Hz update.
+    public static let lengthAlpha = 0.3
+    /// Section 17.2 slew limit, 30 m/s of the 300 m full scale: 10% of full scale per second.
+    public static let lengthSlewPerS = 0.1
+    /// A gap longer than this does not allow a bigger jump.
+    public static let lengthMaxDtS = 5.0
+    /// Section 17.2: a weak or first detection shows a long vector.
+    public static let lengthDefault = 1.0
+
+    /// Section 17.2 Sigma-bar: the stronger of the two patch means; the peak if neither mean was heard.
+    public static func sumDbm(_ s: BtrxProtocol.Steer) -> Double? {
+        switch (s.portHeard, s.stbdHeard) {
+        case (true, true): return Double(max(s.rssiPort, s.rssiStbd))
+        case (true, false): return Double(s.rssiPort)
+        case (false, true): return Double(s.rssiStbd)
+        case (false, false): return s.peakRssi != BtrxProtocol.rssiNotHeard ? Double(s.peakRssi) : nil
+        }
+    }
+
+    /// Unsmoothed arrow length for a sum signal: 0 at ``lengthNearDbm`` or stronger, 1 at ``lengthFarDbm`` or weaker.
+    public static func lengthFor(_ sumDbm: Double) -> Double {
+        min(max((lengthNearDbm - sumDbm) / (lengthNearDbm - lengthFarDbm), 0), 1)
+    }
+
+    /// One section 17.2 smoothing step: EMA toward `target`, slew-limited over `dtS` seconds.
+    public static func smoothLength(_ previous: Double?, _ target: Double, dtS: Double) -> Double {
+        guard let previous else { return target }
+        let limit = lengthSlewPerS * dtS
+        let step = min(max(lengthAlpha * (target - previous), -limit), limit)
+        return min(max(previous + step, 0), 1)
+    }
+
+    /// Mark geometry, in units of half the mark's size, centre (0, 0), y down. Same numbers on Android.
+    public static let markCircleR = 0.18
+    /// Centre to arrow tip at length 0 (near) and 1 (far).
+    public static let arrowMinReach = 0.55
+    public static let arrowMaxReach = 0.96
+    public static let arrowHeadLen = 0.24
+    public static let arrowHeadHalfW = 0.19
+    /// Radius of the turn-around (BEHIND) arrow's bend.
+    public static let uturnR = 0.2
+    private static let uturnSteps = 12
+
+    /// Centre-to-tip distance for an arrow length (0 near .. 1 far).
+    public static func arrowReach(_ length: Double) -> Double {
+        arrowMinReach + min(max(length, 0), 1) * (arrowMaxReach - arrowMinReach)
+    }
+
+    /// The pilot's arrow for `vector` at `length` (0 near .. 1 far): a shaft polyline from the
+    /// circle's edge, a filled head (tip first), and for CLOSER a chevron just behind the head.
+    /// BEHIND is a turn-around (U-turn) arrow that goes up, bends right and comes back down.
+    /// Both platforms draw exactly these points.
+    public static func arrowGeometry(_ vector: Vector, length: Double, closer: Bool = false) -> Arrow {
+        let reach = arrowReach(length)
+        let start = markCircleR + 0.03
+        if vector == .behind {
+            let topY = min(-(reach - uturnR), -(start + 0.12))
+            var shaft = [Pt(0, -start)]
+            for i in 0...uturnSteps {
+                let a = Double.pi + Double.pi * Double(i) / Double(uturnSteps)
+                shaft.append(Pt(uturnR + uturnR * cos(a), topY + uturnR * sin(a)))
+            }
+            let x = 2 * uturnR
+            let tip = Pt(x, topY + max(arrowHeadLen + 0.06, 0.6 * reach))
+            let base = Pt(x, tip.y - arrowHeadLen)
+            shaft.append(base)
+            return Arrow(shaft: shaft, head: [tip, Pt(x - arrowHeadHalfW, base.y), Pt(x + arrowHeadHalfW, base.y)], chevron: [])
+        }
+        let rad = Double(vector.degrees) * .pi / 180
+        let ux = sin(rad), uy = -cos(rad)
+        let px = -uy, py = ux
+        let tip = Pt(ux * reach, uy * reach)
+        let bl = reach - arrowHeadLen
+        let base = Pt(ux * bl, uy * bl)
+        let head = [tip, Pt(base.x + px * arrowHeadHalfW, base.y + py * arrowHeadHalfW),
+                    Pt(base.x - px * arrowHeadHalfW, base.y - py * arrowHeadHalfW)]
+        var chevron: [Pt] = []
+        if closer {
+            let apex = bl - 0.05, back = apex - 0.13, w = arrowHeadHalfW * 0.85
+            chevron = [Pt(ux * back + px * w, uy * back + py * w), Pt(ux * apex, uy * apex), Pt(ux * back - px * w, uy * back - py * w)]
+        }
+        return Arrow(shaft: [Pt(ux * start, uy * start), base], head: head, chevron: chevron)
+    }
 
     /// Port minus starboard, roll-corrected when `rollCorrection` is on and the pod's IMU is OK.
     public static func deltaDb(_ s: BtrxProtocol.Steer, rollCorrection: Bool = rollCorrectionDefault) -> Double {
