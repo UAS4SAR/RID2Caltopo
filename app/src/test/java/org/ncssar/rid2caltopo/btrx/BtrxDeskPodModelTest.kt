@@ -570,4 +570,25 @@ class BtrxDeskPodModelTest {
         assertNull(model.snapshot().lastSteer)
         assertNull(model.snapshot().steerOverlay)
     }
+
+    @Test
+    fun aPodRestartIsLoggedAndResetsSteering() {
+        ready()
+        model.restorePairedPod(BtrxDeskPodModel.PairedPod(pod, pairedPodId, 0x4C8C125BL, 0x351C2971L))
+        model.onFrame(steerFrame(src = 5), meta(pod))
+        model.onFrame(steerFrame(src = 6), meta(pod))
+        assertEquals(1, model.snapshot().steerOverlay!!.colorIndex)
+        val p = P.steerPayload(P.parseSteer(P.fromHex(BtrxProtocolTest.STEER_PAYLOAD)))
+        P.putU32(p, 2, 1_000L); p[8] = 6; p[9] = 0 // window_end_ms went back
+        model.onFrame(P.decodeFrame(P.encodeFrame(P.STEER, seq = ++podSeq, podId = pairedPodId, payload = p)), meta(pod))
+        assertEquals(0, model.snapshot().steerOverlay!!.colorIndex)
+        assertTrue(logs.any { it.startsWith("steering: window_end_ms went back to 1000: the Drone Pod restarted") })
+    }
+
+    @Test
+    fun rollCorrectionIsOffUntilSwitchedOn() {
+        assertFalse(model.snapshot().steeringRollCorrection)
+        model.setSteeringRollCorrection(true)
+        assertTrue(model.snapshot().steeringRollCorrection)
+    }
 }

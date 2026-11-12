@@ -125,7 +125,7 @@ object BtrxManager {
             publish()
         }
         worker.scheduleWithFixedDelay({
-            try { model.tick(); updateLinkStatus(); publish() } catch (e: Exception) { logger.warn("Desk Pod tick failed: ${e.message}") }
+            try { model.tick(); updateLinkStatus(); retainSteeringStream(); publish() } catch (e: Exception) { logger.warn("Desk Pod tick failed: ${e.message}") }
         }, 1, 1, TimeUnit.SECONDS)
     }
 
@@ -196,6 +196,29 @@ object BtrxManager {
     fun muteSteeringSource() = worker.execute { model.muteSteeringSource(); publish() }
     /** "Clear mutes" on the Desk Pod screen. */
     fun clearSteeringMutes() = worker.execute { model.clearSteeringMutes(); publish() }
+    /** Debug: steering roll correction (off until the bench roll check). */
+    fun setSteeringRollCorrection(on: Boolean) = worker.execute { model.setSteeringRollCorrection(on); publish() }
+
+    private val _steeringStream = MutableStateFlow<String?>(null)
+    /** The stream the operator marked "Drone Pod is on this drone" (see [BtrxSteeringTarget]). */
+    val steeringStream: StateFlow<String?> = _steeringStream.asStateFlow()
+
+    fun chooseSteeringStream(designator: String?) {
+        if (_steeringStream.value != designator) logger.info("steering: overlay drone ${designator ?: "cleared"}")
+        _steeringStream.value = designator
+    }
+
+    /** Live, non-playback stream designators (the tiles that can carry the overlay). */
+    fun liveSteeringStreams(): Set<String> = org.ncssar.rid2caltopo.video.StreamRegistry.streams.value
+        .filterValues { it.state == org.ncssar.rid2caltopo.video.StreamState.LIVE && !it.isLocalPlayback }.keys
+
+    private fun retainSteeringStream() {
+        val chosen = _steeringStream.value ?: return
+        if (BtrxSteeringTarget.retained(chosen, liveSteeringStreams()) == null) {
+            logger.info("steering: stream $chosen ended; overlay drone choice cleared")
+            _steeringStream.value = null
+        }
+    }
 
     fun rememberedDeskPodName(): String? = if (installed) prefs().getString(KEY_NAME, null) else null
 

@@ -123,6 +123,8 @@ class BtrxDeskPodModel(
         val steerOverlay: BtrxSteering.View? = null,
         /** The latest STEER whatever the link state, for the Desk Pod screen's bench line. */
         val lastSteer: BtrxSteering.View? = null,
+        /** Debug: roll correction of the steering hint (off until the bench roll check). */
+        val steeringRollCorrection: Boolean = BtrxSteering.ROLL_CORRECTION_DEFAULT,
     ) {
         val roleSupported: Boolean get() = role != null && role.buildHash in P.SUPPORTED_BUILDS
     }
@@ -254,7 +256,12 @@ class BtrxDeskPodModel(
                 trimDetects(meta.arrivalMs)
             }
             // The pod sends STEER only once confirmed; before pairing it is not ours to steer by.
-            P.STEER -> if (pairedPod != null) steering.onSteer(P.parseSteer(frame.payload), meta.arrivalMs)
+            P.STEER -> if (pairedPod != null) {
+                val st = P.parseSteer(frame.payload)
+                if (steering.onSteer(st, meta.arrivalMs)) {
+                    log.info("steering: window_end_ms went back to ${st.windowEndMs}: the Drone Pod restarted; src ids, colors and mutes reset")
+                }
+            }
         }
     }
 
@@ -441,6 +448,7 @@ class BtrxDeskPodModel(
             pairedPodQuiet = pairedQuiet(now),
             steerOverlay = if (steeringLinkUp()) steering.view(now) else null,
             lastSteer = steering.lastView(now),
+            steeringRollCorrection = steering.rollCorrection,
         )
     }
 
@@ -465,6 +473,13 @@ class BtrxDeskPodModel(
             takeOutbox()
         }
         deliver(sends)
+    }
+
+    /** Debug switch on the Desk Pod screen; off by default until the bench roll check. */
+    @Synchronized
+    fun setSteeringRollCorrection(on: Boolean) {
+        if (steering.rollCorrection != on) log.info("steering: roll correction ${if (on) "on" else "off"} (debug)")
+        steering.rollCorrection = on
     }
 
     /** "Clear mutes": STEER_MUTE op 0, to the paired pod. */

@@ -925,9 +925,17 @@ fun StreamTile(
         }
         if (streamState == StreamState.LIVE && !isLocalPlayback) {
             // btrx steering overlay (section 41): top center, clear of the camera button
-            // (center end), the legend (bottom start) and the centerpoint crosshair.
+            // (center end), the legend (bottom start) and the centerpoint crosshair. Only
+            // on the drone carrying the pod: the single live tile, or the one picked.
+            val steeringStreams by viewModel.streams.collectAsStateWithLifecycle()
+            val steeringChosen by org.ncssar.rid2caltopo.btrx.BtrxManager.steeringStream.collectAsStateWithLifecycle()
+            val steeringLive = steeringStreams
+                .filterValues { it.state == StreamState.LIVE && !it.isLocalPlayback }.keys
             org.ncssar.rid2caltopo.ui.BtrxSteeringOverlay(
-                Modifier
+                tile = streamDesignator,
+                liveTiles = steeringLive,
+                chosenTile = steeringChosen,
+                modifier = Modifier
                     .zIndex(2f)
                     .align(Alignment.TopCenter)
                     .padding(top = 8.dp)

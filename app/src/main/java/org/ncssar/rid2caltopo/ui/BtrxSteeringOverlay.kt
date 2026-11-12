@@ -32,18 +32,35 @@ import org.ncssar.rid2caltopo.btrx.BtrxDeskPodText
 import org.ncssar.rid2caltopo.btrx.BtrxManager
 import org.ncssar.rid2caltopo.btrx.BtrxProtocol
 import org.ncssar.rid2caltopo.btrx.BtrxSteering
+import org.ncssar.rid2caltopo.btrx.BtrxSteeringTarget
 
 /**
  * The pilot's steering overlay on a live stream tile (btrx design doc section 41): one
  * circle and vector in the source's color and one hint word, no numbers. Tapping the
  * circle (or "Mute") mutes that source on the pod. Shows only while the Desk Pod link is
- * up, a Drone Pod is paired and STEER keeps arriving. Same as the iPad's
- * AppleSteeringOverlay.
+ * up, a Drone Pod is paired and STEER keeps arriving, and only on the drone carrying the
+ * pod ([BtrxSteeringTarget]): the single live tile, or with several live the one marked
+ * "Drone Pod is on this drone". Same as the iPad's AppleSteeringOverlay.
  */
 @Composable
-fun BtrxSteeringOverlay(modifier: Modifier = Modifier) {
+fun BtrxSteeringOverlay(tile: String, liveTiles: Set<String>, chosenTile: String?, modifier: Modifier = Modifier) {
     val s by BtrxManager.snapshot.collectAsState()
     val v = s.steerOverlay ?: return
+    if (!BtrxSteeringTarget.showsOverlay(tile, liveTiles, chosenTile)) {
+        // Several live streams and none marked yet: offer the pick on each live tile.
+        if (BtrxSteeringTarget.offersPick(tile, liveTiles, chosenTile)) {
+            Text(
+                BtrxDeskPodText.STEER_PICK,
+                color = Color.White,
+                fontSize = 13.sp,
+                modifier = modifier
+                    .background(Color.Black.copy(alpha = 0.55f), RoundedCornerShape(10.dp))
+                    .clickable { BtrxManager.chooseSteeringStream(tile) }
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
+            )
+        }
+        return
+    }
     Column(
         modifier
             .background(Color.Black.copy(alpha = 0.45f), RoundedCornerShape(10.dp))

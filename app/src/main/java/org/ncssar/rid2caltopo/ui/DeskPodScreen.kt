@@ -123,6 +123,15 @@ fun DeskPodScreen(onDismiss: () -> Unit) {
                     if (s.pairedPod != null) {
                         OutlinedButton(onClick = { BtrxManager.clearSteeringMutes() }) { Text(BtrxDeskPodText.CLEAR_MUTES) }
                     }
+                    val steeringChosen by BtrxManager.steeringStream.collectAsState()
+                    Text(BtrxDeskPodText.steerTileLine(steeringChosen, BtrxManager.liveSteeringStreams().size), style = MaterialTheme.typography.bodySmall)
+                    if (steeringChosen != null) {
+                        OutlinedButton(onClick = { BtrxManager.chooseSteeringStream(null) }) { Text(BtrxDeskPodText.STEER_CHOOSE_AGAIN) }
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(BtrxDeskPodText.STEER_ROLL, Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
+                        Switch(checked = s.steeringRollCorrection, onCheckedChange = { BtrxManager.setSteeringRollCorrection(it) })
+                    }
                 }
             }
         }

@@ -105,9 +105,17 @@ object BtrxDeskPodText {
 
     const val MUTE = "Mute"
     const val CLEAR_MUTES = "Clear mutes"
+    const val STEER_PICK = "Drone Pod is on this drone"
+    const val STEER_CHOOSE_AGAIN = "Choose another drone"
+    const val STEER_ROLL = "Roll correction (debug; only after the bench roll check)"
+    fun steerTileLine(chosen: String?, liveCount: Int): String = when {
+        chosen != null -> "Steering overlay on: $chosen"
+        liveCount > 1 -> "Several streams are live: tap \"$STEER_PICK\" on the drone carrying the pod."
+        else -> "Steering overlay on the live stream (one live)."
+    }
     const val STEER_NONE = "No STEER yet (firmware 0x0101 sends one about every second once the pod is paired)."
     const val STEER_MUTED = "A steering source is muted on the Drone Pod."
-    const val STEER_MUTE_HINT = "Tap the overlay on the stream view to mute its source (for example a search team); the next strongest takes its place. Mutes clear when the pod restarts."
+    const val STEER_MUTE_HINT = "Tap the overlay on the stream view to mute its source (for example a search team); the next strongest takes its place. The pod holds up to 8 mutes; they clear when it restarts, and a muted source unheard for 60 s comes back under a new color."
 
     /** Bench line for the Desk Pod screen: src, hint word, kind, age (the swatch is drawn beside it). */
     fun steerLine(v: BtrxSteering.View): String =
