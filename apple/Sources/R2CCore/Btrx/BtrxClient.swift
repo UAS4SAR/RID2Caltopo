@@ -13,9 +13,12 @@ public protocol BtrxLogger: AnyObject {
     func warn(_ message: String)
 }
 
-/// Arrival details from the Desk Pod for one btrx frame. `backlog` is true for frames
-/// delivered before config_complete_id or in the connect burst right after it: old and
-/// display-only. Clue code must refuse them.
+/// Arrival details from the Desk Pod for one btrx frame. `backlog` is true for frames the
+/// Desk Pod queued while R2C was away (Meshtastic keeps the oldest 32 and drops new ones
+/// when full, so they can be minutes old): over Bluetooth, everything read in the first
+/// drain after config_complete_id, up to the first empty FromRadio read; over serial,
+/// frames before config_complete_id. Display-only: live health, RSSI, the Desk Pod's
+/// role and clue code must refuse them.
 public struct BtrxRadioMeta: Sendable, Equatable {
     public let fromNode: UInt32, toNode: UInt32, rxRssi: Int, rxSnr: Float, arrivalMs: Int64, backlog: Bool
     public init(fromNode: UInt32, toNode: UInt32, rxRssi: Int, rxSnr: Float, arrivalMs: Int64, backlog: Bool) {
@@ -45,7 +48,12 @@ public final class BtrxClient: BtrxFrameSender {
     public enum Framing: Sendable { case serial, packet }
     public enum State: Sendable { case idle, configuring, ready, closed }
 
-    public static let connectBurstMs: Int64 = 2_000
+    /// The Desk Pod's ATT MTU is 247 and it rejects long writes: 247 - 3.
+    public static let maxToRadioBLE = 244
+    /// Largest btrx frame R2C sends; leaves room for the ToRadio/MeshPacket wrapper.
+    public static let maxSendFrame = 200
+    /// Below this ATT MTU even PAIR_CONFIRM's ToRadio does not fit comfortably.
+    public static let minUsableMTU = 100
 
     public let framing: Framing
     public private(set) var state: State = .idle
@@ -57,10 +65,15 @@ public final class BtrxClient: BtrxFrameSender {
     private weak var listener: BtrxClientListener?
     private var rng: any RandomNumberGenerator
     private let clock: () -> Int64
-    private let connectBurstMs: Int64
     private var configId: UInt32 = 0
     private var seq = 0
-    private var readyAtMs: Int64 = 0
+    /// Bluetooth: true from config_complete_id until the first empty FromRadio read. The
+    /// Desk Pod delivers its queue right after config_complete, in that first drain.
+    private var firstDrainPending = false
+    private var firstDrainFrames = 0
+    private var heartbeatNonce: UInt32 = 0
+    /// Largest ToRadio this link may write (Bluetooth: ATT MTU - 3, at most ``maxToRadioBLE``).
+    private var maxToRadioBytes = BtrxClient.maxToRadioBLE
     private var decoder: MeshtasticPhoneAPI.StreamDecoder!
     private(set) var frameCounts: [String: Int] = [:]
     private(set) var backlogCounts: [String: Int] = [:]
@@ -70,14 +83,13 @@ public final class BtrxClient: BtrxFrameSender {
 
     public init(send: @escaping ([UInt8]) -> Void, log: BtrxLogger, listener: BtrxClientListener? = nil,
                 rng: any RandomNumberGenerator = SystemRandomNumberGenerator(), framing: Framing = .packet,
-                clock: @escaping () -> Int64 = { Int64(Date().timeIntervalSince1970 * 1000) }, connectBurstMs: Int64 = 0) {
+                clock: @escaping () -> Int64 = { Int64(Date().timeIntervalSince1970 * 1000) }) {
         self.send = send
         self.log = log
         self.listener = listener
         self.rng = rng
         self.framing = framing
         self.clock = clock
-        self.connectBurstMs = connectBurstMs
         decoder = MeshtasticPhoneAPI.StreamDecoder(onMessage: { [unowned self] in self.onProto($0) }, onNoise: { [unowned self] skipped in
             self.log.info("serial: skipped \(skipped) byte(s) of non-API output")
         })
@@ -101,20 +113,45 @@ public final class BtrxClient: BtrxFrameSender {
         decoder.feed(data)
     }
 
-    /// Bluetooth: one FromRadio protobuf per characteristic read (an empty read means drained).
+    /// Bluetooth: one FromRadio protobuf per characteristic read. Pass every read,
+    /// including empty ones: the first empty read after config_complete_id ends the
+    /// connect backlog, and only then is ROLE_GET sent, so its ROLE_REPORT is live.
     public func onFromRadio(_ proto: [UInt8]) {
-        guard state != .closed, !proto.isEmpty else { return }
+        guard state != .closed else { return }
+        if proto.isEmpty {
+            if state == .ready && firstDrainPending {
+                firstDrainPending = false
+                log.info("connect backlog drained: \(firstDrainFrames) frame(s) queued while R2C was away")
+                sendRoleGet()
+            }
+            return
+        }
         onProto(proto)
     }
 
-    private func sendToRadio(_ proto: [UInt8]) {
-        send(framing == .serial ? MeshtasticPhoneAPI.frame(proto) : proto)
+    /// Bluetooth: the ATT MTU; ToRadio writes must fit in one ATT write (no long writes).
+    public func setAttMtu(_ mtu: Int) {
+        maxToRadioBytes = min(Self.maxToRadioBLE, mtu - 3)
+        if mtu < Self.minUsableMTU { log.warn("ERROR: Bluetooth MTU \(mtu) is too small for btrx (need at least \(Self.minUsableMTU)); larger ToRadio writes will be refused") }
     }
 
-    /// Keep-alive; the link calls this about every 5 minutes.
+    @discardableResult
+    private func sendToRadio(_ proto: [UInt8]) -> Bool {
+        if framing == .packet && proto.count > maxToRadioBytes {
+            log.warn("ERROR: ToRadio of \(proto.count) bytes not sent: the Desk Pod accepts at most \(maxToRadioBytes) per Bluetooth write")
+            return false
+        }
+        send(framing == .serial ? MeshtasticPhoneAPI.frame(proto) : proto)
+        return true
+    }
+
+    /// Keep-alive; the link calls this about every 5 minutes. Each heartbeat carries a
+    /// new nonce: Meshtastic drops a ToRadio identical to the previous one.
     public func sendHeartbeat() {
         guard state == .ready else { return }
-        sendToRadio(MeshtasticPhoneAPI.toRadioHeartbeat())
+        heartbeatNonce &+= 1
+        if heartbeatNonce == 0 { heartbeatNonce = 1 }
+        sendToRadio(MeshtasticPhoneAPI.toRadioHeartbeat(nonce: heartbeatNonce))
     }
 
     /// Asks a board what it is. `to` nil means the Desk Pod itself (`^local`).
@@ -129,7 +166,13 @@ public final class BtrxClient: BtrxFrameSender {
         return true
     }
 
+    /// One btrx frame on port 256 (hop_limit 0). Frames over ``maxSendFrame`` bytes are
+    /// refused so the ToRadio stays inside one Bluetooth write (chunk FILTER_LIST to fit).
     public func sendFrame(to: UInt32, frame: [UInt8]) {
+        guard frame.count <= Self.maxSendFrame else {
+            log.warn("ERROR: btrx frame of \(frame.count) bytes not sent to \(Self.nodeName(to)): limit is \(Self.maxSendFrame) (split it)")
+            return
+        }
         var id = UInt32(truncatingIfNeeded: rng.next())
         if id == 0 { id = 1 }
         sendToRadio(MeshtasticPhoneAPI.toRadioPacket(to: to, packetId: id, portnum: BtrxProtocol.privateAppPort, payload: frame))
@@ -170,10 +213,15 @@ public final class BtrxClient: BtrxFrameSender {
                 return
             }
             state = .ready
-            readyAtMs = clock()
             log.info("handshake: config complete, Desk Pod node \(localNode.map(Self.nodeName) ?? "unknown")")
             if let node = localNode { listener?.onConfigured(localNode: node) }
-            sendRoleGet()
+            if framing == .packet {
+                // Queued frames follow in this drain; ask for the role once it is empty.
+                firstDrainPending = true
+                firstDrainFrames = 0
+            } else {
+                sendRoleGet()
+            }
         case .packet(let p): onPacket(p)
         case .other: break
         }
@@ -185,7 +233,10 @@ public final class BtrxClient: BtrxFrameSender {
             return
         }
         let now = clock()
-        let backlog = state != .ready || (connectBurstMs > 0 && now - readyAtMs < connectBurstMs)
+        // Bluetooth: the first drain after config_complete_id. Serial has no empty-read
+        // signal and keeps the M1 rule (frames before config_complete_id only).
+        let backlog = state != .ready || firstDrainPending
+        if backlog && state == .ready { firstDrainFrames += 1 }
         let meta = BtrxRadioMeta(fromNode: packet.from, toNode: packet.to, rxRssi: packet.rxRssi, rxSnr: packet.rxSnr, arrivalMs: now, backlog: backlog)
         let radio = (backlog ? "backlog " : "") + "from=\(Self.nodeName(packet.from)) rssi=\(packet.rxRssi) snr=\(String(format: "%.1f", packet.rxSnr))"
         if refusedNodes.contains(packet.from) {
@@ -208,7 +259,9 @@ public final class BtrxClient: BtrxFrameSender {
         } catch { return }
         if backlog { backlogCounts[frame.typeName, default: 0] += 1 } else { frameCounts[frame.typeName, default: 0] += 1 }
         log.info("rx \(radio) \(BtrxFrameLog.format(frame))")
-        if frame.type == BtrxProtocol.ROLE_REPORT && packet.from == localNode, let report = try? BtrxProtocol.parseRoleReport(frame.payload) {
+        if frame.type == BtrxProtocol.ROLE_REPORT && packet.from == localNode && backlog {
+            log.info("stale ROLE_REPORT in the connect backlog ignored; waiting for the answer to this session's ROLE_GET")
+        } else if frame.type == BtrxProtocol.ROLE_REPORT && packet.from == localNode, let report = try? BtrxProtocol.parseRoleReport(frame.payload) {
             localRole = report
             if report.role == BtrxProtocol.roleDeskPod {
                 let build = BtrxProtocol.supportedBuilds.contains(report.buildHash) ? "supported" : "not in the supported list"

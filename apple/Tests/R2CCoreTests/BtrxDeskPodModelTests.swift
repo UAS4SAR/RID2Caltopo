@@ -174,15 +174,51 @@ final class BtrxDeskPodModelTests: XCTestCase {
         XCTAssertEqual([.done, .failed, .pending, .pending], BtrxDeskPodText.steps(p).map(\.status))
     }
 
-    func testWindowRunningOutBeforeConfirmFails() {
+    func testDeskWindowEndingDoesNotFailWhileThePodKeepsAsking() {
         model.startPairing(); deskPair(1, seconds: 10); pairReq()
-        advance(10_000)
-        let p = model.snapshot().pairing
-        XCTAssertEqual(.failed, p.step)
-        XCTAssertEqual(.podFound, p.failedAt)
-        XCTAssertTrue(p.message.hasPrefix("The pairing window ran out"))
+        for _ in 0..<6 { advance(2_000); pairReq() }
+        deskPair(0)
+        XCTAssertEqual(.podFound, step)
+        XCTAssertFalse(model.snapshot().pairing.podStale)
+        model.confirmPod()
+        XCTAssertEqual(.confirming, step)
+        XCTAssertEqual(1, sender.sent.count)
+    }
+
+    func testPodThatStopsAskingIsMarkedStaleAndNotConfirmed() throws {
+        model.startPairing(); deskPair(1); pairReq()
+        advance(Model.podRequestStaleMs + 1_000)
+        var p = model.snapshot().pairing
+        XCTAssertEqual(.podFound, p.step)
+        XCTAssertTrue(p.podStale)
+        XCTAssertEqual(Model.staleMessage, p.message)
+        XCTAssertTrue(BtrxDeskPodText.steps(p)[2].detail.hasSuffix(BtrxDeskPodText.podStaleHint))
         model.confirmPod()
         XCTAssertTrue(sender.sent.isEmpty)
+        XCTAssertEqual(.podFound, step)
+        pairReq(nonce: "0102030405060708")
+        p = model.snapshot().pairing
+        XCTAssertFalse(p.podStale)
+        model.confirmPod()
+        XCTAssertEqual(1, sender.sent.count)
+        XCTAssertEqual("0102030405060708", P.hex(Array(try P.decodeFrame(sender.sent[0].1).payload[4..<12])))
+    }
+
+    func testConfirmRightAfterTheRequestsStopIsRefusedBeforeTheTick() {
+        model.startPairing(); deskPair(1); pairReq()
+        now += Model.podRequestStaleMs + 1
+        model.confirmPod()
+        XCTAssertTrue(sender.sent.isEmpty)
+        XCTAssertTrue(model.snapshot().pairing.podStale)
+    }
+
+    func testAnotherPodMayTakeOverAStaleCandidate() {
+        model.startPairing(); deskPair(1); pairReq()
+        advance(6_000)
+        pairReq(from: 0x1111_2222)
+        let p = model.snapshot().pairing
+        XCTAssertEqual(0x1111_2222, p.candidate?.node)
+        XCTAssertFalse(p.podStale)
     }
 
     func testRepeatedPairReqIsAnsweredAgainUpToEightTimes() {
@@ -296,5 +332,46 @@ final class BtrxDeskPodModelTests: XCTestCase {
     func testPairedPodRoundTripsThroughCodable() throws {
         let p = Model.PairedPod(node: pod, podId: 0x45D3_5AF0, devA: 0x4C8C_125B, devB: 0x351C_2971)
         XCTAssertEqual(p, try JSONDecoder().decode(Model.PairedPod.self, from: JSONEncoder().encode(p)))
+    }
+
+    // MARK: backlog and paired-pod filtering
+
+    func podFrame(_ name: String, podId: UInt32 = 0) -> P.Frame {
+        let ex = example(name)
+        return try! P.decodeFrame(P.encodeFrame(ex.type, seq: ex.seq, podId: podId, payload: ex.payload))
+    }
+
+    func testBacklogHealthAndRssiAreNotShownAsCurrent() {
+        model.onFrame(podFrame("HEALTH"), meta: meta(pod, backlog: true))
+        model.onFrame(podFrame("DETECT"), meta: meta(0x2222_3333, backlog: true))
+        let s = model.snapshot()
+        XCTAssertNil(s.dronePodHealth)
+        XCTAssertNil(s.lastPacketRssi)
+        XCTAssertEqual(0, s.otherPodNodes)
+        XCTAssertEqual(0, s.detectsLastMinute)
+        XCTAssertEqual(1, s.backlogCounts["HEALTH"])
+    }
+
+    func testOncePairedOnlyThePairedNodeCounts() {
+        model.restorePairedPod(Model.PairedPod(node: pod, podId: 0x45D3_5AF0, devA: 0x4C8C_125B, devB: 0x351C_2971))
+        model.onFrame(podFrame("DETECT"), meta: meta(0x2222_3333))
+        model.onFrame(podFrame("DETECT"), meta: meta(pod))
+        model.onFrame(podFrame("DETECT", podId: 0x45D3_5AF0), meta: meta(pod))
+        model.onFrame(podFrame("DETECT", podId: 0x1234_5678), meta: meta(pod))
+        model.onFrame(podFrame("HEALTH", podId: 0x1234_5678), meta: meta(pod))
+        let s = model.snapshot()
+        XCTAssertEqual(2, s.detectsLastMinute)
+        XCTAssertEqual(1, s.otherPodNodes)
+        XCTAssertNil(s.dronePodHealth)
+        model.onFrame(podFrame("HEALTH", podId: 0x45D3_5AF0), meta: meta(pod))
+        XCTAssertEqual(pod, model.snapshot().dronePodHealth?.node)
+    }
+
+    func testRssiComesOnlyFromThePairedPod() {
+        model.restorePairedPod(Model.PairedPod(node: pod, podId: 1, devA: 2, devB: 3))
+        model.onFrame(podFrame("DETECT"), meta: BtrxRadioMeta(fromNode: 0x2222_3333, toNode: 0xFFFF_FFFF, rxRssi: -90, rxSnr: 1, arrivalMs: now, backlog: false))
+        XCTAssertNil(model.snapshot().lastPacketRssi)
+        model.onFrame(podFrame("DETECT"), meta: meta(pod))
+        XCTAssertEqual(-45, model.snapshot().lastPacketRssi)
     }
 }

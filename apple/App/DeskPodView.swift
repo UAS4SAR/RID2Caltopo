@@ -92,7 +92,7 @@ struct DeskPodView: View {
                     .foregroundStyle(p.step == .failed ? Color.red : p.step == .paired ? Self.green : Color.primary)
             }
             HStack(spacing: 8) {
-                if p.step == .podFound { Button("Confirm pod") { center.confirmPod() }.buttonStyle(.borderedProminent) }
+                if p.step == .podFound && !p.podStale { Button("Confirm pod") { center.confirmPod() }.buttonStyle(.borderedProminent) }
                 if active { Button("Cancel pairing") { center.cancelPairing() }.buttonStyle(.bordered) }
                 if !active {
                     Button(p.step == .paired ? "Pair another" : "Try again") { center.startPairing() }.buttonStyle(.borderedProminent)

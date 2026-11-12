@@ -39,6 +39,9 @@ final class BtrxBleCentral: NSObject, @unchecked Sendable {
     static let directTries = 2
     static let connectTimeout: TimeInterval = 30
     static let opTimeout: TimeInterval = 10
+    /// First connection to a Desk Pod: iPadOS shows its PIN sheet when FromNum
+    /// notifications are enabled (an encrypted write) and waits for the operator.
+    static let pinEntryTimeout: TimeInterval = 90
     static let roleTimeout: TimeInterval = 10
     static let heartbeatSeconds: TimeInterval = 300
     static let summarySeconds: TimeInterval = 60
@@ -72,7 +75,9 @@ final class BtrxBleCentral: NSObject, @unchecked Sendable {
     private var drain: BtrxFromRadioDrain?
     private var client: BtrxClient?
     private var handshakeWritten = false
+    private var attMtu = 23
     private var sessionSerial = 0
+    private var completedSessions = Set<UUID>()
 
     private var attemptWork: DispatchWorkItem?
     private var scanWork: DispatchWorkItem?
@@ -270,14 +275,19 @@ final class BtrxBleCentral: NSObject, @unchecked Sendable {
             sessionLost("the device does not offer the Meshtastic phone API (\(error?.localizedDescription ?? "characteristics missing"))")
             return
         }
-        log.info("ble: max write \(p.maximumWriteValueLength(for: .withResponse)) bytes")
+        // The Desk Pod rejects long writes, so a ToRadio must fit one ATT write (MTU - 3).
+        // iPadOS reports MTU - 3 as the without-response length.
+        attMtu = p.maximumWriteValueLength(for: .withoutResponse) + 3
+        log.info("ble: ATT MTU \(attMtu)")
+        if attMtu < BtrxClient.minUsableMTU { log.warn("ERROR: ble: negotiated MTU \(attMtu) is below \(BtrxClient.minUsableMTU); btrx writes may not fit") }
         gattQueue?.enqueue(.enableNotify)
     }
 
     private func startClient() {
         let c = BtrxClient(send: { [weak self] bytes in self?.gattQueue?.enqueue(.write(bytes)) }, log: log, listener: self,
-                           framing: .packet, connectBurstMs: BtrxClient.connectBurstMs)
+                           framing: .packet)
         client = c
+        c.setAttMtu(attMtu)
         model.attach(c)
         c.start()
         let serial = sessionSerial
@@ -292,6 +302,7 @@ final class BtrxBleCentral: NSObject, @unchecked Sendable {
         backoff.reset()
         directTriesUsed = 0
         guard let p = peripheral else { return }
+        completedSessions.insert(p.identifier)
         remembered = p.identifier
         events.rememberPeripheral(p.identifier, p.name)
         status(.ready, "Connected over Bluetooth.")
@@ -320,7 +331,13 @@ final class BtrxBleCentral: NSObject, @unchecked Sendable {
         case .enableNotify:
             guard let c = fromNum else { return false }
             p.setNotifyValue(true, for: c)
-            armOpTimeout("enabling FromNum notifications")
+            if firstSession(with: p) {
+                // Until a session with this Desk Pod has completed, the PIN sheet may be up.
+                status(.bonding, BtrxDeskPodText.enterPIN)
+                armOpTimeout("enabling FromNum notifications (PIN entry)", seconds: Self.pinEntryTimeout)
+            } else {
+                armOpTimeout("enabling FromNum notifications")
+            }
         case .write(let bytes):
             guard let c = toRadio else { return false }
             p.writeValue(Data(bytes), for: c, type: .withResponse)
@@ -333,15 +350,20 @@ final class BtrxBleCentral: NSObject, @unchecked Sendable {
         return true
     }
 
-    private func armOpTimeout(_ what: String) {
+    private func armOpTimeout(_ what: String, seconds: TimeInterval = BtrxBleCentral.opTimeout) {
         opWork?.cancel()
         let serial = sessionSerial
         let w = DispatchWorkItem { [weak self] in
             guard let self, self.sessionSerial == serial else { return }
-            self.sessionLost("\(what) got no answer in \(Int(Self.opTimeout)) s")
+            self.sessionLost("\(what) got no answer in \(Int(seconds)) s")
         }
         opWork = w
-        queue.asyncAfter(deadline: .now() + Self.opTimeout, execute: w)
+        queue.asyncAfter(deadline: .now() + seconds, execute: w)
+    }
+
+    /// True until a session with this peripheral reached READY (it is then remembered).
+    private func firstSession(with p: CBPeripheral) -> Bool {
+        !completedSessions.contains(p.identifier) && remembered != p.identifier
     }
 
     private func completeOp() {
@@ -486,6 +508,7 @@ extension BtrxBleCentral: CBPeripheralDelegate {
         guard p === peripheral, c.uuid == Self.fromNumUUID else { return }
         completeOp()
         if let error { sessionLost(authHint(error, "FromNum notifications could not be enabled")); return }
+        status(.configuring, "Connected; reading the Desk Pod's configuration.")
         startClient()
     }
 
@@ -511,7 +534,9 @@ extension BtrxBleCentral: CBPeripheralDelegate {
             return
         }
         let value = [UInt8](c.value ?? Data())
-        if d.onRead(value) { client?.onFromRadio(value) }
+        _ = d.onRead(value)
+        // Empty reads too: the first one after config_complete ends the connect backlog.
+        client?.onFromRadio(value)
     }
 }
 

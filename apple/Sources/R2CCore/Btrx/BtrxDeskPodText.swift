@@ -7,6 +7,9 @@ public enum BtrxDeskPodText {
     public static let title = "Desk Pod"
     public static let usbPaused = "Desk Pod is attached by USB; Bluetooth paused"
     public static let bluetoothToggle = "Connect over Bluetooth"
+    public static let podStaleHint = "Not asking any more: nod the drone pod twice again."
+    /// iPad: the first Bluetooth connection waits up to 90 s for the PIN to be typed.
+    public static let enterPIN = "Enter the PIN printed on the Desk Pod (\(MeshtasticPhoneAPI.defaultPIN) by default) when iPadOS asks."
     public static let pinHint = "Bluetooth PIN: printed on the Desk Pod (\(MeshtasticPhoneAPI.defaultPIN) by default for now)."
 
     public enum StepStatus: Sendable { case pending, active, done, failed }
@@ -107,7 +110,9 @@ public enum BtrxDeskPodText {
             case .waitNod:
                 return Step(title: "Nod the drone pod twice", status: status,
                             detail: status == .active ? "\(p.windowSecondsLeft) s left in the pairing window. Hold the pod still for 3 s, then tip it at least 25° and back, twice." : "")
-            case .podFound: return Step(title: "Confirm the Drone Pod", status: status, detail: c.map(candidateLine) ?? "")
+            case .podFound:
+                return Step(title: "Confirm the Drone Pod", status: status,
+                            detail: (c.map(candidateLine) ?? "") + (p.podStale && status == .active ? "\n\(podStaleHint)" : ""))
             default:
                 let detail: String
                 if let a = p.aOk {

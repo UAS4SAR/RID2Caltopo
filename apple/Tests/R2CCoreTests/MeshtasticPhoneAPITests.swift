@@ -21,6 +21,12 @@ final class MeshtasticPhoneAPITests: XCTestCase {
     func testWantConfigAndHeartbeatEncodings() {
         XCTAssertEqual("18f8acd19101", BtrxProtocol.hex(M.toRadioWantConfig(0x1234_5678)))
         XCTAssertEqual("3a00", BtrxProtocol.hex(M.toRadioHeartbeat()))
+        XCTAssertEqual("3a020801", BtrxProtocol.hex(M.toRadioHeartbeat(nonce: 1)))
+    }
+
+    func testDisconnectEncodingAndSerialFrame() {
+        XCTAssertEqual("2001", BtrxProtocol.hex(M.toRadioDisconnect()))
+        XCTAssertEqual("94c300022001", BtrxProtocol.hex(M.frame(M.toRadioDisconnect())))
     }
 
     func testToRadioPacketEncodesPrivateAppDataWithHopLimitZero() {

@@ -36,7 +36,13 @@ public enum MeshtasticPhoneAPI {
 
     public static func toRadioWantConfig(_ configId: UInt32) -> [UInt8] { ProtoWriter().varint(3, UInt64(configId)).bytes() }
 
-    public static func toRadioHeartbeat() -> [UInt8] { ProtoWriter().bytesField(7, []).bytes() }
+    /// ToRadio.heartbeat (field 7); a non-zero `nonce` (Heartbeat.nonce, field 1) makes each one distinct.
+    public static func toRadioHeartbeat(nonce: UInt32 = 0) -> [UInt8] {
+        ProtoWriter().bytesField(7, nonce == 0 ? [] : ProtoWriter().varint(1, UInt64(nonce)).bytes()).bytes()
+    }
+
+    /// ToRadio.disconnect (field 4) = true: the firmware closes the API session (used by Android's USB link).
+    public static func toRadioDisconnect() -> [UInt8] { ProtoWriter().varint(4, 1).bytes() }
 
     public static func toRadioPacket(to: UInt32, packetId: UInt32, portnum: Int, payload: [UInt8], channel: Int = 0, hopLimit: Int = 0) -> [UInt8] {
         let data = ProtoWriter().varint(1, UInt64(portnum)).bytesField(2, payload).bytes()

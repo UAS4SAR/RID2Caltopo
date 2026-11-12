@@ -38,9 +38,9 @@ final class BtrxClientTests: XCTestCase {
     let recorder = Recorder()
     var now: Int64 = 10_000
 
-    func makeClient(_ framing: BtrxClient.Framing, burst: Int64 = 0) -> BtrxClient {
+    func makeClient(_ framing: BtrxClient.Framing) -> BtrxClient {
         BtrxClient(send: { [unowned self] in self.sent.append($0) }, log: log, listener: recorder, rng: BtrxTestRandom(state: 1),
-                   framing: framing, clock: { [unowned self] in self.now }, connectBurstMs: burst)
+                   framing: framing, clock: { [unowned self] in self.now })
     }
 
     func serialMessages() -> [[UInt8]] {
@@ -190,20 +190,35 @@ final class BtrxClientTests: XCTestCase {
         XCTAssertTrue(log.warns.contains { $0.hasPrefix("serial: undecodable FromRadio") })
     }
 
-    // MARK: Bluetooth framing and the connect burst
+    // MARK: Bluetooth framing and the connect backlog
 
-    func testBluetoothFramingSendsBareProtobufsWithoutWakeBytes() throws {
-        let c = makeClient(.packet)
+    func packetHandshake(_ c: BtrxClient) throws {
         c.start()
-        XCTAssertEqual(1, sent.count)
-        XCTAssertEqual(0x18, sent[0][0])
         let id = try configId(sent[0])
         c.onFromRadio(M.ProtoWriter().bytesField(3, M.ProtoWriter().varint(1, UInt64(deskNode)).bytes()).bytes())
         c.onFromRadio(M.ProtoWriter().varint(7, UInt64(id)).bytes())
+    }
+
+    func isRoleGet(_ toRadio: [UInt8]) -> Bool {
+        toRadio.first == 0x0A && P.hex(toRadio).contains(String(P.hex(P.roleGetFrame(seq: 1)).prefix(8)))
+    }
+
+    func testBluetoothFramingSendsBareProtobufsWithoutWakeBytes() throws {
+        let c = makeClient(.packet)
+        try packetHandshake(c)
+        XCTAssertEqual(0x18, sent[0][0])
         XCTAssertEqual(.ready, c.state)
-        XCTAssertEqual(0x0A, sent.last![0])
-        c.sendHeartbeat()
-        XCTAssertEqual("3a00", P.hex(sent.last!))
+        XCTAssertEqual(1, sent.count) // ROLE_GET waits for the end of the connect backlog
+        c.onFromRadio([])
+        XCTAssertTrue(isRoleGet(sent.last!))
+    }
+
+    func testHeartbeatsAreDistinct() throws {
+        let c = makeClient(.packet)
+        try packetHandshake(c)
+        c.sendHeartbeat(); c.sendHeartbeat()
+        XCTAssertEqual("3a020801", P.hex(sent[sent.count - 2]))
+        XCTAssertEqual("3a020802", P.hex(sent.last!))
     }
 
     func testEmptyFromRadioReadIsIgnored() {
@@ -214,19 +229,57 @@ final class BtrxClientTests: XCTestCase {
         XCTAssertTrue(log.warns.isEmpty)
     }
 
-    func testFramesInTheFirstTwoSecondsAfterConfigCompleteAreBacklog() throws {
-        let c = makeClient(.packet, burst: BtrxClient.connectBurstMs)
-        c.start()
-        let id = try configId(sent[0])
-        c.onFromRadio(M.ProtoWriter().bytesField(3, M.ProtoWriter().varint(1, UInt64(deskNode)).bytes()).bytes())
-        c.onFromRadio(M.ProtoWriter().varint(7, UInt64(id)).bytes())
+    func testFirstDrainAfterConfigCompleteIsBacklogUntilTheFirstEmptyRead() throws {
+        let c = makeClient(.packet)
+        try packetHandshake(c)
         let detect = BtrxProtocolTests.example("DETECT")
         now += 500; c.onFromRadio(packet(starboard, detect))
-        now += 1_400; c.onFromRadio(packet(starboard, detect))
-        now += 200; c.onFromRadio(packet(starboard, detect))
-        XCTAssertEqual([true, true, false], recorder.metas.map(\.backlog))
+        now += 2_500; c.onFromRadio(packet(starboard, detect))
+        c.onFromRadio([])
+        now += 100; c.onFromRadio(packet(starboard, detect))
+        c.onFromRadio([])
+        now += 3_000; c.onFromRadio(packet(starboard, detect))
+        XCTAssertEqual([true, true, false, false], recorder.metas.map(\.backlog))
         XCTAssertEqual(2, c.backlogCount("DETECT"))
-        XCTAssertEqual(1, c.frameCount("DETECT"))
-        XCTAssertEqual(12_100, recorder.metas.last?.arrivalMs)
+        XCTAssertEqual(2, c.frameCount("DETECT"))
+        XCTAssertTrue(log.infos.contains("connect backlog drained: 2 frame(s) queued while R2C was away"))
+        XCTAssertEqual(1, sent.filter(isRoleGet).count)
+    }
+
+    func testStaleRoleReportInTheBacklogIsNotTaken() throws {
+        final class Roles: BtrxClientListener { var got: [BtrxProtocol.RoleReport] = []; func onLocalRoleReport(_ r: BtrxProtocol.RoleReport) { got.append(r) } }
+        let roles = Roles()
+        let c = BtrxClient(send: { [unowned self] in self.sent.append($0) }, log: log, listener: roles, rng: BtrxTestRandom(state: 4), framing: .packet)
+        try packetHandshake(c)
+        let report = P.encodeFrame(P.ROLE_REPORT, seq: 4, payload: P.fromHex("030500000000015b128c4c00000000000000000002"))
+        let fromDesk = MeshtasticPhoneAPITests.fromRadioPacket(from: deskNode, to: deskNode, rssi: 0, snr: 0, port: 256, payload: report)
+        c.onFromRadio(fromDesk)
+        XCTAssertNil(c.localRole)
+        XCTAssertTrue(roles.got.isEmpty)
+        XCTAssertTrue(log.infos.contains { $0.hasPrefix("stale ROLE_REPORT in the connect backlog ignored") })
+        c.onFromRadio([])
+        c.onFromRadio(fromDesk)
+        XCTAssertEqual(P.roleDeskPod, c.localRole?.role)
+        XCTAssertEqual(1, roles.got.count)
+    }
+
+    func testToRadioMustFitOneBluetoothWrite() throws {
+        let c = makeClient(.packet)
+        c.setAttMtu(247)
+        try packetHandshake(c)
+        c.onFromRadio([])
+        let before = sent.count
+        c.sendFrame(to: starboard, frame: [UInt8](repeating: 0, count: BtrxClient.maxSendFrame + 1))
+        XCTAssertEqual(before, sent.count)
+        XCTAssertTrue(log.warns.contains { $0.hasPrefix("ERROR: btrx frame of 201 bytes not sent") })
+        c.sendFrame(to: starboard, frame: [UInt8](repeating: 0, count: BtrxClient.maxSendFrame))
+        XCTAssertEqual(before + 1, sent.count)
+        XCTAssertLessThanOrEqual(sent.last!.count, BtrxClient.maxToRadioBLE)
+        c.setAttMtu(100)
+        c.sendFrame(to: starboard, frame: [UInt8](repeating: 0, count: 150))
+        XCTAssertEqual(before + 1, sent.count)
+        XCTAssertTrue(log.warns.contains { $0.contains("at most 97 per Bluetooth write") })
+        c.setAttMtu(64)
+        XCTAssertTrue(log.warns.contains { $0.hasPrefix("ERROR: Bluetooth MTU 64 is too small") })
     }
 }
