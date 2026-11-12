@@ -149,6 +149,12 @@ final class BtrxBleCentral: NSObject, @unchecked Sendable {
     func muteSteeringSource() { queue.async { [self] in model.muteSteeringSource(); publish() } }
     func clearSteeringMutes() { queue.async { [self] in model.clearSteeringMutes(); publish() } }
     func setSteeringRollCorrection(_ on: Bool) { queue.async { [self] in model.setSteeringRollCorrection(on); publish() } }
+    func startImuCal() { queue.async { [self] in model.startImuCal(); publish() } }
+    func startImuCalStarboard() { queue.async { [self] in model.startImuCalStarboard(); publish() } }
+    func checkImuCal() { queue.async { [self] in model.checkImuCal(); publish() } }
+    func clearImuCal() { queue.async { [self] in model.clearImuCal(); publish() } }
+    func cancelImuCal() { queue.async { [self] in model.cancelImuCal(); publish() } }
+    func closeImuCalResult() { queue.async { [self] in model.closeImuCalResult(); publish() } }
 
     // MARK: connection
 
@@ -634,6 +640,13 @@ public final class BtrxDeskPodCenter: ObservableObject {
     public func clearSteeringMutes() { central.clearSteeringMutes() }
     /// Debug: steering roll correction (off until the bench roll check).
     public func setSteeringRollCorrection(_ on: Bool) { central.setSteeringRollCorrection(on) }
+    /// Drone Pod IMU calibration (Desk Pod screen; design doc section 29.3).
+    public func startImuCal() { central.startImuCal() }
+    public func startImuCalStarboard() { central.startImuCalStarboard() }
+    public func checkImuCal() { central.checkImuCal() }
+    public func clearImuCal() { central.clearImuCal() }
+    public func cancelImuCal() { central.cancelImuCal() }
+    public func closeImuCalResult() { central.closeImuCalResult() }
 
     /// The stream the operator marked "Drone Pod is on this drone" (see BtrxSteeringTarget).
     @Published public private(set) var steeringStreamID: String?

@@ -27,6 +27,10 @@ import Foundation
 /// view overlay shows only while the link is connected, a pod is paired and STEER keeps
 /// arriving. ``muteSteeringSource()`` / ``clearSteeringMutes()`` send STEER_MUTE to that pod.
 /// Nothing here ever makes a clue.
+///
+/// IMU calibration (design doc section 29.3, firmware 0x0102): ``BtrxImuCal`` runs the flow;
+/// IMU_CAL goes to the paired pod's node like STEER_MUTE, and only that pod's live
+/// IMU_CAL_ACK (same filter as other pod traffic) answers it. STEER bit 6 feeds "Calibrated".
 public final class BtrxDeskPodModel {
     public enum LinkKind: Sendable { case none, bluetooth, usb }
     public enum LinkPhase: Sendable { case off, unavailable, noPermission, scanning, bonding, connecting, configuring, ready, retryWait, pausedForUSB }
@@ -115,6 +119,8 @@ public final class BtrxDeskPodModel {
         public var lastSteer: BtrxSteering.View?
         /// Debug: roll correction of the steering hint (off until the bench roll check).
         public var steeringRollCorrection = BtrxSteering.rollCorrectionDefault
+        /// The Drone Pod IMU calibration flow (Desk Pod screen).
+        public var imuCal: BtrxImuCal.View?
         public init() {}
         public var roleSupported: Bool { role.map { BtrxProtocol.supportedBuilds.contains($0.buildHash) } ?? false }
     }
@@ -158,6 +164,7 @@ public final class BtrxDeskPodModel {
     /// Start of the current wait for the paired pod's HEALTH (session start, pairing, restore).
     private var quietWatchSinceMs: Int64 = 0
     private let steering = BtrxSteering()
+    private let imuCal = BtrxImuCal()
 
     public init(log: BtrxLogger, clock: @escaping () -> Int64 = { Int64(Date().timeIntervalSince1970 * 1000) }, onPaired: @escaping (PairedPod) -> Void = { _ in }) {
         self.log = log
@@ -186,9 +193,11 @@ public final class BtrxDeskPodModel {
         guard self.sender === sender else { return }
         self.sender = nil
         if Self.activeSteps.contains(pairing.step) { fail(pairing.step, "The link to the Desk Pod was lost (\(reason)).") }
+        imuCal.linkLost(reason: reason)
     }
 
     public func restorePairedPod(_ pod: PairedPod?) {
+        if pod != pairedPod { imuCal.reset() } // another pod: its calibration state is not known
         pairedPod = pod
         quietWatchSinceMs = clock()
     }
@@ -197,6 +206,7 @@ public final class BtrxDeskPodModel {
         pairedPod = nil; lastHealth = nil; otherPods.removeAll()
         podIdMismatches = 0; lastMismatchPodId = nil
         steering.reset()
+        imuCal.reset()
     }
 
     // MARK: client listener
@@ -255,6 +265,17 @@ public final class BtrxDeskPodModel {
                 let st = try BtrxProtocol.parseSteer(frame.payload)
                 if steering.onSteer(st, nowMs: meta.arrivalMs) {
                     log.info("steering: window_end_ms went back to \(st.windowEndMs): the Drone Pod restarted; src ids, colors and mutes reset")
+                }
+                imuCal.onSteer(imuOk: st.imuOk, imuCal: st.imuCal)
+            }
+        // Only from the paired pod: an answer before pairing is not ours.
+        case BtrxProtocol.IMU_CAL_ACK:
+            if pairedPod != nil {
+                let ack = try BtrxProtocol.parseImuCalAck(frame.payload)
+                if imuCal.onAck(ack) {
+                    log.info("imu cal: \(BtrxProtocol.imuCalOpName(ack.op)) tag=\(ack.tag) answered: \(BtrxProtocol.imuCalStatusName(ack.status))")
+                } else {
+                    log.info("imu cal: IMU_CAL_ACK tag=\(ack.tag) op=\(BtrxProtocol.imuCalOpName(ack.op)) matches no request out; ignored")
                 }
             }
         default: break
@@ -346,6 +367,7 @@ public final class BtrxDeskPodModel {
         if ack.aOk == 1 {
             let pod = PairedPod(node: c.node, podId: c.assignedPodId, devA: c.devA, devB: c.devB)
             if pairedPod?.node != pod.node { steering.reset() }
+            if pairedPod != pod { imuCal.reset() }
             pairedPod = pod
             podIdMismatches = 0; lastMismatchPodId = nil
             quietWatchSinceMs = meta.arrivalMs
@@ -420,6 +442,7 @@ public final class BtrxDeskPodModel {
         default: break
         }
         if Self.activeSteps.contains(pairing.step) { pairing.windowSecondsLeft = window.secondsLeft(nowMs: now) }
+        if let r = imuCal.tick(nowMs: now) { sendImuCal(r) }
     }
 
     public func snapshot() -> Snapshot {
@@ -440,6 +463,7 @@ public final class BtrxDeskPodModel {
         s.steerOverlay = steeringLinkUp ? steering.view(nowMs: now) : nil
         s.lastSteer = steering.lastView(nowMs: now)
         s.steeringRollCorrection = steering.rollCorrection
+        s.imuCal = imuCal.view(nowMs: now)
         return s
     }
 
@@ -460,6 +484,63 @@ public final class BtrxDeskPodModel {
     public func setSteeringRollCorrection(_ on: Bool) {
         if steering.rollCorrection != on { log.info("steering: roll correction \(on ? "on" : "off") (debug)") }
         steering.rollCorrection = on
+    }
+
+    // MARK: IMU calibration actions (design doc section 29.3)
+
+    /// "Calibrate" / "Start again": the level step at once.
+    public func startImuCal() { imuCalAction { imuCal.start(nowMs: clock()) } }
+
+    /// "Start starboard step" / "Retry starboard step": the countdown, then the starboard-down step (from ``tick()``).
+    public func startImuCalStarboard() {
+        if let blocked = imuCalBlocked {
+            log.warn("imu cal: starboard step not started: \(blocked)")
+            imuCal.notSent(nil, reason: blocked)
+        } else if imuCal.startStarboard(nowMs: clock()) {
+            log.info("imu cal: starboard step countdown")
+        }
+    }
+
+    /// "Check": which calibration the pod uses.
+    public func checkImuCal() { imuCalAction { imuCal.check(nowMs: clock()) } }
+
+    /// "Clear saved calibration": back to the mounting set in the pod's build.
+    public func clearImuCal() { imuCalAction { imuCal.clear(nowMs: clock()) } }
+
+    /// "Cancel calibration": ends the flow; nothing is sent.
+    public func cancelImuCal() {
+        if BtrxImuCal.flowSteps.contains(imuCal.currentStep) { log.info("imu cal: cancelled by the operator at \(imuCal.currentStep.rawValue)") }
+        imuCal.cancel()
+    }
+
+    /// "Close": ends a finished calibration result.
+    public func closeImuCalResult() { imuCal.close() }
+
+    private func imuCalAction(_ start: () -> BtrxImuCal.Request?) {
+        if let blocked = imuCalBlocked {
+            log.warn("imu cal: not sent: \(blocked)")
+            imuCal.notSent(nil, reason: blocked)
+        } else if let r = start() {
+            sendImuCal(r)
+        }
+    }
+
+    /// Why IMU_CAL cannot go out now, or nil.
+    private var imuCalBlocked: String? {
+        if pairedPod == nil { return "No Drone Pod is paired. Pair it first." }
+        if !(sender?.isReady ?? false) { return "The Desk Pod is not connected." }
+        return nil
+    }
+
+    private func sendImuCal(_ r: BtrxImuCal.Request) {
+        guard let pod = pairedPod, let s = sender, s.isReady else {
+            let reason = imuCalBlocked ?? "No Drone Pod is paired."
+            log.warn("imu cal: \(BtrxProtocol.imuCalOpName(r.op)) not sent: \(reason)")
+            imuCal.notSent(r, reason: reason)
+            return
+        }
+        log.info("imu cal: IMU_CAL \(BtrxProtocol.imuCalOpName(r.op)) tag=\(r.tag) to \(BtrxClient.nodeName(pod.node))")
+        s.sendFrame(to: pod.node, frame: BtrxProtocol.imuCalFrame(seq: s.nextSeq(), podId: pod.podId, op: r.op, tag: r.tag))
     }
 
     /// "Clear mutes": STEER_MUTE op 0, to the paired pod.

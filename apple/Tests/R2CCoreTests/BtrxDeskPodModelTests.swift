@@ -528,6 +528,108 @@ final class BtrxDeskPodModelTests: XCTestCase {
         XCTAssertFalse(sender.sent.contains { (try? P.decodeFrame($0.1))?.type == P.STEER_MUTE })
     }
 
+    // MARK: IMU calibration (IMU_CAL / IMU_CAL_ACK)
+
+    func imuAck(_ op: Int, _ tag: Int, status: Int = P.IMUCAL_OK, flags: Int = P.IMUCAL_F_IMU_OK | P.IMUCAL_F_LEVEL_HELD, podId: UInt32? = nil) -> P.Frame {
+        podSeq += 1
+        let payload = P.imuCalAckPayload(P.ImuCalAck(op: op, tag: tag, status: status, flags: flags, rollX2: 40, pitchX2: 0, tiltX2: 4, face: 0, yPoints: 0, gyroBiasX10: [0, 0, 0]))
+        return try! P.decodeFrame(P.encodeFrame(P.IMU_CAL_ACK, seq: podSeq, podId: podId ?? pairedPodId, flags: P.F_IS_ACK, payload: payload))
+    }
+    func lastImuCal() -> (UInt32, P.Frame) { let l = sender.sent.last!; return (l.0, try! P.decodeFrame(l.1)) }
+    var imu: BtrxImuCal.View { model.snapshot().imuCal! }
+    var imuCalSent: Bool { sender.sent.contains { (try? P.decodeFrame($0.1))?.type == P.IMU_CAL } }
+
+    func testImuCalGoesToThePairedPodNodeAndOnlyItsAnswerCounts() {
+        ready()
+        restorePaired()
+        model.startImuCal()
+        let (to, f) = lastImuCal()
+        XCTAssertEqual(pod, to)
+        XCTAssertEqual(P.IMU_CAL, f.type)
+        XCTAssertEqual(pairedPodId, f.podId)
+        XCTAssertEqual("0101", P.hex(f.payload)) // level, tag 1
+        XCTAssertEqual(.LEVEL, imu.step)
+        model.onFrame(imuAck(1, 1), meta: meta(0x2222_3333))               // another node
+        model.onFrame(imuAck(1, 1, podId: 0x1234_5678), meta: meta(pod))   // another pod_id
+        model.onFrame(imuAck(1, 1), meta: meta(pod, backlog: true))        // connect backlog
+        XCTAssertEqual(.LEVEL, imu.step)
+        model.onFrame(imuAck(1, 2), meta: meta(pod))                        // another tag
+        XCTAssertEqual(.LEVEL, imu.step)
+        XCTAssertTrue(log.infos.contains { $0.contains("matches no request out; ignored") })
+        model.onFrame(imuAck(1, 1), meta: meta(pod))
+        XCTAssertEqual(.STBD_READY, imu.step)
+        model.startImuCalStarboard()
+        XCTAssertEqual(.STBD_COUNTDOWN, imu.step)
+        let before = sender.sent.count
+        advance(1_000)
+        XCTAssertEqual(before, sender.sent.count)
+        advance(2_000)
+        let (to2, f2) = lastImuCal()
+        XCTAssertEqual(pod, to2)
+        XCTAssertEqual(pairedPodId, f2.podId)
+        XCTAssertEqual("0202", P.hex(f2.payload)) // starboard, tag 2
+        model.onFrame(imuAck(2, 2, flags: P.IMUCAL_F_IMU_OK | P.IMUCAL_F_CALIBRATED), meta: meta(pod))
+        XCTAssertEqual(.CALIBRATED, imu.step)
+        XCTAssertEqual(true, imu.calibrated)
+    }
+
+    func testImuCalAnswerBeforePairingIsIgnored() {
+        ready()
+        model.onFrame(imuAck(3, 1, flags: P.IMUCAL_F_IMU_OK | P.IMUCAL_F_CALIBRATED, podId: 0), meta: meta(pod))
+        XCTAssertNil(imu.calibrated)
+    }
+
+    func testImuCalIsRefusedWithoutAPairingOrLink() {
+        ready()
+        model.startImuCal()
+        XCTAssertFalse(imuCalSent)
+        XCTAssertEqual(.FAILED, imu.step)
+        XCTAssertEqual("No Drone Pod is paired. Pair it first.", imu.message)
+        restorePaired()
+        sender.isReady = false
+        model.checkImuCal()
+        XCTAssertFalse(imuCalSent)
+        XCTAssertEqual("The Desk Pod is not connected.", imu.message)
+    }
+
+    func testImuCalTimesOutCheckClearAndSteerBit6() {
+        ready()
+        restorePaired()
+        var p = P.fromHex(BtrxProtocolTests.steerPayload)
+        p[1] = UInt8(P.STEER_F_IMU_OK | P.STEER_F_IMU_CAL)
+        podSeq += 1
+        model.onFrame(try! P.decodeFrame(P.encodeFrame(P.STEER, seq: podSeq, podId: pairedPodId, payload: p)), meta: meta(pod))
+        XCTAssertEqual(true, imu.calibrated)
+        XCTAssertTrue(imu.calibratedFromSteer)
+        model.checkImuCal()
+        XCTAssertEqual("0301", P.hex(lastImuCal().1.payload))
+        advance(BtrxImuCal.ackTimeoutMs)
+        XCTAssertEqual(.FAILED, imu.step)
+        model.clearImuCal()
+        XCTAssertEqual("0002", P.hex(lastImuCal().1.payload))
+        model.onFrame(imuAck(0, 2, flags: P.IMUCAL_F_IMU_OK), meta: meta(pod))
+        XCTAssertEqual(false, imu.calibrated)
+        model.closeImuCalResult()
+        XCTAssertEqual("", imu.message)
+    }
+
+    func testImuCalCancelLinkLossAndForget() {
+        ready()
+        restorePaired()
+        model.startImuCal()
+        let n = sender.sent.count
+        model.cancelImuCal()
+        XCTAssertEqual(n, sender.sent.count) // cancel sends nothing
+        XCTAssertEqual(BtrxImuCal.cancelled, imu.message)
+        model.startImuCal()
+        model.detach(sender, reason: "test")
+        XCTAssertEqual(.FAILED, imu.step)
+        XCTAssertTrue(imu.message.hasPrefix("The link to the Desk Pod was lost"))
+        model.forgetPairedPod()
+        XCTAssertEqual(.IDLE, imu.step)
+        XCTAssertNil(imu.calibrated)
+    }
+
     func testForgettingThePodClearsSteering() {
         ready()
         restorePaired()

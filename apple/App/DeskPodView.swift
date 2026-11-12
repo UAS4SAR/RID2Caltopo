@@ -4,8 +4,9 @@ import SwiftUI
 
 /// Main menu > Desk Pod: the btrx Desk Pod Bluetooth link, its status and link health,
 /// and the "Pair drone pod" flow. Same sections, order and wording as Android's
-/// DeskPodScreen. "Dismiss" only hides this panel; the link keeps running.
-/// "Cancel pairing" ends a pairing in progress.
+/// DeskPodScreen. "Dismiss" only hides this panel; the link keeps running (a calibration
+/// in progress too). "Cancel pairing" ends a pairing in progress; "Cancel calibration"
+/// ends the IMU calibration flow.
 struct DeskPodView: View {
     @ObservedObject var center: BtrxDeskPodCenter
     let onDismiss: () -> Void
@@ -58,6 +59,10 @@ struct DeskPodView: View {
                     pairing(s.pairing)
 
                     Divider().padding(.vertical, 6)
+                    section(Text_.imuCalTitle)
+                    imuCalSection(s)
+
+                    Divider().padding(.vertical, 6)
                     section("Steering")
                     if let st = s.lastSteer {
                         HStack {
@@ -92,6 +97,49 @@ struct DeskPodView: View {
 
     private func section(_ title: String) -> some View {
         Text(title).font(.headline).padding(.top, 4)
+    }
+
+    /// Drone Pod IMU calibration (design doc section 29.3): Calibrate (level step at once),
+    /// then Start starboard step (countdown, then starboard down), results in plain words,
+    /// Retry starboard step after a failed one, Check and Clear saved calibration. Same as
+    /// Android's ImuCalSection.
+    @ViewBuilder
+    private func imuCalSection(_ s: BtrxDeskPodModel.Snapshot) -> some View {
+        if let v = s.imuCal {
+            let enabled = s.pairedPod != nil
+            Text(BtrxImuCal.calibratedLine(v)).fontWeight(v.calibrated == true ? .semibold : .regular)
+            Text(Text_.imuCalHint).font(.footnote).foregroundStyle(.secondary)
+            if !v.message.isEmpty {
+                Text(v.message)
+                    .fontWeight(v.step == .CALIBRATED ? .semibold : .regular)
+                    .foregroundStyle(v.step == .FAILED ? Color.red : Color.primary)
+            }
+            if v.step == .STBD_COUNTDOWN {
+                Text(Text_.imuCalCountdown(v.countdownS)).font(.title2).monospacedDigit()
+            }
+            HStack(spacing: 8) {
+                if v.canStartStarboard {
+                    Button(v.step == .FAILED ? Text_.imuCalStbdRetry : Text_.imuCalStbd) { center.startImuCalStarboard() }
+                        .buttonStyle(.borderedProminent).disabled(!enabled)
+                }
+                if v.canStart {
+                    let first = v.step == .IDLE
+                    if first && !v.canStartStarboard {
+                        Button(Text_.imuCalStart) { center.startImuCal() }.buttonStyle(.borderedProminent).disabled(!enabled)
+                    } else {
+                        Button(first ? Text_.imuCalStart : Text_.imuCalStartAgain) { center.startImuCal() }.buttonStyle(.bordered).disabled(!enabled)
+                    }
+                }
+                if v.canCancel { Button(Text_.imuCalCancel) { center.cancelImuCal() }.buttonStyle(.bordered) }
+                if v.canClose { Button(Text_.imuCalClose) { center.closeImuCalResult() } }
+            }
+            if v.canCheckOrClear {
+                HStack(spacing: 8) {
+                    Button(Text_.imuCalCheck) { center.checkImuCal() }.buttonStyle(.bordered).disabled(!enabled)
+                    Button(Text_.imuCalClear) { center.clearImuCal() }.buttonStyle(.bordered).disabled(!enabled)
+                }
+            }
+        }
     }
 
     @ViewBuilder

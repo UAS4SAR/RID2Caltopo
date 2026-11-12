@@ -22,7 +22,20 @@ public enum BtrxDeskPodText {
         if liveCount > 1 { return "Several streams are live: tap \"\(steerPick)\" on the drone carrying the pod." }
         return "Steering overlay on the live stream (one live)."
     }
-    public static let steerNone = "No STEER yet (firmware 0x0101 sends one about every second once the pod is paired)."
+    public static let steerNone = "No STEER yet (firmware 0x0101 or later sends one about every second once the pod is paired)."
+
+    // Drone Pod IMU calibration (design doc section 29.3).
+    public static let imuCalTitle = "Drone Pod IMU"
+    public static let imuCalHint = "Calibrate once after the lid goes on, and again whenever the IMU board is refitted. Set the Drone Pod level and keep it still, then tap Calibrate. Needs Drone Pod firmware 0x0102 or later."
+    public static let imuCalStart = "Calibrate"
+    public static let imuCalStartAgain = "Start again"
+    public static let imuCalStbd = "Start starboard step"
+    public static let imuCalStbdRetry = "Retry starboard step"
+    public static let imuCalCancel = "Cancel calibration"
+    public static let imuCalClose = "Close"
+    public static let imuCalCheck = "Check"
+    public static let imuCalClear = "Clear saved calibration"
+    public static func imuCalCountdown(_ seconds: Int) -> String { "Measuring in \(seconds) s" }
     public static let steerMuted = "A steering source is muted on the Drone Pod."
     public static let steerMuteHint = "Tap the overlay on the stream view to mute its source (for example a search team); the next strongest takes its place. The pod holds up to 8 mutes; they clear when it restarts, and a muted source unheard for 60 s comes back under a new color."
 

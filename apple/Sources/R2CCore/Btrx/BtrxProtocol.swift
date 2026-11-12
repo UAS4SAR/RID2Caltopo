@@ -20,9 +20,11 @@ public enum BtrxProtocol {
     public static let privateAppPort = 256
 
     /// Board builds this app knows.
-    public static let supportedBuilds: Set<Int> = [0x0100, 0x0101]
+    public static let supportedBuilds: Set<Int> = [0x0100, 0x0101, 0x0102]
     /// First build that sends STEER (DETECT every 5 s from this build).
     public static let buildSteer = 0x0101
+    /// Firmware that answers IMU_CAL (btrx PR #18, af2549e).
+    public static let buildImuCal = 0x0102
 
     public static let HELLO = 0x01, HELLO_ACK = 0x02, PAIR_REQ = 0x10, PAIR_CONFIRM = 0x11, PAIR_ACK = 0x12
     public static let B_CFG = 0x13, GESTURE = 0x14, DESK_PAIR = 0x15, ROLE_GET = 0x20, ROLE_REPORT = 0x21
@@ -31,6 +33,7 @@ public enum BtrxProtocol {
     public static let FILTER_ACK = 0x61, DETECT = 0x70, IMU_SAMPLE = 0x71, ADV_SAMPLE = 0x72, HEALTH = 0x80
     public static let DFU_REQ = 0x90, DFU_ACK = 0x91
     public static let STEER = 0x73, STEER_MUTE = 0x74
+    public static let IMU_CAL = 0x75, IMU_CAL_ACK = 0x76
 
     private static let msgNames: [Int: String] = [
         HELLO: "HELLO", HELLO_ACK: "HELLO_ACK", PAIR_REQ: "PAIR_REQ", PAIR_CONFIRM: "PAIR_CONFIRM",
@@ -39,7 +42,7 @@ public enum BtrxProtocol {
         START: "START", STOP: "STOP", CTRL_ACK: "CTRL_ACK", SCAN_CFG: "SCAN_CFG", SCAN_CFG_ACK: "SCAN_CFG_ACK",
         FILTER_LIST: "FILTER_LIST", FILTER_ACK: "FILTER_ACK", DETECT: "DETECT", IMU_SAMPLE: "IMU_SAMPLE",
         ADV_SAMPLE: "ADV_SAMPLE", HEALTH: "HEALTH", DFU_REQ: "DFU_REQ", DFU_ACK: "DFU_ACK",
-        STEER: "STEER", STEER_MUTE: "STEER_MUTE",
+        STEER: "STEER", STEER_MUTE: "STEER_MUTE", IMU_CAL: "IMU_CAL", IMU_CAL_ACK: "IMU_CAL_ACK",
     ]
 
     public static func typeName(_ type: Int) -> String { msgNames[type] ?? String(format: "0x%02x", type) }
@@ -79,10 +82,21 @@ public enum BtrxProtocol {
     // STEER flags (btrx_types.h BTRX_STEER_F_*; names as protocol.py STEER_FLAGS).
     public static let STEER_F_TARGET = 0x01, STEER_F_NEW = 0x02, STEER_F_LINKED = 0x04
     public static let STEER_F_GATED = 0x08, STEER_F_IMU_OK = 0x10, STEER_F_MUTED = 0x20
+    /// Firmware 0x0102: pod B has a saved IMU calibration (set only while the IMU is ok).
+    public static let STEER_F_IMU_CAL = 0x40
     private static let steerFlags: [(Int, String)] = [
         (STEER_F_TARGET, "target"), (STEER_F_NEW, "new"), (STEER_F_LINKED, "linked"),
         (STEER_F_GATED, "gated"), (STEER_F_IMU_OK, "imu"), (STEER_F_MUTED, "muted"),
+        (STEER_F_IMU_CAL, "cal"),
     ]
+
+    // IMU_CAL ops and IMU_CAL_ACK status and flags (btrx_imucal.h; protocol.py IMUCAL_*).
+    public static let IMUCAL_OP_CLEAR = 0, IMUCAL_OP_LEVEL = 1, IMUCAL_OP_STBD = 2, IMUCAL_OP_QUERY = 3
+    public static let IMUCAL_OK = 0, IMUCAL_MOTION = 1, IMUCAL_TILT_SMALL = 2, IMUCAL_NOT_LEVEL = 3, IMUCAL_NEED_LEVEL = 4
+    public static let IMUCAL_NO_IMU = 5, IMUCAL_NOT_ROLL = 6, IMUCAL_BAD_OP = 7, IMUCAL_SAVE_FAIL = 8, IMUCAL_BUSY = 9
+    public static let IMUCAL_F_CALIBRATED = 0x01, IMUCAL_F_LEVEL_HELD = 0x02, IMUCAL_F_IMU_OK = 0x04
+    /// IMU_CAL_ACK face / y_points value for "not known".
+    public static let IMU_UNKNOWN = 0xFF
 
     // STEER_MUTE ops (BTRX_MUTE_*).
     public static let MUTE_CLEAR = 0, MUTE_ADD = 1, MUTE_REMOVE = 2
@@ -351,6 +365,8 @@ public enum BtrxProtocol {
         public var gated: Bool { flags & BtrxProtocol.STEER_F_GATED != 0 }
         public var imuOk: Bool { flags & BtrxProtocol.STEER_F_IMU_OK != 0 }
         public var muted: Bool { flags & BtrxProtocol.STEER_F_MUTED != 0 }
+        /// Bit 6 (firmware 0x0102): a saved IMU calibration is in use.
+        public var imuCal: Bool { flags & BtrxProtocol.STEER_F_IMU_CAL != 0 }
         public var portHeard: Bool { rssiPort != BtrxProtocol.rssiNotHeard }
         public var stbdHeard: Bool { rssiStbd != BtrxProtocol.rssiNotHeard }
         /// Last 4 characters of the address: never log or show the full address.
@@ -401,7 +417,112 @@ public enum BtrxProtocol {
         }
     }
 
+    public static func imuCalOpName(_ op: Int) -> String {
+        switch op {
+        case IMUCAL_OP_CLEAR: return "clear"
+        case IMUCAL_OP_LEVEL: return "level"
+        case IMUCAL_OP_STBD: return "starboard"
+        case IMUCAL_OP_QUERY: return "status"
+        default: return String(op)
+        }
+    }
+
+    /// Short status names, as protocol.py IMUCAL_STATUS_NAME (logs; the screen uses BtrxImuCal.statusText).
+    public static func imuCalStatusName(_ status: Int) -> String {
+        switch status {
+        case IMUCAL_OK: return "ok"
+        case IMUCAL_MOTION: return "too much motion"
+        case IMUCAL_TILT_SMALL: return "tilt too small"
+        case IMUCAL_NOT_LEVEL: return "not level"
+        case IMUCAL_NEED_LEVEL: return "needs level first"
+        case IMUCAL_NO_IMU: return "no IMU"
+        case IMUCAL_NOT_ROLL: return "not a roll"
+        case IMUCAL_BAD_OP: return "bad op"
+        case IMUCAL_SAVE_FAIL: return "worked out but not saved"
+        case IMUCAL_BUSY: return "still measuring"
+        default: return String(status)
+        }
+    }
+
+    public static let imuCalLen = 2
+    public static let imuCalAckLen = 15
+
+    public struct ImuCal: Sendable, Equatable {
+        public let op: Int, tag: Int
+        public init(op: Int, tag: Int) { self.op = op; self.tag = tag }
+    }
+
+    /// IMU_CAL (0x75), 2 bytes: op, tag. Logged when the app sends it.
+    public static func parseImuCal(_ p: [UInt8]) throws -> ImuCal {
+        try need(p, imuCalLen, "IMU_CAL")
+        return ImuCal(op: Int(p[0]), tag: Int(p[1]))
+    }
+
+    /// IMU_CAL_ACK (0x76), 15 bytes little-endian (PROTOCOL.md "IMU_CAL"): pod B's answer,
+    /// relayed by pod A (or pod A's own "no IMU"). `<BBBBbbBBBhhh`: op, tag, status, flags,
+    /// roll_x2, pitch_x2, tilt_x2, face, y_points, gyro_bias_x10[3].
+    public struct ImuCalAck: Sendable, Equatable {
+        public let op: Int, tag: Int, status: Int, flags: Int
+        public let rollX2: Int, pitchX2: Int, tiltX2: Int, face: Int, yPoints: Int
+        public let gyroBiasX10: [Int]
+
+        public init(op: Int, tag: Int, status: Int, flags: Int, rollX2: Int, pitchX2: Int, tiltX2: Int, face: Int, yPoints: Int, gyroBiasX10: [Int]) {
+            self.op = op; self.tag = tag; self.status = status; self.flags = flags
+            self.rollX2 = rollX2; self.pitchX2 = pitchX2; self.tiltX2 = tiltX2; self.face = face; self.yPoints = yPoints
+            self.gyroBiasX10 = gyroBiasX10
+        }
+
+        public var calibrated: Bool { flags & BtrxProtocol.IMUCAL_F_CALIBRATED != 0 }
+        public var levelHeld: Bool { flags & BtrxProtocol.IMUCAL_F_LEVEL_HELD != 0 }
+        public var imuOk: Bool { flags & BtrxProtocol.IMUCAL_F_IMU_OK != 0 }
+    }
+
+    public static func parseImuCalAck(_ p: [UInt8]) throws -> ImuCalAck {
+        try need(p, imuCalAckLen, "IMU_CAL_ACK")
+        return ImuCalAck(op: Int(p[0]), tag: Int(p[1]), status: Int(p[2]), flags: Int(p[3]),
+                         rollX2: i8(p, 4), pitchX2: i8(p, 5), tiltX2: Int(p[6]), face: Int(p[7]), yPoints: Int(p[8]),
+                         gyroBiasX10: [i16(p, 9), i16(p, 11), i16(p, 13)])
+    }
+
+    /// IMU_CAL_ACK encoder (protocol.py pack_imu_cal_ack), for tests.
+    public static func imuCalAckPayload(_ a: ImuCalAck) -> [UInt8] {
+        func b(_ v: Int) -> UInt8 { UInt8(truncatingIfNeeded: v) }
+        var out: [UInt8] = [b(a.op), b(a.tag), b(a.status), b(a.flags), b(a.rollX2), b(a.pitchX2), b(a.tiltX2), b(a.face), b(a.yPoints)]
+        for i in 0..<3 {
+            let g = i < a.gyroBiasX10.count ? a.gyroBiasX10[i] : 0
+            out.append(b(g)); out.append(b(g >> 8))
+        }
+        return out
+    }
+
+    public static func imuFaceName(_ face: Int) -> String {
+        switch face { case 0: return "up"; case 1: return "down"; default: return "?" }
+    }
+
+    public static func imuYName(_ y: Int) -> String {
+        switch y { case 0: return "fwd"; case 1: return "aft"; case 2: return "port"; case 3: return "stbd"; default: return "?" }
+    }
+
+    public static func imuCalFlagNames(_ flags: Int) -> String {
+        var names: [String] = []
+        if flags & IMUCAL_F_CALIBRATED != 0 { names.append("calibrated") }
+        if flags & IMUCAL_F_LEVEL_HELD != 0 { names.append("level-held") }
+        if flags & IMUCAL_F_IMU_OK != 0 { names.append("imu") }
+        return names.isEmpty ? "none" : names.joined(separator: ",")
+    }
+
     // MARK: payloads R2C sends
+
+    /// IMU_CAL (0x75) payload: op, tag (protocol.py pack_imu_cal).
+    public static func imuCalPayload(op: Int, tag: Int) -> [UInt8] {
+        [UInt8(truncatingIfNeeded: op), UInt8(truncatingIfNeeded: tag)]
+    }
+
+    /// A complete IMU_CAL frame, sent like STEER_MUTE: to the paired Drone Pod's node (pod
+    /// A relays it to pod B), with that pod's pod_id in the header.
+    public static func imuCalFrame(seq: Int, podId: UInt32, op: Int, tag: Int) -> [UInt8] {
+        encodeFrame(IMU_CAL, seq: seq, podId: podId, payload: imuCalPayload(op: op, tag: tag))
+    }
 
     /// STEER_MUTE (0x74) payload: op u8, src_id u16 (protocol.py pack_steer_mute).
     public static func steerMutePayload(op: Int, srcId: Int = 0) -> [UInt8] {

@@ -278,6 +278,65 @@ final class BtrxProtocolTests: XCTestCase {
         XCTAssertTrue(mute.hasSuffix("op=add src=258"), mute)
     }
 
+    // MARK: IMU_CAL / IMU_CAL_ACK (firmware 0x0102; protocol.py test vectors)
+
+    static let imuCalFrame = "b75201750300000000000202071644"
+    static let imuCalAckPayload = "0207000528ff2801010c00fbff0300"
+
+    func testImuCalFrameMatchesTheFirmwareVector() throws {
+        XCTAssertEqual(Self.imuCalFrame, P.hex(P.imuCalFrame(seq: 3, podId: 0, op: P.IMUCAL_OP_STBD, tag: 7)))
+        let f = try P.decodeFrame(P.fromHex(Self.imuCalFrame))
+        XCTAssertEqual(P.IMU_CAL, f.type)
+        XCTAssertEqual(P.ImuCal(op: P.IMUCAL_OP_STBD, tag: 7), try P.parseImuCal(f.payload))
+        let g = try P.decodeFrame(P.imuCalFrame(seq: 9, podId: 0x45D3_5AF0, op: P.IMUCAL_OP_LEVEL, tag: 255))
+        XCTAssertEqual(0x45D3_5AF0, g.podId)
+        XCTAssertEqual(0, g.flags)
+        XCTAssertEqual("01ff", P.hex(g.payload))
+        XCTAssertEqual("0001", P.hex(P.imuCalPayload(op: P.IMUCAL_OP_CLEAR, tag: 1)))
+        XCTAssertEqual("0302", P.hex(P.imuCalPayload(op: P.IMUCAL_OP_QUERY, tag: 2)))
+    }
+
+    func testImuCalAckRoundTripsTheFirmwareVector() throws {
+        let a = try P.parseImuCalAck(P.fromHex(Self.imuCalAckPayload))
+        XCTAssertEqual(P.ImuCalAck(op: 2, tag: 7, status: 0, flags: 5, rollX2: 40, pitchX2: -1, tiltX2: 40, face: 1, yPoints: 1, gyroBiasX10: [12, -5, 3]), a)
+        XCTAssertTrue(a.calibrated); XCTAssertFalse(a.levelHeld); XCTAssertTrue(a.imuOk)
+        XCTAssertEqual("down", P.imuFaceName(a.face)); XCTAssertEqual("aft", P.imuYName(a.yPoints))
+        XCTAssertEqual(Self.imuCalAckPayload, P.hex(P.imuCalAckPayload(a)))
+        let unknown = P.ImuCalAck(op: 3, tag: 255, status: 9, flags: 0x06, rollX2: -128, pitchX2: 127, tiltX2: 255, face: 255, yPoints: 255, gyroBiasX10: [-32768, 32767, 0])
+        XCTAssertEqual(unknown, try P.parseImuCalAck(P.imuCalAckPayload(unknown)))
+        XCTAssertEqual("?", P.imuFaceName(255)); XCTAssertEqual("?", P.imuYName(255))
+        let frame = P.encodeFrame(P.IMU_CAL_ACK, seq: 4, podId: 0x45D3_5AF0, flags: P.F_IS_ACK, payload: P.fromHex(Self.imuCalAckPayload))
+        XCTAssertEqual(a, try P.parseImuCalAck(try P.decodeFrame(frame).payload))
+    }
+
+    func testImuCalPayloadsTooShortAreRejected() {
+        XCTAssertThrowsError(try P.parseImuCal([1])) { XCTAssertTrue($0 is P.PayloadError) }
+        XCTAssertThrowsError(try P.parseImuCalAck([UInt8](repeating: 0, count: 14))) { XCTAssertTrue($0 is P.PayloadError) }
+    }
+
+    func testImuCalFrameLogLines() throws {
+        let req = BtrxFrameLog.format(try P.decodeFrame(P.fromHex(Self.imuCalFrame)))
+        XCTAssertTrue(req.hasPrefix("IMU_CAL seq=3"), req)
+        XCTAssertTrue(req.hasSuffix("op=starboard tag=7"), req)
+        let ack = BtrxFrameLog.format(try P.decodeFrame(P.encodeFrame(P.IMU_CAL_ACK, seq: 4, flags: P.F_IS_ACK, payload: P.fromHex(Self.imuCalAckPayload))))
+        XCTAssertTrue(ack.hasSuffix("op=starboard tag=7 status=ok cal_flags=calibrated,imu roll_x2=40 pitch_x2=-1 tilt_x2=40 face=down y=aft gyro_bias_x10=12,-5,3"), ack)
+    }
+
+    func testSteerBit6IsTheSavedCalibration() throws {
+        let s = try P.parseSteer(P.fromHex(Self.steerPayload))
+        XCTAssertFalse(s.imuCal)
+        var p = P.steerPayload(s); p[1] |= UInt8(P.STEER_F_IMU_CAL)
+        let c = try P.parseSteer(p)
+        XCTAssertTrue(c.imuCal)
+        XCTAssertTrue(P.steerFlagNames(c.flags).contains("cal"))
+    }
+
+    func testFirmware0102IsSupported() {
+        XCTAssertTrue(P.supportedBuilds.contains(0x0102))
+        XCTAssertEqual("IMU_CAL", P.typeName(0x75))
+        XCTAssertEqual("IMU_CAL_ACK", P.typeName(0x76))
+    }
+
     func testFirmware0101IsSupported() {
         XCTAssertTrue(P.supportedBuilds.contains(0x0101))
         XCTAssertTrue(P.supportedBuilds.contains(0x0100))
