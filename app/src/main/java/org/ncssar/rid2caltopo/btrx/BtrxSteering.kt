@@ -468,6 +468,22 @@ class BtrxSteering {
  * Same as the iPad's BtrxSteeringTarget.
  */
 object BtrxSteeringTarget {
+    /** What a stream tile shows for the steering overlay. */
+    enum class TileOverlay { NONE, CARD, HIDDEN_CHIP, PICK }
+
+    /**
+     * The tile's overlay: the card, or the small "BTRX hidden" chip while the operator has
+     * hidden the overlay (only the card is hidden; link, STEER, mutes and the Steering
+     * section keep working), or the "Drone Pod is on this drone" pick. [hasView]: there is a
+     * live steering view (paired, link up, STEER arriving).
+     */
+    fun tileOverlay(tile: String, live: Set<String>, chosen: String?, hasView: Boolean, shown: Boolean): TileOverlay = when {
+        !hasView -> TileOverlay.NONE
+        showsOverlay(tile, live, chosen) -> if (shown) TileOverlay.CARD else TileOverlay.HIDDEN_CHIP
+        offersPick(tile, live, chosen) -> if (shown) TileOverlay.PICK else TileOverlay.HIDDEN_CHIP
+        else -> TileOverlay.NONE
+    }
+
     fun showsOverlay(tile: String, live: Set<String>, chosen: String?): Boolean =
         tile in live && (live.size == 1 || chosen == tile)
 

@@ -129,6 +129,12 @@ object BtrxDeskPodText {
         return "$desk will be forgotten and the app will connect to the next Desk Pod it finds. The paired Drone Pod stays paired."
     }
 
+    // Steering overlay hide/show (only the card on the stream tile).
+    const val OVERLAY_TOGGLE = "Show steering overlay on the stream"
+    const val OVERLAY_TOGGLE_HINT = "Off hides only the card on the stream tile; the Drone Pod stays connected, mutes and this Steering section keep working. Tap \"BTRX hidden\" on the tile to show it again."
+    const val OVERLAY_HIDE = "Hide"
+    const val OVERLAY_HIDDEN = "BTRX hidden"
+
     const val STEER_PICK = "Drone Pod is on this drone"
     const val STEER_CHOOSE_AGAIN = "Choose another drone"
     const val STEER_ROLL = "Roll correction (debug; only after the bench roll check)"

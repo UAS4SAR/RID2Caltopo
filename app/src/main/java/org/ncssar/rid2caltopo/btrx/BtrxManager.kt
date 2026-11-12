@@ -48,6 +48,7 @@ object BtrxManager {
     private const val KEY_NAME = "ble_name"
     private const val KEY_PAIRED = "paired_pod"
     private const val KEY_USB_DEBUG = "usb_debug"
+    private const val KEY_OVERLAY_SHOWN = "steer_overlay_shown"
     /** Time the Desk Pod takes to advertise again after a clean USB close. */
     private const val BLE_RESUME_AFTER_USB_MS = 3_000L
 
@@ -75,6 +76,9 @@ object BtrxManager {
     /** Desk Pod screen state, refreshed about once a second while a link or Bluetooth is on. */
     val snapshot: StateFlow<BtrxDeskPodModel.Snapshot> = _snapshot.asStateFlow()
 
+    private val _overlayShown = MutableStateFlow(true)
+    /** Steering overlay card shown on the stream tile (hide/show; persisted). */
+    val overlayShown: StateFlow<Boolean> = _overlayShown.asStateFlow()
     private val _bluetoothEnabled = MutableStateFlow(false)
     val bluetoothEnabled: StateFlow<Boolean> = _bluetoothEnabled.asStateFlow()
 
@@ -119,6 +123,7 @@ object BtrxManager {
             _bluetoothEnabled.value = enabled
             val usbDebug = p.getBoolean(KEY_USB_DEBUG, false)
             _usbDebugEnabled.value = usbDebug
+            _overlayShown.value = p.getBoolean(KEY_OVERLAY_SHOWN, true)
             setAttachActivityEnabled(usbDebug)
             if (usbHost && usbDebug) scanAttached()
             applyArbiter(arbiter.update(bluetoothEnabled = enabled, usbDebugEnabled = usbDebug))
@@ -130,6 +135,18 @@ object BtrxManager {
     }
 
     // ---- Desk Pod screen actions (post to the worker; never block the caller) ----
+
+    /**
+     * Hide or show the steering overlay card on the stream tile. Only the card: the link,
+     * STEER and DETECT handling, mutes and the Steering section keep working. Persisted.
+     */
+    fun setOverlayShown(shown: Boolean) {
+        _overlayShown.value = shown
+        worker.execute {
+            prefs().edit().putBoolean(KEY_OVERLAY_SHOWN, shown).apply()
+            logger.info("steering overlay ${if (shown) "shown" else "hidden"} (link, STEER and mutes unaffected)")
+        }
+    }
 
     fun setBluetoothEnabled(enabled: Boolean) = worker.execute {
         prefs().edit().putBoolean(KEY_BLE_ENABLED, enabled).apply()

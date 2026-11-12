@@ -44,10 +44,26 @@ import org.ncssar.rid2caltopo.btrx.BtrxSteeringTarget
 @Composable
 fun BtrxSteeringOverlay(tile: String, liveTiles: Set<String>, chosenTile: String?, modifier: Modifier = Modifier) {
     val s by BtrxManager.snapshot.collectAsState()
-    val v = s.steerOverlay ?: return
-    if (!BtrxSteeringTarget.showsOverlay(tile, liveTiles, chosenTile)) {
+    val shown by BtrxManager.overlayShown.collectAsState()
+    val v = s.steerOverlay
+    val mode = BtrxSteeringTarget.tileOverlay(tile, liveTiles, chosenTile, v != null, shown)
+    if (mode == BtrxSteeringTarget.TileOverlay.HIDDEN_CHIP) {
+        // Hidden by the operator: a small chip says so (the pod has not gone quiet); tap shows it again.
+        Text(
+            BtrxDeskPodText.OVERLAY_HIDDEN,
+            color = Color.White,
+            fontSize = 12.sp,
+            modifier = modifier
+                .background(Color.Black.copy(alpha = 0.55f), RoundedCornerShape(10.dp))
+                .clickable { BtrxManager.setOverlayShown(true) }
+                .padding(horizontal = 10.dp, vertical = 5.dp),
+        )
+        return
+    }
+    if (v == null || mode == BtrxSteeringTarget.TileOverlay.NONE) return
+    if (mode != BtrxSteeringTarget.TileOverlay.CARD) {
         // Several live streams and none marked yet: offer the pick on each live tile.
-        if (BtrxSteeringTarget.offersPick(tile, liveTiles, chosenTile)) {
+        if (mode == BtrxSteeringTarget.TileOverlay.PICK) {
             Text(
                 BtrxDeskPodText.STEER_PICK,
                 color = Color.White,
@@ -66,6 +82,16 @@ fun BtrxSteeringOverlay(tile: String, liveTiles: Set<String>, chosenTile: String
             .padding(horizontal = 8.dp, vertical = 6.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
+        // Hide only this card (link, STEER and mutes keep working); "BTRX hidden" brings it back.
+        Text(
+            BtrxDeskPodText.OVERLAY_HIDE,
+            color = Color.White.copy(alpha = 0.85f),
+            fontSize = 11.sp,
+            modifier = Modifier
+                .align(Alignment.End)
+                .clickable { BtrxManager.setOverlayShown(false) }
+                .padding(horizontal = 4.dp, vertical = 2.dp),
+        )
         // The arrow carries the meaning; the word is a small secondary label only.
         SteeringMark(
             v, 132.dp,

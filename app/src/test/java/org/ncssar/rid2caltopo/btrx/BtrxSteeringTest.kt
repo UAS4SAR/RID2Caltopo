@@ -319,6 +319,22 @@ class BtrxSteeringTest {
     // ---- which tile (the drone carrying the pod) ----
 
     @Test
+    fun hiddenOverlayShowsOnlyTheBtrxHiddenChip() {
+        fun mode(tile: String, live: Set<String>, chosen: String?, hasView: Boolean, shown: Boolean) =
+            BtrxSteeringTarget.tileOverlay(tile, live, chosen, hasView, shown)
+        assertEquals(BtrxSteeringTarget.TileOverlay.CARD, mode("A", setOf("A"), null, true, shown = true))
+        assertEquals(BtrxSteeringTarget.TileOverlay.HIDDEN_CHIP, mode("A", setOf("A"), null, true, shown = false))
+        // No live steering (not paired, link down, STEER stopped): nothing, hidden or not.
+        assertEquals(BtrxSteeringTarget.TileOverlay.NONE, mode("A", setOf("A"), null, false, shown = false))
+        // Several live, none chosen: the pick, or the chip while hidden.
+        assertEquals(BtrxSteeringTarget.TileOverlay.PICK, mode("A", setOf("A", "B"), null, true, shown = true))
+        assertEquals(BtrxSteeringTarget.TileOverlay.HIDDEN_CHIP, mode("A", setOf("A", "B"), null, true, shown = false))
+        // The other drone's tile shows nothing either way.
+        assertEquals(BtrxSteeringTarget.TileOverlay.NONE, mode("B", setOf("A", "B"), "A", true, shown = true))
+        assertEquals(BtrxSteeringTarget.TileOverlay.NONE, mode("B", setOf("A", "B"), "A", true, shown = false))
+    }
+
+    @Test
     fun oneLiveStreamShowsTheOverlayWithoutAPick() {
         val live = setOf("A")
         assertTrue(BtrxSteeringTarget.showsOverlay("A", live, null))
