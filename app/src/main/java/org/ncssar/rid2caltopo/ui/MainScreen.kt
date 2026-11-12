@@ -1730,6 +1730,7 @@ fun MainScreen(
     }
 
     var showWorkspaceStats by remember { mutableStateOf(false) }
+    var showDeskPod by remember { mutableStateOf(false) }
     val aircraftReceptionAutoOpen by localViewModel.aircraftReceptionAutoOpenGeneration.collectAsState()
     val aircraftReceptionFocusRemoteId by localViewModel.aircraftReceptionFocusRemoteId.collectAsState()
     LaunchedEffect(showWorkspaceStats) {
@@ -1750,6 +1751,10 @@ fun MainScreen(
                             DropdownMenuItem(text = { Text("Aircraft and Reception") }, onClick = {
                                 menuExpanded = false
                                 showWorkspaceStats = true
+                            })
+                            DropdownMenuItem(text = { Text("Desk Pod") }, onClick = {
+                                menuExpanded = false
+                                showDeskPod = true
                             })
                             DropdownMenuItem(text = { Text("Settings") }, onClick = {
                                 localViewModel.showSettings()
@@ -1806,6 +1811,9 @@ fun MainScreen(
                         }
         }
     }, { showAboutPrivacyDialog = true }, { showWorkspaceStats = true })
+    if (showDeskPod) {
+        DeskPodScreen(onDismiss = { showDeskPod = false })
+    }
     if (showWorkspaceStats) {
         val drones by localViewModel.drones.collectAsState()
         WorkspaceBluetoothStats(drones = drones, focusRemoteId = aircraftReceptionFocusRemoteId, onDismiss = { showWorkspaceStats = false }, onInspect = { drone ->
