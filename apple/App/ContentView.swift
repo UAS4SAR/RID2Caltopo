@@ -113,6 +113,7 @@ struct ContentView: View {
     /// are not truncated; 100 means unscaled.
     @ScaledMetric(relativeTo: .caption) private var dashboardCellScalePercent: CGFloat = 100
     @StateObject private var bluetoothScanner = BluetoothRIDScanner()
+    @StateObject private var deskPod = BtrxDeskPodCenter()
     @StateObject private var bridgeAlerts = AppleDroneScoutBridgeAlertCenter()
     @StateObject private var mediaMTX = MediaMTXViewModel()
     @ObservedObject private var videoFrames = AppleStreamRegistry.shared.primaryModel
@@ -153,6 +154,7 @@ struct ContentView: View {
     @State private var showDiagnosticLogs = false
     @State private var showStatus = false
     @State private var showReleaseNotes = false
+    @State private var showDeskPod = false
     @State private var showTerms = false
     @State private var showAboutPrivacy = false
     @State private var showImportConfig = false
@@ -289,6 +291,9 @@ struct ContentView: View {
                     panelAlreadyShowingForThisAircraft: showing
                 ) else { return }
                 pendingDroneConfirmation = DroneConfirmationRequest(id: remoteID)
+            }
+            .sheet(isPresented: $showDeskPod) {
+                DeskPodView(center: deskPod, onDismiss: { showDeskPod = false })
             }
             .sheet(isPresented: $showWorkspaceAbout) {
                 NavigationStack {
@@ -733,6 +738,8 @@ struct ContentView: View {
                 if !ProcessInfo.processInfo.arguments.contains("--manual-radios") {
                     try? await bluetoothScanner.start()
                 }
+                // btrx Desk Pod: connects only after the operator turns Bluetooth on in Desk Pod.
+                deskPod.start()
                 // Record locally for every flight; CurrentFlightPublicationGate alone gates publish.
                 ridTracks.configureFlightRecording { _ in true }
                 peerCoordinator.ownershipContextChanged = { remoteID in
@@ -2644,7 +2651,7 @@ struct ContentView: View {
             viewportMemory: mapViewportMemory,
             workspaceMenu: AnyView(MainScreenMenu(
                 showDiagnosticLogs: $showDiagnosticLogs, showWorkspaceStats: $showWorkspaceStats,
-                showReleaseNotes: $showReleaseNotes, showImportConfig: $showImportConfig,
+                showDeskPod: $showDeskPod, showReleaseNotes: $showReleaseNotes, showImportConfig: $showImportConfig,
                 showStorageManagement: $showStorageManagement,
                 showCaltopoSettings: $showCaltopoSettings, showAboutPrivacy: $showAboutPrivacy,
                 showTerms: $showTerms, showConfirmExit: $showConfirmExit).equatable()),
@@ -3630,6 +3637,7 @@ private struct ShortFlightRecordingPanel: View {
 private struct MainScreenMenu: View, Equatable {
     @Binding var showDiagnosticLogs: Bool
     @Binding var showWorkspaceStats: Bool
+    @Binding var showDeskPod: Bool
     @Binding var showReleaseNotes: Bool
     @Binding var showImportConfig: Bool
     @Binding var showStorageManagement: Bool
@@ -3649,6 +3657,7 @@ private struct MainScreenMenu: View, Equatable {
         #endif
         Menu {
             Button("Aircraft and Reception", systemImage: "antenna.radiowaves.left.and.right") { showWorkspaceStats = true }
+            Button("Desk Pod", systemImage: "dot.radiowaves.left.and.right") { showDeskPod = true }
             Button("Settings", systemImage: "gearshape") { showCaltopoSettings = true }
             Button("Release Notes", systemImage: "doc.text") { showReleaseNotes = true }
             Divider()
@@ -4262,7 +4271,8 @@ struct AppleMainMenuUIProbe: View {
             Text("Refresh: \(tick)").accessibilityIdentifier("menu-refresh-tick")
             Text("Menu builds: \(MainMenuUIProbeMetrics.menuBodies)").accessibilityIdentifier("menu-body-count")
             MainScreenMenu(
-                showDiagnosticLogs: selection("diagnostics"), showWorkspaceStats: selection("aircraft-reception"), showReleaseNotes: selection("release-notes"),
+                showDiagnosticLogs: selection("diagnostics"), showWorkspaceStats: selection("aircraft-reception"),
+                showDeskPod: selection("desk-pod"), showReleaseNotes: selection("release-notes"),
                 showImportConfig: selection("import"),
                 showStorageManagement: selection("storage"), showCaltopoSettings: selection("settings"),
                 showAboutPrivacy: selection("privacy"), showTerms: selection("terms"), showConfirmExit: selection("quit")).equatable()

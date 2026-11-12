@@ -71,7 +71,7 @@
         <true/>
     </dict>
 	<key>NSBluetoothAlwaysUsageDescription</key>
-	<string>RID2Caltopo scans nearby ASTM Remote ID Bluetooth broadcasts to locate aircraft.</string>
+	<string>RID2Caltopo scans nearby ASTM Remote ID Bluetooth broadcasts to locate aircraft, and connects to your Desk Pod receiver when you turn that on.</string>
 	<key>NSCameraUsageDescription</key>
 	<string>RID2Caltopo scans configuration codes, aircraft serial numbers, and CalTopo account values.</string>
     <key>NSLocalNetworkUsageDescription</key>

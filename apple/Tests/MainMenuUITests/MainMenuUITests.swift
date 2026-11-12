@@ -11,7 +11,7 @@ final class MainMenuUITests: XCTestCase {
         XCTAssertTrue(menu.waitForExistence(timeout: 20))
         menu.tap()
         XCTAssertTrue(app.buttons["Settings"].waitForExistence(timeout: 5))
-        for title in ["Settings", "Release Notes", "Import Config", "Manage Storage...",
+        for title in ["Desk Pod", "Settings", "Release Notes", "Import Config", "Manage Storage...",
                       "Send diagnostics to developer...", "Terms of Use", "About & Privacy", "Quit"] {
             XCTAssertTrue(app.buttons[title].exists, title)
         }
