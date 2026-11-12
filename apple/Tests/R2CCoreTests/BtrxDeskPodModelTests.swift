@@ -153,7 +153,7 @@ final class BtrxDeskPodModelTests: XCTestCase {
         model.startPairing()
         pairReq()
         XCTAssertEqual(.waitButton, step)
-        XCTAssertTrue(log.infos.contains { $0.contains("no Desk Pod window open") })
+        XCTAssertTrue(log.debugs.contains { $0.contains("no Desk Pod window open") })
     }
 
     func testBacklogPairReqIsNeverActedOn() {
@@ -555,7 +555,7 @@ final class BtrxDeskPodModelTests: XCTestCase {
         XCTAssertEqual(.LEVEL, imu.step)
         model.onFrame(imuAck(1, 2), meta: meta(pod))                        // another tag
         XCTAssertEqual(.LEVEL, imu.step)
-        XCTAssertTrue(log.infos.contains { $0.contains("matches no request out; ignored") })
+        XCTAssertTrue(log.debugs.contains { $0.contains("matches no request out; ignored") })
         model.onFrame(imuAck(1, 1), meta: meta(pod))
         XCTAssertEqual(.STBD_READY, imu.step)
         model.startImuCalStarboard()

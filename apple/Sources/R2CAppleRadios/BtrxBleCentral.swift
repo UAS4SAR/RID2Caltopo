@@ -43,7 +43,6 @@ final class BtrxBleCentral: NSObject, @unchecked Sendable {
     /// First connection to a Desk Pod: iPadOS shows its PIN sheet when FromNum
     /// notifications are enabled (an encrypted write) and waits for the operator.
     static let pinEntryTimeout: TimeInterval = 90
-    static let roleTimeout: TimeInterval = 10
     static let heartbeatSeconds: TimeInterval = 300
     static let summarySeconds: TimeInterval = 60
 
@@ -301,7 +300,7 @@ final class BtrxBleCentral: NSObject, @unchecked Sendable {
         model.attach(c)
         c.start()
         let serial = sessionSerial
-        schedule(Self.roleTimeout, serial) { [weak self] in self?.checkRole(c, retry: true) }
+        schedule(Double(BtrxClient.rolePollMs) / 1000, serial) { [weak self] in self?.checkRole(c, retried: false) }
         scheduleRepeating(Self.heartbeatSeconds, serial) { [weak self] in self?.client?.sendHeartbeat() }
         scheduleRepeating(Self.summarySeconds, serial) { [weak self] in
             if let c = self?.client { self?.log.info("ble summary: \(c.summary())") }
@@ -318,18 +317,21 @@ final class BtrxBleCentral: NSObject, @unchecked Sendable {
         status(.ready, "Connected over Bluetooth.")
     }
 
-    private func checkRole(_ c: BtrxClient, retry: Bool) {
+    /// The ROLE_REPORT wait (timing in ``BtrxClient/roleCheck(retried:)``: from ROLE_GET, after the connect backlog).
+    private func checkRole(_ c: BtrxClient, retried: Bool) {
         guard client === c else { return }
-        if c.state != .ready {
-            log.warn("ble: no Meshtastic config_complete after \(Int(Self.roleTimeout))s")
-        } else if c.localRole != nil {
-            return
-        } else if retry {
-            log.warn("ble: no ROLE_REPORT from the Desk Pod; asking again")
-            _ = c.sendRoleGet()
-            schedule(Self.roleTimeout, sessionSerial) { [weak self] in self?.checkRole(c, retry: false) }
-        } else {
+        let r = c.roleCheck(retried: retried)
+        switch r.action {
+        case .done: break
+        case .wait:
+            schedule(Double(r.delayMs) / 1000, sessionSerial) { [weak self] in self?.checkRole(c, retried: retried) }
+        case .retry:
+            log.warn("ble: no ROLE_REPORT from the Desk Pod within \(BtrxClient.roleTimeoutMs / 1000) s of ROLE_GET; asked again")
+            schedule(Double(r.delayMs) / 1000, sessionSerial) { [weak self] in self?.checkRole(c, retried: true) }
+        case .giveUp:
             log.warn("ble: no ROLE_REPORT from the Desk Pod after a retry; keeping the link open and decoding frames.")
+        case .noConfig:
+            log.warn("ble: no Meshtastic config_complete after \(BtrxClient.configTimeoutMs / 1000)s")
         }
     }
 

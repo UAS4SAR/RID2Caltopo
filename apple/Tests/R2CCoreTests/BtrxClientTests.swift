@@ -295,6 +295,97 @@ final class BtrxClientTests: XCTestCase {
         XCTAssertEqual(1, sent.filter(isRoleGet).count)
     }
 
+    var deskRoleReport: [UInt8] {
+        MeshtasticPhoneAPITests.fromRadioPacket(from: deskNode, to: deskNode, rssi: 0, snr: 0, port: 256,
+                                                payload: P.encodeFrame(P.ROLE_REPORT, seq: 4, payload: P.fromHex("030500000000015b128c4c00000000000000000002")))
+    }
+
+    func testRoleWaitStartsAtRoleGetNotAtConnect() throws {
+        now = 0
+        let c = makeClient(.packet)
+        c.start()
+        XCTAssertEqual(BtrxClient.RoleCheck(.wait, BtrxClient.rolePollMs), c.roleCheck(retried: false))
+        now = 10_000 // the config dump took 10 s
+        let id = try configId(sent[0])
+        c.onFromRadio(M.ProtoWriter().bytesField(3, M.ProtoWriter().varint(1, UInt64(deskNode)).bytes()).bytes())
+        c.onFromRadio(M.ProtoWriter().varint(7, UInt64(id)).bytes())
+        let detect = BtrxProtocolTests.example("DETECT")
+        // 37 queued frames over 10 s: still draining, so no ROLE_GET and no retry yet.
+        for _ in 0..<37 {
+            now += 270; c.onFromRadio(packet(starboard, detect))
+            XCTAssertEqual(.wait, c.roleCheck(retried: false).action)
+        }
+        XCTAssertTrue(c.connectBacklogPending)
+        XCTAssertEqual(0, sent.filter(isRoleGet).count)
+        XCTAssertFalse(log.warns.contains { $0.contains("ROLE") })
+        c.onFromRadio([]) // drained: ROLE_GET goes out now
+        XCTAssertEqual(1, sent.filter(isRoleGet).count)
+        now += 9_999
+        XCTAssertEqual(BtrxClient.RoleCheck(.wait, 1), c.roleCheck(retried: false))
+        c.onFromRadio(deskRoleReport) // the live answer
+        XCTAssertEqual(.done, c.roleCheck(retried: false).action)
+        XCTAssertTrue(log.infos.contains { $0.hasPrefix("Desk Pod confirmed: role=3 build_hash=0x0100 (supported) 30.0 s after connect") })
+    }
+
+    func testRoleGetIsRetriedOnceThenGivenUp() throws {
+        now = 0
+        let c = makeClient(.packet)
+        try packetHandshake(c)
+        c.onFromRadio([])
+        XCTAssertEqual(1, sent.filter(isRoleGet).count)
+        now += BtrxClient.roleTimeoutMs
+        XCTAssertEqual(BtrxClient.RoleCheck(.retry, BtrxClient.roleTimeoutMs), c.roleCheck(retried: false))
+        XCTAssertEqual(2, sent.filter(isRoleGet).count)
+        now += BtrxClient.roleTimeoutMs - 1
+        XCTAssertEqual(.wait, c.roleCheck(retried: true).action)
+        now += 1
+        XCTAssertEqual(.giveUp, c.roleCheck(retried: true).action)
+        XCTAssertEqual(2, sent.filter(isRoleGet).count)
+    }
+
+    func testABacklogThatNeverEndsIsCutOffSoRoleGetStillGoesOut() throws {
+        now = 0
+        let c = makeClient(.packet)
+        try packetHandshake(c)
+        now += BtrxClient.maxConnectBacklogMs - 1
+        XCTAssertEqual(.wait, c.roleCheck(retried: false).action)
+        now += 1
+        XCTAssertEqual(BtrxClient.RoleCheck(.wait, BtrxClient.roleTimeoutMs), c.roleCheck(retried: false))
+        XCTAssertFalse(c.connectBacklogPending)
+        XCTAssertEqual(1, sent.filter(isRoleGet).count)
+        XCTAssertTrue(log.warns.contains { $0.hasPrefix("connect backlog still draining 30 s after config_complete") })
+        c.onFromRadio(packet(starboard, BtrxProtocolTests.example("DETECT")))
+        XCTAssertEqual(false, recorder.metas.last?.backlog)
+    }
+
+    func testNoConfigCompleteIsReportedAfterThirtySeconds() {
+        now = 0
+        let c = makeClient(.packet)
+        c.start()
+        now += BtrxClient.configTimeoutMs - 1
+        XCTAssertEqual(.wait, c.roleCheck(retried: false).action)
+        now += 1
+        XCTAssertEqual(.noConfig, c.roleCheck(retried: false).action)
+    }
+
+    func testImuCalAckAndSteerFlagChangesShowAtEveryLogLevel() throws {
+        let c = makeClient(.packet)
+        try packetHandshake(c)
+        c.onFromRadio([])
+        let ack = P.encodeFrame(P.IMU_CAL_ACK, seq: 5, payload: P.fromHex(BtrxProtocolTests.imuCalAckPayload))
+        c.onFromRadio(packet(starboard, ack))
+        XCTAssertTrue(log.debugs.contains { $0.contains("IMU_CAL_ACK") && $0.contains("status=") && $0.contains("gyro_bias_x10=") })
+        let steer = try P.decodeFrame(P.fromHex(BtrxProtocolTests.steerFrame)).payload
+        func steerWith(_ flags: Int) -> [UInt8] { var p = steer; p[1] = UInt8(flags); return P.encodeFrame(P.STEER, seq: 6, payload: p) }
+        c.onFromRadio(packet(starboard, steerWith(P.STEER_F_TARGET | P.STEER_F_IMU_OK)))
+        c.onFromRadio(packet(starboard, steerWith(P.STEER_F_TARGET | P.STEER_F_IMU_OK)))
+        c.onFromRadio(packet(starboard, steerWith(P.STEER_F_TARGET | P.STEER_F_IMU_OK | P.STEER_F_IMU_CAL)))
+        let changes = log.debugs.filter { $0.hasPrefix("steer flags from") }
+        XCTAssertEqual(2, changes.count)
+        XCTAssertTrue(changes.first?.hasSuffix("(first) -> target,imu (imu_cal=no)") ?? false)
+        XCTAssertTrue(changes.last?.hasSuffix("target,imu -> target,imu,cal (imu_cal=yes)") ?? false)
+    }
+
     func testStaleRoleReportInTheBacklogIsNotTaken() throws {
         final class Roles: BtrxClientListener { var got: [BtrxProtocol.RoleReport] = []; func onLocalRoleReport(_ r: BtrxProtocol.RoleReport) { got.append(r) } }
         let roles = Roles()

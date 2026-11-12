@@ -273,9 +273,9 @@ public final class BtrxDeskPodModel {
             if pairedPod != nil {
                 let ack = try BtrxProtocol.parseImuCalAck(frame.payload)
                 if imuCal.onAck(ack) {
-                    log.info("imu cal: \(BtrxProtocol.imuCalOpName(ack.op)) tag=\(ack.tag) answered: \(BtrxProtocol.imuCalStatusName(ack.status))")
+                    log.debug("imu cal: \(BtrxProtocol.imuCalOpName(ack.op)) tag=\(ack.tag) answered: \(BtrxProtocol.imuCalStatusName(ack.status))")
                 } else {
-                    log.info("imu cal: IMU_CAL_ACK tag=\(ack.tag) op=\(BtrxProtocol.imuCalOpName(ack.op)) matches no request out; ignored")
+                    log.debug("imu cal: IMU_CAL_ACK tag=\(ack.tag) op=\(BtrxProtocol.imuCalOpName(ack.op)) matches no request out; ignored")
                 }
             }
         default: break
@@ -287,13 +287,13 @@ public final class BtrxDeskPodModel {
         window.onDeskPair(seq: frame.seq, dp, arrivalMs: meta.arrivalMs, backlog: meta.backlog)
         let now = meta.arrivalMs
         if dp.open == 1 {
-            if window.openedFromBacklog { log.info("pairing: Desk Pod window open from a tap that arrived with the connect backlog (\(window.secondsLeft(nowMs: now)) s left)") }
+            if window.openedFromBacklog { log.debug("pairing: Desk Pod window open from a tap that arrived with the connect backlog (\(window.secondsLeft(nowMs: now)) s left)") }
             // A new tap while waiting for the nod restarts the countdown on the new window.
             if pairing.step == .waitButton || pairing.step == .waitNod {
                 enterWaitNod(now)
             } else if pairing.step == .podFound && pairing.podStale && !meta.backlog {
                 // A live tap while the found pod is stale starts over at the nod (any pod may answer).
-                log.info("pairing: new Desk Pod tap while \(pairing.candidate.map { BtrxClient.nodeName($0.node) } ?? "nil") is stale; waiting for a nod")
+                log.debug("pairing: new Desk Pod tap while \(pairing.candidate.map { BtrxClient.nodeName($0.node) } ?? "nil") is stale; waiting for a nod")
                 pairing.candidate = nil
                 pairing.podStale = false
                 enterWaitNod(now)
@@ -310,14 +310,14 @@ public final class BtrxDeskPodModel {
     private func onPairReq(_ req: BtrxProtocol.PairReq, _ meta: BtrxRadioMeta) {
         let now = meta.arrivalMs
         if meta.backlog {
-            log.info("pairing: PAIR_REQ from \(BtrxClient.nodeName(meta.fromNode)) in the connect backlog ignored (stale)")
+            log.debug("pairing: PAIR_REQ from \(BtrxClient.nodeName(meta.fromNode)) in the connect backlog ignored (stale)")
             return
         }
         let nonce = BtrxProtocol.hex(req.nonce)
         let open = window.isOpen(nowMs: now)
         func newCandidate() {
             guard open else {
-                log.info("pairing: PAIR_REQ from \(BtrxClient.nodeName(meta.fromNode)) ignored: no Desk Pod window open")
+                log.debug("pairing: PAIR_REQ from \(BtrxClient.nodeName(meta.fromNode)) ignored: no Desk Pod window open")
                 return
             }
             let c = Candidate(node: meta.fromNode, assignedPodId: BtrxProtocol.podId(forDevA: req.devA), devA: req.devA, devB: req.devB,
@@ -327,7 +327,7 @@ public final class BtrxDeskPodModel {
             pairing.candidate = c
             pairing.podStale = false
             pairing.message = askedMessage(c)
-            log.info(String(format: "pairing: PAIR_REQ from %@ dev_a=%08x dev_b=%08x imu_ok=%d; waiting for the operator", BtrxClient.nodeName(c.node), c.devA, c.devB, c.imuOk))
+            log.debug(String(format: "pairing: PAIR_REQ from %@ dev_a=%08x dev_b=%08x imu_ok=%d; waiting for the operator", BtrxClient.nodeName(c.node), c.devA, c.devB, c.imuOk))
         }
         switch pairing.step {
         case .waitNod:
@@ -335,25 +335,25 @@ public final class BtrxDeskPodModel {
         case .podFound:
             guard var c = pairing.candidate else { return }
             if meta.fromNode == c.node {
-                if pairing.podStale { log.info("pairing: \(BtrxClient.nodeName(c.node)) is asking to pair again") }
+                if pairing.podStale { log.debug("pairing: \(BtrxClient.nodeName(c.node)) is asking to pair again") }
                 c.nonceHex = nonce; c.rssi = meta.rxRssi; c.snr = meta.rxSnr; c.lastRequestMs = now
                 pairing.candidate = c
                 pairing.podStale = false
                 pairing.message = askedMessage(c)
             } else {
                 // Only the same pod may revive a stale candidate; another pod needs a new Desk Pod tap.
-                log.info("pairing: another Drone Pod \(BtrxClient.nodeName(meta.fromNode)) also asked to pair; ignored"
+                log.debug("pairing: another Drone Pod \(BtrxClient.nodeName(meta.fromNode)) also asked to pair; ignored"
                          + (pairing.podStale ? " (tap the Desk Pod button to pair a different pod)" : ""))
             }
         case .confirming:
             guard let c = pairing.candidate else { return }
             if meta.fromNode == c.node && nonce == c.nonceHex && pairing.confirmTries < Self.maxConfirmTries {
                 pairing.confirmTries += 1
-                log.info("pairing: PAIR_REQ repeated; answering again (try \(pairing.confirmTries))")
+                log.debug("pairing: PAIR_REQ repeated; answering again (try \(pairing.confirmTries))")
                 sendConfirm(c)
             }
         default:
-            if !open { log.info("pairing: PAIR_REQ from \(BtrxClient.nodeName(meta.fromNode)) ignored: no Desk Pod window open") }
+            if !open { log.debug("pairing: PAIR_REQ from \(BtrxClient.nodeName(meta.fromNode)) ignored: no Desk Pod window open") }
         }
     }
 
@@ -374,7 +374,7 @@ public final class BtrxDeskPodModel {
             pairing.step = .paired
             pairing.failedAt = nil
             pairing.message = ack.bOk == 1 ? "Drone Pod paired." : "Paired, but the port board did not answer. Check the cable between the boards."
-            log.info(String(format: "pairing: PAIR_ACK a_ok=%d b_ok=%d; paired %@ pod_id=%08x", ack.aOk, ack.bOk, BtrxClient.nodeName(c.node), c.assignedPodId))
+            log.debug(String(format: "pairing: PAIR_ACK a_ok=%d b_ok=%d; paired %@ pod_id=%08x", ack.aOk, ack.bOk, BtrxClient.nodeName(c.node), c.assignedPodId))
             onPaired(pod)
         } else {
             fail(.confirming, "The Drone Pod did not take the pairing (a_ok=0, flags=\(BtrxProtocol.statusFlagNames(ack.flags))).")
@@ -408,14 +408,14 @@ public final class BtrxDeskPodModel {
         pairing.confirmTries = 1
         pairing.message = "Waiting for the Drone Pod to acknowledge."
         stepDeadlineMs = now + Self.ackTimeoutMs
-        log.info(String(format: "pairing: PAIR_CONFIRM to %@ nonce=%@ pod_id=%08x", BtrxClient.nodeName(c.node), c.nonceHex, c.assignedPodId))
+        log.debug(String(format: "pairing: PAIR_CONFIRM to %@ nonce=%@ pod_id=%08x", BtrxClient.nodeName(c.node), c.nonceHex, c.assignedPodId))
         sendConfirm(c)
     }
 
     /// "Cancel pairing": ends the flow. Nothing is sent; the pod's own window runs out.
     public func cancelPairing() {
         guard Self.activeSteps.contains(pairing.step) else { return }
-        log.info("pairing: cancelled by the operator at \(pairing.step)")
+        log.debug("pairing: cancelled by the operator at \(pairing.step)")
         pairing.step = .cancelled
         pairing.message = "Pairing cancelled."
         pairing.failedAt = nil
@@ -497,7 +497,7 @@ public final class BtrxDeskPodModel {
             log.warn("imu cal: starboard step not started: \(blocked)")
             imuCal.notSent(nil, reason: blocked)
         } else if imuCal.startStarboard(nowMs: clock()) {
-            log.info("imu cal: starboard step countdown")
+            log.debug("imu cal: starboard step countdown")
         }
     }
 
@@ -509,7 +509,7 @@ public final class BtrxDeskPodModel {
 
     /// "Cancel calibration": ends the flow; nothing is sent.
     public func cancelImuCal() {
-        if BtrxImuCal.flowSteps.contains(imuCal.currentStep) { log.info("imu cal: cancelled by the operator at \(imuCal.currentStep.rawValue)") }
+        if BtrxImuCal.flowSteps.contains(imuCal.currentStep) { log.debug("imu cal: cancelled by the operator at \(imuCal.currentStep.rawValue)") }
         imuCal.cancel()
     }
 
@@ -539,7 +539,7 @@ public final class BtrxDeskPodModel {
             imuCal.notSent(r, reason: reason)
             return
         }
-        log.info("imu cal: IMU_CAL \(BtrxProtocol.imuCalOpName(r.op)) tag=\(r.tag) to \(BtrxClient.nodeName(pod.node))")
+        log.debug("imu cal: IMU_CAL \(BtrxProtocol.imuCalOpName(r.op)) tag=\(r.tag) to \(BtrxClient.nodeName(pod.node))")
         s.sendFrame(to: pod.node, frame: BtrxProtocol.imuCalFrame(seq: s.nextSeq(), podId: pod.podId, op: r.op, tag: r.tag))
     }
 
@@ -563,11 +563,11 @@ public final class BtrxDeskPodModel {
         pairing.step = .waitNod
         pairing.windowSecondsLeft = window.secondsLeft(nowMs: now)
         pairing.message = "Nod the drone pod twice."
-        log.info("pairing: Desk Pod window open, \(window.secondsLeft(nowMs: now)) s left; waiting for PAIR_REQ")
+        log.debug("pairing: Desk Pod window open, \(window.secondsLeft(nowMs: now)) s left; waiting for PAIR_REQ")
     }
 
     private func markStale(_ c: Candidate) {
-        if !pairing.podStale { log.info("pairing: no PAIR_REQ from \(BtrxClient.nodeName(c.node)) for over \(Self.podRequestStaleMs / 1000) s; asking for another nod") }
+        if !pairing.podStale { log.debug("pairing: no PAIR_REQ from \(BtrxClient.nodeName(c.node)) for over \(Self.podRequestStaleMs / 1000) s; asking for another nod") }
         pairing.podStale = true
         pairing.message = Self.staleMessage
     }

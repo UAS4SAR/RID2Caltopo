@@ -64,6 +64,34 @@ public final class BtrxClient: BtrxFrameSender {
     public static let minUsableMTU = 100
     /// Serial: the connect backlog ends at the first gap this long with no bytes.
     public static let serialQuietGapMs: Int64 = 300
+    /// ROLE_REPORT answer timeout, counted from this session's ROLE_GET.
+    public static let roleTimeoutMs: Int64 = 10_000
+    /// How often the link checks the role wait.
+    public static let rolePollMs: Int64 = 1_000
+    /// No config_complete_id this long after want_config_id: the Desk Pod is not answering.
+    public static let configTimeoutMs: Int64 = 30_000
+    /// A connect backlog still draining this long after config_complete is ended (ROLE_GET goes out).
+    public static let maxConnectBacklogMs: Int64 = 30_000
+
+    /// What the link should do next while waiting for the Desk Pod's ROLE_REPORT (see ``roleCheck(retried:)``).
+    public enum RoleWait: Sendable, Equatable {
+        /// The Desk Pod answered.
+        case done
+        /// Check again after `delayMs`.
+        case wait
+        /// No answer within ``roleTimeoutMs`` of ROLE_GET: ROLE_GET was sent again.
+        case retry
+        /// No answer after the retry either.
+        case giveUp
+        /// No config_complete_id within ``configTimeoutMs``.
+        case noConfig
+    }
+
+    public struct RoleCheck: Sendable, Equatable {
+        public let action: RoleWait
+        public let delayMs: Int64
+        public init(_ action: RoleWait, _ delayMs: Int64 = 0) { self.action = action; self.delayMs = delayMs }
+    }
 
     public let framing: Framing
     public private(set) var state: State = .idle
@@ -77,6 +105,10 @@ public final class BtrxClient: BtrxFrameSender {
     private let clock: () -> Int64
     private var configId: UInt32 = 0
     private var seq = 0
+    private var startedMs: Int64 = 0
+    private var readyMs: Int64 = 0
+    /// When this session's latest ROLE_GET to the Desk Pod went out (nil: none yet).
+    private var roleGetSentMs: Int64?
     /// True from config_complete_id until the connect backlog ends. The Desk Pod delivers
     /// its queue right after config_complete. Bluetooth: it ends at the first empty
     /// FromRadio read. Serial: at the first quiet gap of ``serialQuietGapMs``.
@@ -94,6 +126,22 @@ public final class BtrxClient: BtrxFrameSender {
     private var rejectCounts: [String: Int] = [:]
     private var refusedNodes = Set<UInt32>()
     private var otherPorts = 0
+    private var steerFlags: [UInt32: Int] = [:]
+
+    /// Frame types logged at debug (shown at every app log level): STEER, and the rare
+    /// frames that pairing, the role check and IMU calibration turn on. Same as Android.
+    public static let alwaysLogged: Set<Int> = [BtrxProtocol.STEER, BtrxProtocol.PAIR_REQ, BtrxProtocol.PAIR_ACK,
+                                                BtrxProtocol.DESK_PAIR, BtrxProtocol.ROLE_REPORT, BtrxProtocol.IMU_CAL_ACK]
+
+    /// One line whenever a Drone Pod's STEER flags change (bit 6: IMU calibration in use).
+    private func logSteerFlagChange(_ from: UInt32, _ frame: BtrxProtocol.Frame) {
+        guard let flags = try? BtrxProtocol.parseSteer(frame.payload).flags else { return }
+        let old = steerFlags.updateValue(flags, forKey: from)
+        if old != flags {
+            log.debug("steer flags from \(Self.nodeName(from)): \(old.map(BtrxProtocol.steerFlagNames) ?? "(first)") -> \(BtrxProtocol.steerFlagNames(flags))"
+                + " (imu_cal=\(flags & BtrxProtocol.STEER_F_IMU_CAL != 0 ? "yes" : "no"))")
+        }
+    }
 
     public init(send: @escaping ([UInt8]) -> Void, log: BtrxLogger, listener: BtrxClientListener? = nil,
                 rng: any RandomNumberGenerator = SystemRandomNumberGenerator(), framing: Framing = .packet,
@@ -116,6 +164,7 @@ public final class BtrxClient: BtrxFrameSender {
         guard state == .idle else { return }
         configId = max(1, UInt32(rng.next() & 0x7FFF_FFFF))
         state = .configuring
+        startedMs = clock()
         if framing == .serial { send(MeshtasticPhoneAPI.wakeBytes()) }
         sendToRadio(MeshtasticPhoneAPI.toRadioWantConfig(configId))
         log.info("handshake: want_config_id=\(configId) sent")
@@ -134,6 +183,35 @@ public final class BtrxClient: BtrxFrameSender {
     public func checkQuietGap() {
         guard framing == .serial, state == .ready, firstDrainPending else { return }
         if clock() - lastSerialRxMs >= Self.serialQuietGapMs { endConnectBacklog("after a \(Self.serialQuietGapMs) ms quiet gap") }
+    }
+
+    /// True from config_complete_id until the connect backlog has drained.
+    public var connectBacklogPending: Bool { firstDrainPending }
+
+    /// The link's ROLE_REPORT wait, about once a second from session start. The 10 s answer
+    /// timeout runs from this session's ROLE_GET, which goes out only when the connect backlog
+    /// has drained (a ROLE_REPORT inside the backlog counts as stale). A Desk Pod whose queue
+    /// is full (Meshtastic keeps 32) can take 10 s or more to drain, so the wait does not start
+    /// at connect. A backlog still draining after ``maxConnectBacklogMs`` is ended here so
+    /// ROLE_GET still goes out. `retried`: ROLE_GET was already repeated once. Same as Android.
+    public func roleCheck(retried: Bool) -> RoleCheck {
+        let now = clock()
+        if localRole != nil { return RoleCheck(.done) }
+        if state != .ready {
+            return now - startedMs >= Self.configTimeoutMs ? RoleCheck(.noConfig) : RoleCheck(.wait, Self.rolePollMs)
+        }
+        if firstDrainPending {
+            if now - readyMs < Self.maxConnectBacklogMs { return RoleCheck(.wait, Self.rolePollMs) }
+            log.warn("connect backlog still draining \(Self.maxConnectBacklogMs / 1000) s after config_complete (\(firstDrainFrames) frame(s)); treating what follows as live")
+            endConnectBacklog("by the \(Self.maxConnectBacklogMs / 1000) s limit")
+            return RoleCheck(.wait, Self.roleTimeoutMs)
+        }
+        guard let sent = roleGetSentMs else { return RoleCheck(.wait, Self.rolePollMs) }
+        let waited = now - sent
+        if waited < Self.roleTimeoutMs { return RoleCheck(.wait, Self.roleTimeoutMs - waited) }
+        if retried { return RoleCheck(.giveUp) }
+        sendRoleGet()
+        return RoleCheck(.retry, Self.roleTimeoutMs)
     }
 
     private func endConnectBacklog(_ how: String) {
@@ -189,6 +267,7 @@ public final class BtrxClient: BtrxFrameSender {
             return false
         }
         sendFrame(to: dest, frame: BtrxProtocol.roleGetFrame(seq: nextSeq()))
+        if dest == localNode { roleGetSentMs = clock() }
         log.info("tx ROLE_GET to \(Self.nodeName(dest))")
         return true
     }
@@ -246,6 +325,7 @@ public final class BtrxClient: BtrxFrameSender {
             firstDrainPending = true
             firstDrainFrames = 0
             lastSerialRxMs = clock()
+            readyMs = clock()
         case .packet(let p): onPacket(p)
         case .other: break
         }
@@ -282,15 +362,18 @@ public final class BtrxClient: BtrxFrameSender {
             return
         } catch { return }
         if backlog { backlogCounts[frame.typeName, default: 0] += 1 } else { frameCounts[frame.typeName, default: 0] += 1 }
-        // STEER arrives every second: debug level, so the log stays readable.
-        if frame.type == BtrxProtocol.STEER { log.debug("rx \(radio) \(BtrxFrameLog.format(frame))") } else { log.info("rx \(radio) \(BtrxFrameLog.format(frame))") }
+        // STEER (every second) and the rare frames a bench test needs are logged at debug,
+        // which shows at every app log level; the rest (DETECT, HEALTH...) at info.
+        if Self.alwaysLogged.contains(frame.type) { log.debug("rx \(radio) \(BtrxFrameLog.format(frame))") } else { log.info("rx \(radio) \(BtrxFrameLog.format(frame))") }
+        if frame.type == BtrxProtocol.STEER { logSteerFlagChange(packet.from, frame) }
         if frame.type == BtrxProtocol.ROLE_REPORT && packet.from == localNode && backlog {
             log.info("stale ROLE_REPORT in the connect backlog ignored; waiting for the answer to this session's ROLE_GET")
         } else if frame.type == BtrxProtocol.ROLE_REPORT && packet.from == localNode, let report = try? BtrxProtocol.parseRoleReport(frame.payload) {
             localRole = report
             if report.role == BtrxProtocol.roleDeskPod {
                 let build = BtrxProtocol.supportedBuilds.contains(report.buildHash) ? "supported" : "not in the supported list"
-                log.info(String(format: "Desk Pod confirmed: role=3 build_hash=0x%04x (%@)", report.buildHash, build))
+                let since = String(format: " %.1f s after connect", locale: Locale(identifier: "en_US_POSIX"), Double(clock() - startedMs) / 1000)
+                log.info(String(format: "Desk Pod confirmed: role=3 build_hash=0x%04x (%@)", report.buildHash, build) + since)
             } else {
                 log.warn("this board answered role=\(report.role) (\(BtrxProtocol.roleName(report.role))), not a Desk Pod (role=3)")
             }
