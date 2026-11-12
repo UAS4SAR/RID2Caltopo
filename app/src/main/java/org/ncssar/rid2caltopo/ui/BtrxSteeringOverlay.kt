@@ -15,19 +15,18 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.material3.Text
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import kotlin.math.cos
-import kotlin.math.sin
 import org.ncssar.rid2caltopo.btrx.BtrxDeskPodText
 import org.ncssar.rid2caltopo.btrx.BtrxManager
 import org.ncssar.rid2caltopo.btrx.BtrxProtocol
@@ -36,7 +35,7 @@ import org.ncssar.rid2caltopo.btrx.BtrxSteeringTarget
 
 /**
  * The pilot's steering overlay on a live stream tile (btrx design doc section 41): one
- * circle and vector in the source's color and one hint word, no numbers. Tapping the
+ * circle and arrow in the source's color (the hint word only as a small label), no numbers. Tapping the
  * circle (or "Mute") mutes that source on the pod. Shows only while the Desk Pod link is
  * up, a Drone Pod is paired and STEER keeps arriving, and only on the drone carrying the
  * pod ([BtrxSteeringTarget]): the single live tile, or with several live the one marked
@@ -64,16 +63,17 @@ fun BtrxSteeringOverlay(tile: String, liveTiles: Set<String>, chosenTile: String
     Column(
         modifier
             .background(Color.Black.copy(alpha = 0.45f), RoundedCornerShape(10.dp))
-            .padding(horizontal = 10.dp, vertical = 6.dp),
+            .padding(horizontal = 8.dp, vertical = 6.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
+        // The arrow carries the meaning; the word is a small secondary label only.
         SteeringMark(
-            v, 64.dp,
+            v, 132.dp,
             Modifier
                 .semantics { contentDescription = "${v.hint.word}. ${BtrxDeskPodText.MUTE}" }
                 .clickable(enabled = v.canMute) { BtrxManager.muteSteeringSource() },
         )
-        Text(v.hint.word, color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+        Text(v.hint.word, color = Color.White.copy(alpha = 0.75f), fontSize = 10.sp)
         if (v.canMute) {
             Text(
                 BtrxDeskPodText.MUTE,
@@ -89,33 +89,88 @@ fun BtrxSteeringOverlay(tile: String, liveTiles: Set<String>, chosenTile: String
     }
 }
 
-/** Circle (shape by device kind) and vector, in the source's palette color. Also the Desk Pod screen's swatch. */
+/**
+ * Circle (shape by device kind) and the pilot's arrow ([BtrxSteering.arrowGeometry]) in the
+ * source's palette color: the arrow points the way to turn (up = straight on, U-turn = turn
+ * around) and is longer the weaker (farther) the source; a chevron behind the head means
+ * closing. Icons instead of words: LEVEL a gray arrow and a wings-level badge, LOST a slashed
+ * circle and no arrow, muted a crossed-out speaker. Also the Desk Pod screen's swatch.
+ * Same drawing as the iPad's SteeringMark.
+ */
 @Composable
 fun SteeringMark(v: BtrxSteering.View, size: Dp, modifier: Modifier = Modifier) {
     val color = steeringColor(v.colorIndex)
     val vectorColor = if (v.gray) Color(0xFF000000 or BtrxSteering.GRAY.toLong()) else color
     val outline = Color(0xFF000000 or BtrxSteering.OUTLINE.toLong())
     Canvas(modifier.size(size).alpha(if (v.faded) 0.4f else 1f)) {
-        val r = this.size.minDimension * 0.22f
+        val h = this.size.minDimension / 2f
         val c = center
+        fun pt(p: BtrxSteering.Pt) = Offset(c.x + p.x.toFloat() * h, c.y + p.y.toFloat() * h)
+        fun poly(points: List<BtrxSteering.Pt>) = Path().apply {
+            points.forEachIndexed { i, p -> val o = pt(p); if (i == 0) moveTo(o.x, o.y) else lineTo(o.x, o.y) }
+        }
+        val unit = h / 66f // stroke widths scale with the mark (66 = half of the 132 dp overlay)
+        val r = BtrxSteering.MARK_CIRCLE_R.toFloat() * h
         drawKindCircle(v.devClass, c, r, color, outline)
-        v.vector?.let { dir ->
-            val rad = Math.toRadians(dir.degrees.toDouble())
-            val len = this.size.minDimension * 0.46f
-            val dx = sin(rad).toFloat()
-            val dy = -cos(rad).toFloat()
-            val start = Offset(c.x + dx * (r + 2f), c.y + dy * (r + 2f))
-            val end = Offset(c.x + dx * len, c.y + dy * len)
-            drawLine(outline, start, end, strokeWidth = 7.dp.toPx(), cap = StrokeCap.Round)
-            drawLine(vectorColor, start, end, strokeWidth = 4.dp.toPx(), cap = StrokeCap.Round)
-            // Arrow head.
-            val head = 8.dp.toPx()
-            for (side in listOf(-1, 1)) {
-                val a = rad + side * Math.toRadians(150.0)
-                val p = Offset(end.x + sin(a).toFloat() * head, end.y - cos(a).toFloat() * head)
-                drawLine(vectorColor, end, p, strokeWidth = 4.dp.toPx(), cap = StrokeCap.Round)
+        val dir = v.vector
+        if (dir == null) {
+            // LOST: slash through the circle and a dashed ring; no arrow.
+            val d = r * 1.5f
+            drawCircle(outline, d, c, style = Stroke(5f * unit))
+            drawCircle(Color.White, d, c, style = Stroke(3f * unit, pathEffect = PathEffect.dashPathEffect(floatArrayOf(6f * unit, 5f * unit))))
+            val a = Offset(c.x - d * 0.72f, c.y - d * 0.72f)
+            val b = Offset(c.x + d * 0.72f, c.y + d * 0.72f)
+            drawLine(outline, a, b, strokeWidth = 7f * unit, cap = StrokeCap.Round)
+            drawLine(Color.White, a, b, strokeWidth = 4f * unit, cap = StrokeCap.Round)
+        } else {
+            val arrow = BtrxSteering.arrowGeometry(dir, v.length, v.closer)
+            val shaft = poly(arrow.shaft)
+            drawPath(shaft, outline, style = Stroke(12f * unit, cap = StrokeCap.Round, join = StrokeJoin.Round))
+            drawPath(shaft, vectorColor, style = Stroke(8f * unit, cap = StrokeCap.Round, join = StrokeJoin.Round))
+            val head = poly(arrow.head).apply { close() }
+            drawPath(head, vectorColor)
+            drawPath(head, outline, style = Stroke(2f * unit, join = StrokeJoin.Round))
+            if (arrow.chevron.isNotEmpty()) {
+                val chev = poly(arrow.chevron)
+                drawPath(chev, outline, style = Stroke(8f * unit, cap = StrokeCap.Round, join = StrokeJoin.Round))
+                drawPath(chev, vectorColor, style = Stroke(5f * unit, cap = StrokeCap.Round, join = StrokeJoin.Round))
             }
         }
+        if (v.hint == BtrxSteering.Hint.LEVEL) drawLevelBadge(Offset(c.x - h * 0.72f, c.y + h * 0.78f), h * 0.2f, unit, outline)
+        if (v.muted) drawMutedBadge(Offset(c.x + h * 0.72f, c.y + h * 0.78f), h * 0.17f, unit, outline)
+    }
+}
+
+/** LEVEL badge: an attitude-indicator ring with a level wings line through it ("level the wings"). */
+private fun DrawScope.drawLevelBadge(c: Offset, s: Float, unit: Float, outline: Color) {
+    drawCircle(outline, s, c, style = Stroke(5f * unit))
+    drawCircle(Color.White, s, c, style = Stroke(3f * unit))
+    val a = Offset(c.x - s * 1.6f, c.y)
+    val b = Offset(c.x + s * 1.6f, c.y)
+    drawLine(outline, a, b, strokeWidth = 6f * unit, cap = StrokeCap.Round)
+    drawLine(Color.White, a, b, strokeWidth = 3.5f * unit, cap = StrokeCap.Round)
+    drawCircle(Color.White, 2.5f * unit, c)
+}
+
+/** Muted badge: a speaker with a cross (a source is muted on the pod; STEER bit 5). */
+private fun DrawScope.drawMutedBadge(c: Offset, s: Float, unit: Float, outline: Color) {
+    val speaker = Path().apply {
+        moveTo(c.x - s * 1.1f, c.y - s * 0.35f)
+        lineTo(c.x - s * 0.55f, c.y - s * 0.35f)
+        lineTo(c.x, c.y - s * 0.9f)
+        lineTo(c.x, c.y + s * 0.9f)
+        lineTo(c.x - s * 0.55f, c.y + s * 0.35f)
+        lineTo(c.x - s * 1.1f, c.y + s * 0.35f)
+        close()
+    }
+    drawPath(speaker, Color.White)
+    drawPath(speaker, outline, style = Stroke(1.5f * unit))
+    for ((a, b) in listOf(
+        Offset(c.x + s * 0.35f, c.y - s * 0.45f) to Offset(c.x + s * 1.15f, c.y + s * 0.45f),
+        Offset(c.x + s * 0.35f, c.y + s * 0.45f) to Offset(c.x + s * 1.15f, c.y - s * 0.45f),
+    )) {
+        drawLine(outline, a, b, strokeWidth = 5.5f * unit, cap = StrokeCap.Round)
+        drawLine(Color.White, a, b, strokeWidth = 3f * unit, cap = StrokeCap.Round)
     }
 }
 

@@ -330,4 +330,119 @@ class BtrxSteeringTest {
         // B ended: A alone is automatic again.
         assertTrue(BtrxSteeringTarget.showsOverlay("A", setOf("A"), BtrxSteeringTarget.retained("B", setOf("A"))))
     }
+
+    // --- Arrow (Ken, Nov 12 2026): direction and length instead of words. ---
+
+    private fun len() = st.view(now)!!.length
+
+    @Test
+    fun arrowPointsUpForAheadSidewaysForATurnAndFlatForAHardTurn() {
+        val near = 0.0
+        val ahead = BtrxSteering.arrowGeometry(Vector.AHEAD, near).tip
+        assertEquals(0.0, ahead.x, 1e-9); assertTrue(ahead.y < 0) // straight up
+        val left = BtrxSteering.arrowGeometry(Vector.LEFT, near).tip
+        assertTrue(left.x < 0 && left.y < 0); assertEquals(-left.x, -left.y, 1e-9) // up and left, 45 deg
+        val right = BtrxSteering.arrowGeometry(Vector.RIGHT, near).tip
+        assertTrue(right.x > 0 && right.y < 0); assertEquals(right.x, -right.y, 1e-9)
+        val hardLeft = BtrxSteering.arrowGeometry(Vector.HARD_LEFT, near).tip
+        assertTrue(hardLeft.x < 0); assertEquals(0.0, hardLeft.y, 1e-9) // horizontal, left
+        val hardRight = BtrxSteering.arrowGeometry(Vector.HARD_RIGHT, near).tip
+        assertTrue(hardRight.x > 0); assertEquals(0.0, hardRight.y, 1e-9)
+    }
+
+    @Test
+    fun behindIsATurnAroundArrowWhoseHeadPointsDown() {
+        val a = BtrxSteering.arrowGeometry(Vector.BEHIND, 0.5)
+        assertTrue(a.shaft[1].y < a.shaft[0].y)           // leaves the circle going up
+        assertTrue(a.shaft.minOf { it.y } < -BtrxSteering.MARK_CIRCLE_R)
+        assertTrue(a.tip.y > a.head[1].y)                 // head points down: turn around
+        assertTrue(a.tip.x > 0)
+        // Everything stays inside the mark.
+        for (l in listOf(0.0, 1.0)) for (v in Vector.values()) {
+            val g = BtrxSteering.arrowGeometry(v, l, closer = true)
+            for (p in g.shaft + g.head + g.chevron) assertTrue("$v $l $p", kotlin.math.abs(p.x) <= 1.0 && kotlin.math.abs(p.y) <= 1.0)
+        }
+    }
+
+    @Test
+    fun arrowIsLongerWhenTheSourceIsFarther() {
+        assertEquals(BtrxSteering.ARROW_MIN_REACH, BtrxSteering.arrowReach(0.0), 1e-9)
+        assertEquals(BtrxSteering.ARROW_MAX_REACH, BtrxSteering.arrowReach(1.0), 1e-9)
+        for (v in Vector.values().filter { it != Vector.BEHIND }) {
+            val near = BtrxSteering.arrowGeometry(v, 0.0).tip
+            val far = BtrxSteering.arrowGeometry(v, 1.0).tip
+            assertTrue(far.x * far.x + far.y * far.y > near.x * near.x + near.y * near.y)
+        }
+        val uNear = BtrxSteering.arrowGeometry(Vector.BEHIND, 0.0)
+        val uFar = BtrxSteering.arrowGeometry(Vector.BEHIND, 1.0)
+        assertTrue(uFar.shaft.minOf { it.y } < uNear.shaft.minOf { it.y })
+    }
+
+    @Test
+    fun lengthIsLinearInTheSumSignalBetweenMinus50AndMinus100() {
+        assertEquals(0.0, BtrxSteering.lengthFor(-40.0), 1e-9)  // stronger than -50: shortest
+        assertEquals(0.0, BtrxSteering.lengthFor(-50.0), 1e-9)
+        assertEquals(0.5, BtrxSteering.lengthFor(-75.0), 1e-9)
+        assertEquals(1.0, BtrxSteering.lengthFor(-100.0), 1e-9)
+        assertEquals(1.0, BtrxSteering.lengthFor(-115.0), 1e-9) // weaker: longest
+    }
+
+    @Test
+    fun sumSignalIsTheStrongerPatchMean() {
+        steer(-70, -80, peak = -60)
+        assertEquals(BtrxSteering.lengthFor(-70.0), len(), 1e-9) // first report: no smoothing
+        val s = P.Steer(1, P.STEER_F_TARGET, 1L, 0, 9, -128, -90, -85, 0, 2, 0, 0, 1, ByteArray(6), 0, 0)
+        assertEquals(-90.0, BtrxSteering.sumDbm(s)!!, 1e-9) // one patch: that mean
+        val peakOnly = P.Steer(1, P.STEER_F_TARGET, 1L, 0, 9, -128, -128, -85, 0, 0, 0, 0, 1, ByteArray(6), 0, 0)
+        assertEquals(-85.0, BtrxSteering.sumDbm(peakOnly)!!, 1e-9)
+    }
+
+    @Test
+    fun lengthIsSmoothedAndSlewLimited() {
+        steer(-95, -95)                         // far: 0.9
+        assertEquals(0.9, len(), 1e-9)
+        tick(); steer(-50, -50)                 // jumps to near: EMA would move 0.27, slew allows 0.1/s
+        assertEquals(0.8, len(), 1e-9)
+        tick(); steer(-50, -50)
+        assertEquals(0.7, len(), 1e-9)
+        assertEquals(0.73, BtrxSteering.smoothLength(0.7, 0.8, 1.0), 1e-9) // small change: plain EMA 0.3
+        assertEquals(0.5, BtrxSteering.smoothLength(null, 0.5, 1.0), 1e-9)
+    }
+
+    @Test
+    fun lengthFreezesWhileGatedOrFadedAndRestartsWithANewSource() {
+        steer(-60, -60)
+        val l = len()
+        tick(); steer(-95, -95, gated = true)
+        assertEquals(l, len(), 1e-9)            // LEVEL: held
+        tick(); steer(-95, -95, target = false)
+        assertEquals(l, len(), 1e-9)            // no target: held, faded
+        tick(); steer(-95, -95, src = 8)        // a new source starts afresh, unsmoothed
+        assertEquals(0.9, len(), 1e-9)
+    }
+
+    @Test
+    fun closerShowsTheChevronAndFartherTheTurnAround() {
+        assertEquals(Hint.CLOSER, ramp(-75, 1))
+        val v = st.view(now)!!
+        assertTrue(v.closer)
+        assertTrue(BtrxSteering.arrowGeometry(v.vector!!, v.length, v.closer).chevron.size == 3)
+        assertTrue(BtrxSteering.arrowGeometry(Vector.AHEAD, 0.5, closer = false).chevron.isEmpty())
+        st.reset()
+        tick(); assertEquals(Hint.FARTHER, ramp(-60, -1))
+        assertFalse(st.view(now)!!.closer)
+        assertEquals(Vector.BEHIND, vector())
+    }
+
+    @Test
+    fun portStrongerPointsTheArrowLeft() {
+        // Bench role check: the Desk Pod's BLE right in front of the port patch.
+        steer(-45, -72, hitsPort = 8, hitsStbd = 3)
+        assertEquals(Hint.LEFT, hint())
+        val v = st.view(now)!!
+        val tip = BtrxSteering.arrowGeometry(v.vector!!, v.length).tip
+        assertTrue(tip.x < 0)                   // the arrow points left
+        assertEquals(Vector.HARD_LEFT, v.vector)
+        assertEquals(0.0, v.length, 1e-9)       // -45 dBm: near, shortest
+    }
 }

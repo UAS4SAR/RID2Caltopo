@@ -1,12 +1,13 @@
 package org.ncssar.rid2caltopo.btrx
 
 import kotlin.math.abs
+import kotlin.math.max
 import kotlin.math.sqrt
 import org.ncssar.rid2caltopo.btrx.BtrxProtocol as P
 
 /**
  * The pilot's steering overlay (btrx design doc section 41): one source, one circle
- * and vector in its color, one hint word. Pure Kotlin, fed live STEER frames from the
+ * and arrow in its color (hint word as a small label only). Pure Kotlin, fed live STEER frames from the
  * paired Drone Pod by [BtrxDeskPodModel]; the iPad has the same logic in Swift
  * (R2CCore BtrxSteering.swift). Keep them matching. Not thread-safe: the model's lock
  * guards it. Nothing here ever makes a clue.
@@ -40,6 +41,18 @@ import org.ncssar.rid2caltopo.btrx.BtrxProtocol as P
  * - Faded at once when the latest report has no target, or no STEER for [STALE_MS].
  * - LOST at once after [LOST_MS] without a target: no vector, circle faded.
  * A new src_id, or the same one after LOST, starts the hint afresh.
+ *
+ * Arrow (Ken, Nov 12 2026: arrows instead of words, length for relative distance). The
+ * pilot reads the arrow, not a word: it points in [Vector]'s direction and its length
+ * follows the original combined-vector rule (design doc section 17.2, Ken v0.6): long
+ * while the signal is weak, shorter as it rises. Section 41.2's first build had a fixed
+ * length; this brings the 17.2 length back. [View.length] is 0 (strong, near) to 1 (weak,
+ * far), linear in the sum signal (max of the two patch means, as section 17.2's
+ * Sigma-bar) between [LENGTH_NEAR_DBM] and [LENGTH_FAR_DBM]. That is linear in log range
+ * under the section 8.3 path-loss model; a fixed-P0 range in metres would pin the arrow
+ * near its minimum for every source this receiver can hear. Smoothed as in section 17.2:
+ * EMA [LENGTH_ALPHA] per report, slew-limited to [LENGTH_SLEW_PER_S] of full scale per
+ * second (17.2: 30 m/s of 300 m), frozen while faded, gated or LOST, restarted with the hint.
  */
 class BtrxSteering {
     enum class Hint(val word: String) {
@@ -71,7 +84,19 @@ class BtrxSteering {
         val ageMs: Long,
         /** A source to mute (not LOST, src_id non-zero). */
         val canMute: Boolean,
+        /** Arrow length, 0 = strong (near, shortest) to 1 = weak (far, longest); see the class doc. */
+        val length: Double = LENGTH_DEFAULT,
+        /** CLOSER while STRAIGHT: draw the closing chevron on the arrow. */
+        val closer: Boolean = false,
     )
+
+    /** A point in mark units (half the mark's size), centre (0, 0), y down. */
+    data class Pt(val x: Double, val y: Double)
+
+    /** The arrow to draw: shaft polyline, filled head (tip first), optional CLOSER chevron polyline. */
+    data class Arrow(val shaft: List<Pt>, val head: List<Pt>, val chevron: List<Pt>) {
+        val tip: Pt get() = head[0]
+    }
 
     /** Least-squares fit of peak RSSI against time: slope in dB/s and its standard error. */
     data class Fit(val slopeDbPerS: Double, val stdErr: Double, val n: Int)
@@ -97,6 +122,9 @@ class BtrxSteering {
     private var lastSteerMs: Long? = null
     private var lastTargetMs: Long? = null
     private var targetDevClass = P.DEV_UNKNOWN
+    /** Smoothed arrow length (0..1) and the window_end_ms it was last updated at. */
+    private var length: Double? = null
+    private var lengthWindowMs: Long? = null
 
     /** The current target's src_id, or 0. */
     val currentSrc: Int get() = src
@@ -142,6 +170,7 @@ class BtrxSteering {
         if (s.gated) return restarted // hold the last hint (LEVEL); not in the fit
         updateSide(s)
         updateAlong(s)
+        updateLength(s)
         return restarted
     }
 
@@ -172,6 +201,7 @@ class BtrxSteering {
             srcId = src, colorIndex = colors[src], hint = hint, vector = vector, gray = hint == Hint.LEVEL,
             faded = lost || !s.target || stale, devClass = targetDevClass,
             muted = s.muted, steerSeq = s.steerSeq, ageMs = nowMs - seen, canMute = !lost && src != 0,
+            length = length ?: LENGTH_DEFAULT, closer = !lost && side == Side.STRAIGHT && along == Along.CLOSER,
         )
     }
 
@@ -188,6 +218,14 @@ class BtrxSteering {
     private fun clearHint() {
         side = null; pendingSide = null; pendingCount = 0; hard = false
         along = Along.NONE; peaks.clear()
+        length = null; lengthWindowMs = null
+    }
+
+    private fun updateLength(s: P.Steer) {
+        val sum = sumDbm(s) ?: return
+        val dtS = lengthWindowMs?.let { ((s.windowEndMs - it) / 1000.0).coerceIn(0.0, LENGTH_MAX_DT_S) } ?: 1.0
+        length = smoothLength(length, lengthFor(sum), dtS)
+        lengthWindowMs = s.windowEndMs
     }
 
     private fun updateSide(s: P.Steer) {
@@ -282,6 +320,102 @@ class BtrxSteering {
         /** No STEER at all for this long hides the overlay (a no-target STEER comes at most every 5 s). */
         const val SHOW_MS = 12_000L
         const val MAX_REMEMBERED = 64
+
+        /** Sum signal at or above this: shortest arrow (source near) [EST: tune in flight test 2]. */
+        const val LENGTH_NEAR_DBM = -50.0
+        /** Sum signal at or below this: longest arrow (about the RAK4631's BLE floor) [EST]. */
+        const val LENGTH_FAR_DBM = -100.0
+        /** Section 17.2: EMA alpha 0.3 per 1 Hz update. */
+        const val LENGTH_ALPHA = 0.3
+        /** Section 17.2 slew limit, 30 m/s of the 300 m full scale: 10% of full scale per second. */
+        const val LENGTH_SLEW_PER_S = 0.1
+        /** A gap longer than this does not allow a bigger jump. */
+        const val LENGTH_MAX_DT_S = 5.0
+        /** Section 17.2: a weak or first detection shows a long vector. */
+        const val LENGTH_DEFAULT = 1.0
+
+        /** Section 17.2 Sigma-bar: the stronger of the two patch means; the peak if neither mean was heard. */
+        fun sumDbm(s: P.Steer): Double? = when {
+            s.portHeard && s.stbdHeard -> max(s.rssiPort, s.rssiStbd).toDouble()
+            s.portHeard -> s.rssiPort.toDouble()
+            s.stbdHeard -> s.rssiStbd.toDouble()
+            s.peakRssi != P.RSSI_NOT_HEARD -> s.peakRssi.toDouble()
+            else -> null
+        }
+
+        /** Unsmoothed arrow length for a sum signal: 0 at [LENGTH_NEAR_DBM] or stronger, 1 at [LENGTH_FAR_DBM] or weaker. */
+        fun lengthFor(sumDbm: Double): Double =
+            ((LENGTH_NEAR_DBM - sumDbm) / (LENGTH_NEAR_DBM - LENGTH_FAR_DBM)).coerceIn(0.0, 1.0)
+
+        /** One section 17.2 smoothing step: EMA toward [target], slew-limited over [dtS] seconds. */
+        fun smoothLength(previous: Double?, target: Double, dtS: Double): Double {
+            if (previous == null) return target
+            val step = (LENGTH_ALPHA * (target - previous)).coerceIn(-LENGTH_SLEW_PER_S * dtS, LENGTH_SLEW_PER_S * dtS)
+            return (previous + step).coerceIn(0.0, 1.0)
+        }
+
+        /** Mark geometry, in units of half the mark's size, centre (0, 0), y down. Same numbers on the iPad. */
+        const val MARK_CIRCLE_R = 0.18
+        /** Centre to arrow tip at length 0 (near) and 1 (far). */
+        const val ARROW_MIN_REACH = 0.55
+        const val ARROW_MAX_REACH = 0.96
+        const val ARROW_HEAD_LEN = 0.24
+        const val ARROW_HEAD_HALF_W = 0.19
+        /** Radius of the turn-around (BEHIND) arrow's bend. */
+        const val UTURN_R = 0.2
+        private const val UTURN_STEPS = 12
+
+        /** Centre-to-tip distance for an arrow length (0 near .. 1 far). */
+        fun arrowReach(length: Double): Double = ARROW_MIN_REACH + length.coerceIn(0.0, 1.0) * (ARROW_MAX_REACH - ARROW_MIN_REACH)
+
+        /**
+         * The pilot's arrow for [vector] at [length] (0 near .. 1 far): a shaft polyline
+         * from the circle's edge, a filled head (tip first), and for CLOSER a chevron just
+         * behind the head. BEHIND is a turn-around (U-turn) arrow that goes up, bends right
+         * and comes back down. Both platforms draw exactly these points.
+         */
+        fun arrowGeometry(vector: Vector, length: Double, closer: Boolean = false): Arrow {
+            val reach = arrowReach(length)
+            val start = MARK_CIRCLE_R + 0.03
+            if (vector == Vector.BEHIND) {
+                val topY = minOf(-(reach - UTURN_R), -(start + 0.12))
+                val shaft = ArrayList<Pt>()
+                shaft += Pt(0.0, -start)
+                for (i in 0..UTURN_STEPS) {
+                    val a = Math.PI + Math.PI * i / UTURN_STEPS
+                    shaft += Pt(UTURN_R + UTURN_R * Math.cos(a), topY + UTURN_R * Math.sin(a))
+                }
+                val x = 2 * UTURN_R
+                val tip = Pt(x, topY + maxOf(ARROW_HEAD_LEN + 0.06, 0.6 * reach))
+                val base = Pt(x, tip.y - ARROW_HEAD_LEN)
+                shaft += base
+                return Arrow(shaft, listOf(tip, Pt(x - ARROW_HEAD_HALF_W, base.y), Pt(x + ARROW_HEAD_HALF_W, base.y)), emptyList())
+            }
+            val rad = Math.toRadians(vector.degrees.toDouble())
+            val ux = Math.sin(rad)
+            val uy = -Math.cos(rad)
+            val px = -uy
+            val py = ux
+            val tip = Pt(ux * reach, uy * reach)
+            val bl = reach - ARROW_HEAD_LEN
+            val base = Pt(ux * bl, uy * bl)
+            val head = listOf(
+                tip,
+                Pt(base.x + px * ARROW_HEAD_HALF_W, base.y + py * ARROW_HEAD_HALF_W),
+                Pt(base.x - px * ARROW_HEAD_HALF_W, base.y - py * ARROW_HEAD_HALF_W),
+            )
+            val chevron = if (!closer) emptyList() else {
+                val apex = bl - 0.05
+                val back = apex - 0.13
+                val w = ARROW_HEAD_HALF_W * 0.85
+                listOf(
+                    Pt(ux * back + px * w, uy * back + py * w),
+                    Pt(ux * apex, uy * apex),
+                    Pt(ux * back - px * w, uy * back - py * w),
+                )
+            }
+            return Arrow(listOf(Pt(ux * start, uy * start), base), head, chevron)
+        }
 
         /** Port minus starboard, roll-corrected when [rollCorrection] is on and the pod's IMU is OK. */
         fun deltaDb(s: P.Steer, rollCorrection: Boolean = ROLL_CORRECTION_DEFAULT): Double {
