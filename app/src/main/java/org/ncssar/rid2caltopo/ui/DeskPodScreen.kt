@@ -32,6 +32,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.DialogProperties
 import org.ncssar.rid2caltopo.btrx.BtrxDeskPodModel.PairStep
 import org.ncssar.rid2caltopo.btrx.BtrxDeskPodText
+import org.ncssar.rid2caltopo.btrx.BtrxImuCal
 import org.ncssar.rid2caltopo.btrx.BtrxDeskPodText.StepStatus
 import org.ncssar.rid2caltopo.btrx.BtrxManager
 
@@ -39,7 +40,8 @@ import org.ncssar.rid2caltopo.btrx.BtrxManager
  * Main menu > Desk Pod: the btrx Desk Pod link (Bluetooth, or USB for debugging),
  * its status and link health, and the "Pair drone pod" flow. Same sections, order
  * and wording as the iPad's DeskPodView. "Dismiss" only hides this panel; the link
- * keeps running. "Cancel pairing" ends a pairing in progress.
+ * keeps running (a calibration in progress too). "Cancel pairing" ends a pairing in
+ * progress; "Cancel calibration" ends the IMU calibration flow.
  */
 @Composable
 fun DeskPodScreen(onDismiss: () -> Unit) {
@@ -108,6 +110,10 @@ fun DeskPodScreen(onDismiss: () -> Unit) {
                     PairingSection(s)
 
                     HorizontalDivider(Modifier.padding(vertical = 6.dp))
+                    SectionTitle(BtrxDeskPodText.IMU_CAL_TITLE)
+                    ImuCalSection(s)
+
+                    HorizontalDivider(Modifier.padding(vertical = 6.dp))
                     SectionTitle("Steering")
                     val st = s.lastSteer
                     if (st == null) {
@@ -134,6 +140,55 @@ fun DeskPodScreen(onDismiss: () -> Unit) {
                     }
                 }
             }
+        }
+    }
+}
+
+/**
+ * Drone Pod IMU calibration (design doc section 29.3): Calibrate (level step at once),
+ * then Start starboard step (countdown, then starboard down), results in plain words,
+ * Retry starboard step after a failed one, Check and Clear saved calibration. Same as the
+ * iPad's imuCalSection.
+ */
+@Composable
+private fun ImuCalSection(s: org.ncssar.rid2caltopo.btrx.BtrxDeskPodModel.Snapshot) {
+    val v = s.imuCal ?: return
+    Text(BtrxImuCal.calibratedLine(v), fontWeight = if (v.calibrated == true) FontWeight.SemiBold else FontWeight.Normal)
+    Text(BtrxDeskPodText.IMU_CAL_HINT, style = MaterialTheme.typography.bodySmall)
+    if (v.message.isNotEmpty()) {
+        Text(
+            v.message,
+            color = if (v.step == BtrxImuCal.Step.FAILED) MaterialTheme.colorScheme.error else Color.Unspecified,
+            fontWeight = if (v.step == BtrxImuCal.Step.CALIBRATED) FontWeight.SemiBold else FontWeight.Normal,
+        )
+    }
+    if (v.step == BtrxImuCal.Step.STBD_COUNTDOWN) {
+        Text(BtrxDeskPodText.imuCalCountdown(v.countdownS), style = MaterialTheme.typography.headlineSmall)
+    }
+    val enabled = s.pairedPod != null
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+        if (v.canStartStarboard) {
+            Button(onClick = { BtrxManager.startImuCalStarboard() }, enabled = enabled) {
+                Text(if (v.step == BtrxImuCal.Step.FAILED) BtrxDeskPodText.IMU_CAL_STBD_RETRY else BtrxDeskPodText.IMU_CAL_STBD)
+            }
+        }
+        if (v.canStart) {
+            val first = v.step == BtrxImuCal.Step.IDLE
+            if (first && !v.canStartStarboard) {
+                Button(onClick = { BtrxManager.startImuCal() }, enabled = enabled) { Text(BtrxDeskPodText.IMU_CAL_START) }
+            } else {
+                OutlinedButton(onClick = { BtrxManager.startImuCal() }, enabled = enabled) {
+                    Text(if (first) BtrxDeskPodText.IMU_CAL_START else BtrxDeskPodText.IMU_CAL_START_AGAIN)
+                }
+            }
+        }
+        if (v.canCancel) OutlinedButton(onClick = { BtrxManager.cancelImuCal() }) { Text(BtrxDeskPodText.IMU_CAL_CANCEL) }
+        if (v.canClose) TextButton(onClick = { BtrxManager.closeImuCalResult() }) { Text(BtrxDeskPodText.IMU_CAL_CLOSE) }
+    }
+    if (v.canCheckOrClear) {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = { BtrxManager.checkImuCal() }, enabled = enabled) { Text(BtrxDeskPodText.IMU_CAL_CHECK) }
+            OutlinedButton(onClick = { BtrxManager.clearImuCal() }, enabled = enabled) { Text(BtrxDeskPodText.IMU_CAL_CLEAR) }
         }
     }
 }

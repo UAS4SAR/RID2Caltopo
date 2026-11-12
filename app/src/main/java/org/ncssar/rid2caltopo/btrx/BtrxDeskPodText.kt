@@ -113,7 +113,20 @@ object BtrxDeskPodText {
         liveCount > 1 -> "Several streams are live: tap \"$STEER_PICK\" on the drone carrying the pod."
         else -> "Steering overlay on the live stream (one live)."
     }
-    const val STEER_NONE = "No STEER yet (firmware 0x0101 sends one about every second once the pod is paired)."
+    const val STEER_NONE = "No STEER yet (firmware 0x0101 or later sends one about every second once the pod is paired)."
+
+    // Drone Pod IMU calibration (design doc section 29.3).
+    const val IMU_CAL_TITLE = "Drone Pod IMU"
+    const val IMU_CAL_HINT = "Calibrate once after the lid goes on, and again whenever the IMU board is refitted. Set the Drone Pod level and keep it still, then tap Calibrate. Needs Drone Pod firmware 0x0102 or later."
+    const val IMU_CAL_START = "Calibrate"
+    const val IMU_CAL_START_AGAIN = "Start again"
+    const val IMU_CAL_STBD = "Start starboard step"
+    const val IMU_CAL_STBD_RETRY = "Retry starboard step"
+    const val IMU_CAL_CANCEL = "Cancel calibration"
+    const val IMU_CAL_CLOSE = "Close"
+    const val IMU_CAL_CHECK = "Check"
+    const val IMU_CAL_CLEAR = "Clear saved calibration"
+    fun imuCalCountdown(seconds: Int): String = "Measuring in $seconds s"
     const val STEER_MUTED = "A steering source is muted on the Drone Pod."
     const val STEER_MUTE_HINT = "Tap the overlay on the stream view to mute its source (for example a search team); the next strongest takes its place. The pod holds up to 8 mutes; they clear when it restarts, and a muted source unheard for 60 s comes back under a new color."
 

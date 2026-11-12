@@ -196,6 +196,13 @@ object BtrxManager {
     fun muteSteeringSource() = worker.execute { model.muteSteeringSource(); publish() }
     /** "Clear mutes" on the Desk Pod screen. */
     fun clearSteeringMutes() = worker.execute { model.clearSteeringMutes(); publish() }
+    /** Drone Pod IMU calibration (Desk Pod screen; design doc section 29.3). */
+    fun startImuCal() = worker.execute { model.startImuCal(); publish() }
+    fun startImuCalStarboard() = worker.execute { model.startImuCalStarboard(); publish() }
+    fun checkImuCal() = worker.execute { model.checkImuCal(); publish() }
+    fun clearImuCal() = worker.execute { model.clearImuCal(); publish() }
+    fun cancelImuCal() = worker.execute { model.cancelImuCal(); publish() }
+    fun closeImuCalResult() = worker.execute { model.closeImuCalResult(); publish() }
     /** Debug: steering roll correction (off until the bench roll check). */
     fun setSteeringRollCorrection(on: Boolean) = worker.execute { model.setSteeringRollCorrection(on); publish() }
 

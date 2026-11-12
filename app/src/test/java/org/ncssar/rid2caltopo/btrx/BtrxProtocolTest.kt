@@ -450,7 +450,76 @@ class BtrxProtocolTest {
         assertEquals("STEER_MUTE", P.typeName(0x74))
     }
 
+    // ---- IMU_CAL / IMU_CAL_ACK (firmware 0x0102; protocol.py test vectors) ----
+
+    @Test
+    fun imuCalFrameMatchesTheFirmwareVector() {
+        assertEquals(IMU_CAL_FRAME, P.hex(P.imuCalFrame(3, 0, P.IMUCAL_OP_STBD, 7)))
+        val f = P.decodeFrame(h(IMU_CAL_FRAME))
+        assertEquals(P.IMU_CAL, f.type)
+        assertEquals(P.ImuCal(P.IMUCAL_OP_STBD, 7), P.parseImuCal(f.payload))
+        val g = P.decodeFrame(P.imuCalFrame(9, 0x45D35AF0L, P.IMUCAL_OP_LEVEL, 255))
+        assertEquals(0x45D35AF0L, g.podId)
+        assertEquals(0, g.flags)
+        assertEquals("01ff", P.hex(g.payload))
+        assertEquals("0001", P.hex(P.imuCalPayload(P.IMUCAL_OP_CLEAR, 1)))
+        assertEquals("0302", P.hex(P.imuCalPayload(P.IMUCAL_OP_QUERY, 2)))
+    }
+
+    @Test
+    fun imuCalAckRoundTripsTheFirmwareVector() {
+        val a = P.parseImuCalAck(h(IMU_CAL_ACK_PAYLOAD))
+        assertEquals(P.ImuCalAck(2, 7, 0, 5, 40, -1, 40, 1, 1, listOf(12, -5, 3)), a)
+        assertTrue(a.calibrated); assertFalse(a.levelHeld); assertTrue(a.imuOk)
+        assertEquals("down", P.imuFaceName(a.face)); assertEquals("aft", P.imuYName(a.yPoints))
+        assertEquals(IMU_CAL_ACK_PAYLOAD, P.hex(P.imuCalAckPayload(a)))
+        val unknown = P.ImuCalAck(3, 255, 9, 0x06, -128, 127, 255, 255, 255, listOf(-32768, 32767, 0))
+        assertEquals(unknown, P.parseImuCalAck(P.imuCalAckPayload(unknown)))
+        assertEquals("?", P.imuFaceName(255)); assertEquals("?", P.imuYName(255))
+        // As a firmware frame (pod A answers with F_IS_ACK).
+        val frame = P.encodeFrame(P.IMU_CAL_ACK, seq = 4, podId = 0x45D35AF0L, flags = P.F_IS_ACK, payload = h(IMU_CAL_ACK_PAYLOAD))
+        assertEquals(a, P.parseImuCalAck(P.decodeFrame(frame).payload))
+    }
+
+    @Test
+    fun imuCalPayloadsTooShortAreRejected() {
+        for ((bytes, parse) in listOf<Pair<ByteArray, (ByteArray) -> Unit>>(
+            ByteArray(1) to { b -> P.parseImuCal(b) },
+            ByteArray(14) to { b -> P.parseImuCalAck(b) },
+        )) {
+            try { parse(bytes); fail("expected a payload error") } catch (_: P.PayloadException) { }
+        }
+    }
+
+    @Test
+    fun imuCalFrameLogLines() {
+        val req = BtrxFrameLog.format(P.decodeFrame(h(IMU_CAL_FRAME)))
+        assertTrue(req, req.startsWith("IMU_CAL seq=3"))
+        assertTrue(req, req.endsWith("op=starboard tag=7"))
+        val ack = BtrxFrameLog.format(P.decodeFrame(P.encodeFrame(P.IMU_CAL_ACK, seq = 4, flags = P.F_IS_ACK, payload = h(IMU_CAL_ACK_PAYLOAD))))
+        assertTrue(ack, ack.endsWith("op=starboard tag=7 status=ok cal_flags=calibrated,imu roll_x2=40 pitch_x2=-1 tilt_x2=40 face=down y=aft gyro_bias_x10=12,-5,3"))
+    }
+
+    @Test
+    fun steerBit6IsTheSavedCalibration() {
+        val s = P.parseSteer(P.fromHex(STEER_PAYLOAD))
+        assertFalse(s.imuCal)
+        val p = P.steerPayload(s); p[1] = (p[1].toInt() or P.STEER_F_IMU_CAL).toByte()
+        val c = P.parseSteer(p)
+        assertTrue(c.imuCal)
+        assertTrue(P.steerFlagNames(c.flags).contains("cal"))
+    }
+
+    @Test
+    fun firmware0102IsSupported() {
+        assertTrue(P.SUPPORTED_BUILDS.contains(0x0102))
+        assertEquals("IMU_CAL", P.typeName(0x75))
+        assertEquals("IMU_CAL_ACK", P.typeName(0x76))
+    }
+
     companion object {
+        const val IMU_CAL_FRAME = "b75201750300000000000202071644"
+        const val IMU_CAL_ACK_PAYLOAD = "0207000528ff2801010c00fbff0300"
         const val STEER_PAYLOAD = "0703040302014101efbec3bac603044c000102aa0000000055fa04"
         const val STEER_FRAME = "b75201730134120000001b0703040302014101efbec3bac603044c000102aa0000000055fa04378f"
         const val STEER_MUTE_FRAME = "b7520174020000000000030102017c69"

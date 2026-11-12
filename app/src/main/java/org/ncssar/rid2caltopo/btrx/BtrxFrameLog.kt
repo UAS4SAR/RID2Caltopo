@@ -71,6 +71,12 @@ object BtrxFrameLog {
             "$head$target window_end_ms=${st.windowEndMs} roll_x2=${st.rollX2} pitch_x2=${st.pitchX2}"
         }
         P.STEER_MUTE -> P.parseSteerMute(p).let { "op=${P.muteOpName(it.op)} src=${it.srcId}" }
+        P.IMU_CAL -> P.parseImuCal(p).let { "op=${P.imuCalOpName(it.op)} tag=${it.tag}" }
+        P.IMU_CAL_ACK -> P.parseImuCalAck(p).let { k ->
+            "op=${P.imuCalOpName(k.op)} tag=${k.tag} status=${P.imuCalStatusName(k.status)} cal_flags=${P.imuCalFlagNames(k.flags)} " +
+                "roll_x2=${k.rollX2} pitch_x2=${k.pitchX2} tilt_x2=${k.tiltX2} face=${P.imuFaceName(k.face)} y=${P.imuYName(k.yPoints)} " +
+                "gyro_bias_x10=${k.gyroBiasX10.joinToString(",")}"
+        }
         else -> if (p.isEmpty()) "" else "raw=${P.hex(p)}"
     }
 }

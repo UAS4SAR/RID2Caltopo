@@ -22,9 +22,11 @@ object BtrxProtocol {
     const val PRIVATE_APP_PORT = 256
 
     /** Board builds this app knows. A board reporting another build gets a notice (M2). */
-    val SUPPORTED_BUILDS: Set<Int> = setOf(0x0100, 0x0101)
+    val SUPPORTED_BUILDS: Set<Int> = setOf(0x0100, 0x0101, 0x0102)
     /** Firmware that sends STEER (btrx PR #18, steering-report). */
     const val BUILD_STEER = 0x0101
+    /** Firmware that answers IMU_CAL (btrx PR #18, af2549e). */
+    const val BUILD_IMU_CAL = 0x0102
 
     // Message types (section 5 of the R2C integration brief).
     const val HELLO = 0x01
@@ -52,6 +54,8 @@ object BtrxProtocol {
     const val ADV_SAMPLE = 0x72
     const val STEER = 0x73
     const val STEER_MUTE = 0x74
+    const val IMU_CAL = 0x75
+    const val IMU_CAL_ACK = 0x76
     const val HEALTH = 0x80
     const val DFU_REQ = 0x90
     const val DFU_ACK = 0x91
@@ -64,7 +68,8 @@ object BtrxProtocol {
         TIME_PONG to "TIME_PONG", START to "START", STOP to "STOP", CTRL_ACK to "CTRL_ACK",
         SCAN_CFG to "SCAN_CFG", SCAN_CFG_ACK to "SCAN_CFG_ACK", FILTER_LIST to "FILTER_LIST",
         FILTER_ACK to "FILTER_ACK", DETECT to "DETECT", IMU_SAMPLE to "IMU_SAMPLE",
-        ADV_SAMPLE to "ADV_SAMPLE", STEER to "STEER", STEER_MUTE to "STEER_MUTE", HEALTH to "HEALTH", DFU_REQ to "DFU_REQ", DFU_ACK to "DFU_ACK",
+        ADV_SAMPLE to "ADV_SAMPLE", STEER to "STEER", STEER_MUTE to "STEER_MUTE",
+        IMU_CAL to "IMU_CAL", IMU_CAL_ACK to "IMU_CAL_ACK", HEALTH to "HEALTH", DFU_REQ to "DFU_REQ", DFU_ACK to "DFU_ACK",
     )
 
     fun typeName(type: Int): String = MSG_NAME[type] ?: "0x%02x".format(type)
@@ -119,10 +124,34 @@ object BtrxProtocol {
     const val STEER_F_GATED = 0x08
     const val STEER_F_IMU_OK = 0x10
     const val STEER_F_MUTED = 0x20
+    /** Pod B uses a saved IMU calibration (firmware 0x0102). */
+    const val STEER_F_IMU_CAL = 0x40
     private val STEER_FLAGS = listOf(
         STEER_F_TARGET to "target", STEER_F_NEW to "new", STEER_F_LINKED to "linked",
         STEER_F_GATED to "gated", STEER_F_IMU_OK to "imu", STEER_F_MUTED to "muted",
+        STEER_F_IMU_CAL to "cal",
     )
+
+    // IMU_CAL ops and IMU_CAL_ACK status and flags (btrx_imucal.h; protocol.py IMUCAL_*).
+    const val IMUCAL_OP_CLEAR = 0
+    const val IMUCAL_OP_LEVEL = 1
+    const val IMUCAL_OP_STBD = 2
+    const val IMUCAL_OP_QUERY = 3
+    const val IMUCAL_OK = 0
+    const val IMUCAL_MOTION = 1
+    const val IMUCAL_TILT_SMALL = 2
+    const val IMUCAL_NOT_LEVEL = 3
+    const val IMUCAL_NEED_LEVEL = 4
+    const val IMUCAL_NO_IMU = 5
+    const val IMUCAL_NOT_ROLL = 6
+    const val IMUCAL_BAD_OP = 7
+    const val IMUCAL_SAVE_FAIL = 8
+    const val IMUCAL_BUSY = 9
+    const val IMUCAL_F_CALIBRATED = 0x01
+    const val IMUCAL_F_LEVEL_HELD = 0x02
+    const val IMUCAL_F_IMU_OK = 0x04
+    /** face / y_points value for "not known". */
+    const val IMU_UNKNOWN = 0xFF
 
     // STEER_MUTE ops (BTRX_MUTE_*).
     const val MUTE_CLEAR = 0
@@ -389,6 +418,8 @@ object BtrxProtocol {
         val gated: Boolean get() = flags and STEER_F_GATED != 0
         val imuOk: Boolean get() = flags and STEER_F_IMU_OK != 0
         val muted: Boolean get() = flags and STEER_F_MUTED != 0
+        /** Bit 6: pod B uses a saved IMU calibration (set only with the IMU ok). */
+        val imuCal: Boolean get() = flags and STEER_F_IMU_CAL != 0
         val portHeard: Boolean get() = rssiPort != RSSI_NOT_HEARD
         val stbdHeard: Boolean get() = rssiStbd != RSSI_NOT_HEARD
         /** Last 4 characters of the address: never log or show the full address. */
@@ -435,7 +466,105 @@ object BtrxProtocol {
         else -> op.toString()
     }
 
+    fun imuCalOpName(op: Int): String = when (op) {
+        IMUCAL_OP_CLEAR -> "clear"
+        IMUCAL_OP_LEVEL -> "level"
+        IMUCAL_OP_STBD -> "starboard"
+        IMUCAL_OP_QUERY -> "status"
+        else -> op.toString()
+    }
+
+    /** Short status names, as protocol.py IMUCAL_STATUS_NAME (logs; the screen uses BtrxImuCal.statusText). */
+    fun imuCalStatusName(status: Int): String = when (status) {
+        IMUCAL_OK -> "ok"
+        IMUCAL_MOTION -> "too much motion"
+        IMUCAL_TILT_SMALL -> "tilt too small"
+        IMUCAL_NOT_LEVEL -> "not level"
+        IMUCAL_NEED_LEVEL -> "needs level first"
+        IMUCAL_NO_IMU -> "no IMU"
+        IMUCAL_NOT_ROLL -> "not a roll"
+        IMUCAL_BAD_OP -> "bad op"
+        IMUCAL_SAVE_FAIL -> "worked out but not saved"
+        IMUCAL_BUSY -> "still measuring"
+        else -> status.toString()
+    }
+
+    const val IMU_CAL_LEN = 2
+    const val IMU_CAL_ACK_LEN = 15
+
+    data class ImuCal(val op: Int, val tag: Int)
+
+    /** IMU_CAL (0x75), 2 bytes: op, tag. Logged when the app sends it. */
+    fun parseImuCal(p: ByteArray): ImuCal {
+        need(p, IMU_CAL_LEN, "IMU_CAL")
+        return ImuCal(u8(p, 0), u8(p, 1))
+    }
+
+    /**
+     * IMU_CAL_ACK (0x76), 15 bytes little-endian (PROTOCOL.md "IMU_CAL"): pod B's answer,
+     * relayed by pod A (which makes up "no IMU" itself after 6 s). The frame has the ack
+     * flag, and the error flag when status is not 0.
+     */
+    data class ImuCalAck(
+        val op: Int, val tag: Int, val status: Int, val flags: Int,
+        /** Roll now, 0.5 deg, + starboard down, as the calibration in use reads it. */
+        val rollX2: Int,
+        /** Pitch now, 0.5 deg, + nose up. */
+        val pitchX2: Int,
+        /** Level: the board's tilt from flat; starboard down: how far it was tipped. 0.5 deg. */
+        val tiltX2: Int,
+        /** Mounting in use: 0 component side up, 1 down, 255 not known. */
+        val face: Int,
+        /** Board Y arrow: 0 forward, 1 aft, 2 port, 3 starboard, 255 not known. */
+        val yPoints: Int,
+        /** Gyro offset in board axes, 0.1 deg/s (x, y, z). */
+        val gyroBiasX10: List<Int>,
+    ) {
+        val calibrated: Boolean get() = flags and IMUCAL_F_CALIBRATED != 0
+        val levelHeld: Boolean get() = flags and IMUCAL_F_LEVEL_HELD != 0
+        val imuOk: Boolean get() = flags and IMUCAL_F_IMU_OK != 0
+    }
+
+    fun parseImuCalAck(p: ByteArray): ImuCalAck {
+        need(p, IMU_CAL_ACK_LEN, "IMU_CAL_ACK")
+        return ImuCalAck(
+            op = u8(p, 0), tag = u8(p, 1), status = u8(p, 2), flags = u8(p, 3), rollX2 = i8(p, 4), pitchX2 = i8(p, 5),
+            tiltX2 = u8(p, 6), face = u8(p, 7), yPoints = u8(p, 8), gyroBiasX10 = listOf(i16(p, 9), i16(p, 11), i16(p, 13)),
+        )
+    }
+
+    /** IMU_CAL_ACK encoder (protocol.py pack_imu_cal_ack), for tests. */
+    fun imuCalAckPayload(a: ImuCalAck): ByteArray {
+        val out = ByteArray(IMU_CAL_ACK_LEN)
+        out[0] = a.op.toByte(); out[1] = a.tag.toByte(); out[2] = a.status.toByte(); out[3] = a.flags.toByte()
+        out[4] = a.rollX2.toByte(); out[5] = a.pitchX2.toByte(); out[6] = a.tiltX2.toByte()
+        out[7] = a.face.toByte(); out[8] = a.yPoints.toByte()
+        for (i in 0 until 3) {
+            val v = a.gyroBiasX10.getOrElse(i) { 0 }
+            out[9 + 2 * i] = v.toByte(); out[10 + 2 * i] = (v ushr 8).toByte()
+        }
+        return out
+    }
+
+    fun imuFaceName(face: Int): String = when (face) { 0 -> "up"; 1 -> "down"; else -> "?" }
+    fun imuYName(y: Int): String = when (y) { 0 -> "fwd"; 1 -> "aft"; 2 -> "port"; 3 -> "stbd"; else -> "?" }
+    fun imuCalFlagNames(flags: Int): String = buildList {
+        if (flags and IMUCAL_F_CALIBRATED != 0) add("calibrated")
+        if (flags and IMUCAL_F_LEVEL_HELD != 0) add("level-held")
+        if (flags and IMUCAL_F_IMU_OK != 0) add("imu")
+    }.joinToString(",").ifEmpty { "none" }
+
     // ---- payloads R2C sends ----
+
+    /** IMU_CAL (0x75) payload: op, tag (protocol.py pack_imu_cal). */
+    fun imuCalPayload(op: Int, tag: Int): ByteArray = byteArrayOf(op.toByte(), tag.toByte())
+
+    /**
+     * A complete IMU_CAL frame, sent like STEER_MUTE: to the paired Drone Pod's node (pod
+     * A, which passes it to pod B over the cable), header pod_id = the paired pod's.
+     */
+    fun imuCalFrame(seq: Int, podId: Long, op: Int, tag: Int): ByteArray =
+        encodeFrame(IMU_CAL, seq = seq, podId = podId, payload = imuCalPayload(op, tag))
 
     /** STEER_MUTE (0x74) payload: op u8, src_id u16 (protocol.py pack_steer_mute). */
     fun steerMutePayload(op: Int, srcId: Int = 0): ByteArray = byteArrayOf(op.toByte(), srcId.toByte(), (srcId ushr 8).toByte())

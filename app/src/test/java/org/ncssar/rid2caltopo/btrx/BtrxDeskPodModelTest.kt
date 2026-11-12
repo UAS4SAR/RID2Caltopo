@@ -561,6 +561,110 @@ class BtrxDeskPodModelTest {
         assertTrue(sender.sent.none { P.decodeFrame(it.second).type == P.STEER_MUTE })
     }
 
+    // ---- IMU calibration (IMU_CAL / IMU_CAL_ACK) ----
+
+    private fun imuAck(op: Int, tag: Int, status: Int = P.IMUCAL_OK, flags: Int = P.IMUCAL_F_IMU_OK or P.IMUCAL_F_LEVEL_HELD, podId: Long = pairedPodId) =
+        P.decodeFrame(P.encodeFrame(P.IMU_CAL_ACK, seq = ++podSeq, podId = podId, flags = P.F_IS_ACK,
+            payload = P.imuCalAckPayload(P.ImuCalAck(op, tag, status, flags, 40, 0, 4, 0, 0, listOf(0, 0, 0)))))
+    private fun lastImuCal(): Pair<Long, P.Frame> = sender.sent.last().let { it.first to P.decodeFrame(it.second) }
+    private val imu get() = model.snapshot().imuCal!!
+
+    @Test
+    fun imuCalGoesToThePairedPodNodeAndOnlyItsAnswerCounts() {
+        ready()
+        model.restorePairedPod(BtrxDeskPodModel.PairedPod(pod, pairedPodId, 0x4C8C125BL, 0x351C2971L))
+        model.startImuCal()
+        val (to, f) = lastImuCal()
+        assertEquals(pod, to)
+        assertEquals(P.IMU_CAL, f.type)
+        assertEquals(pairedPodId, f.podId)
+        assertEquals("0101", P.hex(f.payload)) // level, tag 1
+        assertEquals(BtrxImuCal.Step.LEVEL, imu.step)
+        model.onFrame(imuAck(1, 1), meta(0x22223333L))               // another node
+        model.onFrame(imuAck(1, 1, podId = 0x12345678L), meta(pod))  // another pod_id
+        model.onFrame(imuAck(1, 1), meta(pod, backlog = true))       // connect backlog
+        assertEquals(BtrxImuCal.Step.LEVEL, imu.step)
+        model.onFrame(imuAck(1, 2), meta(pod))                        // another tag
+        assertEquals(BtrxImuCal.Step.LEVEL, imu.step)
+        assertTrue(logs.any { it.contains("matches no request out; ignored") })
+        model.onFrame(imuAck(1, 1), meta(pod))
+        assertEquals(BtrxImuCal.Step.STBD_READY, imu.step)
+        // The starboard step goes out from tick() when the countdown ends.
+        model.startImuCalStarboard()
+        assertEquals(BtrxImuCal.Step.STBD_COUNTDOWN, imu.step)
+        val before = sender.sent.size
+        advance(1_000)
+        assertEquals(before, sender.sent.size)
+        advance(2_000)
+        val (to2, f2) = lastImuCal()
+        assertEquals(pod, to2)
+        assertEquals(pairedPodId, f2.podId)
+        assertEquals("0202", P.hex(f2.payload)) // starboard, tag 2
+        model.onFrame(imuAck(2, 2, flags = P.IMUCAL_F_IMU_OK or P.IMUCAL_F_CALIBRATED), meta(pod))
+        assertEquals(BtrxImuCal.Step.CALIBRATED, imu.step)
+        assertEquals(true, imu.calibrated)
+    }
+
+    @Test
+    fun imuCalAnswerBeforePairingIsIgnored() {
+        ready()
+        model.onFrame(imuAck(3, 1, flags = P.IMUCAL_F_IMU_OK or P.IMUCAL_F_CALIBRATED, podId = 0), meta(pod))
+        assertNull(imu.calibrated)
+    }
+
+    @Test
+    fun imuCalIsRefusedWithoutAPairingOrLink() {
+        ready()
+        model.startImuCal()
+        assertTrue(sender.sent.none { P.decodeFrame(it.second).type == P.IMU_CAL })
+        assertEquals(BtrxImuCal.Step.FAILED, imu.step)
+        assertEquals("No Drone Pod is paired. Pair it first.", imu.message)
+        model.restorePairedPod(BtrxDeskPodModel.PairedPod(pod, pairedPodId, 0x4C8C125BL, 0x351C2971L))
+        sender.isReady = false
+        model.checkImuCal()
+        assertTrue(sender.sent.none { P.decodeFrame(it.second).type == P.IMU_CAL })
+        assertEquals("The Desk Pod is not connected.", imu.message)
+    }
+
+    @Test
+    fun imuCalTimesOutCheckClearAndSteerBit6() {
+        ready()
+        model.restorePairedPod(BtrxDeskPodModel.PairedPod(pod, pairedPodId, 0x4C8C125BL, 0x351C2971L))
+        val p = P.steerPayload(P.parseSteer(P.fromHex(BtrxProtocolTest.STEER_PAYLOAD)))
+        p[1] = (P.STEER_F_IMU_OK or P.STEER_F_IMU_CAL).toByte()
+        model.onFrame(P.decodeFrame(P.encodeFrame(P.STEER, seq = ++podSeq, podId = pairedPodId, payload = p)), meta(pod))
+        assertEquals(true, imu.calibrated)
+        assertTrue(imu.calibratedFromSteer)
+        model.checkImuCal()
+        assertEquals("0301", P.hex(lastImuCal().second.payload))
+        advance(BtrxImuCal.ACK_TIMEOUT_MS)
+        assertEquals(BtrxImuCal.Step.FAILED, imu.step)
+        model.clearImuCal()
+        assertEquals("0002", P.hex(lastImuCal().second.payload))
+        model.onFrame(imuAck(0, 2, flags = P.IMUCAL_F_IMU_OK), meta(pod))
+        assertEquals(false, imu.calibrated)
+        model.closeImuCalResult()
+        assertEquals("", imu.message)
+    }
+
+    @Test
+    fun imuCalCancelLinkLossAndForget() {
+        ready()
+        model.restorePairedPod(BtrxDeskPodModel.PairedPod(pod, pairedPodId, 0x4C8C125BL, 0x351C2971L))
+        model.startImuCal()
+        val n = sender.sent.size
+        model.cancelImuCal()
+        assertEquals(n, sender.sent.size) // cancel sends nothing
+        assertEquals(BtrxImuCal.CANCELLED, imu.message)
+        model.startImuCal()
+        model.detach(sender, "test")
+        assertEquals(BtrxImuCal.Step.FAILED, imu.step)
+        assertTrue(imu.message.startsWith("The link to the Desk Pod was lost"))
+        model.forgetPairedPod()
+        assertEquals(BtrxImuCal.Step.IDLE, imu.step)
+        assertNull(imu.calibrated)
+    }
+
     @Test
     fun forgettingThePodClearsSteering() {
         ready()
