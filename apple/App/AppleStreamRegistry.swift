@@ -881,6 +881,13 @@ private struct AppleStreamTile: View {
                 }
             )
             .allowsHitTesting(session.id != "demo")
+            if session.state == .live && session.id != "demo" {
+                // btrx steering overlay (section 41): top center, clear of the requested-by
+                // label (bottom leading), the alert overlay (top leading) and the crosshair.
+                AppleSteeringOverlay()
+                    .padding(.top, 8)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            }
             if remoteRequesterEmail != nil || model.anomalyThermallySuspended {
                 VStack(alignment: .leading, spacing: 4) {
                     if let remoteRequesterEmail {

@@ -1390,6 +1390,8 @@ struct ContentView: View {
             .navigationTitle("RID2Caltopo")
             .navigationBarTitleDisplayMode(.inline)
         }
+            // The stream tiles' btrx steering overlay reads the Desk Pod link from here.
+            .environment(\.btrxDeskPod, deskPod)
             // Bound from body, not monitoredRoot: the access gate replaces
             // monitoredRoot while the app is inactive or in background.
             .task { startAlertCoordinator() }

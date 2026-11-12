@@ -45,6 +45,17 @@ public enum BtrxFrameLog {
                        r.addressTail, r.deviceClass, r.addressType, r.rssiPort, r.rssiStbd, r.hits, r.ageMs, r.companyId, r.uuid16, r.isRemoteID ? " rid" : "")
             }.joined(separator: " ")
             return recs.isEmpty ? head : "\(head) \(recs)"
+        case P.STEER:
+            let st = try P.parseSteer(p)
+            let head = "steer_seq=\(st.steerSeq) steer_flags=\(P.steerFlagNames(st.flags)) src=\(st.srcId)"
+            let target = !st.target ? "" : String(
+                format: " kind=%@ cid=0x%04x rssi_port=%d rssi_stbd=%d peak=%d hits_port=%d hits_stbd=%d age_ms=%d [..%@] addr_type=%d",
+                P.devClassName(st.devClass), st.companyId, st.rssiPort, st.rssiStbd, st.peakRssi, st.hitsPort, st.hitsStbd, st.ageMs,
+                st.addressTail, st.addrType)
+            return "\(head)\(target) window_end_ms=\(st.windowEndMs) roll_x2=\(st.rollX2) pitch_x2=\(st.pitchX2)"
+        case P.STEER_MUTE:
+            let m = try P.parseSteerMute(p)
+            return "op=\(P.muteOpName(m.op)) src=\(m.srcId)"
         default:
             return p.isEmpty ? "" : "raw=\(P.hex(p))"
         }

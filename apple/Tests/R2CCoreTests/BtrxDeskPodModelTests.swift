@@ -457,4 +457,83 @@ final class BtrxDeskPodModelTests: XCTestCase {
         XCTAssertTrue(model.snapshot().pairedPodQuiet)
         withExtendedLifetime(next) {}
     }
+
+    // MARK: steering (STEER / STEER_MUTE)
+
+    let pairedPodId: UInt32 = 0x45D3_5AF0
+    func ready() { model.setLink(Model.LinkStatus(kind: .bluetooth, phase: .ready)) }
+    func steerFrame(podId: UInt32? = nil, src: Int = 0xBEEF) -> P.Frame {
+        var p = P.fromHex(BtrxProtocolTests.steerPayload)
+        p[8] = UInt8(src & 0xFF); p[9] = UInt8(src >> 8)
+        podSeq += 1
+        return try! P.decodeFrame(P.encodeFrame(P.STEER, seq: podSeq, podId: podId ?? pairedPodId, payload: p))
+    }
+    func restorePaired() { model.restorePairedPod(Model.PairedPod(node: pod, podId: pairedPodId, devA: 0x4C8C_125B, devB: 0x351C_2971)) }
+
+    func testSteerOverlayShowsOnlyWhilePairedLinkedAndArriving() {
+        ready()
+        model.onFrame(steerFrame(podId: 0), meta: meta(pod))
+        XCTAssertNil(model.snapshot().steerOverlay) // not paired yet: ignored
+        XCTAssertNil(model.snapshot().lastSteer)
+        restorePaired()
+        model.onFrame(steerFrame(), meta: meta(pod))
+        let v = model.snapshot().steerOverlay
+        XCTAssertEqual(.left, v?.hint)
+        XCTAssertEqual(0xBEEF, v?.srcId)
+        XCTAssertEqual(0, v?.colorIndex)
+        model.setLink(Model.LinkStatus(kind: .bluetooth, phase: .retryWait))
+        XCTAssertNil(model.snapshot().steerOverlay) // link down: hidden
+        XCTAssertNotNil(model.snapshot().lastSteer) // the Desk Pod screen keeps the last one
+        ready()
+        XCTAssertNotNil(model.snapshot().steerOverlay)
+        now += BtrxSteering.showMs + 1
+        XCTAssertNil(model.snapshot().steerOverlay) // STEER stopped arriving
+        XCTAssertEqual(.lost, model.snapshot().lastSteer?.hint)
+    }
+
+    func testSteerIsFilteredByPairedNodeAndPodId() {
+        ready()
+        restorePaired()
+        model.onFrame(steerFrame(), meta: meta(0x2222_3333))            // another node
+        model.onFrame(steerFrame(podId: 0x1234_5678), meta: meta(pod))  // another pod_id
+        model.onFrame(steerFrame(), meta: meta(pod, backlog: true))     // connect backlog
+        XCTAssertNil(model.snapshot().lastSteer)
+        model.onFrame(steerFrame(), meta: meta(pod))
+        XCTAssertNotNil(model.snapshot().steerOverlay)
+    }
+
+    func testMuteAndClearMutesGoToThePairedPodNode() throws {
+        ready()
+        restorePaired()
+        model.muteSteeringSource()
+        XCTAssertTrue(sender.sent.isEmpty) // no source yet
+        XCTAssertTrue(log.warns.contains { $0.hasPrefix("steering: Mute not sent") })
+        model.onFrame(steerFrame(src: 0x0102), meta: meta(pod))
+        model.muteSteeringSource()
+        let (to, bytes) = try XCTUnwrap(sender.sent.last)
+        XCTAssertEqual(pod, to)
+        let f = try P.decodeFrame(bytes)
+        XCTAssertEqual(P.STEER_MUTE, f.type)
+        XCTAssertEqual(pairedPodId, f.podId)
+        XCTAssertEqual("010201", P.hex(f.payload)) // op 1, src 0x0102
+        model.clearSteeringMutes()
+        XCTAssertEqual("000000", P.hex(try P.decodeFrame(sender.sent.last!.1).payload))
+        XCTAssertEqual(pod, sender.sent.last!.0)
+    }
+
+    func testMuteIsRefusedWithoutAPairing() {
+        ready()
+        model.clearSteeringMutes()
+        model.muteSteeringSource()
+        XCTAssertFalse(sender.sent.contains { (try? P.decodeFrame($0.1))?.type == P.STEER_MUTE })
+    }
+
+    func testForgettingThePodClearsSteering() {
+        ready()
+        restorePaired()
+        model.onFrame(steerFrame(), meta: meta(pod))
+        model.forgetPairedPod()
+        XCTAssertNil(model.snapshot().lastSteer)
+        XCTAssertNil(model.snapshot().steerOverlay)
+    }
 }

@@ -11,6 +11,13 @@ public protocol BtrxFrameSender: AnyObject {
 public protocol BtrxLogger: AnyObject {
     func info(_ message: String)
     func warn(_ message: String)
+    /// Per-frame detail that arrives every second (STEER).
+    func debug(_ message: String)
+}
+
+public extension BtrxLogger {
+    /// Info unless the app logs debug separately.
+    func debug(_ message: String) { info(message) }
 }
 
 /// Arrival details from the Desk Pod for one btrx frame. `backlog` is true for frames the
@@ -275,7 +282,8 @@ public final class BtrxClient: BtrxFrameSender {
             return
         } catch { return }
         if backlog { backlogCounts[frame.typeName, default: 0] += 1 } else { frameCounts[frame.typeName, default: 0] += 1 }
-        log.info("rx \(radio) \(BtrxFrameLog.format(frame))")
+        // STEER arrives every second: debug level, so the log stays readable.
+        if frame.type == BtrxProtocol.STEER { log.debug("rx \(radio) \(BtrxFrameLog.format(frame))") } else { log.info("rx \(radio) \(BtrxFrameLog.format(frame))") }
         if frame.type == BtrxProtocol.ROLE_REPORT && packet.from == localNode && backlog {
             log.info("stale ROLE_REPORT in the connect backlog ignored; waiting for the answer to this session's ROLE_GET")
         } else if frame.type == BtrxProtocol.ROLE_REPORT && packet.from == localNode, let report = try? BtrxProtocol.parseRoleReport(frame.payload) {

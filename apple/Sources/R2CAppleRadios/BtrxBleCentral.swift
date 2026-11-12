@@ -7,6 +7,7 @@ import R2CCore
 final class BtrxAppleLogger: BtrxLogger, @unchecked Sendable {
     func info(_ message: String) { OperationalBridgePacketLog.write?("INFO", "Btrx", message) }
     func warn(_ message: String) { OperationalBridgePacketLog.write?("WARN", "Btrx", message) }
+    func debug(_ message: String) { OperationalBridgePacketLog.write?("DEBUG", "Btrx", message) }
 }
 
 /// The btrx Desk Pod over Bluetooth on the iPad: the Meshtastic phone API service, one
@@ -145,6 +146,8 @@ final class BtrxBleCentral: NSObject, @unchecked Sendable {
     func confirmPod() { queue.async { [self] in model.confirmPod(); publish() } }
     func cancelPairing() { queue.async { [self] in model.cancelPairing(); publish() } }
     func clearPairingResult() { queue.async { [self] in model.clearPairingResult(); publish() } }
+    func muteSteeringSource() { queue.async { [self] in model.muteSteeringSource(); publish() } }
+    func clearSteeringMutes() { queue.async { [self] in model.clearSteeringMutes(); publish() } }
 
     // MARK: connection
 
@@ -560,6 +563,8 @@ extension BtrxBleCentral: BtrxClientListener {
 
     func onFrame(_ frame: BtrxProtocol.Frame, meta: BtrxRadioMeta) {
         model.onFrame(frame, meta: meta)
+        // The overlay follows each STEER (about every second), not only the 1 s tick.
+        if frame.type == BtrxProtocol.STEER && !meta.backlog { publish() }
     }
 
     func onVersionRefused(fromNode: UInt32, version: Int) {}
@@ -622,6 +627,10 @@ public final class BtrxDeskPodCenter: ObservableObject {
     public func confirmPod() { central.confirmPod() }
     public func cancelPairing() { central.cancelPairing() }
     public func clearPairingResult() { central.clearPairingResult() }
+    /// "Mute" on the stream-view steering overlay.
+    public func muteSteeringSource() { central.muteSteeringSource() }
+    /// "Clear mutes" on the Desk Pod screen.
+    public func clearSteeringMutes() { central.clearSteeringMutes() }
 
     private func remember(_ id: UUID, _ name: String?) {
         defaults.set(id.uuidString, forKey: Self.keyPeripheral)

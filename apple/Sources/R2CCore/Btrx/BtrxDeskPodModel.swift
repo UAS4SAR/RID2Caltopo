@@ -21,6 +21,11 @@ import Foundation
 /// filter by pod_id); a non-zero header pod_id other than the paired one is refused,
 /// counted and shown ("re-pair"). No HEALTH from the paired pod for ``pairedQuietMs`` is
 /// shown too: an unconfirmed pod (pod_id reset after a 10 s hold) stops transmitting.
+///
+/// Steering (design doc section 41): live STEER frames from the paired pod (by node,
+/// pod_id 0 or the paired one, like other pod traffic) feed ``BtrxSteering``; the stream
+/// view overlay shows only while the link is connected, a pod is paired and STEER keeps
+/// arriving. ``muteSteeringSource()`` / ``clearSteeringMutes()`` send STEER_MUTE to that pod.
 /// Nothing here ever makes a clue.
 public final class BtrxDeskPodModel {
     public enum LinkKind: Sendable { case none, bluetooth, usb }
@@ -104,6 +109,10 @@ public final class BtrxDeskPodModel {
         public var lastMismatchPodId: UInt32?
         /// Paired, connected, and no HEALTH from the paired pod for over ``pairedQuietMs``.
         public var pairedPodQuiet = false
+        /// The stream-view steering overlay, or nil when it must not show.
+        public var steerOverlay: BtrxSteering.View?
+        /// The latest STEER whatever the link state, for the Desk Pod screen's bench line.
+        public var lastSteer: BtrxSteering.View?
         public init() {}
         public var roleSupported: Bool { role.map { BtrxProtocol.supportedBuilds.contains($0.buildHash) } ?? false }
     }
@@ -146,6 +155,7 @@ public final class BtrxDeskPodModel {
     private var lastMismatchPodId: UInt32?
     /// Start of the current wait for the paired pod's HEALTH (session start, pairing, restore).
     private var quietWatchSinceMs: Int64 = 0
+    private let steering = BtrxSteering()
 
     public init(log: BtrxLogger, clock: @escaping () -> Int64 = { Int64(Date().timeIntervalSince1970 * 1000) }, onPaired: @escaping (PairedPod) -> Void = { _ in }) {
         self.log = log
@@ -184,6 +194,7 @@ public final class BtrxDeskPodModel {
     public func forgetPairedPod() {
         pairedPod = nil; lastHealth = nil; otherPods.removeAll()
         podIdMismatches = 0; lastMismatchPodId = nil
+        steering.reset()
     }
 
     // MARK: client listener
@@ -236,6 +247,9 @@ public final class BtrxDeskPodModel {
             detectTimes.append(meta.arrivalMs)
             lastDetectMs = meta.arrivalMs
             trimDetects(meta.arrivalMs)
+        // The pod sends STEER only once confirmed; before pairing it is not ours to steer by.
+        case BtrxProtocol.STEER:
+            if pairedPod != nil { steering.onSteer(try BtrxProtocol.parseSteer(frame.payload), nowMs: meta.arrivalMs) }
         default: break
         }
     }
@@ -324,6 +338,7 @@ public final class BtrxDeskPodModel {
         pairing.aOk = ack.aOk; pairing.bOk = ack.bOk; pairing.ackFlags = ack.flags
         if ack.aOk == 1 {
             let pod = PairedPod(node: c.node, podId: c.assignedPodId, devA: c.devA, devB: c.devB)
+            if pairedPod?.node != pod.node { steering.reset() }
             pairedPod = pod
             podIdMismatches = 0; lastMismatchPodId = nil
             quietWatchSinceMs = meta.arrivalMs
@@ -415,7 +430,30 @@ public final class BtrxDeskPodModel {
         s.pairedPod = pairedPod
         s.pairedPodIdMismatches = podIdMismatches; s.lastMismatchPodId = lastMismatchPodId
         s.pairedPodQuiet = pairedQuiet(now)
+        s.steerOverlay = steeringLinkUp ? steering.view(nowMs: now) : nil
+        s.lastSteer = steering.lastView(nowMs: now)
         return s
+    }
+
+    private var steeringLinkUp: Bool { pairedPod != nil && link.phase == .ready && sender != nil }
+
+    // MARK: steering actions
+
+    /// "Mute": STEER_MUTE op 1 for the current steering source, to the paired pod.
+    public func muteSteeringSource() {
+        guard let pod = pairedPod else { log.warn("steering: Mute not sent: no paired Drone Pod"); return }
+        guard let v = steering.view(nowMs: clock()), v.canMute else { log.warn("steering: Mute not sent: no current steering source"); return }
+        guard let s = sender, s.isReady else { log.warn("steering: Mute not sent: the Desk Pod is not connected"); return }
+        log.info("steering: STEER_MUTE mute src=\(v.srcId) to \(BtrxClient.nodeName(pod.node))")
+        s.sendFrame(to: pod.node, frame: BtrxProtocol.steerMuteFrame(seq: s.nextSeq(), podId: pod.podId, op: BtrxProtocol.MUTE_ADD, srcId: v.srcId))
+    }
+
+    /// "Clear mutes": STEER_MUTE op 0, to the paired pod.
+    public func clearSteeringMutes() {
+        guard let pod = pairedPod else { log.warn("steering: Clear mutes not sent: no paired Drone Pod"); return }
+        guard let s = sender, s.isReady else { log.warn("steering: Clear mutes not sent: the Desk Pod is not connected"); return }
+        log.info("steering: STEER_MUTE clear to \(BtrxClient.nodeName(pod.node))")
+        s.sendFrame(to: pod.node, frame: BtrxProtocol.steerMuteFrame(seq: s.nextSeq(), podId: pod.podId, op: BtrxProtocol.MUTE_CLEAR))
     }
 
     private func pairedQuiet(_ now: Int64) -> Bool {

@@ -20,7 +20,9 @@ public enum BtrxProtocol {
     public static let privateAppPort = 256
 
     /// Board builds this app knows.
-    public static let supportedBuilds: Set<Int> = [0x0100]
+    public static let supportedBuilds: Set<Int> = [0x0100, 0x0101]
+    /// First build that sends STEER (DETECT every 5 s from this build).
+    public static let buildSteer = 0x0101
 
     public static let HELLO = 0x01, HELLO_ACK = 0x02, PAIR_REQ = 0x10, PAIR_CONFIRM = 0x11, PAIR_ACK = 0x12
     public static let B_CFG = 0x13, GESTURE = 0x14, DESK_PAIR = 0x15, ROLE_GET = 0x20, ROLE_REPORT = 0x21
@@ -28,6 +30,7 @@ public enum BtrxProtocol {
     public static let CTRL_ACK = 0x42, SCAN_CFG = 0x50, SCAN_CFG_ACK = 0x51, FILTER_LIST = 0x60
     public static let FILTER_ACK = 0x61, DETECT = 0x70, IMU_SAMPLE = 0x71, ADV_SAMPLE = 0x72, HEALTH = 0x80
     public static let DFU_REQ = 0x90, DFU_ACK = 0x91
+    public static let STEER = 0x73, STEER_MUTE = 0x74
 
     private static let msgNames: [Int: String] = [
         HELLO: "HELLO", HELLO_ACK: "HELLO_ACK", PAIR_REQ: "PAIR_REQ", PAIR_CONFIRM: "PAIR_CONFIRM",
@@ -36,6 +39,7 @@ public enum BtrxProtocol {
         START: "START", STOP: "STOP", CTRL_ACK: "CTRL_ACK", SCAN_CFG: "SCAN_CFG", SCAN_CFG_ACK: "SCAN_CFG_ACK",
         FILTER_LIST: "FILTER_LIST", FILTER_ACK: "FILTER_ACK", DETECT: "DETECT", IMU_SAMPLE: "IMU_SAMPLE",
         ADV_SAMPLE: "ADV_SAMPLE", HEALTH: "HEALTH", DFU_REQ: "DFU_REQ", DFU_ACK: "DFU_ACK",
+        STEER: "STEER", STEER_MUTE: "STEER_MUTE",
     ]
 
     public static func typeName(_ type: Int) -> String { msgNames[type] ?? String(format: "0x%02x", type) }
@@ -72,6 +76,33 @@ public enum BtrxProtocol {
         (FLAG_SCANNING, "listening"),
     ]
 
+    // STEER flags (btrx_types.h BTRX_STEER_F_*; names as protocol.py STEER_FLAGS).
+    public static let STEER_F_TARGET = 0x01, STEER_F_NEW = 0x02, STEER_F_LINKED = 0x04
+    public static let STEER_F_GATED = 0x08, STEER_F_IMU_OK = 0x10, STEER_F_MUTED = 0x20
+    private static let steerFlags: [(Int, String)] = [
+        (STEER_F_TARGET, "target"), (STEER_F_NEW, "new"), (STEER_F_LINKED, "linked"),
+        (STEER_F_GATED, "gated"), (STEER_F_IMU_OK, "imu"), (STEER_F_MUTED, "muted"),
+    ]
+
+    // STEER_MUTE ops (BTRX_MUTE_*).
+    public static let MUTE_CLEAR = 0, MUTE_ADD = 1, MUTE_REMOVE = 2
+
+    // STEER device kind (BTRX_DEV_*).
+    public static let DEV_UNKNOWN = 0, DEV_PHONE = 1, DEV_WEARABLE = 2, DEV_TRACKER = 3, DEV_AUDIO = 4, DEV_COMPUTER = 5
+
+    public static func devClassName(_ kind: Int) -> String {
+        switch kind {
+        case DEV_UNKNOWN: return "unknown"
+        case DEV_PHONE: return "phone"
+        case DEV_WEARABLE: return "wearable"
+        case DEV_TRACKER: return "tracker"
+        case DEV_AUDIO: return "audio"
+        case DEV_COMPUTER: return "computer"
+        default: return String(kind)
+        }
+    }
+
+    public static func steerFlagNames(_ v: Int) -> String { flagNames(v, steerFlags) }
     public static func frameFlagNames(_ v: Int) -> String { flagNames(v, frameFlags) }
     public static func statusFlagNames(_ v: Int) -> String { flagNames(v, statusFlags) }
 
@@ -290,7 +321,98 @@ public enum BtrxProtocol {
                       attitudeFlags: Int(p[8]), tiltCode: Int(p[9]), records: records)
     }
 
+    public static let steerLen = 27
+    /// STEER RSSI value for "not heard on this patch".
+    public static let rssiNotHeard = -128
+
+    /// STEER (0x73), 27 bytes, firmware/PROTOCOL.md "STEER": the single strongest source
+    /// in the pod's last 1 s window. Port is pod B (the IMU board), starboard pod A; port
+    /// stronger means the source is to the left.
+    public struct Steer: Sendable, Equatable {
+        public let steerSeq: Int, flags: Int, windowEndMs: UInt32, ageMs: Int, srcId: Int
+        public let rssiPort: Int, rssiStbd: Int, peakRssi: Int, hitsPort: Int, hitsStbd: Int
+        public let companyId: Int, devClass: Int, addrType: Int
+        /// Address as received, least significant byte first (as in DETECT).
+        public let macLsbFirst: [UInt8]
+        public let rollX2: Int, pitchX2: Int
+
+        public init(steerSeq: Int, flags: Int, windowEndMs: UInt32, ageMs: Int, srcId: Int, rssiPort: Int, rssiStbd: Int,
+                    peakRssi: Int, hitsPort: Int, hitsStbd: Int, companyId: Int, devClass: Int, addrType: Int,
+                    macLsbFirst: [UInt8], rollX2: Int, pitchX2: Int) {
+            self.steerSeq = steerSeq; self.flags = flags; self.windowEndMs = windowEndMs; self.ageMs = ageMs; self.srcId = srcId
+            self.rssiPort = rssiPort; self.rssiStbd = rssiStbd; self.peakRssi = peakRssi; self.hitsPort = hitsPort; self.hitsStbd = hitsStbd
+            self.companyId = companyId; self.devClass = devClass; self.addrType = addrType; self.macLsbFirst = macLsbFirst
+            self.rollX2 = rollX2; self.pitchX2 = pitchX2
+        }
+
+        public var target: Bool { flags & BtrxProtocol.STEER_F_TARGET != 0 }
+        public var newSource: Bool { flags & BtrxProtocol.STEER_F_NEW != 0 }
+        public var linked: Bool { flags & BtrxProtocol.STEER_F_LINKED != 0 }
+        public var gated: Bool { flags & BtrxProtocol.STEER_F_GATED != 0 }
+        public var imuOk: Bool { flags & BtrxProtocol.STEER_F_IMU_OK != 0 }
+        public var muted: Bool { flags & BtrxProtocol.STEER_F_MUTED != 0 }
+        public var portHeard: Bool { rssiPort != BtrxProtocol.rssiNotHeard }
+        public var stbdHeard: Bool { rssiStbd != BtrxProtocol.rssiNotHeard }
+        /// Last 4 characters of the address: never log or show the full address.
+        public var addressTail: String { String(macLsbFirst.reversed().map { String(format: "%02X", $0) }.joined().suffix(4)) }
+    }
+
+    public static func parseSteer(_ p: [UInt8]) throws -> Steer {
+        try need(p, steerLen, "STEER")
+        return Steer(steerSeq: Int(p[0]), flags: Int(p[1]), windowEndMs: u32(p, 2), ageMs: u16(p, 6), srcId: u16(p, 8),
+                     rssiPort: i8(p, 10), rssiStbd: i8(p, 11), peakRssi: i8(p, 12), hitsPort: Int(p[13]), hitsStbd: Int(p[14]),
+                     companyId: u16(p, 15), devClass: Int(p[17]), addrType: Int(p[18]), macLsbFirst: Array(p[19..<25]),
+                     rollX2: i8(p, 25), pitchX2: i8(p, 26))
+    }
+
+    /// STEER encoder (protocol.py pack_steer), for tests and the bench simulator.
+    public static func steerPayload(_ s: Steer) -> [UInt8] {
+        var out = [UInt8](repeating: 0, count: steerLen)
+        func b(_ v: Int) -> UInt8 { UInt8(truncatingIfNeeded: v) }
+        out[0] = b(s.steerSeq); out[1] = b(s.flags)
+        putU32(&out, 2, s.windowEndMs)
+        out[6] = b(s.ageMs); out[7] = b(s.ageMs >> 8)
+        out[8] = b(s.srcId); out[9] = b(s.srcId >> 8)
+        out[10] = b(s.rssiPort); out[11] = b(s.rssiStbd); out[12] = b(s.peakRssi)
+        out[13] = b(s.hitsPort); out[14] = b(s.hitsStbd)
+        out[15] = b(s.companyId); out[16] = b(s.companyId >> 8)
+        out[17] = b(s.devClass); out[18] = b(s.addrType)
+        for (i, v) in s.macLsbFirst.prefix(6).enumerated() { out[19 + i] = v }
+        out[25] = b(s.rollX2); out[26] = b(s.pitchX2)
+        return out
+    }
+
+    public struct SteerMute: Sendable, Equatable {
+        public let op: Int, srcId: Int
+        public init(op: Int, srcId: Int) { self.op = op; self.srcId = srcId }
+    }
+
+    public static func parseSteerMute(_ p: [UInt8]) throws -> SteerMute {
+        try need(p, 3, "STEER_MUTE")
+        return SteerMute(op: Int(p[0]), srcId: u16(p, 1))
+    }
+
+    public static func muteOpName(_ op: Int) -> String {
+        switch op {
+        case MUTE_CLEAR: return "clear"
+        case MUTE_ADD: return "add"
+        case MUTE_REMOVE: return "remove"
+        default: return String(op)
+        }
+    }
+
     // MARK: payloads R2C sends
+
+    /// STEER_MUTE (0x74) payload: op u8, src_id u16 (protocol.py pack_steer_mute).
+    public static func steerMutePayload(op: Int, srcId: Int = 0) -> [UInt8] {
+        [UInt8(truncatingIfNeeded: op), UInt8(truncatingIfNeeded: srcId), UInt8(truncatingIfNeeded: srcId >> 8)]
+    }
+
+    /// A complete STEER_MUTE frame. R2C sends it to the paired Drone Pod's node (the
+    /// starboard board, which builds STEER); the header carries that pod's pod_id.
+    public static func steerMuteFrame(seq: Int, podId: UInt32, op: Int, srcId: Int = 0) -> [UInt8] {
+        encodeFrame(STEER_MUTE, seq: seq, podId: podId, payload: steerMutePayload(op: op, srcId: srcId))
+    }
 
     public static func roleGetFrame(seq: Int) -> [UInt8] { encodeFrame(ROLE_GET, seq: seq) }
 

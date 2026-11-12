@@ -56,6 +56,22 @@ struct DeskPodView: View {
                         Text("The Desk Pod pairing window is open (\(s.windowSecondsLeft) s left).").font(.footnote)
                     }
                     pairing(s.pairing)
+
+                    Divider().padding(.vertical, 6)
+                    section("Steering")
+                    if let st = s.lastSteer {
+                        HStack {
+                            SteeringMark(view: st, size: 36)
+                            Text(Text_.steerLine(st))
+                        }
+                        if st.muted { Text(Text_.steerMuted).fontWeight(.semibold) }
+                    } else {
+                        Text(Text_.steerNone).font(.footnote)
+                    }
+                    Text(Text_.steerMuteHint).font(.footnote).foregroundStyle(.secondary)
+                    if s.pairedPod != nil {
+                        Button(Text_.clearMutes) { center.clearSteeringMutes() }.buttonStyle(.bordered)
+                    }
                 }
                 .frame(maxWidth: 720, alignment: .leading)
                 .padding()
@@ -120,5 +136,122 @@ struct DeskPodView: View {
         case .active: return .accentColor
         case .pending: return .secondary
         }
+    }
+}
+
+// MARK: steering overlay (btrx design doc section 41)
+
+private struct BtrxDeskPodKey: EnvironmentKey {
+    static let defaultValue: BtrxDeskPodCenter? = nil
+}
+
+extension EnvironmentValues {
+    /// The Desk Pod link, for the stream tiles' steering overlay (set by ContentView).
+    var btrxDeskPod: BtrxDeskPodCenter? {
+        get { self[BtrxDeskPodKey.self] }
+        set { self[BtrxDeskPodKey.self] = newValue }
+    }
+}
+
+/// The pilot's steering overlay on a live stream tile: one circle and vector in the
+/// source's color and one hint word, no numbers. Tapping the circle (or "Mute") mutes
+/// that source on the pod. Shows only while the Desk Pod link is up, a Drone Pod is
+/// paired and STEER keeps arriving. Same as Android's BtrxSteeringOverlay.
+struct AppleSteeringOverlay: View {
+    @Environment(\.btrxDeskPod) private var center
+
+    var body: some View {
+        if let center { AppleSteeringOverlayContent(center: center) }
+    }
+}
+
+private struct AppleSteeringOverlayContent: View {
+    @ObservedObject var center: BtrxDeskPodCenter
+
+    var body: some View {
+        if let v = center.snapshot.steerOverlay {
+            VStack(spacing: 2) {
+                SteeringMark(view: v, size: 64)
+                    .contentShape(Circle())
+                    .onTapGesture { if v.canMute { center.muteSteeringSource() } }
+                    .accessibilityElement()
+                    .accessibilityLabel("\(v.hint.word). \(BtrxDeskPodText.mute)")
+                    .accessibilityAddTraits(.isButton)
+                Text(v.hint.word)
+                    .font(.system(size: 22, weight: .bold))
+                    .foregroundStyle(.white)
+                if v.canMute {
+                    Button { center.muteSteeringSource() } label: {
+                        Text(BtrxDeskPodText.mute)
+                            .font(.caption)
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 3)
+                            .background(.white.opacity(0.18), in: RoundedRectangle(cornerRadius: 8))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(.black.opacity(0.45), in: RoundedRectangle(cornerRadius: 10))
+        }
+    }
+}
+
+/// Circle (shape by device kind) and vector in the source's palette color. Also the Desk
+/// Pod screen's swatch. Same drawing as Android's SteeringMark.
+struct SteeringMark: View {
+    let view: BtrxSteering.View
+    let size: CGFloat
+
+    static func color(_ rgb: Int) -> Color {
+        Color(red: Double((rgb >> 16) & 0xFF) / 255, green: Double((rgb >> 8) & 0xFF) / 255, blue: Double(rgb & 0xFF) / 255)
+    }
+
+    var body: some View {
+        let color = Self.color(view.colorIndex.map { BtrxSteering.palette[$0] } ?? BtrxSteering.gray)
+        let vectorColor = view.gray ? Self.color(BtrxSteering.gray) : color
+        let outline = Self.color(BtrxSteering.outline)
+        Canvas { ctx, sz in
+            let m = min(sz.width, sz.height)
+            let r = m * 0.22
+            let c = CGPoint(x: sz.width / 2, y: sz.height / 2)
+            let circle = Path(ellipseIn: CGRect(x: c.x - r, y: c.y - r, width: 2 * r, height: 2 * r))
+            switch view.devClass {
+            case BtrxProtocol.DEV_PHONE:
+                ctx.fill(circle, with: .color(color))
+                ctx.stroke(circle, with: .color(outline), lineWidth: 1.5)
+            case BtrxProtocol.DEV_WEARABLE, BtrxProtocol.DEV_AUDIO:
+                ctx.stroke(circle, with: .color(outline), lineWidth: 5)
+                ctx.stroke(circle, with: .color(color), lineWidth: 3)
+                let inner = Path(ellipseIn: CGRect(x: c.x - r / 2, y: c.y - r / 2, width: r, height: r))
+                ctx.stroke(inner, with: .color(color), lineWidth: 3)
+            case BtrxProtocol.DEV_TRACKER:
+                ctx.stroke(circle, with: .color(outline), lineWidth: 5)
+                ctx.stroke(circle, with: .color(color), style: StrokeStyle(lineWidth: 3, dash: [4, 3]))
+            default:
+                ctx.stroke(circle, with: .color(outline), lineWidth: 5)
+                ctx.stroke(circle, with: .color(color), lineWidth: 3)
+            }
+            guard let dir = view.vector else { return }
+            let rad = Double(dir.degrees) * .pi / 180
+            let dx = CGFloat(sin(rad)), dy = CGFloat(-cos(rad))
+            let len = m * 0.46
+            let start = CGPoint(x: c.x + dx * (r + 2), y: c.y + dy * (r + 2))
+            let end = CGPoint(x: c.x + dx * len, y: c.y + dy * len)
+            var shaft = Path()
+            shaft.move(to: start); shaft.addLine(to: end)
+            let head = CGFloat(8)
+            for side in [-1.0, 1.0] {
+                let a = rad + side * 150 * .pi / 180
+                shaft.move(to: end)
+                shaft.addLine(to: CGPoint(x: end.x + CGFloat(sin(a)) * head, y: end.y - CGFloat(cos(a)) * head))
+            }
+            ctx.stroke(shaft, with: .color(outline), style: StrokeStyle(lineWidth: 7, lineCap: .round))
+            ctx.stroke(shaft, with: .color(vectorColor), style: StrokeStyle(lineWidth: 4, lineCap: .round))
+        }
+        .frame(width: size, height: size)
+        .opacity(view.faded ? 0.4 : 1)
     }
 }

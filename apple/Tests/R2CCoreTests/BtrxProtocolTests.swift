@@ -196,4 +196,92 @@ final class BtrxProtocolTests: XCTestCase {
         XCTAssertEqual(0x4B95_F515, P.podId(forDevA: 0))
         for d: UInt32 in [0, 1, 0xFFFF_FFFF, 0x0189_68BE] { XCTAssertNotEqual(0, P.podId(forDevA: d)) }
     }
+
+    // MARK: steering (firmware 0x0101; vectors from test_protocol.py)
+
+    static let steerPayload = "0703040302014101efbec3bac603044c000102aa0000000055fa04"
+    static let steerFrame = "b75201730134120000001b0703040302014101efbec3bac603044c000102aa0000000055fa04378f"
+    static let steerMuteFrame = "b7520174020000000000030102017c69"
+
+    func testSteerFrameFromFirmwareDecodes() throws {
+        let f = try P.decodeFrame(P.fromHex(Self.steerFrame))
+        XCTAssertEqual(P.STEER, f.type)
+        XCTAssertEqual(1, f.seq)
+        XCTAssertEqual(0x1234, f.podId)
+        XCTAssertEqual(27, f.payload.count)
+        let s = try P.parseSteer(f.payload)
+        XCTAssertEqual(7, s.steerSeq)
+        XCTAssertEqual(P.STEER_F_TARGET | P.STEER_F_NEW, s.flags)
+        XCTAssertTrue(s.target && s.newSource && !s.gated && !s.muted && !s.imuOk && !s.linked)
+        XCTAssertEqual(0x0102_0304, s.windowEndMs)
+        XCTAssertEqual(321, s.ageMs)
+        XCTAssertEqual(0xBEEF, s.srcId)
+        XCTAssertEqual(-61, s.rssiPort)
+        XCTAssertEqual(-70, s.rssiStbd)
+        XCTAssertEqual(-58, s.peakRssi)
+        XCTAssertEqual(3, s.hitsPort)
+        XCTAssertEqual(4, s.hitsStbd)
+        XCTAssertEqual(0x004C, s.companyId)
+        XCTAssertEqual(P.DEV_PHONE, s.devClass)
+        XCTAssertEqual(2, s.addrType)
+        XCTAssertEqual("aa0000000055", P.hex(s.macLsbFirst))
+        XCTAssertEqual("00AA", s.addressTail)
+        XCTAssertEqual(-6, s.rollX2)
+        XCTAssertEqual(4, s.pitchX2)
+    }
+
+    func testSteerEncodesToTheFirmwareVector() throws {
+        let s = try P.parseSteer(P.fromHex(Self.steerPayload))
+        XCTAssertEqual(Self.steerPayload, P.hex(P.steerPayload(s)))
+        XCTAssertEqual(Self.steerFrame, P.hex(P.encodeFrame(P.STEER, seq: 1, podId: 0x1234, payload: P.steerPayload(s))))
+    }
+
+    func testSteerWithNoTargetIsAllNotHeard() throws {
+        // pack_steer(1, 0, 5000, 0, 0, -128, -128, -128, 0, 0, 0, 0, 0, bytes(6)), roll/pitch 0
+        let payload = P.fromHex("010088130000000000008080800000000000000000000000000000")
+        let s = try P.parseSteer(payload)
+        XCTAssertFalse(s.target)
+        XCTAssertEqual(5000, s.windowEndMs)
+        XCTAssertEqual(0, s.srcId)
+        XCTAssertFalse(s.portHeard || s.stbdHeard)
+        XCTAssertEqual(-128, s.peakRssi)
+        XCTAssertEqual(P.hex(payload), P.hex(P.steerPayload(s)))
+    }
+
+    func testSteerMuteFrameMatchesTheFirmwareVector() throws {
+        XCTAssertEqual(Self.steerMuteFrame, P.hex(P.steerMuteFrame(seq: 2, podId: 0, op: P.MUTE_ADD, srcId: 0x0102)))
+        let f = try P.decodeFrame(P.fromHex(Self.steerMuteFrame))
+        XCTAssertEqual(P.STEER_MUTE, f.type)
+        XCTAssertEqual(P.SteerMute(op: P.MUTE_ADD, srcId: 0x0102), try P.parseSteerMute(f.payload))
+    }
+
+    func testSteerMuteCommandBytes() throws {
+        XCTAssertEqual("000000", P.hex(P.steerMutePayload(op: P.MUTE_CLEAR, srcId: 0)))
+        XCTAssertEqual("01efbe", P.hex(P.steerMutePayload(op: P.MUTE_ADD, srcId: 0xBEEF)))
+        XCTAssertEqual("020700", P.hex(P.steerMutePayload(op: P.MUTE_REMOVE, srcId: 7)))
+        let f = try P.decodeFrame(P.steerMuteFrame(seq: 9, podId: 0x45D3_5AF0, op: P.MUTE_CLEAR))
+        XCTAssertEqual(0x45D3_5AF0, f.podId)
+        XCTAssertEqual(0, f.flags)
+        XCTAssertEqual("000000", P.hex(f.payload))
+    }
+
+    func testSteerTooShortIsAPayloadError() {
+        XCTAssertThrowsError(try P.parseSteer([UInt8](repeating: 0, count: 26))) { XCTAssertTrue($0 is P.PayloadError) }
+    }
+
+    func testSteerFrameLogLine() throws {
+        let line = BtrxFrameLog.format(try P.decodeFrame(P.fromHex(Self.steerFrame)))
+        XCTAssertTrue(line.hasPrefix("STEER seq=1"), line)
+        XCTAssertTrue(line.contains("steer_seq=7 steer_flags=target,new src=48879 kind=phone cid=0x004c rssi_port=-61 rssi_stbd=-70 peak=-58 hits_port=3 hits_stbd=4 age_ms=321 [..00AA] addr_type=2"), line)
+        XCTAssertTrue(line.hasSuffix("window_end_ms=16909060 roll_x2=-6 pitch_x2=4"), line)
+        let mute = BtrxFrameLog.format(try P.decodeFrame(P.fromHex(Self.steerMuteFrame)))
+        XCTAssertTrue(mute.hasSuffix("op=add src=258"), mute)
+    }
+
+    func testFirmware0101IsSupported() {
+        XCTAssertTrue(P.supportedBuilds.contains(0x0101))
+        XCTAssertTrue(P.supportedBuilds.contains(0x0100))
+        XCTAssertEqual("STEER", P.typeName(0x73))
+        XCTAssertEqual("STEER_MUTE", P.typeName(0x74))
+    }
 }

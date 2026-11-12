@@ -4,8 +4,10 @@ import XCTest
 final class BtrxTestLogger: BtrxLogger {
     var infos: [String] = []
     var warns: [String] = []
+    var debugs: [String] = []
     func info(_ message: String) { infos.append(message) }
     func warn(_ message: String) { warns.append(message) }
+    func debug(_ message: String) { debugs.append(message) }
 }
 
 /// Deterministic generator so config ids and packet ids repeat between runs.
@@ -130,6 +132,21 @@ final class BtrxClientTests: XCTestCase {
         c.onBytes(M.frame(MeshtasticPhoneAPITests.fromRadioPacket(from: deskNode, to: deskNode, rssi: 0, snr: 0, port: 256, payload: report)))
         XCTAssertEqual(P.roleDeskPod, c.localRole?.role)
         XCTAssertTrue(log.infos.contains { $0.hasPrefix("Desk Pod confirmed: role=3 build_hash=0x0100 (supported)") })
+    }
+
+    func testSteerIsLoggedAtDebugLevelWithOnlyTheAddressTail() throws {
+        let c = makeClient(.serial)
+        try handshakeSerial(c)
+        c.onBytes(M.frame(packet(starboard, P.fromHex(BtrxProtocolTests.steerFrame))))
+        let lines = log.debugs.filter { $0.hasPrefix("rx ") }
+        XCTAssertEqual(1, lines.count)
+        let line = lines.first ?? ""
+        XCTAssertTrue(line.contains("STEER seq=1"), line)
+        XCTAssertTrue(line.contains("src=48879"), line)
+        XCTAssertTrue(line.contains("[..00AA]"), line)
+        XCTAssertFalse(line.lowercased().contains("aa0000000055"), line)
+        XCTAssertFalse(log.infos.contains { $0.contains(" STEER ") })
+        XCTAssertEqual(1, c.frameCount("STEER"))
     }
 
     func testEveryFrameIsDecodedIntoTheLogAndCounted() throws {
