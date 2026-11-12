@@ -26,6 +26,16 @@ Project-only engineering record; do not package in the app, copy into store meta
   end, legend bottom start); iPad `AppleStreamTile.videoContent`, top center
   (requested-by label bottom leading, alert overlay top leading). Native drawing
   (Compose Canvas / SwiftUI Canvas), same shapes and sizes.
+- BT RX review of the overlay, both platforms (btrx 4a68518, section 41.2): fade
+  after 2 s without STEER; CLOSER/FARTHER from the peak slope against
+  window_end_ms over 10 s (6+ reports, >= 0.5 dB/s and 2 standard errors, clear
+  under 0.25 dB/s, gated and empty reports left out); one-patch reports are
+  strong only with 2+ hits; roll slope 0.2 dB/deg with roll correction off by
+  default (debug switch on the Desk Pod screen) until the bench roll check;
+  window_end_ms going back resets steering (pod restart); the overlay only on the
+  pod drone's tile, automatic with one live stream, else "Drone Pod is on this
+  drone" on the tile (cleared when that stream ends; "Choose another drone" on
+  the Desk Pod screen). Same pure logic (`BtrxSteeringTarget`) on both.
 - Evidence: Android unit suite and debug build; Swift package tests and the
   unsigned iOS build. Board test: `docs/btrx/BLE-bench-test.md` section 6 (not
   yet run; left/right still to be verified on hardware).
