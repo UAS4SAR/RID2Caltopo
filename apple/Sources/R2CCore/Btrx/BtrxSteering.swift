@@ -30,6 +30,8 @@ import Foundation
 ///   ``alongSigma`` x its standard error, FARTHER likewise negative (vector points back:
 ///   turn around); cleared below ``alongExitDbS`` dB/s.
 /// - LEVEL at once while the latest report is gated: vector gray, last hint held.
+/// - NO_PORT at once while pod B is missing from the latest report (port -128 and IMU-ok
+///   clear): vector gray, last hint and length held (it used to give a hard RIGHT).
 /// - Faded at once when the latest report has no target, or no STEER for ``staleMs``.
 /// - LOST at once after ``lostMs`` without a target: no vector, circle faded.
 /// A new src_id, or the same one after LOST, starts the hint afresh.
@@ -48,6 +50,8 @@ import Foundation
 public final class BtrxSteering {
     public enum Hint: String, Sendable {
         case left = "LEFT", right = "RIGHT", straight = "STRAIGHT", closer = "CLOSER", farther = "FARTHER", level = "LEVEL", lost = "LOST"
+        /// Pod B silent (``BtrxProtocol/Steer/portBoardSilent``): no direction, last hint held, vector gray.
+        case noPort = "NO PORT"
         public var word: String { rawValue }
     }
 
@@ -173,6 +177,7 @@ public final class BtrxSteering {
         colorFor(src)
         targetDevClass = s.devClass
         if s.gated { return restarted } // hold the last hint (LEVEL); not in the fit
+        if s.portBoardSilent { return restarted } // pod B missing: no direction (NO_PORT)
         updateSide(s)
         updateAlong(s)
         updateLength(s)
@@ -190,7 +195,7 @@ public final class BtrxSteering {
         guard let s = last, let seen = lastSteerMs else { return nil }
         let lost = lastTargetMs.map { nowMs - $0 >= Self.lostMs } ?? true
         let stale = nowMs - seen >= Self.staleMs
-        let hint: Hint = lost ? .lost : s.gated ? .level : heldHint()
+        let hint: Hint = lost ? .lost : s.gated ? .level : (s.target && s.portBoardSilent) ? .noPort : heldHint()
         var vector: Vector?
         if !lost {
             switch side {
@@ -199,7 +204,7 @@ public final class BtrxSteering {
             default: vector = along == .farther ? .behind : .ahead
             }
         }
-        return View(srcId: src, colorIndex: colors[src], hint: hint, vector: vector, gray: hint == .level,
+        return View(srcId: src, colorIndex: colors[src], hint: hint, vector: vector, gray: hint == .level || hint == .noPort,
                     faded: lost || !s.target || stale, devClass: targetDevClass, muted: s.muted, steerSeq: s.steerSeq,
                     ageMs: nowMs - seen, canMute: !lost && src != 0,
                     length: length ?? Self.lengthDefault, closer: !lost && side == .straight && along == .closer)

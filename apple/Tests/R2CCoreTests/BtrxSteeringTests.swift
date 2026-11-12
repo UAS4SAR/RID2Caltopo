@@ -73,19 +73,31 @@ final class BtrxSteeringTests: XCTestCase {
     }
 
     func testHeardOnOnePatchWithTwoHitsIsThatSideAtOnceAndHard() {
-        XCTAssertEqual(.right, steer(P.rssiNotHeard, -80, hitsPort: 0, hitsStbd: 2))
+        XCTAssertEqual(.right, steer(P.rssiNotHeard, -80, imu: true, hitsPort: 0, hitsStbd: 2))
         XCTAssertEqual(.hardRight, vector)
         tick(); XCTAssertEqual(.left, steer(-80, P.rssiNotHeard, hitsPort: 2, hitsStbd: 0))
         XCTAssertEqual(.hardLeft, vector)
     }
 
+    func testPortBoardSilentIsNoDirectionNotAHardRight() {
+        // A5 bench 10:45:26: port -128, hits 0/7, IMU-ok clear (pod B off the link), stbd -24.
+        XCTAssertEqual(.noPort, steer(P.rssiNotHeard, -24, hitsPort: 0, hitsStbd: 7))
+        let v = st.view(nowMs: now)!
+        XCTAssertTrue(v.gray)
+        XCTAssertEqual(.ahead, v.vector) // nothing learnt: no side
+        tick(); XCTAssertEqual(.left, steer(-60, -66, imu: true))
+        for _ in 0..<3 { tick(); XCTAssertEqual(.noPort, steer(P.rssiNotHeard, -24, hitsPort: 0, hitsStbd: 7)) }
+        XCTAssertEqual(.left, st.view(nowMs: now)?.vector)
+        tick(); XCTAssertEqual(.left, steer(-60, -66, imu: true))
+    }
+
     func testHeardOnOnePatchWithOneHitNeedsConfirming() {
         steer(-60, -64)
         XCTAssertEqual(.left, hint)
-        tick(); XCTAssertEqual(.left, steer(P.rssiNotHeard, -80, hitsPort: 0, hitsStbd: 1))
-        tick(); XCTAssertEqual(.right, steer(P.rssiNotHeard, -80, hitsPort: 0, hitsStbd: 1))
+        tick(); XCTAssertEqual(.left, steer(P.rssiNotHeard, -80, imu: true, hitsPort: 0, hitsStbd: 1))
+        tick(); XCTAssertEqual(.right, steer(P.rssiNotHeard, -80, imu: true, hitsPort: 0, hitsStbd: 1))
         XCTAssertEqual(.right, vector)
-        tick(); steer(P.rssiNotHeard, -80, hitsPort: 0, hitsStbd: 2)
+        tick(); steer(P.rssiNotHeard, -80, imu: true, hitsPort: 0, hitsStbd: 2)
         XCTAssertEqual(.hardRight, vector)
     }
 

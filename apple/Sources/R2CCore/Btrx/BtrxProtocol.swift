@@ -369,6 +369,9 @@ public enum BtrxProtocol {
         public var imuCal: Bool { flags & BtrxProtocol.STEER_F_IMU_CAL != 0 }
         public var portHeard: Bool { rssiPort != BtrxProtocol.rssiNotHeard }
         public var stbdHeard: Bool { rssiStbd != BtrxProtocol.rssiNotHeard }
+        /// Pod B (the port patch and the IMU) is missing from this report: port not heard and
+        /// the IMU-ok flag clear. That is the board-to-board link, not a direction. Same as Android.
+        public var portBoardSilent: Bool { !portHeard && !imuOk }
         /// Last 4 characters of the address: never log or show the full address.
         public var addressTail: String { String(macLsbFirst.reversed().map { String(format: "%02X", $0) }.joined().suffix(4)) }
     }
