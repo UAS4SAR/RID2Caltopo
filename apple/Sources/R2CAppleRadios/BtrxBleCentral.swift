@@ -141,6 +141,7 @@ final class BtrxBleCentral: NSObject, @unchecked Sendable {
     }
 
     func forgetPairedPod() { queue.async { [self] in model.forgetPairedPod(); publish() } }
+    func replacePairedPod() { queue.async { [self] in model.replacePairedPod(); publish() } }
     func startPairing() { queue.async { [self] in model.startPairing(); publish() } }
     func confirmPod() { queue.async { [self] in model.confirmPod(); publish() } }
     func cancelPairing() { queue.async { [self] in model.cancelPairing(); publish() } }
@@ -630,6 +631,12 @@ public final class BtrxDeskPodCenter: ObservableObject {
     public func forgetPairedPod() {
         defaults.removeObject(forKey: Self.keyPaired)
         central.forgetPairedPod()
+    }
+
+    /// "Replace Drone Pod" after its confirmation: unpair the current pod here, then pair.
+    public func replacePairedPod() {
+        defaults.removeObject(forKey: Self.keyPaired)
+        central.replacePairedPod()
     }
 
     public func startPairing() { central.startPairing() }

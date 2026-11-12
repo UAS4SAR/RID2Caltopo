@@ -15,6 +15,29 @@ public enum BtrxDeskPodText {
     public static let pinHint = "Bluetooth PIN: printed on the Desk Pod (\(MeshtasticPhoneAPI.defaultPIN) by default for now)."
     public static let mute = "Mute"
     public static let clearMutes = "Clear mutes"
+    // One Desk Pod and one Drone Pod per app: replace, never add another.
+    public static let pairPod = "Pair drone pod"
+    public static let replacePod = "Replace Drone Pod"
+    public static let replacePodTitle = "Replace Drone Pod?"
+    public static let replacePodOK = "Unpair and pair new"
+    public static let replaceDesk = "Replace Desk Pod"
+    public static let replaceDeskTitle = "Replace Desk Pod?"
+    public static let replaceDeskOK = "Forget and scan"
+    public static let replaceKeep = "Keep current"
+
+    /// Body of the "Replace Drone Pod?" confirmation.
+    public static func replacePodMessage(_ s: Model.Snapshot) -> String {
+        let pod = s.pairedPod.map { String(format: "Drone Pod %@ (pod_id %08x)", BtrxClient.nodeName($0.node), $0.podId) } ?? "The current Drone Pod"
+        return "\(pod) will be unpaired from this app, then pairing starts for the new pod. "
+            + "The old pod keeps its own pairing and keeps sending until it is paired again or factory reset; this app ignores it."
+    }
+
+    /// Body of the "Replace Desk Pod?" confirmation.
+    public static func replaceDeskMessage(_ s: Model.Snapshot) -> String {
+        let desk = s.link.deviceName.map { "Desk Pod \($0)" } ?? "The current Desk Pod"
+        return "\(desk) will be forgotten and the app will connect to the next Desk Pod it finds. The paired Drone Pod stays paired."
+    }
+
     public static let steerPick = "Drone Pod is on this drone"
     public static let steerChooseAgain = "Choose another drone"
     public static let steerRoll = "Roll correction (debug; only after the bench roll check)"

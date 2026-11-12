@@ -458,6 +458,49 @@ final class BtrxDeskPodModelTests: XCTestCase {
         withExtendedLifetime(next) {}
     }
 
+    // MARK: one Drone Pod per app
+
+    func testPairingIsNotStartedWhileADronePodIsPaired() {
+        model.restorePairedPod(Model.PairedPod(node: pod, podId: 0x45D3_5AF0, devA: 0x4C8C_125B, devB: 0x351C_2971))
+        model.startPairing()
+        XCTAssertEqual(.idle, step)
+        XCTAssertTrue(log.debugs.contains { $0.contains("is paired; use Replace Drone Pod") })
+    }
+
+    func testReplaceUnpairsTheCurrentPodThenRunsTheWholePairingFlow() {
+        model.restorePairedPod(Model.PairedPod(node: 0x0BAD_F00D, podId: 0x1111_1111, devA: 0x4C8C_125B, devB: 0x351C_2971))
+        model.replacePairedPod()
+        XCTAssertNil(model.snapshot().pairedPod) // unpaired first
+        XCTAssertEqual(.waitButton, step)
+        XCTAssertTrue(log.debugs.contains { $0.contains("Drone Pod !0badf00d pod_id=11111111 unpaired in this app to replace it") })
+        XCTAssertTrue(sender.sent.isEmpty) // firmware 0x0102 has no unpair message to send
+        deskPair(1)
+        pairReq()
+        model.confirmPod()
+        pairAck(1, 1)
+        let done = model.snapshot()
+        XCTAssertEqual(.paired, done.pairing.step)
+        XCTAssertEqual(pod, done.pairedPod?.node)
+        XCTAssertEqual(1, paired.count)
+        // The old pod keeps sending with its old pod_id: ignored now.
+        podSeq += 1
+        let old = try! P.decodeFrame(P.encodeFrame(P.STEER, seq: podSeq, podId: 0x1111_1111, payload: P.fromHex(BtrxProtocolTests.steerPayload)))
+        model.onFrame(old, meta: meta(0x0BAD_F00D))
+        XCTAssertNil(model.snapshot().lastSteer)
+    }
+
+    func testReplaceWithNothingPairedJustStartsPairing() {
+        model.replacePairedPod()
+        XCTAssertEqual(.waitButton, step)
+    }
+
+    func testReplaceTextNamesThePodAndWhatThePodStillHolds() {
+        model.restorePairedPod(Model.PairedPod(node: pod, podId: 0x45D3_5AF0, devA: 0x4C8C_125B, devB: 0x351C_2971))
+        let msg = BtrxDeskPodText.replacePodMessage(model.snapshot())
+        XCTAssertTrue(msg.hasPrefix("Drone Pod !018968be (pod_id 45d35af0) will be unpaired from this app"), msg)
+        XCTAssertTrue(msg.contains("keeps its own pairing"))
+    }
+
     // MARK: steering (STEER / STEER_MUTE)
 
     let pairedPodId: UInt32 = 0x45D3_5AF0

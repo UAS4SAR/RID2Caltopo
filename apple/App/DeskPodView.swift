@@ -6,10 +6,15 @@ import SwiftUI
 /// and the "Pair drone pod" flow. Same sections, order and wording as Android's
 /// DeskPodScreen. "Dismiss" only hides this panel; the link keeps running (a calibration
 /// in progress too). "Cancel pairing" ends a pairing in progress; "Cancel calibration"
-/// ends the IMU calibration flow.
+/// ends the IMU calibration flow. One Desk Pod and one Drone Pod per app: "Replace Desk
+/// Pod" / "Replace Drone Pod" ask first, then forget or unpair the current one; there is
+/// no "Pair another".
 struct DeskPodView: View {
     @ObservedObject var center: BtrxDeskPodCenter
     let onDismiss: () -> Void
+    @State private var replacing: Replacing?
+
+    private enum Replacing: Identifiable { case deskPod, dronePod; var id: Self { self } }
 
     private typealias Text_ = BtrxDeskPodText
     private static let green = Color(red: 0x2E / 255, green: 0x7D / 255, blue: 0x32 / 255)
@@ -29,7 +34,7 @@ struct DeskPodView: View {
                     if let device = Text_.deviceLine(s) { Text(device) }
                     Text(Text_.pinHint).font(.footnote).foregroundStyle(.secondary)
                     if center.bluetoothEnabled {
-                        Button("Forget this Desk Pod") { center.forgetDeskPod() }.buttonStyle(.bordered)
+                        Button(Text_.replaceDesk) { replacing = .deskPod }.buttonStyle(.bordered)
                     }
 
                     Divider().padding(.vertical, 6)
@@ -46,11 +51,7 @@ struct DeskPodView: View {
                     Divider().padding(.vertical, 6)
                     section("Pair drone pod")
                     if let line = Text_.pairedLine(s) {
-                        HStack {
-                            Text(line)
-                            Spacer()
-                            Button("Forget") { center.forgetPairedPod() }
-                        }
+                        Text(line)
                         ForEach(Text_.pairedPodWarnings(s), id: \.self) { Text($0).font(.footnote).foregroundStyle(.red) }
                     }
                     if s.windowOpen && s.pairing.step == .idle {
@@ -91,6 +92,16 @@ struct DeskPodView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Dismiss", action: onDismiss) }
+            }
+            .alert(replacing == .dronePod ? Text_.replacePodTitle : Text_.replaceDeskTitle,
+                   isPresented: Binding(get: { replacing != nil }, set: { if !$0 { replacing = nil } }),
+                   presenting: replacing) { r in
+                Button(r == .dronePod ? Text_.replacePodOK : Text_.replaceDeskOK, role: .destructive) {
+                    if r == .dronePod { center.replacePairedPod() } else { center.forgetDeskPod() }
+                }
+                Button(Text_.replaceKeep, role: .cancel) {}
+            } message: { r in
+                Text(r == .dronePod ? Text_.replacePodMessage(s) : Text_.replaceDeskMessage(s))
             }
         }
     }
@@ -146,7 +157,7 @@ struct DeskPodView: View {
     private func pairing(_ p: BtrxDeskPodModel.Pairing) -> some View {
         let active = BtrxDeskPodModel.activeSteps.contains(p.step)
         if p.step == .idle {
-            Button("Pair drone pod") { center.startPairing() }.buttonStyle(.borderedProminent)
+            pairOrReplaceButton(retry: false)
         } else {
             ForEach(Array(Text_.steps(p).enumerated()), id: \.offset) { i, step in
                 HStack(alignment: .top, spacing: 8) {
@@ -166,11 +177,21 @@ struct DeskPodView: View {
                 if p.step == .podFound && !p.podStale { Button("Confirm pod") { center.confirmPod() }.buttonStyle(.borderedProminent) }
                 if active { Button("Cancel pairing") { center.cancelPairing() }.buttonStyle(.bordered) }
                 if !active {
-                    Button(p.step == .paired ? "Pair another" : "Try again") { center.startPairing() }.buttonStyle(.borderedProminent)
+                    pairOrReplaceButton(retry: p.step == .failed)
                     Button("Clear result") { center.clearPairingResult() }
                 }
             }
             .padding(.top, 4)
+        }
+    }
+
+    /// "Pair drone pod" with none paired; "Replace Drone Pod" (asks first) once one is paired.
+    @ViewBuilder
+    private func pairOrReplaceButton(retry: Bool) -> some View {
+        if center.snapshot.pairedPod != nil {
+            Button(Text_.replacePod) { replacing = .dronePod }.buttonStyle(.borderedProminent)
+        } else {
+            Button(retry ? "Try again" : Text_.pairPod) { center.startPairing() }.buttonStyle(.borderedProminent)
         }
     }
 
