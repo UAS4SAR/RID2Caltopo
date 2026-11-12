@@ -8,6 +8,7 @@ public enum BtrxDeskPodText {
     public static let usbPaused = "Desk Pod is attached by USB; Bluetooth paused"
     public static let bluetoothToggle = "Connect over Bluetooth"
     public static let podStaleHint = "Not asking any more: nod the drone pod twice again."
+    public static let pairedPodQuiet = "No HEALTH from the paired Drone Pod for over 2 min; re-pair?"
     /// iPad: the first Bluetooth connection waits up to 90 s for the PIN to be typed.
     public static let enterPIN = "Enter the PIN printed on the Desk Pod (\(MeshtasticPhoneAPI.defaultPIN) by default) when iPadOS asks."
     public static let pinHint = "Bluetooth PIN: printed on the Desk Pod (\(MeshtasticPhoneAPI.defaultPIN) by default for now)."
@@ -86,6 +87,17 @@ public enum BtrxDeskPodText {
 
     public static func pairedLine(_ s: Model.Snapshot) -> String? {
         s.pairedPod.map { String(format: "Paired Drone Pod: %@, pod_id %08x, dev_a %08x, dev_b %08x", BtrxClient.nodeName($0.node), $0.podId, $0.devA, $0.devB) }
+    }
+
+    /// Warnings under the paired pod: an unexpected pod_id from it, or no HEALTH for a while.
+    public static func pairedPodWarnings(_ s: Model.Snapshot) -> [String] {
+        guard s.pairedPod != nil else { return [] }
+        var w: [String] = []
+        if let id = s.lastMismatchPodId, s.pairedPodIdMismatches > 0 {
+            w.append(String(format: "Paired Drone Pod is sending pod_id %08x (%d frame(s) ignored); re-pair it.", id, s.pairedPodIdMismatches))
+        }
+        if s.pairedPodQuiet { w.append(pairedPodQuiet) }
+        return w
     }
 
     public static func steps(_ p: Model.Pairing) -> [Step] {

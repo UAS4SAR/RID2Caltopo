@@ -187,7 +187,9 @@ final class BtrxDeskPodModelTests: XCTestCase {
 
     func testPodThatStopsAskingIsMarkedStaleAndNotConfirmed() throws {
         model.startPairing(); deskPair(1); pairReq()
-        advance(Model.podRequestStaleMs + 1_000)
+        advance(6_000) // three missed 2 s repeats are not stale yet (threshold 7 s)
+        XCTAssertFalse(model.snapshot().pairing.podStale)
+        advance(Model.podRequestStaleMs - 6_000 + 1_000)
         var p = model.snapshot().pairing
         XCTAssertEqual(.podFound, p.step)
         XCTAssertTrue(p.podStale)
@@ -212,13 +214,54 @@ final class BtrxDeskPodModelTests: XCTestCase {
         XCTAssertTrue(model.snapshot().pairing.podStale)
     }
 
-    func testAnotherPodMayTakeOverAStaleCandidate() {
+    func testOnlyANewDeskPodTapLetsAnotherPodReplaceAStaleCandidate() {
         model.startPairing(); deskPair(1); pairReq()
-        advance(6_000)
+        advance(Model.podRequestStaleMs + 1_000)
         pairReq(from: 0x1111_2222)
-        let p = model.snapshot().pairing
+        var p = model.snapshot().pairing
+        XCTAssertEqual(pod, p.candidate?.node) // a different pod cannot revive it
+        XCTAssertTrue(p.podStale)
+        deskPair(1, backlog: true, seq: 90) // not a live tap
+        XCTAssertEqual(.podFound, step)
+        deskPair(1) // a new live tap: back to the nod
+        p = model.snapshot().pairing
+        XCTAssertEqual(.waitNod, p.step)
+        XCTAssertNil(p.candidate)
+        pairReq(from: 0x1111_2222)
+        p = model.snapshot().pairing
+        XCTAssertEqual(.podFound, p.step)
         XCTAssertEqual(0x1111_2222, p.candidate?.node)
         XCTAssertFalse(p.podStale)
+    }
+
+    func testStaleCandidateEndsTheFlowOnceTheDeskWindowHasClosed() {
+        model.startPairing(); deskPair(1, seconds: 10); pairReq()
+        advance(8_000)
+        XCTAssertTrue(model.snapshot().pairing.podStale)
+        XCTAssertEqual(.podFound, step) // window still open: another nod can revive it
+        advance(3_000)
+        let p = model.snapshot().pairing
+        XCTAssertEqual(.failed, p.step)
+        XCTAssertEqual(.podFound, p.failedAt)
+        XCTAssertEqual(Model.staleEndedMessage, p.message)
+        XCTAssertTrue(p.message.contains("Tap the Desk Pod button and nod the drone pod twice again"))
+    }
+
+    func testStaleCandidateEndsTheFlowTwoMinutesAfterItWasFound() {
+        model.startPairing(); deskPair(1); pairReq()
+        var t: Int64 = 0
+        while t < 116_000 {
+            advance(2_000); t += 2_000
+            pairReq()
+            if t % 50_000 == 0 { deskPair(1) }
+        }
+        XCTAssertEqual(.podFound, step)
+        deskPair(1)
+        advance(Model.podRequestStaleMs + 1_000)
+        XCTAssertTrue(model.snapshot().windowOpen)
+        let p = model.snapshot().pairing
+        XCTAssertEqual(.failed, p.step)
+        XCTAssertEqual(Model.staleEndedMessage, p.message)
     }
 
     func testRepeatedPairReqIsAnsweredAgainUpToEightTimes() {
@@ -373,5 +416,45 @@ final class BtrxDeskPodModelTests: XCTestCase {
         XCTAssertNil(model.snapshot().lastPacketRssi)
         model.onFrame(podFrame("DETECT"), meta: meta(pod))
         XCTAssertEqual(-45, model.snapshot().lastPacketRssi)
+    }
+
+    func testPairedNodeWithAnUnexpectedPodIdIsCountedLoggedAndShown() {
+        model.restorePairedPod(Model.PairedPod(node: pod, podId: 0x45D3_5AF0, devA: 0x4C8C_125B, devB: 0x351C_2971))
+        for _ in 0..<3 { model.onFrame(podFrame("DETECT", podId: 0x1234_5678), meta: meta(pod)) }
+        let s = model.snapshot()
+        XCTAssertEqual(3, s.pairedPodIdMismatches)
+        XCTAssertEqual(0x1234_5678, s.lastMismatchPodId)
+        XCTAssertEqual(1, log.warns.filter { $0.hasPrefix("paired node !018968be sending pod_id 12345678") && $0.hasSuffix("re-pair") }.count)
+        XCTAssertEqual(["Paired Drone Pod is sending pod_id 12345678 (3 frame(s) ignored); re-pair it."], BtrxDeskPodText.pairedPodWarnings(s))
+        model.forgetPairedPod()
+        XCTAssertEqual(0, model.snapshot().pairedPodIdMismatches)
+    }
+
+    func testQuietPairedPodShowsARepairHint() {
+        model.setLink(Model.LinkStatus(kind: .bluetooth, phase: .ready))
+        model.restorePairedPod(Model.PairedPod(node: pod, podId: 0x45D3_5AF0, devA: 0x4C8C_125B, devB: 0x351C_2971))
+        now += 60_000
+        model.onFrame(podFrame("HEALTH", podId: 0x45D3_5AF0), meta: meta(pod))
+        now += Model.pairedQuietMs
+        XCTAssertFalse(model.snapshot().pairedPodQuiet)
+        now += 1
+        let s = model.snapshot()
+        XCTAssertTrue(s.pairedPodQuiet)
+        XCTAssertEqual([BtrxDeskPodText.pairedPodQuiet], BtrxDeskPodText.pairedPodWarnings(s))
+        model.setLink(Model.LinkStatus(kind: .bluetooth, phase: .retryWait))
+        XCTAssertFalse(model.snapshot().pairedPodQuiet) // not while the link is down
+    }
+
+    func testNoHintBeforeTheFirstTwoMinutesOfASession() {
+        model.setLink(Model.LinkStatus(kind: .bluetooth, phase: .ready))
+        model.restorePairedPod(Model.PairedPod(node: pod, podId: 1, devA: 2, devB: 3))
+        now += 100_000
+        let next = FakeSender()
+        model.attach(next) // reconnect restarts the wait
+        now += 100_000
+        XCTAssertFalse(model.snapshot().pairedPodQuiet)
+        now += 30_000
+        XCTAssertTrue(model.snapshot().pairedPodQuiet)
+        withExtendedLifetime(next) {}
     }
 }

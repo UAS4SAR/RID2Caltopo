@@ -11,11 +11,16 @@ import Foundation
 /// non-zero pod_id, then PAIR_ACK with a_ok / b_ok. The pod only takes PAIR_CONFIRM
 /// inside its own 60 s nod window, while it repeats PAIR_REQ every 2 s; once a pod has
 /// asked, the Desk Pod's window is advisory, and no PAIR_REQ for ``podRequestStaleMs``
-/// marks the pod stale and asks for another nod.
+/// marks the pod stale and asks for another nod. Only the same pod can revive a stale
+/// candidate; a different pod needs a new Desk Pod tap (a new DESK_PAIR open=1 goes back
+/// to the nod). A stale pod ends the flow once the Desk Pod window has closed or
+/// ``podFoundMaxMs`` after it was found.
 ///
 /// Pod traffic (HEALTH, DETECT, RSSI/SNR) counts only when live: backlog frames can be
 /// minutes old. Once a pod is paired only its node is accepted (the Desk Pod does not
-/// filter by pod_id); a non-zero header pod_id other than the paired one is refused.
+/// filter by pod_id); a non-zero header pod_id other than the paired one is refused,
+/// counted and shown ("re-pair"). No HEALTH from the paired pod for ``pairedQuietMs`` is
+/// shown too: an unconfirmed pod (pod_id reset after a 10 s hold) stops transmitting.
 /// Nothing here ever makes a clue.
 public final class BtrxDeskPodModel {
     public enum LinkKind: Sendable { case none, bluetooth, usb }
@@ -45,6 +50,8 @@ public final class BtrxDeskPodModel {
         public var nonceHex: String, rssi: Int, snr: Float
         /// Arrival of the latest PAIR_REQ from this pod (they repeat every 2 s inside its nod window).
         public var lastRequestMs: Int64 = 0
+        /// Arrival of the PAIR_REQ that made this the candidate.
+        public var foundMs: Int64 = 0
 
         public var warnings: [String] {
             var w: [String] = []
@@ -92,6 +99,11 @@ public final class BtrxDeskPodModel {
         public var windowFromBacklog = false
         public var pairing = Pairing()
         public var pairedPod: PairedPod?
+        /// Live frames from the paired node carrying an unexpected non-zero pod_id (refused).
+        public var pairedPodIdMismatches = 0
+        public var lastMismatchPodId: UInt32?
+        /// Paired, connected, and no HEALTH from the paired pod for over ``pairedQuietMs``.
+        public var pairedPodQuiet = false
         public init() {}
         public var roleSupported: Bool { role.map { BtrxProtocol.supportedBuilds.contains($0.buildHash) } ?? false }
     }
@@ -101,7 +113,13 @@ public final class BtrxDeskPodModel {
     public static let maxConfirmTries = 8
     public static let detectWindowMs: Int64 = 60_000
     /// PAIR_REQ repeats every 2 s while the pod's own window is open.
-    public static let podRequestStaleMs: Int64 = 5_000
+    public static let podRequestStaleMs: Int64 = 7_000
+    /// A stale candidate ends the flow this long after it was found, even with the window open.
+    public static let podFoundMaxMs: Int64 = 120_000
+    /// No HEALTH (about every 60 s) from the paired pod for this long: hint to re-pair.
+    public static let pairedQuietMs: Int64 = 120_000
+    public static let mismatchLogEvery = 50
+    public static let staleEndedMessage = "The Drone Pod stopped asking to pair and its pairing window is over. Tap the Desk Pod button and nod the drone pod twice again."
     public static let staleMessage = "The Drone Pod stopped asking to pair; its own pairing window has probably closed. Nod the drone pod twice again, then confirm."
 
     private let log: BtrxLogger
@@ -124,6 +142,10 @@ public final class BtrxDeskPodModel {
     private var lastSnr: Float?
     private var liveCounts: [String: Int] = [:]
     private var backlogCounts: [String: Int] = [:]
+    private var podIdMismatches = 0
+    private var lastMismatchPodId: UInt32?
+    /// Start of the current wait for the paired pod's HEALTH (session start, pairing, restore).
+    private var quietWatchSinceMs: Int64 = 0
 
     public init(log: BtrxLogger, clock: @escaping () -> Int64 = { Int64(Date().timeIntervalSince1970 * 1000) }, onPaired: @escaping (PairedPod) -> Void = { _ in }) {
         self.log = log
@@ -145,6 +167,7 @@ public final class BtrxDeskPodModel {
         role = nil
         liveCounts = [:]; backlogCounts = [:]
         detectTimes.removeAll()
+        quietWatchSinceMs = clock()
     }
 
     public func detach(_ sender: BtrxFrameSender, reason: String) {
@@ -153,8 +176,15 @@ public final class BtrxDeskPodModel {
         if Self.activeSteps.contains(pairing.step) { fail(pairing.step, "The link to the Desk Pod was lost (\(reason)).") }
     }
 
-    public func restorePairedPod(_ pod: PairedPod?) { pairedPod = pod }
-    public func forgetPairedPod() { pairedPod = nil; lastHealth = nil; otherPods.removeAll() }
+    public func restorePairedPod(_ pod: PairedPod?) {
+        pairedPod = pod
+        quietWatchSinceMs = clock()
+    }
+
+    public func forgetPairedPod() {
+        pairedPod = nil; lastHealth = nil; otherPods.removeAll()
+        podIdMismatches = 0; lastMismatchPodId = nil
+    }
 
     // MARK: client listener
 
@@ -186,7 +216,14 @@ public final class BtrxDeskPodModel {
             return false
         }
         // Frames queued before pairing still carry pod_id 0 from the right node; accept by node.
-        return frame.podId == 0 || frame.podId == paired.podId
+        if frame.podId == 0 || frame.podId == paired.podId { return true }
+        podIdMismatches += 1
+        if frame.podId != lastMismatchPodId || podIdMismatches % Self.mismatchLogEvery == 0 {
+            log.warn(String(format: "paired node %@ sending pod_id %08x (paired as %08x, %d frame(s) refused); re-pair",
+                            BtrxClient.nodeName(paired.node), frame.podId, paired.podId, podIdMismatches))
+        }
+        lastMismatchPodId = frame.podId
+        return false
     }
 
     private func onPodTraffic(_ frame: BtrxProtocol.Frame, _ meta: BtrxRadioMeta) throws {
@@ -210,7 +247,15 @@ public final class BtrxDeskPodModel {
         if dp.open == 1 {
             if window.openedFromBacklog { log.info("pairing: Desk Pod window open from a tap that arrived with the connect backlog (\(window.secondsLeft(nowMs: now)) s left)") }
             // A new tap while waiting for the nod restarts the countdown on the new window.
-            if pairing.step == .waitButton || pairing.step == .waitNod { enterWaitNod(now) }
+            if pairing.step == .waitButton || pairing.step == .waitNod {
+                enterWaitNod(now)
+            } else if pairing.step == .podFound && pairing.podStale && !meta.backlog {
+                // A live tap while the found pod is stale starts over at the nod (any pod may answer).
+                log.info("pairing: new Desk Pod tap while \(pairing.candidate.map { BtrxClient.nodeName($0.node) } ?? "nil") is stale; waiting for a nod")
+                pairing.candidate = nil
+                pairing.podStale = false
+                enterWaitNod(now)
+            }
         } else {
             switch pairing.step {
             case .waitNod: fail(.waitNod, "The Desk Pod closed its pairing window before a Drone Pod asked to pair. Tap the Desk Pod button and nod the drone pod again.")
@@ -235,7 +280,7 @@ public final class BtrxDeskPodModel {
             }
             let c = Candidate(node: meta.fromNode, assignedPodId: BtrxProtocol.podId(forDevA: req.devA), devA: req.devA, devB: req.devB,
                               buildA: req.buildA, buildB: req.buildB, imuOk: req.imuOk, roleA: req.roleA, roleB: req.roleB,
-                              nonceHex: nonce, rssi: meta.rxRssi, snr: meta.rxSnr, lastRequestMs: now)
+                              nonceHex: nonce, rssi: meta.rxRssi, snr: meta.rxSnr, lastRequestMs: now, foundMs: now)
             pairing.step = .podFound
             pairing.candidate = c
             pairing.podStale = false
@@ -253,10 +298,10 @@ public final class BtrxDeskPodModel {
                 pairing.candidate = c
                 pairing.podStale = false
                 pairing.message = askedMessage(c)
-            } else if pairing.podStale {
-                newCandidate()
             } else {
-                log.info("pairing: another Drone Pod \(BtrxClient.nodeName(meta.fromNode)) also asked to pair; ignored")
+                // Only the same pod may revive a stale candidate; another pod needs a new Desk Pod tap.
+                log.info("pairing: another Drone Pod \(BtrxClient.nodeName(meta.fromNode)) also asked to pair; ignored"
+                         + (pairing.podStale ? " (tap the Desk Pod button to pair a different pod)" : ""))
             }
         case .confirming:
             guard let c = pairing.candidate else { return }
@@ -280,6 +325,8 @@ public final class BtrxDeskPodModel {
         if ack.aOk == 1 {
             let pod = PairedPod(node: c.node, podId: c.assignedPodId, devA: c.devA, devB: c.devB)
             pairedPod = pod
+            podIdMismatches = 0; lastMismatchPodId = nil
+            quietWatchSinceMs = meta.arrivalMs
             pairing.step = .paired
             pairing.failedAt = nil
             pairing.message = ack.bOk == 1 ? "Drone Pod paired." : "Paired, but the port board did not answer. Check the cable between the boards."
@@ -343,7 +390,10 @@ public final class BtrxDeskPodModel {
         case .waitButton: if now >= stepDeadlineMs { fail(.waitButton, "The Desk Pod button was not tapped. Tap it, then start again.") }
         case .waitNod: if !open { fail(.waitNod, windowEndedMessage("No Drone Pod asked to pair. Nod the drone pod twice within the window.")) }
         case .podFound:
-            if let c = pairing.candidate, !pairing.podStale, now - c.lastRequestMs > Self.podRequestStaleMs { markStale(c) }
+            if let c = pairing.candidate {
+                if !pairing.podStale && now - c.lastRequestMs > Self.podRequestStaleMs { markStale(c) }
+                if pairing.podStale && (!open || now - c.foundMs > Self.podFoundMaxMs) { fail(.podFound, Self.staleEndedMessage) }
+            }
         case .confirming: if now >= stepDeadlineMs { fail(.confirming, "No PAIR_ACK from the Drone Pod within \(Self.ackTimeoutMs / 1000) s. Tap the Desk Pod button and try again.") }
         default: break
         }
@@ -363,7 +413,15 @@ public final class BtrxDeskPodModel {
         if Self.activeSteps.contains(p.step) { p.windowSecondsLeft = window.secondsLeft(nowMs: now) }
         s.pairing = p
         s.pairedPod = pairedPod
+        s.pairedPodIdMismatches = podIdMismatches; s.lastMismatchPodId = lastMismatchPodId
+        s.pairedPodQuiet = pairedQuiet(now)
         return s
+    }
+
+    private func pairedQuiet(_ now: Int64) -> Bool {
+        guard let pod = pairedPod, link.phase == .ready, sender != nil else { return false }
+        let lastHeard = lastHealth.flatMap { $0.node == pod.node ? $0.arrivalMs : nil } ?? 0
+        return now - max(lastHeard, quietWatchSinceMs) > Self.pairedQuietMs
     }
 
     // MARK: internals

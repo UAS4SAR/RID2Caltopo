@@ -50,6 +50,7 @@ struct DeskPodView: View {
                             Spacer()
                             Button("Forget") { center.forgetPairedPod() }
                         }
+                        ForEach(Text_.pairedPodWarnings(s), id: \.self) { Text($0).font(.footnote).foregroundStyle(.red) }
                     }
                     if s.windowOpen && s.pairing.step == .idle {
                         Text("The Desk Pod pairing window is open (\(s.windowSecondsLeft) s left).").font(.footnote)

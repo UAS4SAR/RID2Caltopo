@@ -17,7 +17,8 @@ public protocol BtrxLogger: AnyObject {
 /// Desk Pod queued while R2C was away (Meshtastic keeps the oldest 32 and drops new ones
 /// when full, so they can be minutes old): over Bluetooth, everything read in the first
 /// drain after config_complete_id, up to the first empty FromRadio read; over serial,
-/// frames before config_complete_id. Display-only: live health, RSSI, the Desk Pod's
+/// everything up to the first ``BtrxClient/serialQuietGapMs`` gap after config_complete_id.
+/// Display-only: live health, RSSI, the Desk Pod's
 /// role and clue code must refuse them.
 public struct BtrxRadioMeta: Sendable, Equatable {
     public let fromNode: UInt32, toNode: UInt32, rxRssi: Int, rxSnr: Float, arrivalMs: Int64, backlog: Bool
@@ -54,6 +55,8 @@ public final class BtrxClient: BtrxFrameSender {
     public static let maxSendFrame = 200
     /// Below this ATT MTU even PAIR_CONFIRM's ToRadio does not fit comfortably.
     public static let minUsableMTU = 100
+    /// Serial: the connect backlog ends at the first gap this long with no bytes.
+    public static let serialQuietGapMs: Int64 = 300
 
     public let framing: Framing
     public private(set) var state: State = .idle
@@ -67,11 +70,15 @@ public final class BtrxClient: BtrxFrameSender {
     private let clock: () -> Int64
     private var configId: UInt32 = 0
     private var seq = 0
-    /// Bluetooth: true from config_complete_id until the first empty FromRadio read. The
-    /// Desk Pod delivers its queue right after config_complete, in that first drain.
+    /// True from config_complete_id until the connect backlog ends. The Desk Pod delivers
+    /// its queue right after config_complete. Bluetooth: it ends at the first empty
+    /// FromRadio read. Serial: at the first quiet gap of ``serialQuietGapMs``.
     private var firstDrainPending = false
     private var firstDrainFrames = 0
-    private var heartbeatNonce: UInt32 = 0
+    /// Serial: arrival of the latest bytes while `firstDrainPending`.
+    private var lastSerialRxMs: Int64 = 0
+    /// Last heartbeat nonce sent; the first one sent is 2 (see ``sendHeartbeat()``).
+    private var heartbeatNonce: UInt32 = 1
     /// Largest ToRadio this link may write (Bluetooth: ATT MTU - 3, at most ``maxToRadioBLE``).
     private var maxToRadioBytes = BtrxClient.maxToRadioBLE
     private var decoder: MeshtasticPhoneAPI.StreamDecoder!
@@ -110,7 +117,22 @@ public final class BtrxClient: BtrxFrameSender {
     /// USB-style serial bytes (tests and parity).
     public func onBytes(_ data: [UInt8]) {
         guard state != .closed else { return }
+        checkQuietGap()
+        if firstDrainPending { lastSerialRxMs = clock() }
         decoder.feed(data)
+    }
+
+    /// Serial: ends the connect backlog after ``serialQuietGapMs`` without bytes since
+    /// config_complete_id (or the burst's last bytes), then sends ROLE_GET.
+    public func checkQuietGap() {
+        guard framing == .serial, state == .ready, firstDrainPending else { return }
+        if clock() - lastSerialRxMs >= Self.serialQuietGapMs { endConnectBacklog("after a \(Self.serialQuietGapMs) ms quiet gap") }
+    }
+
+    private func endConnectBacklog(_ how: String) {
+        firstDrainPending = false
+        log.info("connect backlog drained \(how): \(firstDrainFrames) frame(s) queued while R2C was away")
+        sendRoleGet()
     }
 
     /// Bluetooth: one FromRadio protobuf per characteristic read. Pass every read,
@@ -119,11 +141,7 @@ public final class BtrxClient: BtrxFrameSender {
     public func onFromRadio(_ proto: [UInt8]) {
         guard state != .closed else { return }
         if proto.isEmpty {
-            if state == .ready && firstDrainPending {
-                firstDrainPending = false
-                log.info("connect backlog drained: \(firstDrainFrames) frame(s) queued while R2C was away")
-                sendRoleGet()
-            }
+            if state == .ready && firstDrainPending { endConnectBacklog("at the first empty read") }
             return
         }
         onProto(proto)
@@ -146,11 +164,13 @@ public final class BtrxClient: BtrxFrameSender {
     }
 
     /// Keep-alive; the link calls this about every 5 minutes. Each heartbeat carries a
-    /// new nonce: Meshtastic drops a ToRadio identical to the previous one.
+    /// new nonce: Meshtastic drops a ToRadio identical to the previous one. Nonces 0 and 1
+    /// are never sent: Meshtastic PhoneAPI treats heartbeat nonce 1 as a trigger to
+    /// broadcast node info over LoRa (default hop limit), so the first nonce is 2 and the
+    /// counter skips 0 and 1 when it wraps.
     public func sendHeartbeat() {
         guard state == .ready else { return }
-        heartbeatNonce &+= 1
-        if heartbeatNonce == 0 { heartbeatNonce = 1 }
+        heartbeatNonce = Self.nextHeartbeatNonce(after: heartbeatNonce)
         sendToRadio(MeshtasticPhoneAPI.toRadioHeartbeat(nonce: heartbeatNonce))
     }
 
@@ -215,13 +235,10 @@ public final class BtrxClient: BtrxFrameSender {
             state = .ready
             log.info("handshake: config complete, Desk Pod node \(localNode.map(Self.nodeName) ?? "unknown")")
             if let node = localNode { listener?.onConfigured(localNode: node) }
-            if framing == .packet {
-                // Queued frames follow in this drain; ask for the role once it is empty.
-                firstDrainPending = true
-                firstDrainFrames = 0
-            } else {
-                sendRoleGet()
-            }
+            // Queued frames follow; ask for the role once they are through.
+            firstDrainPending = true
+            firstDrainFrames = 0
+            lastSerialRxMs = clock()
         case .packet(let p): onPacket(p)
         case .other: break
         }
@@ -233,8 +250,8 @@ public final class BtrxClient: BtrxFrameSender {
             return
         }
         let now = clock()
-        // Bluetooth: the first drain after config_complete_id. Serial has no empty-read
-        // signal and keeps the M1 rule (frames before config_complete_id only).
+        // Before config_complete_id, or in the burst right after it (Bluetooth: up to the
+        // first empty read; serial: up to the first quiet gap).
         let backlog = state != .ready || firstDrainPending
         if backlog && state == .ready { firstDrainFrames += 1 }
         let meta = BtrxRadioMeta(fromNode: packet.from, toNode: packet.to, rxRssi: packet.rxRssi, rxSnr: packet.rxSnr, arrivalMs: now, backlog: backlog)
@@ -272,6 +289,12 @@ public final class BtrxClient: BtrxFrameSender {
             listener?.onLocalRoleReport(report)
         }
         listener?.onFrame(frame, meta: meta)
+    }
+
+    /// Heartbeat nonce after `previous`: wraps at 32 bits and skips 0 and 1.
+    public static func nextHeartbeatNonce(after previous: UInt32) -> UInt32 {
+        let next = previous &+ 1
+        return next < 2 ? 2 : next
     }
 
     public static func nodeName(_ node: UInt32) -> String { String(format: "!%08x", node) }

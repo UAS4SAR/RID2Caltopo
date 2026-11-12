@@ -58,12 +58,17 @@ final class BtrxClientTests: XCTestCase {
         let r = M.ProtoReader(want); _ = try r.tag(); return UInt32(try r.varint())
     }
 
-    func handshakeSerial(_ c: BtrxClient) throws {
+    /// Handshake, then the serial quiet gap that ends the connect backlog (and sends ROLE_GET).
+    func handshakeSerial(_ c: BtrxClient, endBacklog: Bool = true) throws {
         c.start()
         let id = try configId(serialMessages().first!)
         c.onBytes(M.frame(M.ProtoWriter().bytesField(3, M.ProtoWriter().varint(1, UInt64(deskNode)).bytes()).bytes()))
         c.onBytes(M.frame(M.ProtoWriter().bytesField(10, [8, 0]).bytes()))
         c.onBytes(M.frame(M.ProtoWriter().varint(7, UInt64(id)).bytes()))
+        if endBacklog {
+            now += BtrxClient.serialQuietGapMs
+            c.checkQuietGap()
+        }
     }
 
     func testSerialStartSendsWakeBytesThenWantConfig() {
@@ -75,12 +80,19 @@ final class BtrxClientTests: XCTestCase {
         XCTAssertEqual(.configuring, c.state)
     }
 
-    func testConfigCompleteSendsRoleGetToTheLocalNode() throws {
+    func testRoleGetToTheLocalNodeFollowsTheSerialQuietGap() throws {
         let c = makeClient(.serial)
-        try handshakeSerial(c)
+        try handshakeSerial(c, endBacklog: false)
         XCTAssertEqual(.ready, c.state)
         XCTAssertEqual(deskNode, c.localNode)
         XCTAssertEqual(deskNode, recorder.configured)
+        XCTAssertEqual(1, serialMessages().count) // still in the connect burst
+        now += BtrxClient.serialQuietGapMs - 1
+        c.checkQuietGap()
+        XCTAssertEqual(1, serialMessages().count)
+        now += 1
+        c.checkQuietGap()
+        XCTAssertTrue(log.infos.contains { $0.hasPrefix("connect backlog drained after a 300 ms quiet gap: 0 frame(s)") })
         let toRadio = serialMessages().last!
         let r = M.ProtoReader(toRadio)
         XCTAssertTrue(try r.tag() == (1, 2))
@@ -133,19 +145,30 @@ final class BtrxClientTests: XCTestCase {
         XCTAssertTrue(c.summary().contains("other-port packets=1"))
     }
 
-    func testFramesBeforeConfigCompleteAreBacklog() throws {
+    func testSerialFramesUntilTheFirstQuietGapAfterConfigCompleteAreBacklog() throws {
         let c = makeClient(.serial)
         c.start()
         let id = try configId(serialMessages().first!)
         let detect = BtrxProtocolTests.example("DETECT")
+        let oldReport = P.encodeFrame(P.ROLE_REPORT, seq: 4, payload: P.fromHex("030500000000015b128c4c00000000000000000002"))
         c.onBytes(M.frame(M.ProtoWriter().bytesField(3, M.ProtoWriter().varint(1, UInt64(deskNode)).bytes()).bytes()))
-        for _ in 0..<2 { c.onBytes(M.frame(packet(starboard, detect))) }
+        c.onBytes(M.frame(packet(starboard, detect))) // before config_complete
         c.onBytes(M.frame(M.ProtoWriter().varint(7, UInt64(id)).bytes()))
+        now += 120
+        c.onBytes(M.frame(packet(starboard, detect))) // queued burst
+        now += 250 // gaps inside the burst are shorter than 300 ms
+        c.onBytes(M.frame(MeshtasticPhoneAPITests.fromRadioPacket(from: deskNode, to: deskNode, rssi: 0, snr: 0, port: 256, payload: oldReport)))
+        XCTAssertNil(c.localRole) // a ROLE_REPORT in the burst is stale
+        XCTAssertTrue(log.infos.contains { $0.hasPrefix("stale ROLE_REPORT in the connect backlog ignored") })
+        XCTAssertEqual(1, serialMessages().count) // no ROLE_GET yet
+        now += 400 // quiet gap: the next bytes are live, and ROLE_GET went out first
         c.onBytes(M.frame(packet(starboard, detect)))
-        XCTAssertEqual([true, true, false], recorder.metas.map(\.backlog))
+        XCTAssertEqual([true, true, true, false], recorder.metas.map(\.backlog))
         XCTAssertEqual(2, c.backlogCount("DETECT"))
         XCTAssertEqual(1, c.frameCount("DETECT"))
-        XCTAssertTrue(c.summary().contains("frames: DETECT=1 backlog: DETECT=2"), c.summary())
+        XCTAssertEqual(2, serialMessages().count)
+        XCTAssertTrue(log.infos.contains { $0.hasPrefix("connect backlog drained after a 300 ms quiet gap: 2 frame(s)") })
+        XCTAssertTrue(c.summary().contains("frames: DETECT=1 backlog: DETECT=2 ROLE_REPORT=1"), c.summary())
     }
 
     func testBadCrcIsLoggedAndCountedNotDecoded() throws {
@@ -217,8 +240,17 @@ final class BtrxClientTests: XCTestCase {
         let c = makeClient(.packet)
         try packetHandshake(c)
         c.sendHeartbeat(); c.sendHeartbeat()
-        XCTAssertEqual("3a020801", P.hex(sent[sent.count - 2]))
-        XCTAssertEqual("3a020802", P.hex(sent.last!))
+        // Never nonce 1: Meshtastic answers it by broadcasting node info over LoRa.
+        XCTAssertEqual("3a020802", P.hex(sent[sent.count - 2]))
+        XCTAssertEqual("3a020803", P.hex(sent.last!))
+    }
+
+    func testHeartbeatNonceSkipsZeroAndOneWhenItWraps() {
+        XCTAssertEqual(2, BtrxClient.nextHeartbeatNonce(after: 1))
+        XCTAssertEqual(0xFFFF_FFFF, BtrxClient.nextHeartbeatNonce(after: 0xFFFF_FFFE))
+        XCTAssertEqual(2, BtrxClient.nextHeartbeatNonce(after: 0xFFFF_FFFF))
+        var n: UInt32 = 1
+        for _ in 0..<1000 { n = BtrxClient.nextHeartbeatNonce(after: n); XCTAssertGreaterThanOrEqual(n, 2) }
     }
 
     func testEmptyFromRadioReadIsIgnored() {
@@ -242,7 +274,7 @@ final class BtrxClientTests: XCTestCase {
         XCTAssertEqual([true, true, false, false], recorder.metas.map(\.backlog))
         XCTAssertEqual(2, c.backlogCount("DETECT"))
         XCTAssertEqual(2, c.frameCount("DETECT"))
-        XCTAssertTrue(log.infos.contains("connect backlog drained: 2 frame(s) queued while R2C was away"))
+        XCTAssertTrue(log.infos.contains("connect backlog drained at the first empty read: 2 frame(s) queued while R2C was away"))
         XCTAssertEqual(1, sent.filter(isRoleGet).count)
     }
 
