@@ -3,6 +3,7 @@ package org.ncssar.rid2caltopo.btrx
 import java.util.Random
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -138,6 +139,37 @@ class BtrxClientTest {
         assertTrue(infos.any { it.startsWith("rx from=!4c8c125b rssi=-60 snr=7.5 DETECT seq=201") })
         assertTrue(client.summary(), client.summary().contains("DETECT=3 HEALTH=1"))
         assertTrue(client.summary(), client.summary().contains("other-port packets=1"))
+    }
+
+    @Test
+    fun steerIsLoggedAtDebugLevelWithOnlyTheAddressTail() {
+        val debugs = mutableListOf<String>()
+        val c = BtrxClient(
+            send = { sent += it },
+            log = object : BtrxClient.Logger {
+                override fun info(message: String) { infos += message }
+                override fun warn(message: String) { warns += message }
+                override fun debug(message: String) { debugs += message }
+            },
+            listener = object : BtrxClient.Listener {},
+            random = Random(1),
+            clock = { now },
+        )
+        c.start()
+        val want = sentMessages().last()
+        val configId = MeshtasticSerial.ProtoReader(want).let { r -> r.tag(); r.varint() }
+        c.onBytes(MeshtasticSerial.frame(ProtoWriter().bytesField(3, ProtoWriter().varint(1, deskNode).bytes()).bytes()))
+        c.onBytes(MeshtasticSerial.frame(ProtoWriter().varint(7, configId).bytes()))
+        now += BtrxClient.SERIAL_QUIET_GAP_MS
+        c.checkQuietGap()
+        c.onBytes(MeshtasticSerial.frame(btrxPacket(starboard, P.fromHex(BtrxProtocolTest.STEER_FRAME))))
+        val line = debugs.single { it.startsWith("rx ") }
+        assertTrue(line, line.contains("STEER seq=1"))
+        assertTrue(line, line.contains("src=48879"))
+        assertTrue(line, line.contains("[..00AA]"))
+        assertFalse(line, line.contains("AA0000000055") || line.contains("aa0000000055"))
+        assertTrue(infos.none { it.contains(" STEER ") })
+        assertEquals(1, c.frameCount("STEER"))
     }
 
     @Test

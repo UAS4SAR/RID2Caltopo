@@ -106,6 +106,23 @@ fun DeskPodScreen(onDismiss: () -> Unit) {
                         Text("The Desk Pod pairing window is open (${s.windowSecondsLeft} s left).", style = MaterialTheme.typography.bodySmall)
                     }
                     PairingSection(s)
+
+                    HorizontalDivider(Modifier.padding(vertical = 6.dp))
+                    SectionTitle("Steering")
+                    val st = s.lastSteer
+                    if (st == null) {
+                        Text(BtrxDeskPodText.STEER_NONE, style = MaterialTheme.typography.bodySmall)
+                    } else {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            SteeringMark(st, 36.dp)
+                            Text(BtrxDeskPodText.steerLine(st), Modifier.padding(start = 8.dp))
+                        }
+                        if (st.muted) Text(BtrxDeskPodText.STEER_MUTED, fontWeight = FontWeight.SemiBold)
+                    }
+                    Text(BtrxDeskPodText.STEER_MUTE_HINT, style = MaterialTheme.typography.bodySmall)
+                    if (s.pairedPod != null) {
+                        OutlinedButton(onClick = { BtrxManager.clearSteeringMutes() }) { Text(BtrxDeskPodText.CLEAR_MUTES) }
+                    }
                 }
             }
         }

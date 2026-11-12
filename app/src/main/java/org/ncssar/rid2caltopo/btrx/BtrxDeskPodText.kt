@@ -103,6 +103,16 @@ object BtrxDeskPodText {
         if (s.pairedPodQuiet) add(PAIRED_POD_QUIET)
     }
 
+    const val MUTE = "Mute"
+    const val CLEAR_MUTES = "Clear mutes"
+    const val STEER_NONE = "No STEER yet (firmware 0x0101 sends one about every second once the pod is paired)."
+    const val STEER_MUTED = "A steering source is muted on the Drone Pod."
+    const val STEER_MUTE_HINT = "Tap the overlay on the stream view to mute its source (for example a search team); the next strongest takes its place. Mutes clear when the pod restarts."
+
+    /** Bench line for the Desk Pod screen: src, hint word, kind, age (the swatch is drawn beside it). */
+    fun steerLine(v: BtrxSteering.View): String =
+        "Last STEER: src ${v.srcId} (${P.devClassName(v.devClass)}), ${v.hint.word}, ${ago(v.ageMs)} (steer_seq ${v.steerSeq})"
+
     /** The four pairing steps with their result, for the per-step display. */
     fun steps(p: BtrxDeskPodModel.Pairing): List<Step> {
         val order = listOf(PairStep.WAIT_BUTTON, PairStep.WAIT_NOD, PairStep.POD_FOUND, PairStep.CONFIRMING)

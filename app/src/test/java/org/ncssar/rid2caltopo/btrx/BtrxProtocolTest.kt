@@ -355,7 +355,105 @@ class BtrxProtocolTest {
         }
     }
 
+    // ---- steering (firmware 0x0101; vectors from test_protocol.py) ----
+
+    @Test
+    fun steerFrameFromFirmwareDecodes() {
+        val f = P.decodeFrame(h(STEER_FRAME))
+        assertEquals(P.STEER, f.type)
+        assertEquals(1, f.seq)
+        assertEquals(0x1234L, f.podId)
+        assertEquals(27, f.payload.size)
+        val s = P.parseSteer(f.payload)
+        assertEquals(7, s.steerSeq)
+        assertEquals(P.STEER_F_TARGET or P.STEER_F_NEW, s.flags)
+        assertTrue(s.target && s.newSource && !s.gated && !s.muted && !s.imuOk && !s.linked)
+        assertEquals(0x01020304L, s.windowEndMs)
+        assertEquals(321, s.ageMs)
+        assertEquals(0xBEEF, s.srcId)
+        assertEquals(-61, s.rssiPort)
+        assertEquals(-70, s.rssiStbd)
+        assertEquals(-58, s.peakRssi)
+        assertEquals(3, s.hitsPort)
+        assertEquals(4, s.hitsStbd)
+        assertEquals(0x004C, s.companyId)
+        assertEquals(P.DEV_PHONE, s.devClass)
+        assertEquals(2, s.addrType)
+        assertEquals("aa0000000055", P.hex(s.macLsbFirst))
+        assertEquals("00AA", s.addressTail)
+        assertEquals(-6, s.rollX2)
+        assertEquals(4, s.pitchX2)
+    }
+
+    @Test
+    fun steerEncodesToTheFirmwareVector() {
+        val s = P.parseSteer(h(STEER_PAYLOAD))
+        assertEquals(STEER_PAYLOAD, P.hex(P.steerPayload(s)))
+        assertEquals(STEER_FRAME, P.hex(P.encodeFrame(P.STEER, seq = 1, podId = 0x1234L, payload = P.steerPayload(s))))
+    }
+
+    @Test
+    fun steerWithNoTargetIsAllNotHeard() {
+        // pack_steer(1, 0, 5000, 0, 0, -128, -128, -128, 0, 0, 0, 0, 0, bytes(6)), roll/pitch 0
+        val payload = h("010088130000000000008080800000000000000000000000000000")
+        val s = P.parseSteer(payload)
+        assertFalse(s.target)
+        assertEquals(5000L, s.windowEndMs)
+        assertEquals(0, s.srcId)
+        assertFalse(s.portHeard || s.stbdHeard)
+        assertEquals(-128, s.peakRssi)
+        assertEquals(P.hex(payload), P.hex(P.steerPayload(s)))
+    }
+
+    @Test
+    fun steerMuteFrameMatchesTheFirmwareVector() {
+        assertEquals(STEER_MUTE_FRAME, P.hex(P.steerMuteFrame(2, 0, P.MUTE_ADD, 0x0102)))
+        val f = P.decodeFrame(h(STEER_MUTE_FRAME))
+        assertEquals(P.STEER_MUTE, f.type)
+        assertEquals(P.SteerMute(P.MUTE_ADD, 0x0102), P.parseSteerMute(f.payload))
+    }
+
+    @Test
+    fun steerMuteCommandBytes() {
+        assertEquals("000000", P.hex(P.steerMutePayload(P.MUTE_CLEAR, 0)))
+        assertEquals("01efbe", P.hex(P.steerMutePayload(P.MUTE_ADD, 0xBEEF)))
+        assertEquals("020700", P.hex(P.steerMutePayload(P.MUTE_REMOVE, 7)))
+        val f = P.decodeFrame(P.steerMuteFrame(9, 0x45D35AF0L, P.MUTE_CLEAR))
+        assertEquals(0x45D35AF0L, f.podId)
+        assertEquals(0, f.flags)
+        assertEquals("000000", P.hex(f.payload))
+    }
+
+    @Test
+    fun steerTooShortIsAPayloadError() {
+        try {
+            P.parseSteer(ByteArray(26)); fail("short STEER accepted")
+        } catch (_: P.PayloadException) {
+        }
+    }
+
+    @Test
+    fun steerFrameLogLine() {
+        val line = BtrxFrameLog.format(P.decodeFrame(h(STEER_FRAME)))
+        assertTrue(line, line.startsWith("STEER seq=1"))
+        assertTrue(line, line.contains("steer_seq=7 steer_flags=target,new src=48879 kind=phone cid=0x004c rssi_port=-61 rssi_stbd=-70 peak=-58 hits_port=3 hits_stbd=4 age_ms=321 [..00AA] addr_type=2"))
+        assertTrue(line, line.endsWith("window_end_ms=16909060 roll_x2=-6 pitch_x2=4"))
+        val mute = BtrxFrameLog.format(P.decodeFrame(h(STEER_MUTE_FRAME)))
+        assertTrue(mute, mute.endsWith("op=add src=258"))
+    }
+
+    @Test
+    fun firmware0101IsSupported() {
+        assertTrue(P.SUPPORTED_BUILDS.contains(0x0101))
+        assertTrue(P.SUPPORTED_BUILDS.contains(0x0100))
+        assertEquals("STEER", P.typeName(0x73))
+        assertEquals("STEER_MUTE", P.typeName(0x74))
+    }
+
     companion object {
+        const val STEER_PAYLOAD = "0703040302014101efbec3bac603044c000102aa0000000055fa04"
+        const val STEER_FRAME = "b75201730134120000001b0703040302014101efbec3bac603044c000102aa0000000055fa04378f"
+        const val STEER_MUTE_FRAME = "b7520174020000000000030102017c69"
         val EXAMPLES = linkedMapOf(
             "ROLE_GET" to "b7520120010000000000005830",
             "DESK_PAIR" to "b75201152500000000000401013c0090ff",

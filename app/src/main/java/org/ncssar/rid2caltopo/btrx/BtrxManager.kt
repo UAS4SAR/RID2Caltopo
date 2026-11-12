@@ -66,6 +66,7 @@ object BtrxManager {
     val logger = object : BtrxClient.Logger {
         override fun info(message: String) = CaltopoClient.CTInfo(TAG, message)
         override fun warn(message: String) = CaltopoClient.CTWarn(TAG, message)
+        override fun debug(message: String) = CaltopoClient.CTDebug(TAG, message)
     }
 
     val model = BtrxDeskPodModel(logger, onPaired = { pod -> worker.execute { savePairedPod(pod) } })
@@ -85,7 +86,11 @@ object BtrxManager {
     private val modelListener = object : BtrxClient.Listener {
         override fun onConfigured(localNode: Long) = model.onConfigured(localNode)
         override fun onLocalRoleReport(report: BtrxProtocol.RoleReport) = model.onLocalRoleReport(report)
-        override fun onFrame(frame: BtrxProtocol.Frame, meta: BtrxClient.RadioMeta) = model.onFrame(frame, meta)
+        override fun onFrame(frame: BtrxProtocol.Frame, meta: BtrxClient.RadioMeta) {
+            model.onFrame(frame, meta)
+            // The overlay follows each STEER (about every second), not only the 1 s tick.
+            if (frame.type == BtrxProtocol.STEER && !meta.backlog) worker.execute { publish() }
+        }
     }
 
     fun isDeskPodCandidate(d: UsbDevice?): Boolean = d != null && d.vendorId == VENDOR_ID && d.productId == PRODUCT_ID
@@ -187,6 +192,10 @@ object BtrxManager {
     fun confirmPod() = worker.execute { model.confirmPod(); publish() }
     fun cancelPairing() = worker.execute { model.cancelPairing(); publish() }
     fun clearPairingResult() = worker.execute { model.clearPairingResult(); publish() }
+    /** "Mute" on the stream-view steering overlay. */
+    fun muteSteeringSource() = worker.execute { model.muteSteeringSource(); publish() }
+    /** "Clear mutes" on the Desk Pod screen. */
+    fun clearSteeringMutes() = worker.execute { model.clearSteeringMutes(); publish() }
 
     fun rememberedDeskPodName(): String? = if (installed) prefs().getString(KEY_NAME, null) else null
 

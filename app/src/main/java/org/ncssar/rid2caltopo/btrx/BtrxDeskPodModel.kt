@@ -34,6 +34,11 @@ import org.ncssar.rid2caltopo.btrx.BtrxProtocol as P
  * filter by pod_id); a non-zero header pod_id other than the paired one is refused,
  * counted and shown ("re-pair"). No HEALTH from the paired pod for [PAIRED_QUIET_MS]
  * is shown too: an unconfirmed pod (pod_id reset after a 10 s hold) stops transmitting.
+ *
+ * Steering (design doc section 41): live STEER frames from the paired pod (by node,
+ * pod_id 0 or the paired one, like other pod traffic) feed [BtrxSteering]; the stream
+ * view overlay shows only while the link is connected, a pod is paired and STEER keeps
+ * arriving. [muteSteeringSource] / [clearSteeringMutes] send STEER_MUTE to that pod.
  * Nothing here ever makes a clue.
  */
 class BtrxDeskPodModel(
@@ -114,6 +119,10 @@ class BtrxDeskPodModel(
         val lastMismatchPodId: Long? = null,
         /** Paired, connected, and no HEALTH from the paired pod for over [PAIRED_QUIET_MS]. */
         val pairedPodQuiet: Boolean = false,
+        /** The stream-view steering overlay, or null when it must not show. */
+        val steerOverlay: BtrxSteering.View? = null,
+        /** The latest STEER whatever the link state, for the Desk Pod screen's bench line. */
+        val lastSteer: BtrxSteering.View? = null,
     ) {
         val roleSupported: Boolean get() = role != null && role.buildHash in P.SUPPORTED_BUILDS
     }
@@ -140,6 +149,7 @@ class BtrxDeskPodModel(
     private var lastMismatchPodId: Long? = null
     /** Start of the current wait for the paired pod's HEALTH (session start, pairing, restore). */
     private var quietWatchSinceMs = 0L
+    private val steering = BtrxSteering()
 
     // ---- link ----
 
@@ -179,6 +189,7 @@ class BtrxDeskPodModel(
     fun forgetPairedPod() {
         pairedPod = null; lastHealth = null; otherPods.clear()
         podIdMismatches = 0; lastMismatchPodId = null
+        steering.reset()
     }
 
     // ---- client listener ----
@@ -242,6 +253,8 @@ class BtrxDeskPodModel(
                 lastDetectMs = meta.arrivalMs
                 trimDetects(meta.arrivalMs)
             }
+            // The pod sends STEER only once confirmed; before pairing it is not ours to steer by.
+            P.STEER -> if (pairedPod != null) steering.onSteer(P.parseSteer(frame.payload), meta.arrivalMs)
         }
     }
 
@@ -326,6 +339,7 @@ class BtrxDeskPodModel(
         if (meta.fromNode != c.node) return
         if (ack.aOk == 1) {
             val pod = PairedPod(c.node, c.assignedPodId, c.devA, c.devB)
+            if (pairedPod?.node != pod.node) steering.reset()
             pairedPod = pod
             podIdMismatches = 0; lastMismatchPodId = null
             quietWatchSinceMs = meta.arrivalMs
@@ -425,7 +439,49 @@ class BtrxDeskPodModel(
             pairedPod = pairedPod,
             pairedPodIdMismatches = podIdMismatches, lastMismatchPodId = lastMismatchPodId,
             pairedPodQuiet = pairedQuiet(now),
+            steerOverlay = if (steeringLinkUp()) steering.view(now) else null,
+            lastSteer = steering.lastView(now),
         )
+    }
+
+    private fun steeringLinkUp(): Boolean = pairedPod != null && link.phase == LinkPhase.READY && sender != null
+
+    // ---- steering actions ----
+
+    /** "Mute": STEER_MUTE op 1 for the current steering source, to the paired pod. */
+    fun muteSteeringSource() {
+        val sends = synchronized(this) {
+            val pod = pairedPod
+            val src = steering.view(clock())?.takeIf { it.canMute }?.srcId
+            when {
+                pod == null -> log.warn("steering: Mute not sent: no paired Drone Pod")
+                src == null -> log.warn("steering: Mute not sent: no current steering source")
+                sender?.isReady != true -> log.warn("steering: Mute not sent: the Desk Pod is not connected")
+                else -> {
+                    log.info("steering: STEER_MUTE mute src=$src to ${BtrxClient.nodeName(pod.node)}")
+                    outbox += pod.node to { seq -> P.steerMuteFrame(seq, pod.podId, P.MUTE_ADD, src) }
+                }
+            }
+            takeOutbox()
+        }
+        deliver(sends)
+    }
+
+    /** "Clear mutes": STEER_MUTE op 0, to the paired pod. */
+    fun clearSteeringMutes() {
+        val sends = synchronized(this) {
+            val pod = pairedPod
+            when {
+                pod == null -> log.warn("steering: Clear mutes not sent: no paired Drone Pod")
+                sender?.isReady != true -> log.warn("steering: Clear mutes not sent: the Desk Pod is not connected")
+                else -> {
+                    log.info("steering: STEER_MUTE clear to ${BtrxClient.nodeName(pod.node)}")
+                    outbox += pod.node to { seq -> P.steerMuteFrame(seq, pod.podId, P.MUTE_CLEAR, 0) }
+                }
+            }
+            takeOutbox()
+        }
+        deliver(sends)
     }
 
     private fun pairedQuiet(now: Long): Boolean {

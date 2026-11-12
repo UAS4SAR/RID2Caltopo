@@ -488,4 +488,86 @@ class BtrxDeskPodModelTest {
         now += 30_000
         assertTrue(model.snapshot().pairedPodQuiet)
     }
+
+    // ---- steering (STEER / STEER_MUTE) ----
+
+    private val pairedPodId = 0x45D35AF0L
+    private fun ready() = model.setLink(BtrxDeskPodModel.LinkStatus(BtrxDeskPodModel.LinkKind.BLUETOOTH, BtrxDeskPodModel.LinkPhase.READY))
+    private fun steerFrame(podId: Long = pairedPodId, src: Int = 0xBEEF): P.Frame {
+        val s = P.parseSteer(P.fromHex(BtrxProtocolTest.STEER_PAYLOAD))
+        val p = P.steerPayload(s); p[8] = src.toByte(); p[9] = (src ushr 8).toByte()
+        return P.decodeFrame(P.encodeFrame(P.STEER, seq = ++podSeq, podId = podId, payload = p))
+    }
+
+    @Test
+    fun steerOverlayShowsOnlyWhilePairedLinkedAndArriving() {
+        ready()
+        model.onFrame(steerFrame(podId = 0), meta(pod))
+        assertNull(model.snapshot().steerOverlay) // not paired yet: ignored
+        assertNull(model.snapshot().lastSteer)
+        model.restorePairedPod(BtrxDeskPodModel.PairedPod(pod, pairedPodId, 0x4C8C125BL, 0x351C2971L))
+        model.onFrame(steerFrame(), meta(pod))
+        val v = model.snapshot().steerOverlay!!
+        assertEquals(BtrxSteering.Hint.LEFT, v.hint)
+        assertEquals(0xBEEF, v.srcId)
+        assertEquals(0, v.colorIndex)
+        model.setLink(BtrxDeskPodModel.LinkStatus(BtrxDeskPodModel.LinkKind.BLUETOOTH, BtrxDeskPodModel.LinkPhase.RETRY_WAIT))
+        assertNull(model.snapshot().steerOverlay) // link down: hidden
+        assertNotNull(model.snapshot().lastSteer) // the Desk Pod screen keeps the last one
+        ready()
+        assertNotNull(model.snapshot().steerOverlay)
+        now += BtrxSteering.SHOW_MS + 1
+        assertNull(model.snapshot().steerOverlay) // STEER stopped arriving
+        assertEquals(BtrxSteering.Hint.LOST, model.snapshot().lastSteer!!.hint)
+    }
+
+    @Test
+    fun steerIsFilteredByPairedNodeAndPodId() {
+        ready()
+        model.restorePairedPod(BtrxDeskPodModel.PairedPod(pod, pairedPodId, 0x4C8C125BL, 0x351C2971L))
+        model.onFrame(steerFrame(), meta(0x22223333L))              // another node
+        model.onFrame(steerFrame(podId = 0x12345678L), meta(pod))   // another pod_id
+        model.onFrame(steerFrame(), meta(pod, backlog = true))      // connect backlog
+        assertNull(model.snapshot().lastSteer)
+        model.onFrame(steerFrame(), meta(pod))
+        assertNotNull(model.snapshot().steerOverlay)
+    }
+
+    @Test
+    fun muteAndClearMutesGoToThePairedPodNode() {
+        ready()
+        model.restorePairedPod(BtrxDeskPodModel.PairedPod(pod, pairedPodId, 0x4C8C125BL, 0x351C2971L))
+        model.muteSteeringSource()
+        assertTrue(sender.sent.isEmpty()) // no source yet
+        assertTrue(logs.any { it.startsWith("W steering: Mute not sent") })
+        model.onFrame(steerFrame(src = 0x0102), meta(pod))
+        model.muteSteeringSource()
+        val (to, bytes) = sender.sent.last()
+        assertEquals(pod, to)
+        val f = P.decodeFrame(bytes)
+        assertEquals(P.STEER_MUTE, f.type)
+        assertEquals(pairedPodId, f.podId)
+        assertEquals("010201", P.hex(f.payload)) // op 1, src 0x0102
+        model.clearSteeringMutes()
+        assertEquals("000000", P.hex(P.decodeFrame(sender.sent.last().second).payload))
+        assertEquals(pod, sender.sent.last().first)
+    }
+
+    @Test
+    fun muteIsRefusedWithoutAPairing() {
+        ready()
+        model.clearSteeringMutes()
+        model.muteSteeringSource()
+        assertTrue(sender.sent.none { P.decodeFrame(it.second).type == P.STEER_MUTE })
+    }
+
+    @Test
+    fun forgettingThePodClearsSteering() {
+        ready()
+        model.restorePairedPod(BtrxDeskPodModel.PairedPod(pod, pairedPodId, 0x4C8C125BL, 0x351C2971L))
+        model.onFrame(steerFrame(), meta(pod))
+        model.forgetPairedPod()
+        assertNull(model.snapshot().lastSteer)
+        assertNull(model.snapshot().steerOverlay)
+    }
 }

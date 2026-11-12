@@ -923,6 +923,16 @@ fun StreamTile(
                 )
             }
         }
+        if (streamState == StreamState.LIVE && !isLocalPlayback) {
+            // btrx steering overlay (section 41): top center, clear of the camera button
+            // (center end), the legend (bottom start) and the centerpoint crosshair.
+            org.ncssar.rid2caltopo.ui.BtrxSteeringOverlay(
+                Modifier
+                    .zIndex(2f)
+                    .align(Alignment.TopCenter)
+                    .padding(top = 8.dp)
+            )
+        }
         if (showOverlayControls) {
             if (showLegendControls) {
                 Row(

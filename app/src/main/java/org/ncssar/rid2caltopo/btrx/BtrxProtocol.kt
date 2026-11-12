@@ -22,7 +22,9 @@ object BtrxProtocol {
     const val PRIVATE_APP_PORT = 256
 
     /** Board builds this app knows. A board reporting another build gets a notice (M2). */
-    val SUPPORTED_BUILDS: Set<Int> = setOf(0x0100)
+    val SUPPORTED_BUILDS: Set<Int> = setOf(0x0100, 0x0101)
+    /** Firmware that sends STEER (btrx PR #18, steering-report). */
+    const val BUILD_STEER = 0x0101
 
     // Message types (section 5 of the R2C integration brief).
     const val HELLO = 0x01
@@ -48,6 +50,8 @@ object BtrxProtocol {
     const val DETECT = 0x70
     const val IMU_SAMPLE = 0x71
     const val ADV_SAMPLE = 0x72
+    const val STEER = 0x73
+    const val STEER_MUTE = 0x74
     const val HEALTH = 0x80
     const val DFU_REQ = 0x90
     const val DFU_ACK = 0x91
@@ -60,7 +64,7 @@ object BtrxProtocol {
         TIME_PONG to "TIME_PONG", START to "START", STOP to "STOP", CTRL_ACK to "CTRL_ACK",
         SCAN_CFG to "SCAN_CFG", SCAN_CFG_ACK to "SCAN_CFG_ACK", FILTER_LIST to "FILTER_LIST",
         FILTER_ACK to "FILTER_ACK", DETECT to "DETECT", IMU_SAMPLE to "IMU_SAMPLE",
-        ADV_SAMPLE to "ADV_SAMPLE", HEALTH to "HEALTH", DFU_REQ to "DFU_REQ", DFU_ACK to "DFU_ACK",
+        ADV_SAMPLE to "ADV_SAMPLE", STEER to "STEER", STEER_MUTE to "STEER_MUTE", HEALTH to "HEALTH", DFU_REQ to "DFU_REQ", DFU_ACK to "DFU_ACK",
     )
 
     fun typeName(type: Int): String = MSG_NAME[type] ?: "0x%02x".format(type)
@@ -108,6 +112,42 @@ object BtrxProtocol {
         FLAG_SCANNING to "listening",
     )
 
+    // STEER flags (btrx_types.h BTRX_STEER_F_*; names as protocol.py STEER_FLAGS).
+    const val STEER_F_TARGET = 0x01
+    const val STEER_F_NEW = 0x02
+    const val STEER_F_LINKED = 0x04
+    const val STEER_F_GATED = 0x08
+    const val STEER_F_IMU_OK = 0x10
+    const val STEER_F_MUTED = 0x20
+    private val STEER_FLAGS = listOf(
+        STEER_F_TARGET to "target", STEER_F_NEW to "new", STEER_F_LINKED to "linked",
+        STEER_F_GATED to "gated", STEER_F_IMU_OK to "imu", STEER_F_MUTED to "muted",
+    )
+
+    // STEER_MUTE ops (BTRX_MUTE_*).
+    const val MUTE_CLEAR = 0
+    const val MUTE_ADD = 1
+    const val MUTE_REMOVE = 2
+
+    // STEER device kind (BTRX_DEV_*).
+    const val DEV_UNKNOWN = 0
+    const val DEV_PHONE = 1
+    const val DEV_WEARABLE = 2
+    const val DEV_TRACKER = 3
+    const val DEV_AUDIO = 4
+    const val DEV_COMPUTER = 5
+
+    fun devClassName(kind: Int): String = when (kind) {
+        DEV_UNKNOWN -> "unknown"
+        DEV_PHONE -> "phone"
+        DEV_WEARABLE -> "wearable"
+        DEV_TRACKER -> "tracker"
+        DEV_AUDIO -> "audio"
+        DEV_COMPUTER -> "computer"
+        else -> kind.toString()
+    }
+
+    fun steerFlagNames(value: Int): String = flagNames(value, STEER_FLAGS)
     fun frameFlagNames(value: Int): String = flagNames(value, FRAME_FLAGS)
     fun statusFlagNames(value: Int): String = flagNames(value, STATUS_FLAGS)
 
@@ -326,7 +366,86 @@ object BtrxProtocol {
         return Detect(u32(p, 0), i8(p, 4), i8(p, 5), i16(p, 6), u8(p, 8), u8(p, 9), records)
     }
 
+    const val STEER_LEN = 27
+    /** STEER RSSI value for "not heard on this patch". */
+    const val RSSI_NOT_HEARD = -128
+
+    /**
+     * STEER (0x73), 27 bytes, firmware/PROTOCOL.md "STEER": the single strongest source
+     * in the pod's last 1 s window. Port is pod B (the IMU board), starboard pod A; port
+     * stronger means the source is to the left.
+     */
+    class Steer(
+        val steerSeq: Int, val flags: Int, val windowEndMs: Long, val ageMs: Int, val srcId: Int,
+        val rssiPort: Int, val rssiStbd: Int, val peakRssi: Int, val hitsPort: Int, val hitsStbd: Int,
+        val companyId: Int, val devClass: Int, val addrType: Int,
+        /** Address as received, least significant byte first (as in DETECT). */
+        val macLsbFirst: ByteArray,
+        val rollX2: Int, val pitchX2: Int,
+    ) {
+        val target: Boolean get() = flags and STEER_F_TARGET != 0
+        val newSource: Boolean get() = flags and STEER_F_NEW != 0
+        val linked: Boolean get() = flags and STEER_F_LINKED != 0
+        val gated: Boolean get() = flags and STEER_F_GATED != 0
+        val imuOk: Boolean get() = flags and STEER_F_IMU_OK != 0
+        val muted: Boolean get() = flags and STEER_F_MUTED != 0
+        val portHeard: Boolean get() = rssiPort != RSSI_NOT_HEARD
+        val stbdHeard: Boolean get() = rssiStbd != RSSI_NOT_HEARD
+        /** Last 4 characters of the address: never log or show the full address. */
+        val addressTail: String get() = macLsbFirst.reversed().joinToString("") { "%02X".format(it.toInt() and 0xFF) }.takeLast(4)
+    }
+
+    fun parseSteer(p: ByteArray): Steer {
+        need(p, STEER_LEN, "STEER")
+        return Steer(
+            steerSeq = u8(p, 0), flags = u8(p, 1), windowEndMs = u32(p, 2), ageMs = u16(p, 6), srcId = u16(p, 8),
+            rssiPort = i8(p, 10), rssiStbd = i8(p, 11), peakRssi = i8(p, 12), hitsPort = u8(p, 13), hitsStbd = u8(p, 14),
+            companyId = u16(p, 15), devClass = u8(p, 17), addrType = u8(p, 18), macLsbFirst = p.copyOfRange(19, 25),
+            rollX2 = i8(p, 25), pitchX2 = i8(p, 26),
+        )
+    }
+
+    /** STEER encoder (protocol.py pack_steer), for tests and the bench simulator. */
+    fun steerPayload(s: Steer): ByteArray {
+        val out = ByteArray(STEER_LEN)
+        out[0] = s.steerSeq.toByte(); out[1] = s.flags.toByte()
+        putU32(out, 2, s.windowEndMs)
+        out[6] = s.ageMs.toByte(); out[7] = (s.ageMs ushr 8).toByte()
+        out[8] = s.srcId.toByte(); out[9] = (s.srcId ushr 8).toByte()
+        out[10] = s.rssiPort.toByte(); out[11] = s.rssiStbd.toByte(); out[12] = s.peakRssi.toByte()
+        out[13] = s.hitsPort.toByte(); out[14] = s.hitsStbd.toByte()
+        out[15] = s.companyId.toByte(); out[16] = (s.companyId ushr 8).toByte()
+        out[17] = s.devClass.toByte(); out[18] = s.addrType.toByte()
+        s.macLsbFirst.copyInto(out, 19, 0, minOf(6, s.macLsbFirst.size))
+        out[25] = s.rollX2.toByte(); out[26] = s.pitchX2.toByte()
+        return out
+    }
+
+    data class SteerMute(val op: Int, val srcId: Int)
+
+    fun parseSteerMute(p: ByteArray): SteerMute {
+        need(p, 3, "STEER_MUTE")
+        return SteerMute(u8(p, 0), u16(p, 1))
+    }
+
+    fun muteOpName(op: Int): String = when (op) {
+        MUTE_CLEAR -> "clear"
+        MUTE_ADD -> "add"
+        MUTE_REMOVE -> "remove"
+        else -> op.toString()
+    }
+
     // ---- payloads R2C sends ----
+
+    /** STEER_MUTE (0x74) payload: op u8, src_id u16 (protocol.py pack_steer_mute). */
+    fun steerMutePayload(op: Int, srcId: Int = 0): ByteArray = byteArrayOf(op.toByte(), srcId.toByte(), (srcId ushr 8).toByte())
+
+    /**
+     * A complete STEER_MUTE frame. R2C sends it to the paired Drone Pod's node (the
+     * starboard board, which builds STEER); the header carries that pod's pod_id.
+     */
+    fun steerMuteFrame(seq: Int, podId: Long, op: Int, srcId: Int = 0): ByteArray =
+        encodeFrame(STEER_MUTE, seq = seq, podId = podId, payload = steerMutePayload(op, srcId))
 
     fun roleGetFrame(seq: Int): ByteArray = encodeFrame(ROLE_GET, seq = seq)
 

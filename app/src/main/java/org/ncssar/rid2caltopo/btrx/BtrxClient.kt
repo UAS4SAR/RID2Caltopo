@@ -32,6 +32,8 @@ class BtrxClient(
     interface Logger {
         fun info(message: String)
         fun warn(message: String)
+        /** Per-frame detail that arrives every second (STEER); info unless the app logs debug separately. */
+        fun debug(message: String) = info(message)
     }
 
     /**
@@ -313,7 +315,9 @@ class BtrxClient(
             return
         }
         count(if (backlog) backlogCounts else frameCounts, frame.typeName)
-        log.info("rx $radio ${BtrxFrameLog.format(frame)}")
+        // STEER arrives every second: debug level, so the log stays readable.
+        if (frame.type == P.STEER) log.debug("rx $radio ${BtrxFrameLog.format(frame)}")
+        else log.info("rx $radio ${BtrxFrameLog.format(frame)}")
         if (frame.type == P.ROLE_REPORT && packet.from == localNode && backlog) {
             log.info("stale ROLE_REPORT in the connect backlog ignored; waiting for the answer to this session's ROLE_GET")
         } else if (frame.type == P.ROLE_REPORT && packet.from == localNode) {

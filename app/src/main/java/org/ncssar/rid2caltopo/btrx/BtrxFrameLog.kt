@@ -63,6 +63,14 @@ object BtrxFrameLog {
             }
             if (recs.isEmpty()) head else "$head $recs"
         }
+        P.STEER -> P.parseSteer(p).let { st ->
+            val head = "steer_seq=${st.steerSeq} steer_flags=${P.steerFlagNames(st.flags)} src=${st.srcId}"
+            val target = if (!st.target) "" else
+                " kind=${P.devClassName(st.devClass)} cid=0x%04x rssi_port=%d rssi_stbd=%d peak=%d hits_port=%d hits_stbd=%d age_ms=%d [..%s] addr_type=%d".format(
+                    st.companyId, st.rssiPort, st.rssiStbd, st.peakRssi, st.hitsPort, st.hitsStbd, st.ageMs, st.addressTail, st.addrType)
+            "$head$target window_end_ms=${st.windowEndMs} roll_x2=${st.rollX2} pitch_x2=${st.pitchX2}"
+        }
+        P.STEER_MUTE -> P.parseSteerMute(p).let { "op=${P.muteOpName(it.op)} src=${it.srcId}" }
         else -> if (p.isEmpty()) "" else "raw=${P.hex(p)}"
     }
 }
