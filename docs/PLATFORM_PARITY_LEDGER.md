@@ -12,6 +12,20 @@ Project-only engineering record; do not package in the app, copy into store meta
 
 ## Cumulative release history
 
+### 2.6.0 (445) — BTRX steering: NO PORT, clue line, hide/show (November 12, 2026)
+
+- Both, same logic and words: a STEER with port -128 and IMU-ok clear
+  (`Steer.portBoardSilent`: pod B off the board link) holds the hint and arrow
+  length and shows hint NO PORT with a gray vector; it used to count as heard on
+  starboard only and gave a hard RIGHT (A5 bench, 10:45-10:47).
+- Clue line on the overlay card and in the Steering section from STEER company_id
+  and dev_class (`BtrxMakers`, SIG company ids checked against
+  company_identifiers.yaml of Nov 10 2026; unknown ids as hex; *unknown device*).
+- Hide/show the overlay card: **Hide** on the card, a toggle in the Steering section,
+  a *BTRX hidden* chip on the tile to show it again; persisted (Android
+  SharedPreferences `steer_overlay_shown`, iPad UserDefaults
+  `btrx.steer_overlay_shown`). `BtrxSteeringTarget.tileOverlay`.
+
 ### 2.6.0 (445) — BTRX: one Desk Pod and one Drone Pod per app (November 12, 2026)
 
 - Both, same words: *Pair another* and the inline *Forget* next to the paired pod are
