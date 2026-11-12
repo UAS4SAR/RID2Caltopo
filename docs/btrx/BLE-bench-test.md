@@ -11,7 +11,10 @@ Nothing on this screen ever posts a clue.
 
 Bench facts: Desk Pod `Meshtastic_42ca` (node `!66c842ca`), Drone Pod
 `!018968be`, Bluetooth PIN `123456` (FIXED_PIN). Expect a ROLE_REPORT within
-1 s of ROLE_GET, a DETECT about every 3 s and a HEALTH about every 60 s.
+1 s of ROLE_GET, a DETECT about every 3 s (every 5 s from firmware 0x0101)
+and a HEALTH about every 60 s. Firmware 0x0101 (btrx PR #18, branch
+`steering-report`) adds STEER about every second once the pod is paired; see
+section 6.
 
 ## Setup
 
@@ -153,6 +156,54 @@ is opt-in: **Use USB link (debug)** in the Desk Pod panel, off by default.
 
 Pass: never both links open at once; with the switch off a plugged-in Desk Pod
 never pauses Bluetooth.
+
+## 6. Steering overlay (firmware 0x0101)
+
+Needs both pods on firmware build 0x0101 (the Desk Pod panel's firmware line
+reads *supported*), the Drone Pod paired, and the Desk Pod link up. Open a live
+stream tile (Android: any LIVE stream; iPad: any live tile). The map does not
+change in this build. Reference: `python r2c_sim.py --ble Meshtastic_42ca steer`
+prints the same STEER lines (disconnect it before testing the tablet).
+
+What the pilot sees: at the top center of the video, one circle and an arrow in
+the source's color and one word: LEFT, RIGHT, STRAIGHT, CLOSER, FARTHER, LEVEL or
+LOST. No numbers. Circle shape by device kind: solid phone, ringed wearable or
+audio, dashed tracker, plain otherwise. Each new source takes the next of 8
+colors (Okabe-Ito with white); gray is only for LEVEL. The Desk Pod panel's
+**Steering** section shows the last STEER (swatch, src, kind, word, age) and
+**Clear mutes**. Each STEER is written to the btrx log at debug level
+(`rx ... STEER ...`, address last 4 only).
+
+1. **Left/right must be verified.** PR #18 fixed the firmware's port/starboard
+   swap (DETECT's rssi_port/rssi_stbd were swapped); the app decodes DETECT and
+   STEER as sent. Hold the Drone Pod level, nose away from you, and place a
+   phone about 3 m off its **port** (left) side with Bluetooth on. Within a few
+   seconds the overlay must read **LEFT** with the arrow pointing left (hard left
+   when the difference is 8 dB or more). Move the phone to the starboard side:
+   **RIGHT**. Directly ahead or behind: **STRAIGHT**. If the sides come out
+   reversed, stop and report it to BT RX (the firmware fix or the board roles,
+   not the app).
+2. Walk the phone slowly toward the pod from ahead: **CLOSER** after a few
+   seconds; away: **FARTHER** (arrow points back: turn around).
+3. Tilt the pod past its attitude gate: **LEVEL**, arrow gray, the previous word
+   holds underneath once level again.
+4. **Mute**: tap the circle (or **Mute** under the word). The log shows
+   `steering: STEER_MUTE mute src=N to !018968be`; the pod moves to the next
+   strongest source (new color) and the panel shows *A steering source is muted
+   on the Drone Pod.* Check with r2c_sim `steer` that the muted flag is set.
+5. **Clear mutes** in the Desk Pod panel: log `steering: STEER_MUTE clear to
+   !018968be`; the muted line goes away and the first source can return.
+6. **LOST**: switch the phone's Bluetooth off (and nothing else nearby). The
+   circle fades at once (the pod reports no target), the word holds for 5 s,
+   then reads **LOST** with no arrow. The pod repeats the no-target STEER at
+   most every 5 s; if no STEER at all arrives for 12 s the overlay disappears
+   (the panel still shows the last STEER and its age).
+7. Turn **Connect over Bluetooth** off (or forget the paired pod): the overlay
+   disappears. It never shows before a pod is paired, from another pod's node,
+   with another pod_id, or from the connect backlog.
+
+Pass: the port-side phone reads LEFT on both tablets; Mute and Clear mutes act
+on the pod; nothing is ever posted as a clue.
 
 ## Notes
 

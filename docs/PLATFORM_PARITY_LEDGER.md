@@ -12,6 +12,24 @@ Project-only engineering record; do not package in the app, copy into store meta
 
 ## Cumulative release history
 
+### 2.6.0 (445) — btrx steering overlay (November 11, 2026)
+
+- Both platforms, same logic (`BtrxSteering.kt` / `BtrxSteering.swift`, tests
+  mirrored): STEER (0x73) from the paired Drone Pod (firmware 0x0101, btrx PR
+  #18) drives a minimal overlay on live stream tiles, one circle and arrow in
+  the source's color (Okabe-Ito, 8 colors, by src_id) and one word
+  (LEFT/RIGHT/STRAIGHT/CLOSER/FARTHER/LEVEL/LOST) with the design doc section 41
+  hysteresis. Tapping it sends STEER_MUTE (0x74) op 1 to the paired pod;
+  "Clear mutes" (op 0) and the last STEER are in the Desk Pod panel. Shown only
+  while a paired pod's link is up and STEER keeps arriving. Map unchanged.
+- Placement: Android `StreamTile` video box, top center (camera button is center
+  end, legend bottom start); iPad `AppleStreamTile.videoContent`, top center
+  (requested-by label bottom leading, alert overlay top leading). Native drawing
+  (Compose Canvas / SwiftUI Canvas), same shapes and sizes.
+- Evidence: Android unit suite and debug build; Swift package tests and the
+  unsigned iOS build. Board test: `docs/btrx/BLE-bench-test.md` section 6 (not
+  yet run; left/right still to be verified on hardware).
+
 ### 2.6.0 (445) — btrx Desk Pod over Bluetooth, link health and pairing (November 11, 2026)
 
 - Resolves the "Android only" difference below: the btrx Desk Pod link is now on
