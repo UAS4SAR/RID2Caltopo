@@ -198,7 +198,9 @@ class BtrxDeskPodModelTest {
     @Test
     fun podThatStopsAskingIsMarkedStaleAndNotConfirmed() {
         model.startPairing(); deskPair(1); pairReq()
-        advance(BtrxDeskPodModel.POD_REQUEST_STALE_MS + 1_000)
+        advance(6_000) // three missed 2 s repeats are not stale yet (threshold 7 s)
+        assertFalse(model.snapshot().pairing.podStale)
+        advance(BtrxDeskPodModel.POD_REQUEST_STALE_MS - 6_000 + 1_000)
         var p = model.snapshot().pairing
         assertEquals(PairStep.POD_FOUND, p.step)
         assertTrue(p.podStale)
@@ -225,13 +227,57 @@ class BtrxDeskPodModelTest {
     }
 
     @Test
-    fun anotherPodMayTakeOverAStaleCandidate() {
+    fun onlyANewDeskPodTapLetsAnotherPodReplaceAStaleCandidate() {
         model.startPairing(); deskPair(1); pairReq()
-        advance(6_000)
+        advance(BtrxDeskPodModel.POD_REQUEST_STALE_MS + 1_000)
         pairReq(from = 0x11112222L)
-        val p = model.snapshot().pairing
+        var p = model.snapshot().pairing
+        assertEquals(pod, p.candidate!!.node) // a different pod cannot revive it
+        assertTrue(p.podStale)
+        deskPair(1, backlog = true, seq = 90) // not a live tap
+        assertEquals(PairStep.POD_FOUND, step)
+        deskPair(1) // a new live tap: back to the nod
+        p = model.snapshot().pairing
+        assertEquals(PairStep.WAIT_NOD, p.step)
+        assertNull(p.candidate)
+        pairReq(from = 0x11112222L)
+        p = model.snapshot().pairing
+        assertEquals(PairStep.POD_FOUND, p.step)
         assertEquals(0x11112222L, p.candidate!!.node)
         assertFalse(p.podStale)
+    }
+
+    @Test
+    fun staleCandidateEndsTheFlowOnceTheDeskWindowHasClosed() {
+        model.startPairing(); deskPair(1, seconds = 10); pairReq()
+        advance(8_000)
+        assertTrue(model.snapshot().pairing.podStale)
+        assertEquals(PairStep.POD_FOUND, step) // window still open: another nod can revive it
+        advance(3_000)
+        val p = model.snapshot().pairing
+        assertEquals(PairStep.FAILED, p.step)
+        assertEquals(PairStep.POD_FOUND, p.failedAt)
+        assertEquals(BtrxDeskPodModel.STALE_ENDED_MESSAGE, p.message)
+        assertTrue(p.message.contains("Tap the Desk Pod button and nod the drone pod twice again"))
+    }
+
+    @Test
+    fun staleCandidateEndsTheFlowTwoMinutesAfterItWasFound() {
+        model.startPairing(); deskPair(1); pairReq()
+        // The pod keeps asking and the Desk Pod window is renewed by new taps.
+        var t = 0L
+        while (t < 116_000) {
+            advance(2_000); t += 2_000
+            pairReq()
+            if (t % 50_000 == 0L) deskPair(1)
+        }
+        assertEquals(PairStep.POD_FOUND, step)
+        deskPair(1) // window open well past the stale point
+        advance(BtrxDeskPodModel.POD_REQUEST_STALE_MS + 1_000)
+        assertTrue(model.snapshot().windowOpen)
+        val p = model.snapshot().pairing
+        assertEquals(PairStep.FAILED, p.step)
+        assertEquals(BtrxDeskPodModel.STALE_ENDED_MESSAGE, p.message)
     }
 
     @Test
@@ -397,5 +443,49 @@ class BtrxDeskPodModelTest {
         assertNull(model.snapshot().lastPacketRssi)
         model.onFrame(podFrame("DETECT"), meta(pod))
         assertEquals(-45, model.snapshot().lastPacketRssi)
+    }
+
+    @Test
+    fun pairedNodeWithAnUnexpectedPodIdIsCountedLoggedAndShown() {
+        model.restorePairedPod(BtrxDeskPodModel.PairedPod(pod, 0x45D35AF0L, 0x4C8C125BL, 0x351C2971L))
+        repeat(3) { model.onFrame(podFrame("DETECT", 0x12345678L), meta(pod)) }
+        val s = model.snapshot()
+        assertEquals(3, s.pairedPodIdMismatches)
+        assertEquals(0x12345678L, s.lastMismatchPodId)
+        assertEquals(1, logs.count { it.startsWith("W paired node !018968be sending pod_id 12345678") && it.endsWith("re-pair") })
+        assertEquals(
+            listOf("Paired Drone Pod is sending pod_id 12345678 (3 frame(s) ignored); re-pair it."),
+            BtrxDeskPodText.pairedPodWarnings(s),
+        )
+        model.forgetPairedPod()
+        assertEquals(0, model.snapshot().pairedPodIdMismatches)
+    }
+
+    @Test
+    fun quietPairedPodShowsAReplairHint() {
+        model.setLink(BtrxDeskPodModel.LinkStatus(BtrxDeskPodModel.LinkKind.BLUETOOTH, BtrxDeskPodModel.LinkPhase.READY))
+        model.restorePairedPod(BtrxDeskPodModel.PairedPod(pod, 0x45D35AF0L, 0x4C8C125BL, 0x351C2971L))
+        now += 60_000
+        model.onFrame(podFrame("HEALTH", 0x45D35AF0L), meta(pod))
+        now += BtrxDeskPodModel.PAIRED_QUIET_MS
+        assertFalse(model.snapshot().pairedPodQuiet)
+        now += 1
+        val s = model.snapshot()
+        assertTrue(s.pairedPodQuiet)
+        assertEquals(listOf(BtrxDeskPodText.PAIRED_POD_QUIET), BtrxDeskPodText.pairedPodWarnings(s))
+        model.setLink(BtrxDeskPodModel.LinkStatus(BtrxDeskPodModel.LinkKind.BLUETOOTH, BtrxDeskPodModel.LinkPhase.RETRY_WAIT))
+        assertFalse(model.snapshot().pairedPodQuiet) // not while the link is down
+    }
+
+    @Test
+    fun noHintBeforeTheFirstTwoMinutesOfASession() {
+        model.setLink(BtrxDeskPodModel.LinkStatus(BtrxDeskPodModel.LinkKind.BLUETOOTH, BtrxDeskPodModel.LinkPhase.READY))
+        model.restorePairedPod(BtrxDeskPodModel.PairedPod(pod, 1, 2, 3))
+        now += 100_000
+        model.attach(FakeSender()) // reconnect restarts the wait
+        now += 100_000
+        assertFalse(model.snapshot().pairedPodQuiet)
+        now += 30_000
+        assertTrue(model.snapshot().pairedPodQuiet)
     }
 }

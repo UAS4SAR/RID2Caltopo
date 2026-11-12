@@ -81,13 +81,17 @@ class BtrxClient(
     private var configId = 0L
     private var seq = 0
     /**
-     * Bluetooth: true from config_complete_id until the first empty FromRadio read.
-     * The Desk Pod delivers its queue right after config_complete, in that first drain
-     * (0.5-3 s on the bench), so everything read in it is backlog.
+     * True from config_complete_id until the connect backlog ends. The Desk Pod delivers
+     * its queue right after config_complete (0.5-3 s on the bench), so everything in it
+     * is backlog. Bluetooth: it ends at the first empty FromRadio read. USB (no empty
+     * read): it ends at the first quiet gap of [SERIAL_QUIET_GAP_MS] with no bytes.
      */
     private var firstDrainPending = false
     private var firstDrainFrames = 0
-    private var heartbeatNonce = 0L
+    /** USB: arrival of the latest serial bytes while [firstDrainPending]. */
+    private var lastSerialRxMs = 0L
+    /** Last heartbeat nonce sent; the first one sent is 2 (see [sendHeartbeat]). */
+    private var heartbeatNonce = 1L
     /** Largest ToRadio this link may write (Bluetooth: ATT MTU - 3, at most [MAX_TO_RADIO_BLE]). */
     private var maxToRadioBytes = MAX_TO_RADIO_BLE
     private val decoder = MeshtasticSerial.StreamDecoder(::onProto) { skipped ->
@@ -114,7 +118,26 @@ class BtrxClient(
     @Synchronized
     fun onBytes(data: ByteArray, length: Int = data.size) {
         if (state == State.CLOSED) return
+        checkQuietGap()
+        if (firstDrainPending) lastSerialRxMs = clock()
         decoder.feed(data, length)
+    }
+
+    /**
+     * USB: ends the connect backlog after [SERIAL_QUIET_GAP_MS] without serial bytes
+     * since config_complete_id (or the last bytes of the burst), then sends ROLE_GET.
+     * The USB link calls this about every 100 ms; [onBytes] checks it too.
+     */
+    @Synchronized
+    fun checkQuietGap() {
+        if (framing != Framing.SERIAL || state != State.READY || !firstDrainPending) return
+        if (clock() - lastSerialRxMs >= SERIAL_QUIET_GAP_MS) endConnectBacklog("after a ${SERIAL_QUIET_GAP_MS} ms quiet gap")
+    }
+
+    private fun endConnectBacklog(how: String) {
+        firstDrainPending = false
+        log.info("connect backlog drained $how: $firstDrainFrames frame(s) queued while R2C was away")
+        sendRoleGet()
     }
 
     /**
@@ -126,11 +149,7 @@ class BtrxClient(
     fun onFromRadio(proto: ByteArray) {
         if (state == State.CLOSED) return
         if (proto.isEmpty()) {
-            if (state == State.READY && firstDrainPending) {
-                firstDrainPending = false
-                log.info("connect backlog drained: $firstDrainFrames frame(s) queued while R2C was away")
-                sendRoleGet()
-            }
+            if (state == State.READY && firstDrainPending) endConnectBacklog("at the first empty read")
             return
         }
         onProto(proto)
@@ -155,12 +174,14 @@ class BtrxClient(
     /**
      * Keep-alive; the transport calls this about every 5 minutes. Each heartbeat
      * carries a new nonce: Meshtastic drops a ToRadio identical to the previous one.
+     * Nonces 0 and 1 are never sent: Meshtastic PhoneAPI treats heartbeat nonce 1 as
+     * a trigger to broadcast node info over LoRa (default hop limit), so the first
+     * nonce is 2 and the counter skips 0 and 1 when it wraps.
      */
     @Synchronized
     fun sendHeartbeat() {
         if (state != State.READY) return
-        heartbeatNonce = (heartbeatNonce + 1) and 0xFFFFFFFFL
-        if (heartbeatNonce == 0L) heartbeatNonce = 1
+        heartbeatNonce = nextHeartbeatNonce(heartbeatNonce)
         sendToRadio(MeshtasticSerial.toRadioHeartbeat(heartbeatNonce))
     }
 
@@ -248,13 +269,10 @@ class BtrxClient(
                 val node = localNode
                 log.info("handshake: config complete, Desk Pod node ${node?.let(::nodeName) ?: "unknown"}")
                 if (node != null) listener.onConfigured(node)
-                if (framing == Framing.PACKET) {
-                    // Queued frames follow in this drain; ask for the role once it is empty.
-                    firstDrainPending = true
-                    firstDrainFrames = 0
-                } else {
-                    sendRoleGet()
-                }
+                // Queued frames follow; ask for the role once they are through.
+                firstDrainPending = true
+                firstDrainFrames = 0
+                lastSerialRxMs = clock()
             }
             is FromRadio.Packet -> onPacket(msg)
             is FromRadio.Other -> Unit
@@ -267,9 +285,8 @@ class BtrxClient(
             return
         }
         val now = clock()
-        // Bluetooth: the first drain after config_complete_id. USB has no empty-read signal,
-        // so it keeps the M1 rule (only frames before config_complete_id); queued frames that
-        // follow config_complete on USB count as live. USB is an opt-in debug link.
+        // Before config_complete_id, or in the burst right after it (Bluetooth: up to the
+        // first empty read; USB: up to the first quiet gap).
         val backlog = state != State.READY || firstDrainPending
         if (backlog && state == State.READY) firstDrainFrames++
         val meta = RadioMeta(packet.from, packet.to, packet.rxRssi, packet.rxSnr, now, backlog)
@@ -328,6 +345,14 @@ class BtrxClient(
         const val MAX_SEND_FRAME = 200
         /** Below this ATT MTU even PAIR_CONFIRM's ToRadio does not fit comfortably. */
         const val MIN_USABLE_MTU = 100
+        /** USB: the connect backlog ends at the first gap this long with no serial bytes. */
+        const val SERIAL_QUIET_GAP_MS = 300L
+
+        /** Heartbeat nonce after [previous]: wraps at 32 bits and skips 0 and 1. */
+        fun nextHeartbeatNonce(previous: Long): Long {
+            val next = (previous + 1) and 0xFFFFFFFFL
+            return if (next < 2) 2 else next
+        }
 
         fun nodeName(node: Long): String = "!%08x".format(node and 0xFFFFFFFFL)
     }

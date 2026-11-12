@@ -15,6 +15,7 @@ object BtrxDeskPodText {
     const val USB_PAUSED = "Desk Pod is attached by USB; Bluetooth paused"
     const val BLUETOOTH_TOGGLE = "Connect over Bluetooth"
     const val POD_STALE_HINT = "Not asking any more: nod the drone pod twice again."
+    const val PAIRED_POD_QUIET = "No HEALTH from the paired Drone Pod for over 2 min; re-pair?"
     /** Android only: USB is a debug link (an iPad cannot open a USB serial device). */
     const val USB_DEBUG_TOGGLE = "Use USB link (debug)"
     const val USB_DEBUG_HINT = "Off: a Desk Pod plugged into this tablet only draws power and Bluetooth stays the link. On: a plugged-in Desk Pod is opened over USB and Bluetooth pauses."
@@ -89,6 +90,17 @@ object BtrxDeskPodText {
 
     fun pairedLine(s: BtrxDeskPodModel.Snapshot): String? = s.pairedPod?.let {
         "Paired Drone Pod: ${BtrxClient.nodeName(it.node)}, pod_id %08x, dev_a %08x, dev_b %08x".format(Locale.US, it.podId, it.devA, it.devB)
+    }
+
+    /** Warnings under the paired pod: an unexpected pod_id from it, or no HEALTH for a while. */
+    fun pairedPodWarnings(s: BtrxDeskPodModel.Snapshot): List<String> = buildList {
+        if (s.pairedPod == null) return@buildList
+        s.lastMismatchPodId?.let {
+            if (s.pairedPodIdMismatches > 0) {
+                add("Paired Drone Pod is sending pod_id %08x (%d frame(s) ignored); re-pair it.".format(Locale.US, it, s.pairedPodIdMismatches))
+            }
+        }
+        if (s.pairedPodQuiet) add(PAIRED_POD_QUIET)
     }
 
     /** The four pairing steps with their result, for the per-step display. */

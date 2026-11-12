@@ -98,6 +98,9 @@ fun DeskPodScreen(onDismiss: () -> Unit) {
                             Text(line, Modifier.weight(1f))
                             TextButton(onClick = { BtrxManager.forgetPairedPod() }) { Text("Forget") }
                         }
+                        BtrxDeskPodText.pairedPodWarnings(s).forEach {
+                            Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                        }
                     }
                     if (s.windowOpen && s.pairing.step == PairStep.IDLE) {
                         Text("The Desk Pod pairing window is open (${s.windowSecondsLeft} s left).", style = MaterialTheme.typography.bodySmall)

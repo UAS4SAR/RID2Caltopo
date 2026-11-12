@@ -141,7 +141,15 @@ object BtrxManager {
         powerOnlyLogged = false
         logger.info("Desk Pod USB debug link turned ${if (enabled) "on" else "off"}")
         setAttachActivityEnabled(enabled)
-        if (!enabled) link?.close("USB debug link turned off")
+        if (!enabled) {
+            // Clear the USB link before Bluetooth starts, so the arbiter and status never see both.
+            val closing = synchronized(this) { link.also { link = null } }
+            if (closing != null) {
+                closing.close("USB debug link turned off")
+                model.detach(closing.client, "USB debug link turned off")
+                lastUsbCloseMs = System.currentTimeMillis()
+            }
+        }
         applyArbiter(arbiter.update(usbDebugEnabled = enabled))
         if (enabled && usbHost) scanAttached()
         publish()

@@ -20,7 +20,10 @@ import org.ncssar.rid2caltopo.btrx.BtrxProtocol as P
  *  3. The operator confirms the pod shown (dev_a / dev_b, imu_ok, RSSI/SNR). The pod
  *     only takes PAIR_CONFIRM inside its own 60 s nod window, while it repeats PAIR_REQ
  *     every 2 s; the Desk Pod's window is advisory here. No PAIR_REQ for
- *     [POD_REQUEST_STALE_MS] marks the pod stale and asks for another nod.
+ *     [POD_REQUEST_STALE_MS] marks the pod stale and asks for another nod. Only the
+ *     same pod can revive a stale candidate; a different pod needs a new Desk Pod tap
+ *     (a new DESK_PAIR open=1 goes back to step 2). A stale pod ends the flow once the
+ *     Desk Pod window has closed or [POD_FOUND_MAX_MS] after it was found.
  *  4. PAIR_CONFIRM to that node, nonce echoed, non-zero pod_id ([P.podIdFor]);
  *     answered again if the same PAIR_REQ repeats (up to [MAX_CONFIRM_TRIES]); then
  *     wait up to [ACK_TIMEOUT_MS] for PAIR_ACK and show a_ok / b_ok.
@@ -28,7 +31,9 @@ import org.ncssar.rid2caltopo.btrx.BtrxProtocol as P
  *
  * Pod traffic (HEALTH, DETECT, RSSI/SNR) counts only when live: backlog frames can be
  * minutes old. Once a pod is paired, only its node is accepted (the Desk Pod does not
- * filter by pod_id); a non-zero header pod_id other than the paired one is refused.
+ * filter by pod_id); a non-zero header pod_id other than the paired one is refused,
+ * counted and shown ("re-pair"). No HEALTH from the paired pod for [PAIRED_QUIET_MS]
+ * is shown too: an unconfirmed pod (pod_id reset after a 10 s hold) stops transmitting.
  * Nothing here ever makes a clue.
  */
 class BtrxDeskPodModel(
@@ -56,6 +61,8 @@ class BtrxDeskPodModel(
         val imuOk: Int, val roleA: Int, val roleB: Int, val nonceHex: String, val rssi: Int, val snr: Float,
         /** Arrival of the latest PAIR_REQ from this pod (they repeat every 2 s inside its nod window). */
         val lastRequestMs: Long = 0,
+        /** Arrival of the PAIR_REQ that made this the candidate. */
+        val foundMs: Long = lastRequestMs,
     ) {
         /** Brief section 6 failure cases: the port board missing or its motion sensor not OK. */
         val warnings: List<String>
@@ -102,6 +109,11 @@ class BtrxDeskPodModel(
         val windowFromBacklog: Boolean,
         val pairing: Pairing,
         val pairedPod: PairedPod?,
+        /** Live frames from the paired node carrying an unexpected non-zero pod_id (refused). */
+        val pairedPodIdMismatches: Int = 0,
+        val lastMismatchPodId: Long? = null,
+        /** Paired, connected, and no HEALTH from the paired pod for over [PAIRED_QUIET_MS]. */
+        val pairedPodQuiet: Boolean = false,
     ) {
         val roleSupported: Boolean get() = role != null && role.buildHash in P.SUPPORTED_BUILDS
     }
@@ -124,6 +136,10 @@ class BtrxDeskPodModel(
     private val liveCounts = sortedMapOf<String, Int>()
     private val backlogCounts = sortedMapOf<String, Int>()
     private val outbox = ArrayList<Pair<Long, (Int) -> ByteArray>>()
+    private var podIdMismatches = 0
+    private var lastMismatchPodId: Long? = null
+    /** Start of the current wait for the paired pod's HEALTH (session start, pairing, restore). */
+    private var quietWatchSinceMs = 0L
 
     // ---- link ----
 
@@ -141,6 +157,7 @@ class BtrxDeskPodModel(
         role = null
         liveCounts.clear(); backlogCounts.clear()
         detectTimes.clear()
+        quietWatchSinceMs = clock()
     }
 
     /** The session ended. A pairing in progress fails: its frames would go nowhere. */
@@ -153,10 +170,16 @@ class BtrxDeskPodModel(
     }
 
     @Synchronized
-    fun restorePairedPod(pod: PairedPod?) { pairedPod = pod }
+    fun restorePairedPod(pod: PairedPod?) {
+        pairedPod = pod
+        quietWatchSinceMs = clock()
+    }
 
     @Synchronized
-    fun forgetPairedPod() { pairedPod = null; lastHealth = null; otherPods.clear() }
+    fun forgetPairedPod() {
+        pairedPod = null; lastHealth = null; otherPods.clear()
+        podIdMismatches = 0; lastMismatchPodId = null
+    }
 
     // ---- client listener ----
 
@@ -200,7 +223,14 @@ class BtrxDeskPodModel(
             return false
         }
         // Frames queued before pairing still carry pod_id 0 from the right node; accept by node.
-        return frame.podId == 0L || frame.podId == paired.podId
+        if (frame.podId == 0L || frame.podId == paired.podId) return true
+        podIdMismatches++
+        if (frame.podId != lastMismatchPodId || podIdMismatches % MISMATCH_LOG_EVERY == 0) {
+            log.warn("paired node ${BtrxClient.nodeName(paired.node)} sending pod_id %08x (paired as %08x, %d frame(s) refused); re-pair"
+                .format(frame.podId, paired.podId, podIdMismatches))
+        }
+        lastMismatchPodId = frame.podId
+        return false
     }
 
     private fun onPodTraffic(frame: P.Frame, meta: BtrxClient.RadioMeta) {
@@ -223,6 +253,12 @@ class BtrxDeskPodModel(
             if (window.openedFromBacklog) log.info("pairing: Desk Pod window open from a tap that arrived with the connect backlog (${window.secondsLeft(now)} s left)")
             // A new tap while waiting for the nod restarts the countdown on the new window.
             if (pairing.step == PairStep.WAIT_BUTTON || pairing.step == PairStep.WAIT_NOD) enterWaitNod(now)
+            // A live tap while the found pod is stale starts over at the nod (any pod may answer).
+            else if (pairing.step == PairStep.POD_FOUND && pairing.podStale && !meta.backlog) {
+                log.info("pairing: new Desk Pod tap while ${pairing.candidate?.let { BtrxClient.nodeName(it.node) }} is stale; waiting for a nod")
+                pairing = pairing.copy(candidate = null, podStale = false)
+                enterWaitNod(now)
+            }
         } else {
             when (pairing.step) {
                 PairStep.WAIT_BUTTON -> Unit // an old close; keep waiting for the tap
@@ -264,10 +300,10 @@ class BtrxDeskPodModel(
                         candidate = c.copy(nonceHex = nonce, rssi = meta.rxRssi, snr = meta.rxSnr, lastRequestMs = now),
                         podStale = false, message = askedMessage(c),
                     )
-                } else if (pairing.podStale) {
-                    newCandidate()
                 } else {
-                    log.info("pairing: another Drone Pod ${BtrxClient.nodeName(meta.fromNode)} also asked to pair; ignored")
+                    // Only the same pod may revive a stale candidate; another pod needs a new Desk Pod tap.
+                    log.info("pairing: another Drone Pod ${BtrxClient.nodeName(meta.fromNode)} also asked to pair; ignored" +
+                        if (pairing.podStale) " (tap the Desk Pod button to pair a different pod)" else "")
                 }
             }
             PairStep.CONFIRMING -> {
@@ -291,6 +327,8 @@ class BtrxDeskPodModel(
         if (ack.aOk == 1) {
             val pod = PairedPod(c.node, c.assignedPodId, c.devA, c.devB)
             pairedPod = pod
+            podIdMismatches = 0; lastMismatchPodId = null
+            quietWatchSinceMs = meta.arrivalMs
             val msg = if (ack.bOk == 1) "Drone Pod paired." else "Paired, but the port board did not answer. Check the cable between the boards."
             pairing = pairing.copy(step = PairStep.PAIRED, aOk = ack.aOk, bOk = ack.bOk, ackFlags = ack.flags, message = msg, failedAt = null)
             log.info("pairing: PAIR_ACK a_ok=${ack.aOk} b_ok=${ack.bOk}; paired ${BtrxClient.nodeName(c.node)} pod_id=%08x".format(c.assignedPodId))
@@ -363,6 +401,9 @@ class BtrxDeskPodModel(
             PairStep.WAIT_NOD -> if (!open) fail(PairStep.WAIT_NOD, windowEndedMessage("No Drone Pod asked to pair. Nod the drone pod twice within the window."))
             PairStep.POD_FOUND -> pairing.candidate?.let { c ->
                 if (!pairing.podStale && now - c.lastRequestMs > POD_REQUEST_STALE_MS) markStale(c)
+                if (pairing.podStale && (!open || now - c.foundMs > POD_FOUND_MAX_MS)) {
+                    fail(PairStep.POD_FOUND, STALE_ENDED_MESSAGE)
+                }
             }
             PairStep.CONFIRMING -> if (now >= stepDeadlineMs) fail(PairStep.CONFIRMING, "No PAIR_ACK from the Drone Pod within ${ACK_TIMEOUT_MS / 1000} s. Tap the Desk Pod button and try again.")
             else -> Unit
@@ -382,7 +423,16 @@ class BtrxDeskPodModel(
             windowOpen = window.isOpen(now), windowSecondsLeft = window.secondsLeft(now), windowFromBacklog = window.openedFromBacklog,
             pairing = if (pairing.step in ACTIVE_STEPS) pairing.copy(windowSecondsLeft = window.secondsLeft(now)) else pairing,
             pairedPod = pairedPod,
+            pairedPodIdMismatches = podIdMismatches, lastMismatchPodId = lastMismatchPodId,
+            pairedPodQuiet = pairedQuiet(now),
         )
+    }
+
+    private fun pairedQuiet(now: Long): Boolean {
+        val pod = pairedPod ?: return false
+        if (link.phase != LinkPhase.READY || sender == null) return false
+        val lastHeard = lastHealth?.takeIf { it.node == pod.node }?.arrivalMs ?: 0L
+        return now - maxOf(lastHeard, quietWatchSinceMs) > PAIRED_QUIET_MS
     }
 
     // ---- internals ----
@@ -435,7 +485,13 @@ class BtrxDeskPodModel(
         const val MAX_CONFIRM_TRIES = 8
         const val DETECT_WINDOW_MS = 60_000L
         /** PAIR_REQ repeats every 2 s while the pod's own window is open. */
-        const val POD_REQUEST_STALE_MS = 5_000L
+        const val POD_REQUEST_STALE_MS = 7_000L
+        /** A stale candidate ends the flow this long after it was found, even with the window open. */
+        const val POD_FOUND_MAX_MS = 120_000L
+        /** No HEALTH (about every 60 s) from the paired pod for this long: hint to re-pair. */
+        const val PAIRED_QUIET_MS = 120_000L
+        const val MISMATCH_LOG_EVERY = 50
+        const val STALE_ENDED_MESSAGE = "The Drone Pod stopped asking to pair and its pairing window is over. Tap the Desk Pod button and nod the drone pod twice again."
         const val STALE_MESSAGE = "The Drone Pod stopped asking to pair; its own pairing window has probably closed. Nod the drone pod twice again, then confirm."
         val ACTIVE_STEPS = setOf(PairStep.WAIT_BUTTON, PairStep.WAIT_NOD, PairStep.POD_FOUND, PairStep.CONFIRMING)
     }

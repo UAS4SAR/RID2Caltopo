@@ -77,6 +77,8 @@ class BtrxUsbLink(
         log.info("USB open: ${describe(device)}")
         client.start()
         later(ROLE_TIMEOUT_S) { checkRole(retry = true, configWaits = 0) }
+        // Ends the connect backlog at the first quiet gap after config_complete (then ROLE_GET).
+        timers.scheduleWithFixedDelay({ client.checkQuietGap() }, QUIET_POLL_MS, QUIET_POLL_MS, TimeUnit.MILLISECONDS)
         timers.scheduleWithFixedDelay({ client.sendHeartbeat() }, HEARTBEAT_S, HEARTBEAT_S, TimeUnit.SECONDS)
         timers.scheduleWithFixedDelay({ log.info("summary: ${client.summary()}") }, SUMMARY_S, SUMMARY_S, TimeUnit.SECONDS)
     }
@@ -147,6 +149,7 @@ class BtrxUsbLink(
         const val MAX_CONFIG_WAITS = 6
         const val HEARTBEAT_S = 300L
         const val SUMMARY_S = 60L
+        const val QUIET_POLL_MS = 100L
 
         fun describe(d: UsbDevice): String =
             "%s %04x:%04x %s".format(d.deviceName, d.vendorId, d.productId, d.productName ?: "")

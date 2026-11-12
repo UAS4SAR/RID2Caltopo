@@ -20,6 +20,7 @@ class BtrxClientTest {
         override fun info(message: String) { infos += message }
         override fun warn(message: String) { warns += message }
     }
+    private var now = 50_000L
     private val client = BtrxClient(
         send = { sent += it },
         log = logger,
@@ -27,6 +28,7 @@ class BtrxClientTest {
             override fun onVersionRefused(fromNode: Long, version: Int) { refused += fromNode to version }
         },
         random = Random(1),
+        clock = { now },
     )
 
     private val deskNode = 0x0A0B0C0DL
@@ -42,13 +44,18 @@ class BtrxClientTest {
 
     private fun feed(proto: ByteArray) = client.onBytes(MeshtasticSerial.frame(proto))
 
-    private fun handshake() {
+    /** Handshake, then the USB quiet gap that ends the connect backlog (and sends ROLE_GET). */
+    private fun handshake(endBacklog: Boolean = true) {
         client.start()
         val want = sentMessages().single()
         val configId = MeshtasticSerial.ProtoReader(want).let { r -> r.tag(); r.varint() }
         feed(ProtoWriter().bytesField(3, ProtoWriter().varint(1, deskNode).bytes()).bytes())
         feed(ProtoWriter().bytesField(10, byteArrayOf(8, 0)).bytes()) // a channel record, ignored
         feed(ProtoWriter().varint(7, configId).bytes())
+        if (endBacklog) {
+            now += BtrxClient.SERIAL_QUIET_GAP_MS
+            client.checkQuietGap()
+        }
     }
 
     private fun btrxPacket(from: Long, frame: ByteArray, port: Int = 256) =
@@ -66,10 +73,17 @@ class BtrxClientTest {
     }
 
     @Test
-    fun configCompleteSendsRoleGetToTheLocalNode() {
-        handshake()
+    fun roleGetToTheLocalNodeFollowsTheUsbQuietGap() {
+        handshake(endBacklog = false)
         assertEquals(BtrxClient.State.READY, client.state)
         assertEquals(deskNode, client.localNode)
+        assertEquals(1, sentMessages().size) // only want_config_id: still in the connect burst
+        now += BtrxClient.SERIAL_QUIET_GAP_MS - 1
+        client.checkQuietGap()
+        assertEquals(1, sentMessages().size)
+        now += 1
+        client.checkQuietGap()
+        assertTrue(infos.any { it.startsWith("connect backlog drained after a 300 ms quiet gap: 0 frame(s)") })
         val toRadio = sentMessages().last()
         // ToRadio.packet -> MeshPacket
         val packetBytes = MeshtasticSerial.ProtoReader(toRadio).let { r -> assertEquals(1 to 2, r.tag()); r.lengthDelimited() }
@@ -127,24 +141,34 @@ class BtrxClientTest {
     }
 
     @Test
-    fun framesBeforeConfigCompleteAreBacklog() {
+    fun usbFramesUntilTheFirstQuietGapAfterConfigCompleteAreBacklog() {
         val metas = mutableListOf<BtrxClient.RadioMeta>()
-        val c = BtrxClient(send = { sent += it }, log = logger, random = Random(2), listener = object : BtrxClient.Listener {
+        val c = BtrxClient(send = { sent += it }, log = logger, random = Random(2), clock = { now }, listener = object : BtrxClient.Listener {
             override fun onFrame(frame: P.Frame, meta: BtrxClient.RadioMeta) { metas += meta }
         })
         c.start()
         val want = sentMessages().single()
         val configId = MeshtasticSerial.ProtoReader(want).let { r -> r.tag(); r.varint() }
         val detect = P.fromHex(BtrxProtocolTest.EXAMPLES.getValue("DETECT"))
+        val oldReport = P.encodeFrame(P.ROLE_REPORT, seq = 4, payload = P.fromHex("030500000000015b128c4c00000000000000000002"))
         c.onBytes(MeshtasticSerial.frame(ProtoWriter().bytesField(3, ProtoWriter().varint(1, deskNode).bytes()).bytes()))
-        repeat(2) { c.onBytes(MeshtasticSerial.frame(btrxPacket(starboard, detect))) }
+        c.onBytes(MeshtasticSerial.frame(btrxPacket(starboard, detect))) // before config_complete
         c.onBytes(MeshtasticSerial.frame(ProtoWriter().varint(7, configId).bytes()))
+        now += 120
+        c.onBytes(MeshtasticSerial.frame(btrxPacket(starboard, detect))) // queued burst
+        now += 250 // gaps inside the burst are shorter than 300 ms
+        c.onBytes(MeshtasticSerial.frame(MeshtasticSerialTest.fromRadioPacket(deskNode, deskNode, 0, 0f, 256, oldReport)))
+        assertNull(c.localRole) // a ROLE_REPORT in the burst is stale
+        assertTrue(infos.any { it.startsWith("stale ROLE_REPORT in the connect backlog ignored") })
+        assertEquals(1, sentMessages().size) // no ROLE_GET yet
+        now += 400 // quiet gap: the next bytes are live, and ROLE_GET went out first
         c.onBytes(MeshtasticSerial.frame(btrxPacket(starboard, detect)))
-        assertEquals(listOf(true, true, false), metas.map { it.backlog })
+        assertEquals(listOf(true, true, true, false), metas.map { it.backlog })
         assertEquals(2, c.backlogCount("DETECT"))
         assertEquals(1, c.frameCount("DETECT"))
-        assertTrue(infos.count { it.startsWith("rx backlog from=!4c8c125b") } == 2)
-        assertTrue(c.summary(), c.summary().contains("frames: DETECT=1 backlog: DETECT=2"))
+        assertEquals(2, sentMessages().size)
+        assertTrue(infos.any { it.startsWith("connect backlog drained after a 300 ms quiet gap: 2 frame(s)") })
+        assertTrue(c.summary(), c.summary().contains("frames: DETECT=1 backlog: DETECT=2 ROLE_REPORT=1"))
     }
 
     @Test
@@ -241,8 +265,18 @@ class BtrxClientTest {
         packetHandshake(c, out)
         c.sendHeartbeat()
         c.sendHeartbeat()
-        assertEquals("3a020801", P.hex(out[out.size - 2]))
-        assertEquals("3a020802", P.hex(out.last()))
+        // Never nonce 1: Meshtastic answers it by broadcasting node info over LoRa.
+        assertEquals("3a020802", P.hex(out[out.size - 2]))
+        assertEquals("3a020803", P.hex(out.last()))
+    }
+
+    @Test
+    fun heartbeatNonceSkipsZeroAndOneWhenItWraps() {
+        assertEquals(2L, BtrxClient.nextHeartbeatNonce(1))
+        assertEquals(0xFFFFFFFFL, BtrxClient.nextHeartbeatNonce(0xFFFFFFFEL))
+        assertEquals(2L, BtrxClient.nextHeartbeatNonce(0xFFFFFFFFL))
+        var n = 1L
+        repeat(1000) { n = BtrxClient.nextHeartbeatNonce(n); assertTrue(n >= 2) }
     }
 
     @Test
@@ -272,7 +306,7 @@ class BtrxClientTest {
         assertEquals(listOf(true, true, false, false), metas.map { it.backlog })
         assertEquals(2, c.backlogCount("DETECT"))
         assertEquals(2, c.frameCount("DETECT"))
-        assertTrue(infos.contains("connect backlog drained: 2 frame(s) queued while R2C was away"))
+        assertTrue(infos.contains("connect backlog drained at the first empty read: 2 frame(s) queued while R2C was away"))
         assertEquals(1, out.count(::isRoleGet))
     }
 
