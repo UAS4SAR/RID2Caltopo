@@ -6,6 +6,9 @@ public enum BtrxDeskPodText {
     public typealias Model = BtrxDeskPodModel
     /// Main menu item and screen title (the btrx receiver system; the pods keep their names inside).
     public static let title = "BTRX"
+    /// Top of Menu > BTRX: opens the BTRX page in the system browser.
+    public static let learnMore = "Learn more about BTRX"
+    public static let learnMoreURL = "https://rid2caltopo.com/btrx"
     public static let usbPaused = "Desk Pod is attached by USB; Bluetooth paused"
     public static let bluetoothToggle = "Connect over Bluetooth"
     public static let podStaleHint = "Not asking any more: nod the drone pod twice again."

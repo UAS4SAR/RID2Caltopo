@@ -24,6 +24,10 @@ struct DeskPodView: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 6) {
+                    // Opens in Safari (the system browser), like Android's ACTION_VIEW.
+                    if let url = URL(string: Text_.learnMoreURL) {
+                        Link(Text_.learnMore, destination: url)
+                    }
                     section("Connection")
                     Toggle(Text_.bluetoothToggle, isOn: Binding(get: { center.bluetoothEnabled }, set: { center.setBluetoothEnabled($0) }))
                     if s.bluetoothPausedForUSB {

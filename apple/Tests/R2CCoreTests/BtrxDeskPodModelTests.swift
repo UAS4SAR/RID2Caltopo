@@ -701,4 +701,10 @@ final class BtrxDeskPodModelTests: XCTestCase {
         model.setSteeringRollCorrection(true)
         XCTAssertTrue(model.snapshot().steeringRollCorrection)
     }
+
+    func testLearnMoreLinkMatchesAndroid() {
+        XCTAssertEqual(BtrxDeskPodText.learnMore, "Learn more about BTRX")
+        XCTAssertEqual(BtrxDeskPodText.learnMoreURL, "https://rid2caltopo.com/btrx")
+        XCTAssertEqual(URL(string: BtrxDeskPodText.learnMoreURL)?.scheme, "https")
+    }
 }
