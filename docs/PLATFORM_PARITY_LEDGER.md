@@ -12,6 +12,19 @@ Project-only engineering record; do not package in the app, copy into store meta
 
 ## Cumulative release history
 
+### 2.6.0 (445) — iPad leftover recording recovery (November 12, 2026)
+
+- Both now recover recordings an earlier run never finished. Android: snapshot staged
+  fragments, start MediaMTX, normalize them on `recordingSyncExecutor` (1c366086).
+  iPad: once per process after MediaMTX starts, raw UTC-named segments untouched since
+  this recorder started (including UTC-date folders) go through the normal local-time
+  rename, conversion and `recordFileCompleted` delivery on a background chain; no
+  moov/media or conversion failure leaves the raw file in place, remembered so it is
+  not retried; recorded time restored (96594dae, ebf79b6f).
+- Evidence: `docs/validation/2026-11-12-ipad-leftover-recording-recovery.md` (four
+  leftovers recovered on the iPad at 17:56 PST, including the 17:40:13 segment cut by
+  the 17:42:50 install).
+
 ### 2.6.0 (445) — Stream startup: listener before housekeeping (November 12, 2026)
 
 - Both, same rules: MediaMTX starts on a non-scanning storage estimate (live, last or
