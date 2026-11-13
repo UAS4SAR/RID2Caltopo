@@ -2,7 +2,7 @@
 
 Bluetooth is the primary Desk Pod link on both platforms. USB
 (`M1-bench-test.md`) stays as an Android debug link, used only when
-**Use USB link (debug)** is on (off by default; see section 5). Main menu > **BTRX**
+**Use USB link (debug)** is on (off by default; see section 5). Settings > Developer Tools > **BTRX**
 shows the link, the Desk Pod's role and firmware, link health and the
 **Pair drone pod** flow. The panel looks and behaves the same on Android and
 the iPad. **Dismiss** only hides the panel; the link keeps running.
@@ -36,7 +36,7 @@ see section 7.
 
 ## 1. Connect (each tablet)
 
-1. Main menu > **BTRX**. Turn on **Connect over Bluetooth**.
+1. Settings > Developer Tools > **BTRX**. Turn on **Connect over Bluetooth**.
    - Android asks for the Nearby devices permission if it was not granted.
    - The iPad asks for Bluetooth permission the first time.
 2. The link line goes through *looking for the Desk Pod (scan 1 of 3)*,

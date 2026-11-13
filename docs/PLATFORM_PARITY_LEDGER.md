@@ -12,6 +12,34 @@ Project-only engineering record; do not package in the app, copy into store meta
 
 ## Cumulative release history
 
+### 2.6.0 (445) — BTRX moved to Developer Tools (November 12, 2026)
+
+- Both: BTRX is no longer in the main menu; it opens from **Settings > Developer
+  Tools > BTRX** until the pod is at least tentatively working (Android: a BTRX button
+  under Proximity Pairs in the Developer Tools dialog, 59cd7f8a; iPad: a BTRX section at
+  the top of `AppleDeveloperToolsView`, which presents `DeskPodView` as a sheet using the
+  `\.btrxDeskPod` environment center). The BTRX pane itself is unchanged: the Learn more
+  link, the Desk Pod link and the steering overlay keep working. Tests: Android
+  `BtrxDeskPodModelTest.btrxOpensFromDeveloperToolsNotTheMainMenu`, iPad
+  `BtrxDeskPodModelTests.testBtrxOpensFromDeveloperToolsNotTheMainMenu` and
+  `MainMenuUITests` (BTRX must not be in the main menu). Bench docs now say
+  Settings > Developer Tools > BTRX. Built, not installed.
+
+### 2.6.0 (445) — Android: clean shutdown on a Recents swipe (November 12, 2026)
+
+- Android: swiping the app away from Recents now runs the full clean shutdown
+  (CalTopo markers and map close, tracks archived, state saved, session log closed
+  with its final card copy, MediaMTX stopped) before the process ends (00125ce0).
+  `ScanningService` is `stopWithTask="false"`; its `onTaskRemoved` (or the activity's
+  `onDestroy`, whichever comes first) starts `TaskRemovalShutdown`, which runs the
+  steps on worker threads and releases the foreground service when done or after
+  5 s. Before this, Android stopped the services and killed the process about 0.5 s
+  after the swipe, so no shutdown step ran (seen on the A5 at 19:11:37 PT). Quit is
+  unchanged. Also: `screenLayout` added to R2CActivity `configChanges`, so freeform
+  window changes no longer rebuild the screen. Tests: `TaskRemovalShutdownTest` (6).
+  iPad: not changed here; its app-switcher termination path was not reviewed in this
+  change. Built, not installed; needs a swipe test with a CalTopo map connected.
+
 ### 2.6.0 (445) — "Learn more about BTRX" link (November 12, 2026)
 
 - Both: the first line of Menu > BTRX is a **Learn more about BTRX** link that opens
