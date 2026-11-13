@@ -1333,6 +1333,8 @@ class R2CActivity :
         if (!settingsReadyActivityCreated) { super.onStop(); return }
         systemUnlockPresentationJob?.cancel()
         ScanningService.setDisplayActive(applicationContext, false, externalDisplayConnected)
+        // App stop: copy pending session log lines to the Archive Dir (background, no wait).
+        CaltopoClient.RequestSessionLogCardSync()
         if (configuredAccessAuthenticationRequired() &&
             organizationAccessState != OrganizationAccessState.AUTHENTICATING
         ) {

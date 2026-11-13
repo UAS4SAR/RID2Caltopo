@@ -1099,6 +1099,11 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
         return DebugLogPath;
     }
 
+    /** Copies pending session log lines to the Archive Dir now, in the background. */
+    public static void RequestSessionLogCardSync() {
+        SessionLogCardSync.requestBatch();
+    }
+
 
 
     public static void SubmitClue(
@@ -1140,9 +1145,9 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
                 }
                 byte[] bytes = msg.getBytes();
                 BytesWrittenToDebugOutputStream += bytes.length;
+                // os is the app-private staging file; SessionLogCardSync copies it to the
+                // Archive Dir in batches and reports the card size to FlightStorage.
                 os.write(bytes);
-                org.ncssar.rid2caltopo.app.FlightStorage.appendCompleted(R2CApplication.getAppCtxt(),
-                        DebugLogPath == null ? null : DebugLogPath.toString(), bytes.length);
                 os.flush();
             } catch (IOException e) {
                 Log.e(TAG, String.format(Locale.US, "CTError: CTLog(): Not able to write '%s' - %s", LogFilePath, e));
@@ -4126,6 +4131,9 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
     }
 
     private static void InitArchiveDirLocked() {
+        Context startCtxt = R2CApplication.getAppCtxt();
+        // Leftover staged logs from a killed run are copied later, in the background.
+        if (null != startCtxt) SessionLogCardSync.scheduleLeftoverFlush(startCtxt);
         DocumentFile todaysArchiveDir = GetTodaysTrackDir();
         if (null == todaysArchiveDir) {
             CTError(TAG, "InitArchiveDir(): archive dir is mia.");
@@ -4142,7 +4150,10 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
                 synchronized (DebugLogLock) {
                     if (DebugLogPath == null && null != dataFilepath) {
                         Uri logPath = dataFilepath.getUri();
-                        OutputStream fileOutputStream = resolver.openOutputStream(logPath);
+                        // Write to app-private storage; never hold the Archive Dir (SD card)
+                        // file open. Android kills a process holding a card file open when
+                        // the card unmounts.
+                        OutputStream fileOutputStream = SessionLogCardSync.start(ctxt, filepath, logPath);
                         if (fileOutputStream != null && DebugOutputStream instanceof DeferredLogOutputStream) {
                             ((DeferredLogOutputStream) DebugOutputStream).attach(fileOutputStream);
                             DebugLogPath = logPath;
@@ -4395,6 +4406,8 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
                     ResetDebugOutputStreamLocked();
                 }
             }
+            // Last batch to the Archive Dir (bounded wait); any remainder is copied next start.
+            SessionLogCardSync.finish();
         }
     }
 
