@@ -12,6 +12,21 @@ Project-only engineering record; do not package in the app, copy into store meta
 
 ## Cumulative release history
 
+### 2.6.0 (445) — Session log no longer held open on the SD card (November 12, 2026)
+
+- Android: the Log_ session log is written to app-private storage
+  (`noBackupFilesDir/session-log-staging`) and copied to the Archive Dir file in
+  batches (every 3 s, app stop, session end): open, append, flush, close, so no card
+  handle stays open. A missing card keeps the bytes privately and catches up later;
+  leftovers from a killed run are copied 15 s after the next start in the background.
+  Card file contents are unchanged (83fa2fb0). Cause: on Nov 12 at 17:57 PST the A5
+  Pro's MediaProvider crashed (OOM), the SD card unmounted and vold sent SIGINT to R2C
+  for its open Log_ file.
+- iPad: no change needed. `AppleDiagnosticLogStore` writes inside the app sandbox
+  (`Documents/RID2Caltopo/FlightStorage/<day>/`); iPadOS has no removable Archive Dir,
+  so there is no unmount that can end the app. OS difference, not a gap.
+- Evidence: `docs/validation/2026-11-12-session-log-card-staging.md`.
+
 ### 2.6.0 (445) — iPad leftover recording recovery (November 12, 2026)
 
 - Both now recover recordings an earlier run never finished. Android: snapshot staged
