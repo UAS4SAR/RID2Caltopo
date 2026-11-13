@@ -360,6 +360,34 @@ public final class AppleFlightStorage: @unchecked Sendable {
         public let failures: [String]
     }
 
+    static let estimatedUsedKey = "flight.estimatedUsedBytes"
+
+    /// Recording-start allowance from what is already known (live estimate, last read, or
+    /// the usage persisted by the previous run) plus free volume space. Never walks the
+    /// flight folders and never waits on the work queue, so it cannot delay the RTMP
+    /// listener. Same rules as a sweep: 90% allowance and the 1 GB reserve. Matches
+    /// Android `FlightStorage.recordingStartEstimate`.
+    public static func recordingStartEstimate(defaults: UserDefaults = .standard) -> Snapshot {
+        shared.stateLock.lock()
+        let known: Int64? = shared.initialized ? shared.estimatedUsed : shared.recentRead?.used
+        let scannedBlocked = shared.initialized && shared.blocked
+        shared.stateLock.unlock()
+        let used = known ?? Int64(defaults.integer(forKey: estimatedUsedKey))
+        var probe = root
+        while !FileManager.default.fileExists(atPath: probe.path), probe.pathComponents.count > 1 {
+            probe = probe.deletingLastPathComponent()
+        }
+        let available = (try? probe.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]))?.volumeAvailableCapacityForImportantUsage
+        return recordingStartSnapshot(used: used, available: available, maximum: maximumBytes, scannedBlocked: scannedBlocked)
+    }
+
+    static func recordingStartSnapshot(used: Int64, available: Int64?, maximum: Int64, scannedBlocked: Bool) -> Snapshot {
+        let allowance = used > maximum * 9 / 10
+        let deviceLow = available.map { $0 < FlightStoragePolicy.reserveBytes } ?? false
+        return Snapshot(used: used, available: available, blocked: allowance || deviceLow || scannedBlocked,
+                        allowanceInsufficient: allowance || (scannedBlocked && !deviceLow), failures: [])
+    }
+
     public static func maintain(purge: Bool = true, at customRoot: URL? = nil,
                                 maximum: Int64? = nil, days: Int? = nil, now: Date = Date(), reserving: Int64 = 0) -> Snapshot {
         // Hop through a nonisolated trampoline so callers on MainActor do not
@@ -509,7 +537,9 @@ public final class AppleFlightStorage: @unchecked Sendable {
                 shared.sweepUsed = shared.estimatedUsed; shared.sweepAvailable = free
                 shared.initialized = true; shared.blocked = result.blocked
                 shared.lastSweepDay = dayName(now)
+                let persisted = shared.estimatedUsed
                 shared.stateLock.unlock()
+                UserDefaults.standard.set(persisted, forKey: estimatedUsedKey)
             }
         }
         if customRoot == nil && !cancelled() {

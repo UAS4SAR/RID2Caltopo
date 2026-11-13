@@ -169,6 +169,17 @@ final class MediaMTXViewModel: ObservableObject {
     private var healthCheckTask: Task<Void, Never>?
     private var recordingAllowed = true
     private var storagePressureReported = false
+    // Storage and capture toggle recording through the MediaMTX API, never by restarting
+    // the server. A restart is only the fallback for turning recording off.
+    private lazy var recordingReconciler = MediaMTXRecordingReconciler(
+        onApplied: { [storageControl] state in
+            await storageControl.perform { AppleFlightStorage.setRecorderRunning(state.record) }
+            AppleLog.debug("MediaMTX", "Recording \(state.record ? "on" : "off") via API")
+        },
+        onDisableFailed: { [weak self] in
+            await MainActor.run { self?.restartForStorageSafety() }
+        }
+    )
 
     func start(captureStreams: Bool? = nil) {
         guard !isRunning, status != "Starting" else { return }
@@ -236,7 +247,9 @@ final class MediaMTXViewModel: ObservableObject {
                 let (baseConfiguration, recordingRoot) = try await Task.detached(priority: .userInitiated) {
                     (try Data(contentsOf: url), try Self.capturedStreamsDirectory())
                 }.value
-                let storage = await Task.detached { AppleFlightStorage.maintain() }.value
+                // Retention cleanup is housekeeping: the listener opens on the known
+                // estimate and the sweep runs afterwards; recording follows via the API.
+                let storage = AppleFlightStorage.recordingStartEstimate()
                 recordingAllowed = !storage.blocked
                 reportStoragePressure(storage)
                 // No day-level "recorder" owner: it pinned the start day after
@@ -245,14 +258,25 @@ final class MediaMTXViewModel: ObservableObject {
                 let capturesRecordings = captureStreams && recordingAllowed
                 let configuration = try MediaMTXRuntimeConfiguration.build(
                     base: baseConfiguration,
-                    captureStreams: capturesRecordings,
+                    captureStreams: captureStreams,
                     restrictNetworkAccess: UserDefaults.standard.object(forKey: "video.restrictMediaServerAccess") as? Bool ?? true,
-                    recordingRoot: recordingRoot
+                    recordingRoot: recordingRoot,
+                    recordNow: capturesRecordings
                 )
                 let recorderStartedAt = Date()
                 try await controller.start(configuration: configuration)
                 await storageControl.perform {
                     AppleFlightStorage.setRecorderRunning(capturesRecordings, startedAt: recorderStartedAt)
+                }
+                await recordingReconciler.serverStarted(
+                    configured: MediaMTXRecordingState(record: capturesRecordings, recordingRoot: recordingRoot),
+                    captureEnabled: captureStreams,
+                    storageBlocked: !recordingAllowed,
+                    recordingRoot: recordingRoot
+                )
+                Task.detached(priority: .utility) {
+                    let swept = AppleFlightStorage.maintain()
+                    await self.handleStorageSnapshot(swept)
                 }
                 isRunning = true
                 if status == "Starting" {
@@ -387,6 +411,7 @@ final class MediaMTXViewModel: ObservableObject {
         guard isRunning else { return }
         Task {
             await controller.stop()
+            await recordingReconciler.serverStopped()
             await storageControl.perform {
                 AppleFlightStorage.release(owner: "recorder")
                 AppleFlightStorage.setRecorderRunning(false)
@@ -410,18 +435,32 @@ final class MediaMTXViewModel: ObservableObject {
         if !snapshot.blocked { storageWarning = nil }
     }
 
+    /// Storage verdicts switch recording on/off through the API; the server keeps running.
+    private func handleStorageSnapshot(_ snapshot: AppleFlightStorage.Snapshot) {
+        reportStoragePressure(snapshot)
+        let allowed = !snapshot.blocked
+        if allowed != recordingAllowed {
+            recordingAllowed = allowed
+            AppleLog.debug("MediaMTX", "Storage capture \(allowed ? "allowed" : "blocked"); updating recording via API")
+            let requested = UserDefaults.standard.object(forKey: "video.captureStreams") as? Bool ?? true
+            if isRunning, status.hasPrefix("Running") || status.hasPrefix("Capture paused") {
+                status = requested && allowed ? "Running • capturing streams" : (requested ? "Capture paused: storage limit" : "Running")
+            }
+        }
+        Task { await recordingReconciler.updateStorageBlocked(!allowed) }
+    }
+
+    /// Fallback when MediaMTX did not accept turning recording off.
+    private func restartForStorageSafety() {
+        AppleLog.error("MediaMTX", "Recording API did not accept record=no; restarting to enforce the storage limit")
+        restart(captureStreams: UserDefaults.standard.object(forKey: "video.captureStreams") as? Bool ?? true)
+    }
+
     private func startStorageMonitor() {
         storageControl.enqueue { [weak self] in
         AppleFlightStorage.observe { [weak self] snapshot in
             Task { @MainActor [weak self] in
-                guard let self else { return }
-                self.reportStoragePressure(snapshot)
-                let allowed = !snapshot.blocked
-                if allowed != self.recordingAllowed {
-                    self.recordingAllowed = allowed
-                    let requested = UserDefaults.standard.object(forKey: "video.captureStreams") as? Bool ?? true
-                    if requested { self.restart(captureStreams: requested) }
-                }
+                self?.handleStorageSnapshot(snapshot)
             }
         }
         }
@@ -440,6 +479,7 @@ final class MediaMTXViewModel: ObservableObject {
         // Stop the native server first so no new publishers/recordings start, but keep
         // the event loop briefly so buffered recordFileCompleted work can finish.
         await controller.stop()
+        await recordingReconciler.serverStopped()
         await drainRecordingFinalizers(timeoutSeconds: Self.quitRecordingDrainTimeoutSeconds)
 
         eventTask?.cancel()
@@ -484,6 +524,7 @@ final class MediaMTXViewModel: ObservableObject {
         status = "Restarting"
         Task {
             await controller.stop()
+            await recordingReconciler.serverStopped()
             await storageControl.perform {
                 AppleFlightStorage.release(owner: "recorder")
                 AppleFlightStorage.setRecorderRunning(false)

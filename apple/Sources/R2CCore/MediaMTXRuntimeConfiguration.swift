@@ -1,21 +1,31 @@
 import Foundation
 
 public enum MediaMTXRuntimeConfiguration {
+    /// MediaMTX record path template under a recording root.
+    public static func recordPath(root: URL) -> String {
+        "\(root.path)/%Y-%m-%d/%path/%path_%Y-%m-%d_%H-%M-%S-%f"
+    }
+
+    /// `captureStreams` is the user's capture setting. `recordNow` says whether recording
+    /// starts on immediately; while storage is still being checked the record settings are
+    /// written with `record: no` and switched on through the API (MediaMTXRecordingReconciler).
     public static func build(
         base: Data,
         captureStreams: Bool,
         restrictNetworkAccess: Bool = true,
-        recordingRoot: URL
+        recordingRoot: URL,
+        recordNow: Bool? = nil
     ) throws -> Data {
         guard let text = String(data: base, encoding: .utf8) else {
             throw CocoaError(.fileReadInapplicableStringEncoding)
         }
 
-        var settings = ["  record: \(captureStreams ? "yes" : "no")"]
+        let record = captureStreams && (recordNow ?? true)
+        var settings = ["  record: \(record ? "yes" : "no")"]
         if captureStreams {
-            let escapedPath = recordingRoot.path.replacingOccurrences(of: "'", with: "''")
+            let escapedPath = recordPath(root: recordingRoot).replacingOccurrences(of: "'", with: "''")
             settings += [
-                "  recordPath: '\(escapedPath)/%Y-%m-%d/%path/%path_%Y-%m-%d_%H-%M-%S-%f'",
+                "  recordPath: '\(escapedPath)'",
                 "  recordFormat: fmp4",
                 "  recordDeleteAfter: 0s",
             ]
