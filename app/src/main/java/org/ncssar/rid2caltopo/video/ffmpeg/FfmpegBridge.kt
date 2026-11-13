@@ -67,6 +67,14 @@ object FfmpegBridge {
         }
     }
 
+    /**
+     * Loads libffmpeg_bridge (about 450 ms cold on the A5 Pro). Called from a background
+     * thread at process start so StreamsViewModel/FfmpegProbeService creation on the
+     * main thread finds it already loaded.
+     */
+    @JvmStatic
+    fun preload(): Boolean = nativeLoaded
+
     fun isAvailable(): Boolean {
         return nativeLoaded && nativeIsAvailable()
     }

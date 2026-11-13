@@ -43,6 +43,11 @@ class R2CApplication : Application() {
             android.webkit.WebView.setWebContentsDebuggingEnabled(false)
             return
         }
+        // The first screen builds StreamsViewModel -> FfmpegProbeService, which loads the
+        // FFmpeg bridge. Warm it now off the main thread (P4).
+        StartupPreload.start("ffmpeg-preload") {
+            org.ncssar.rid2caltopo.video.ffmpeg.FfmpegBridge.preload()
+        }
         DeviceLocationMonitor.install(this)
         instance = this;
         if (BuildConfig.DEBUG) {
