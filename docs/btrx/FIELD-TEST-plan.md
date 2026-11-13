@@ -200,7 +200,8 @@ environments before changing anything else.
   - Stream recording on (it keeps the per-frame SEI: yaw, pitch, position).
 - **Clocks:** network time on the tablets; note the tablet's time against a
   GPS clock at the start. The pod's clock maps to the tablet clock through
-  the arrival offset now, and through TIME_PING later.
+  the arrival offset now, and through the app's periodic TIME_PING once
+  that is built (no Desk Pod receive timestamp is planned).
 - **After each flight, pull with adb (read-only):**
   - the session `Log_*.txt` (Archive Dir, or app storage if the card copy
     lags);

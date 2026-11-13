@@ -430,8 +430,14 @@ input with the host time it applies to, not only when it arrived:
 Report time = window_end_ms + offset − 500 ms (the window centre), mapped to
 the host clock.
 
-- **TIME_PING/TIME_PONG (preferred).** The boundary sends TIME_PING every
-  30 s **[A]** and passes (t1 host send, t2 pod receive, t3 pod send, t4 host
+- **TIME_PING/TIME_PONG (the clock sync; Ken, via BT RX, November 13).**
+  The only timestamp that matters is the RSSI window time `window_end_ms`
+  mapped into tablet time; there will be **no Desk Pod receive timestamp**.
+  **The app sends TIME_PING to the Drone Pod periodically** while the layer
+  is on: every 30 s **[A]**, plus a burst of 3 at layer start and after a
+  pod restart or reconnect, so a low-RTT sample arrives quickly. This is new
+  work on both platforms (`BtrxClient` can send the frame, but nothing sends
+  it periodically today). The boundary passes (t1 host send, t2 pod receive, t3 pod send, t4 host
   receive) to `push_time_sync()`. offset = ((t2 − t1) + (t3 − t4)) / 2,
   RTT = (t4 − t1) − (t3 − t2). The library keeps the sample with the
   smallest RTT over the last 2 min; its error is under RTT/2. Whether the
@@ -480,10 +486,18 @@ lowered once field logs show the maximum normal delay.
 
 **Desk Pod backlog is history, not live steering** (btrx PROTOCOL.md at
 `684cfa5`). While no app is attached, the Desk Pod keeps up to 32 messages
-for the app; when that queue is full, **newer messages are dropped and the
-oldest stay**. So after a reconnect the app can receive up to 32 old STEER
-frames (about 30 s or more of windows), and the most recent windows before
-the reconnect may be missing.
+for the app. **Ken's decision (via BT RX, November 13): when the queue is
+full, the Desk Pod discards the oldest frame before accepting a new one**, so
+the newest are kept. After a reconnect the app receives up to the 32 most
+recent queued frames.
+
+- **Lost count:** the Desk Pod's periodic status will report a count of
+  unserviced reports it discarded. **The field layout is pending BT RX.**
+  The boundary passes it to `btrx_bearing_push_desk_lost()`; the stats carry
+  the running total and the increase since the last reconnect
+  (`desk_queue_lost`), and the BTRX status screen (the Desk Pod
+  status/health screen, `BtrxDeskPodModel`/`BtrxDeskPodText` on both
+  platforms) shows it as "Reports lost while no app: N".
 
 - The library judges every frame by its own time (`window_end_ms` + offset),
   never by arrival. A backlog frame within the 15 s budget whose pose is
@@ -507,7 +521,7 @@ locate and eliminate any significant delays."
 | --- | --- | --- |
 | T0 window end | `window_end_ms` + pod offset | pod, section 3.2 |
 | T0′ hand-off | T0 + (time to `send_steer`); `age_ms` gives the newest sample's age at hand-off | pod |
-| T1 Desk Pod | **not available**: the Desk Pod adds no receive stamp (r3 option D). Until firmware adds one, T0→T2 is one stage (LoRa air time 63–71 ms + Desk Pod relay + BLE) | — |
+| T1 Desk Pod | **none, by decision**: no Desk Pod receive timestamp is planned (Ken). T0→T2 stays one stage (LoRa air time 63–71 ms + Desk Pod relay + BLE), measured against the TIME_PING-synced window time | — |
 | T2 BLE arrival | the BLE/USB read callback in `BtrxClient` (for a Desk Pod backlog frame this includes the time queued, so backlog frames are excluded from the stage histograms, section 3.4) | boundary |
 | T3 push | `btrx_bearing_push_report()` call | library |
 | T4 pose ready | pending report gets its pose; records which ring it waited for (yaw or position) | library |
@@ -1027,6 +1041,8 @@ btrx_bearing_status_t btrx_bearing_push_report(btrx_bearing_t *h, const btrx_bea
 btrx_bearing_status_t btrx_bearing_push_time_sync(btrx_bearing_t *h, int64_t t1_host_us,
         uint32_t t2_pod_ms, uint32_t t3_pod_ms, int64_t t4_host_us);
 btrx_bearing_status_t btrx_bearing_push_pod_uptime(btrx_bearing_t *h, int64_t host_us, uint32_t uptime_s);
+/* Desk Pod status: running count of unserviced reports it discarded (layout pending BT RX). */
+btrx_bearing_status_t btrx_bearing_push_desk_lost(btrx_bearing_t *h, int64_t host_us, uint32_t lost_total);
 /* T7: the overlay showing snapshot `seq` is on screen. */
 btrx_bearing_status_t btrx_bearing_note_rendered(btrx_bearing_t *h, uint64_t seq, int64_t host_us);
 
@@ -1115,6 +1131,8 @@ typedef struct {
     uint32_t reports_in, entries_in, used, gated, no_heading, no_position,
              late_dropped, ring_dropped, buckets_expired_early, ignored,
              backlog_history, steer_truncated, extras_unresolved, provisional_merges;
+    uint32_t desk_queue_lost;        /* Desk Pod "unserviced reports lost" total (field pending BT RX) */
+    uint32_t desk_queue_lost_since_connect;
     uint32_t tiles_in_use, tiles_total; /* pool use */
     float fade_total_s, fade_shape_p;   /* settings in effect */
     int32_t pod_offset_ms;           /* host - pod */
@@ -1200,7 +1218,7 @@ the switch, **stamp and push** inputs, **drive tick** on its BTRX worker,
 | Wrapper class | `btrx/BtrxBearingNative.kt` (`external fun`s, `System.loadLibrary("btrx_bearing")` in `runCatching` as in `MappingSurfaceNative`) and `btrx/BtrxBearingLayer.kt` | `R2CCore/Btrx/BtrxBearingLayer.swift` (owns the `OpaquePointer`, `deinit` destroys) |
 | Switch | Settings > Developer Tools, off by default, never at launch | same |
 | Fade settings (section 2.4) | BTRX settings in Developer Tools: "Fade time" (1–30 min, default 10) and a "Fade shape" slider (p 1–4, Linear to Accelerating, live "half strength at m:ss" readout), saved in the app config; `set_fade` on change | same controls, labels and defaults, saved in the iPad settings; `set_fade` on change |
-| STEER, PONG, HEALTH | `BtrxClient.Listener.onFrame` (stamps T2 at the BLE/USB read) → raw payload to `btrx_bearing_parse_steer` (the shared C parser, section 4.1) → `push_report`; the existing `BtrxProtocol.parseSteer` stays for the stream overlay; PONG → `push_time_sync`; HEALTH → `push_pod_uptime`. TIME_PING sent every 30 s by the same client (new: `BtrxClient` can send the frame, but nothing sends it periodically today) | `BtrxClient` listener `onFrame` → same fields |
+| STEER, PONG, HEALTH | `BtrxClient.Listener.onFrame` (stamps T2 at the BLE/USB read) → raw payload to `btrx_bearing_parse_steer` (the shared C parser, section 4.1) → `push_report`; the existing `BtrxProtocol.parseSteer` stays for the stream overlay; PONG → `push_time_sync`; HEALTH → `push_pod_uptime`; Desk Pod status lost count → `push_desk_lost` (field pending BT RX). **TIME_PING sent by the same client every 30 s plus a burst of 3 at start, restart and reconnect** (new work) | `BtrxClient` listener `onFrame` → same fields; same TIME_PING schedule (new work) |
 | DJI yaw | the SEI path that fills `DjiCameraOrientation` (from `ffmpeg_bridge.c`, `native/R2CDJICameraTelemetry.h`) → `push_pose(YAW)` with `R2CDJIAircraftYawTrueNorthDegrees` | `R2CFFmpegSessionCopyLatestDJICameraTelemetry` (`R2CFFmpegMobile.c`, same header) → `push_pose(YAW)` |
 | Position, AGL | RID track points + `DroneAltitudeCoordinator` → `push_pose(POSITION, AGL)` | RID track + the iPad altitude source → same |
 | Own aircraft (ignore) | BTRX pane action → `set_source_flags(IGNORED)` | same |
@@ -1313,9 +1331,12 @@ and in `apple/release-check.sh`:
    provisional source; the same id later as primary merges it exactly (tile
    sums add, colour of the address source kept); a pod restart clears the
    id table; a linked address change adds an alias.
-   **Backlog:** 32 queued frames, oldest first, after a reconnect: those
-   within 15 s with poses are used, older ones get `history` and stay out of
-   the lag histograms.
+   **Backlog:** the 32 newest queued frames (oldest discarded by the Desk
+   Pod) after a reconnect: those within 15 s with poses are used, older ones
+   get `history` and stay out of the lag histograms; `push_desk_lost` totals
+   and the since-connect increase reach the stats.
+   **Clock sync:** the TIME_PING schedule (every 30 s, burst of 3 at start,
+   restart and reconnect) on both platforms' boundary tests.
 7. **Threading:** pushes from 3 threads while ticking and acquiring for 10 s
    under ThreadSanitizer (`-fsanitize=thread`, host only); no `malloc` after
    create (an interposed counting allocator).
@@ -1451,23 +1472,21 @@ New, for Ken:
 - **Clue markers:** OK to treat them like waypoints (they win over the
   overlay)?
 
-For BT RX. **BT RX has recommended three of these to Ken, not yet
-approved:** `src_id` in DETECT records (+2 bytes per record), the Desk Pod
-dropping STEER frames older than about 15 s from its queue, and a Desk Pod
-receive timestamp later. Until Ken decides, the spec keeps the
-"unresolved" provisional sources (section 4.1) and the backlog `history`
-handling (section 3.4).
+Firmware decisions (Ken, relayed by BT RX, November 13):
 
-5. **Desk Pod receive stamp** (r3 option D, earlier judged not worth it):
-   without it, the pod→arrival stage can't be split into LoRa, Desk Pod and
-   BLE. Worth adding now that slow paths are being chased?
-6. **Extras' addresses:** extras carry only `src_id`. PROTOCOL.md says an
-   address can come from DETECT, but DETECT records carry no `src_id` (the
-   app's DETECT parser and the record layout have none), so in practice only
-   an earlier STEER as primary resolves one. Could DETECT records carry
-   `src_id`, or the extra records a short address hash, so extras resolve at
-   once?
-7. **Backlog order:** a full Desk Pod queue keeps the oldest 32 messages and
-   drops newer ones, so after a reconnect the app gets old history and loses
-   the latest windows. Could the Desk Pod keep the newest instead, or drop
-   STEER frames older than about 15 s from its queue?
+- **Desk Pod receive timestamp:** never planned. Clock sync is TIME_PING/
+  TIME_PONG with the Drone Pod; only `window_end_ms` mapped to tablet time
+  matters (section 3.2).
+- **Desk Pod queue full:** the oldest frame is discarded and the newest kept;
+  periodic status will carry a lost-report count, **field layout pending BT
+  RX** (section 3.4). Backlog frames are still judged by window time
+  (over 15 s old = history).
+- **`src_id` in DETECT records:** **undecided.** The spec keeps the
+  "unresolved" provisional sources (section 4.1).
+
+For BT RX:
+
+5. **Lost-report counter:** the field layout in the Desk Pod's periodic
+   status.
+6. **Extras' addresses:** until `src_id` in DETECT is decided, extras
+   resolve only after the same `src_id` appears as primary.
