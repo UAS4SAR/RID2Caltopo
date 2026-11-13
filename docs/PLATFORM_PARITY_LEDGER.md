@@ -12,6 +12,27 @@ Project-only engineering record; do not package in the app, copy into store meta
 
 ## Cumulative release history
 
+### Unreleased — BTRX bearing map layer (November 13, 2026)
+
+- Both, Developer Tools > BTRX > "Bearing map layer" only (nothing goes to
+  CalTopo): shared C11 library `CBtrxBearing` (`e23986fd`; Android CMake
+  `libbtrx_bearing.so`, iPad SwiftPM target), Android boundary and osmdroid
+  overlay (`9970eebe`), iPad boundary and MapKit overlay (`53593f83`). Same
+  inputs (paired Drone Pod STEER incl. backlog and 0x0103 extras, TIME_PONG,
+  Desk/Drone Pod HEALTH incl. 0x0104 `phone_lost`; DJI aircraft yaw and RID
+  position + AGL of the "Drone Pod is on this drone" stream), same 200 ms tick
+  and TIME_PING schedule, same controls, labels and order, same tap rules
+  (markers win; shading wins over assignments; double tap zooms; inset maps no
+  taps) and the same "BTRX sources here" panel (show/hide rows, Mute all,
+  Unmute all, Done).
+- Harmless native differences: position source (Android local track listener
+  with fix time; iPad RID track view model with receive time) and the double-tap
+  mechanism; see `docs/btrx/BEARING-LAYER-spec.md` section 12.
+- Evidence: host C tests 217/217 (Release, ASan/UBSan, TSan); Android unit
+  tests 2,576 (1 skipped, 0 failed; was 2,563); Swift 473 XCTest + 860
+  swift-testing, 0 failed (was 465 + 860); iPad Debug device build succeeded
+  (not installed). Bench with firmware 0x0103/0x0104 still to do.
+
 ### 2.6.0 (445) — DJI camera yaw documented as aircraft nose yaw (November 12, 2026)
 
 - Both (shared `native/R2CDJICameraTelemetry.h`): `azimuthDegrees` is documented as the

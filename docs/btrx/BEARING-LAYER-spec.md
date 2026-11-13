@@ -1,6 +1,9 @@
 # BTRX bearing layer: spec r3, continuous (milestone 1 of the map layer, draft, November 13, 2026)
 
-Status: spec only. **Map-layer code is on hold.** r2 replaces the r1
+Status: **implemented** on branch `feature/btrx-integration` (November 13, 2026:
+`e23986fd` C library, `9970eebe` Android, `53593f83` iPad; not pushed, not
+flashed or bench-tested). Section 12 lists where the code differs from this
+text. r2 replaces the r1
 hover-station design (`8130f673`). There is **no station, no "Start station"
 button and no enforced hover or pan.** While the layer is switched on, every
 STEER report is matched to where the drone was and where its nose pointed at
@@ -373,7 +376,9 @@ Otherwise the source shows its shading only, with no point. A second peak
 A report is not accumulated (it is counted per reason in the stats) when:
 
 - the DJI yaw rate over the 1 s window exceeds 10°/s, or the yaw changed by
-  more than 5° within it **[A]**;
+  more than 10° within it **[A]** (implementation: 10°, not the 5° first
+  written here, which would gate every report of the 6°/s hover-yaw
+  scenario in section 9.3; section 12);
 - bit 3 (gated) is set or bit 4 (IMU ok) is clear;
 - there is no yaw sample within 0.5 s of the report time ("no heading");
 - there is no position within 3 s, or the height above ground is unknown and
@@ -974,7 +979,7 @@ typedef struct {
     float alpha_visible;             /* 0.02: transparent below; sources_at threshold */
     float ray_halfwidth_ll;          /* -0.5: latest-ray edge level */
     /* gates and timing */
-    float max_yaw_rate_dps, max_yaw_change_deg; /* 10, 5 */
+    float max_yaw_rate_dps, max_yaw_change_deg; /* 10, 10 (section 12) */
     int32_t max_yaw_gap_ms, max_pos_gap_ms;     /* 500, 3000 */
     int32_t max_pos_extrapolate_ms;  /* 1500 */
     int32_t max_report_lag_ms;       /* 15000 (Ken: 10-15 s while measuring) */
@@ -1519,3 +1524,71 @@ For BT RX:
 
 5. **Extras' addresses:** until `src_id` in DETECT is decided, extras
    resolve only after the same `src_id` appears as primary.
+
+## 12. Implementation notes and deviations (November 13, 2026)
+
+Where the code (`e23986fd`, `9970eebe`, `53593f83`) differs from or adds to
+the text above. Each is the simplest option faithful to the spec's intent.
+
+C library (`apple/Sources/CBtrxBearing`, also built for Android by CMake):
+
+- `max_yaw_change_deg` default **10°**, not 5° (section 2.8): at 6°/s over a
+  1 s window the yaw changes 6°, so 5° would discard every hover-yaw report.
+- Added to the API: `push_us` on reports (lag stage T2), `note_connected`,
+  `parse_health`, `snapshot_copy` (a flat copy the UI thread can query),
+  `bucket_width_s`, `half_strength_s` (the slider readout) and
+  `pattern_delta_db` (tests).
+- Uses `stdio.h` (`vsnprintf`, log lines) and `time.h` (`timespec_get`, the
+  self-test clock) beyond the section 6.1 list; no allocation outside create.
+- Floating-point contraction is disabled by `#pragma STDC FP_CONTRACT OFF` in
+  the sources (and `-ffp-contract=off` on Android), not by SwiftPM
+  `unsafeFlags`, so the package stays usable as a dependency.
+- Pod restart is detected only on unflagged (non-backlog) frames.
+- Pose wait uses stream liveness: a report waits for yaw at most 2.5 s and for
+  position at most 1.5 s past its window, then is dropped as "no heading" /
+  "no position".
+- "Ignore (own aircraft)" frees that source's buckets at once; the v1 table
+  mirror used for the replay check is approximate.
+- Host tests use a counting allocator (no allocation after create) and a
+  1.5 s threading test. `THIRD_PARTY_LICENSES` / licenses JSON is unchanged:
+  the library is our own code and the JSON lists only prebuilt Apple static
+  libraries.
+
+Platform boundary (section 7), same on Android and iPad:
+
+- One custom overlay draws raster, latest-ray outline (5 s fade, dashed
+  mirror), estimate dot, 1σ/2σ ellipses and labels, instead of separate
+  ground-overlay, polygon, polyline and marker objects. Android: osmdroid
+  `Overlay` before the local markers. iPad: one world-sized `MKOverlay` kept
+  last at `.aboveLabels` (above assignments and lines, below every marker
+  view).
+- TIME_PING burst: 3 pings spaced 1 s apart (not back to back) at start,
+  reconnect and pod-session change, then every 30 s; a ping that cannot be sent
+  is not retried early.
+- Arrival time (T1) comes from the radio meta's wall-clock `arrivalMs`, mapped
+  to the host monotonic clock as `now - clamp(wall_now - stamp, 0, 2 s)`;
+  yaw 2 s, position 3 s the same way.
+- The lost count and lag lines show in "Link health" only while the layer is
+  on (the snapshot carries them).
+- Changing "Lag trace log" restarts the layer (trace is a create option).
+- Fade time / shape slider ranges (1–30 min, p 1–4) are duplicated in Kotlin
+  and Swift; the library clamps to its own limits.
+- The "BTRX sources here" panel opens at the tap point without clamping to the
+  screen edge.
+- Inset maps draw the overlay but take no taps.
+- Double tap: iPad uses a passive double-tap recognizer the BTRX single tap
+  waits on (map zoom unaffected); Android uses osmdroid's confirmed single tap.
+- Position feed: Android uses its own `CaltopoLiveTrack.LocalTrackListener`
+  (fix timestamp) and AGL from `DroneAltitudeCoordinator`, which updates only
+  while the map or a stream consumes it. iPad feeds from ContentView on each
+  `RIDTrackViewModel.tracks` change, picking the aircraft bound to the chosen
+  stream (`boundAircraftID(for:)`, or aircraft ID equal to the stream ID), with
+  the point's receive time and the display AGL when not stale. Without AGL the
+  library default (30 m) applies.
+- Class 3 ("audio" in the DETECT class list) shows as "audio".
+- The layer switch is not saved (off at every launch); fade settings and lag
+  trace are saved (Android prefs `bearing_*`, iPad `btrx.bearing.*`).
+
+Bench checks still open (need builds 0x0103 / 0x0104 flashed): 34-byte HEALTH
+lost count, TIME_PONG offset, STEER extras, hover-yaw ridge on real data, tap
+routing, mute/unmute, fade sliders, lag trace through `lag_report.py`.
