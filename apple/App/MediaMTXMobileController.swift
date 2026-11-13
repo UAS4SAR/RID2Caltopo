@@ -191,48 +191,33 @@ final class MediaMTXViewModel: ObservableObject {
             eventTask = Task { [controller] in
                 for await event in controller.events {
                     guard !Task.isCancelled else { return }
-                    defer {
-                        if case let .recordFileCompleted(path, _, _) = event {
-                            Task { await controller.finishRecordingEvent(path: path) }
-                        }
-                    }
-                    let storageOwner = "finalize-" + UUID().uuidString
-                    if case let .recordFileCompleted(_, filePath, _) = event,
-                       let date = ManagedVideoRecordingIdentity.recordingStartedAt(forPath: filePath) {
-                        await storageControl.perform { AppleFlightStorage.protect(AppleFlightStorage.dayName(date), owner: storageOwner) }
-                    }
-                    defer { storageControl.enqueue { AppleFlightStorage.release(owner: storageOwner) } }
-                    // Deliver publisher lifecycle immediately. Recording normalize is slow
-                    // and must not block streamStopped / path-destroy delivery (which keeps
-                    // the UI stuck on Publishing and drives HLS 404 reconnect loops).
-                    let localizedEvent = await Task.detached(priority: .utility) {
-                        Self.localizeCompletedRecordingIfNeeded(event)
-                    }.value
-                    switch localizedEvent {
+                    // Publisher lifecycle is delivered immediately. Recording finalization
+                    // (protect, localize, normalize, deliver, release) runs on its own
+                    // serial chain so it can never hold up streamStarted/streamStopped.
+                    switch event {
                     case let .serverStarted(version):
                         AppleStreamsServerStatus.shared.version = version
                         AppleStreamsServerStatus.shared.startedAt = Date()
                         status = "Running \(version)"
-                        eventHandler?(localizedEvent)
+                        eventHandler?(event)
                     case let .streamStarted(path, _):
                         activePublisherPaths.insert(path)
                         status = "Streaming \(path)"
-                        eventHandler?(localizedEvent)
+                        eventHandler?(event)
                     case let .streamStopped(path, _):
                         activePublisherPaths.remove(path)
                         status = "Stopped stream \(path)"
-                        eventHandler?(localizedEvent)
+                        eventHandler?(event)
                     case let .streamError(path, _, detail):
                         if let path { activePublisherPaths.remove(path) }
                         status = "Error \(path ?? "stream"): \(detail)"
-                        eventHandler?(localizedEvent)
+                        eventHandler?(event)
                     case let .recordFileCompleted(path, filePath, _):
                         status = "Recorded \(path)"
                         AppleLog.info("MediaMTX", "Recording file complete path=\(filePath)")
-                        let deliveredEvent = await Self.normalizeCompletedRecordingIfNeeded(localizedEvent)
-                        eventHandler?(deliveredEvent)
+                        enqueueRecordingFinalization(event)
                     default:
-                        eventHandler?(localizedEvent)
+                        eventHandler?(event)
                     }
                 }
             }
@@ -290,6 +275,23 @@ final class MediaMTXViewModel: ObservableObject {
                 await controller.discardPendingRecordingEvents()
                 status = "Start failed: \(error)"
             }
+        }
+    }
+
+    private let recordingFinalization = SerialTaskChain()
+
+    private func enqueueRecordingFinalization(_ event: MediaServerEvent) {
+        guard case let .recordFileCompleted(path, filePath, _) = event else { return }
+        recordingFinalization.enqueue(priority: .utility) { [weak self, controller, storageControl] in
+            let storageOwner = "finalize-" + UUID().uuidString
+            if let date = ManagedVideoRecordingIdentity.recordingStartedAt(forPath: filePath) {
+                await storageControl.perform { AppleFlightStorage.protect(AppleFlightStorage.dayName(date), owner: storageOwner) }
+            }
+            let localized = Self.localizeCompletedRecordingIfNeeded(event)
+            let delivered = await Self.normalizeCompletedRecordingIfNeeded(localized)
+            await MainActor.run { self?.eventHandler?(delivered) }
+            storageControl.enqueue { AppleFlightStorage.release(owner: storageOwner) }
+            await controller.finishRecordingEvent(path: path)
         }
     }
 
