@@ -14,6 +14,10 @@ read with `git show`) and the RID2Caltopo code. Section 12 lists where this
 doc qualifies or does not adopt a point. **[A]** marks an assumption; **[BT]**
 marks a BT RX statement that could not be checked in either repo.
 
+**Milestone 1 is the bearing layer** (`BEARING-LAYER-spec.md`): bearing rays
+from hover-and-yaw stations, crossed between stations, using the same data
+model. The grid in section 5 is milestone 2.
+
 Why: the overlay shows one source with hysteresis and smoothing
 (`BtrxSteering`: a side change needs two reports; EMA plus slew limit on the
 length), so it lags. Every reading is timestamped and the app knows where the
@@ -350,6 +354,8 @@ readings. Yaw-hold detection uses the DJI yaw (steady within 3° [A]).
   - turn-and-compare bearing lines.
 - No smoothing and nothing sent to CalTopo.
 - The stream overlay is unchanged.
+- Milestone 1 rendering (station rays, wedges, crossings) is specified in
+  `BEARING-LAYER-spec.md` section 3.
 
 ## 10. Performance, parity, placement
 
