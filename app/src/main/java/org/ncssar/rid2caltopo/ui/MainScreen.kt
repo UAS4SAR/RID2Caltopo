@@ -1752,10 +1752,6 @@ fun MainScreen(
                                 menuExpanded = false
                                 showWorkspaceStats = true
                             })
-                            DropdownMenuItem(text = { Text("BTRX") }, onClick = {
-                                menuExpanded = false
-                                showDeskPod = true
-                            })
                             DropdownMenuItem(text = { Text("Settings") }, onClick = {
                                 localViewModel.showSettings()
                                 menuExpanded = false
@@ -2319,6 +2315,17 @@ fun MainScreen(
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Text("Proximity Pairs")
+                    }
+                    Spacer(modifier = Modifier.height(8.dp))
+                    // BTRX lives here (not the main menu) until the pod is at least tentatively working.
+                    Button(
+                        onClick = {
+                            showTestingToolsDialog = false
+                            showDeskPod = true
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(org.ncssar.rid2caltopo.btrx.BtrxDeskPodText.TITLE)
                     }
                     Spacer(modifier = Modifier.height(8.dp))
                     Button(

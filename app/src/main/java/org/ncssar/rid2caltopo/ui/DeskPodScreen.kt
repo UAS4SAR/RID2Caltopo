@@ -278,7 +278,7 @@ private fun PairingSection(s: org.ncssar.rid2caltopo.btrx.BtrxDeskPodModel.Snaps
     Spacer(Modifier.fillMaxWidth().height(8.dp))
 }
 
-/** Menu > BTRX top link: the BTRX page in the system browser (matches the iPad's Link). */
+/** Top link of the BTRX pane (Developer Tools > BTRX): the BTRX page in the system browser (matches the iPad's Link). */
 @Composable
 private fun LearnMoreLink() {
     val context = LocalContext.current

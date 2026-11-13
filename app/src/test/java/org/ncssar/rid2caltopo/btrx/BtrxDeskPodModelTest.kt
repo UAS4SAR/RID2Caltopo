@@ -753,4 +753,19 @@ class BtrxDeskPodModelTest {
         assertTrue(link in 0 until src.indexOf("SectionTitle(\"Connection\")"))
         assertTrue(src.contains("Intent.ACTION_VIEW"))
     }
+
+    @Test
+    fun btrxOpensFromDeveloperToolsNotTheMainMenu() {
+        val wd = java.io.File(requireNotNull(System.getProperty("user.dir")))
+        val rel = "app/src/main/java/org/ncssar/rid2caltopo/ui/MainScreen.kt"
+        val src = listOf(java.io.File(wd, rel), java.io.File(wd.parentFile ?: wd, rel))
+            .first { it.isFile }.readText()
+        assertFalse(src.contains("DropdownMenuItem(text = { Text(\"BTRX\") }"))
+        val tools = src.indexOf("title = { Text(\"Developer Tools\") }")
+        assertTrue(tools > 0)
+        val entry = src.indexOf("BtrxDeskPodText.TITLE", tools)
+        assertTrue(entry > tools)
+        assertTrue(src.substring(tools, entry).contains("showDeskPod = true"))
+        assertTrue(src.contains("DeskPodScreen(onDismiss = { showDeskPod = false })"))
+    }
 }
