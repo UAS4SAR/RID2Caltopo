@@ -22,7 +22,8 @@ replaces the team's own flight rules (section 6).
   - about 40 per patch per hold are needed to see a 20° turn-and-compare
     change at 3σ (about 5 dB at an estimated 0.25 dB/deg).
 - **Reports:** STEER is about 1 per second (1 s windows) and covers the
-  **single strongest** source only (top 2–3 requested, pending BT RX).
+  **single strongest** source only. Build 0x0103 (btrx `684cfa5`, not
+  flashed yet) adds up to 2 more sources per STEER.
   DETECT lists up to 7 sources every 5 s.
 - **Link:** LoRa on US SHORT_FAST. A STEER is about 63–71 ms on air.
 - **Sample rates seen on the bench (Nov 12):** the DJI source gave about 40
@@ -110,7 +111,7 @@ preference).**
   button) paints the hover spot's wedges, which darken along the bearing as
   the yaw passes add up. Repeat from a second edge point: the two spots'
   wedges darken where they cross. Record the layer's estimate and ellipse.
-- **Multiple sources:** until the top-2–3 STEER firmware lands, STEER shows
+- **Multiple sources:** until build 0x0103 is flashed, STEER shows
   only the strongest, so steering-mute it (the pod's STEER_MUTE, not the map
   panel's hide) from the
   BTRX pane and sweep again to find the next. DETECT's 5 s windows (30° of

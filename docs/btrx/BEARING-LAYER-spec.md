@@ -13,8 +13,8 @@ questions: a **10 min fade, linear by default** (section 2.4; Ken's 9:18 AM
 addition makes the total time and the fade shape user settings), a **tap-to-mute panel**
 (section 5.2), **15 s of pose history with lag instrumentation** (sections
 3.3–3.5), **one fade rate for all sources** (section 2.9), **top 2–3 sources
-per STEER** (section 4.1, frame format pending BT RX) and a **latest-ray
-outline** (section 5.1).
+per STEER** (section 4.1; the frame is now defined by BT RX in btrx
+`684cfa5`, build 0x0103) and a **latest-ray outline** (section 5.1).
 
 The core is a **portable C library** (C11, stdlib, pthreads only), shared by
 Android and the iPad, with thin platform boundary layers for inputs and
@@ -53,10 +53,11 @@ Ken (November 13):
 
 - **STEER (0x73), about 1 Hz** on LoRa ShortFast (SF7, 250 kHz). One report
   per 1 s window. Today it carries the **single strongest** source. Ken
-  asked for the top 2–3 (r3 section 13 option A, "Yes please"), so the
-  library takes up to 3 sources per report (section 4.1). **The frame format
-  is pending BT RX's firmware definition**; single-source STEER stays
-  supported.
+  asked for the top 2–3 (r3 section 13 option A, "Yes please"). BT RX
+  defined the frame (btrx `684cfa5`, branch `steering-report`, draft PR #18,
+  build 0x0103, **not flashed yet**): the first 27 bytes are unchanged, then
+  up to 2 extra 6-byte records (section 4.1). The library takes up to 3
+  sources per report; 27-byte frames from older firmware stay supported.
 - **Δ = rssi_port − rssi_stbd** (mean dB per patch). Positive Δ means the
   source is to the **left (port)**. −128 means that patch did not hear it.
 - **Roll** is positive with the starboard side down; **pitch** is positive
@@ -460,6 +461,24 @@ r2 Desk Pod backlog question: backlog frames up to 15 s late are used, and
 older ones (r3 measured 5–20 s) are dropped and counted. The budget is
 lowered once field logs show the maximum normal delay.
 
+**Desk Pod backlog is history, not live steering** (btrx PROTOCOL.md at
+`684cfa5`). While no app is attached, the Desk Pod keeps up to 32 messages
+for the app; when that queue is full, **newer messages are dropped and the
+oldest stay**. So after a reconnect the app can receive up to 32 old STEER
+frames (about 30 s or more of windows), and the most recent windows before
+the reconnect may be missing.
+
+- The library judges every frame by its own time (`window_end_ms` + offset),
+  never by arrival. A backlog frame within the 15 s budget whose pose is
+  still in the rings is used like any other.
+- Older backlog frames get the fate **`history`**, not `late`: counted
+  separately (`backlog_history`) and logged in `BBLAG`, but kept **out of the
+  late-drop and stage histograms**, so a reconnect does not look like a slow
+  path. The poses for those windows have already left the 15 s rings anyway.
+- A frame is treated as backlog when `BtrxClient` marks it so, or when its
+  window ended more than 5 s **[A]** before the newest window already seen.
+- The pod offset is never estimated from backlog arrivals (r3 section 6).
+
 ### 3.5 Lag instrumentation
 
 Ken: "I think we want to measure and debug the slow path so that we can
@@ -472,7 +491,7 @@ locate and eliminate any significant delays."
 | T0 window end | `window_end_ms` + pod offset | pod, section 3.2 |
 | T0′ hand-off | T0 + (time to `send_steer`); `age_ms` gives the newest sample's age at hand-off | pod |
 | T1 Desk Pod | **not available**: the Desk Pod adds no receive stamp (r3 option D). Until firmware adds one, T0→T2 is one stage (LoRa air time 63–71 ms + Desk Pod relay + BLE) | — |
-| T2 BLE arrival | the BLE/USB read callback in `BtrxClient` | boundary |
+| T2 BLE arrival | the BLE/USB read callback in `BtrxClient` (for a Desk Pod backlog frame this includes the time queued, so backlog frames are excluded from the stage histograms, section 3.4) | boundary |
 | T3 push | `btrx_bearing_push_report()` call | library |
 | T4 pose ready | pending report gets its pose; records which ring it waited for (yaw or position) | library |
 | T5 accumulated | added to the grids in `tick` | library |
@@ -491,7 +510,7 @@ Stages reported: **pod→arrival** (T2 − T0), **arrival→push** (T3 − T2),
 - **Debug log line** (`lag_trace` config, Developer Tools only): one line per
   report when its fate is final, through the log callback, which the
   boundary writes to the session log:
-  `BBLAG seq=<steer_seq> src=<short_id> fate=used|gated|late|ignored wait=yaw|pos|none t0=… t2=… t3=… t4=… t5=… t6=…`
+  `BBLAG seq=<steer_seq> src=<short_id> rank=<0-2> fate=used|gated|late|history|ignored wait=yaw|pos|none t0=… t2=… t3=… t4=… t5=… t6=…`
   and one `BBRND snap=<seq> t7=<host_us>` line per rendered snapshot.
 - **CSV:** `tools/btrx_bearing_test/lag_report.py` joins `BBLAG` and `BBRND`
   lines from a session log into one CSV row per report (all stamps and
@@ -502,12 +521,21 @@ Stages reported: **pod→arrival** (T2 − T0), **arrival→push** (T3 − T2),
 - **Key:** the library hashes the full 6-byte address and its address type
   with SipHash-2-4 under a 16-byte **incident key** the boundary passes at
   create (random per incident, never saved). `btrx_bearing_source_key()`
-  returns the 64-bit key. Inputs and logs carry only that key.
+  returns the 64-bit key. Inputs and logs carry only that key. The
+  STEER parser (section 4.1) computes it for the target, so the raw address
+  never enters a report struct or a log.
+- **Extras have no address**, only the pod's `src_id`. The library keeps a
+  `src_id` → source table per pod session (section 4.1) and resolves extras
+  through it.
 - **Short ID:** base64url of the top 36 bits, 6 characters (for example
   `Q3x9Kd`). Same on both platforms by construction.
-- **Class:** the boundary passes phone / watch / hearing aid / tag / unknown,
-  from its existing mapping (STEER `dev_class`, DETECT `class_hint`,
-  `BtrxMakers`). The library keeps the most specific class seen.
+- **Class:** from the pod's `dev_class` (target byte 17, or extra-record
+  `rflags` bits 2–4): 1 phone → phone, 2 wearable → watch, 3 tracker → tag,
+  4 audio → **audio**, 5 computer and 0 → unknown. "Audio" (earbuds,
+  headphones, hearing aids) becomes **hearing aid** only when the boundary's
+  existing evidence says so (DETECT hearing service UUIDs, `BtrxMakers`),
+  through `btrx_bearing_set_source_class()`. The library keeps the most
+  specific class seen.
 - **Colour:** a fixed 8-colour colour-blind-safe palette (Okabe–Ito order:
   orange, sky blue, bluish green, yellow, blue, vermillion, reddish purple,
   black, all **[A]**), assigned in order of first report and kept for the
@@ -527,28 +555,91 @@ Stages reported: **pod→arrival** (T2 − T0), **arrival→push** (T3 − T2),
   no more reports arrive for it. The map panel only hides; it never sends
   STEER_MUTE.
 
-### 4.1 Multi-source STEER (pending BT RX)
+### 4.1 Multi-source STEER (defined by BT RX, build 0x0103)
 
-Ken said yes to the top 2–3 sources per STEER (r3 section 13 option A: about
-7.9–9.4% air time, needs the STEER cap raised from 8% to 10% **[BT]**). **The
-frame format is not defined yet; BT RX owns it.** The library is ready for
-it:
+Source: btrx `firmware/PROTOCOL.md` at `684cfa5` (branch `steering-report`,
+draft PR #18), read with `git show`. **Not flashed yet.** BT RX estimates
+the 53-byte frame at about 78 ms on air, so STEER stays at 1 s under the
+existing 8% duty cap.
 
-- `btrx_bearing_report_t` holds the frame fields once (`window_end_ms`,
-  `steer_seq`, frame flags, pod roll/pitch, arrival) and **1–3 source
-  entries** (rssi_port/stbd, peak, hits, age, per-source flags, key, class,
-  company ID, address type).
-- A single-source STEER (today's frame) maps to one entry, so nothing changes
-  for current firmware.
-- Each entry is posed with the same report time and pose, and goes through
-  the gates and accumulation on its own, into its own source's grid.
-- Order in the frame (strongest first) is kept for the stats only; the
-  weights don't depend on rank.
-- Still no negative evidence: a source missing from a 3-entry frame may be
-  muted or ignored on the pod, or just fourth.
-- The boundary parser changes when BT RX defines the format (Kotlin and
-  Swift `BtrxProtocol.parseSteer`, with shared test vectors); the library
-  struct does not.
+**Payload** (little-endian):
+
+| Sources | Payload | btrx frame |
+| --- | --- | --- |
+| 1 (or none heard) | 28 bytes (27 on older firmware) | 41 bytes |
+| 2 | 34 bytes | 47 bytes |
+| 3 | 40 bytes | 53 bytes |
+
+- **Bytes 0–26:** the existing single-source STEER, unchanged: the
+  **primary** (target), the strongest source with the pod's 3 dB hold.
+- **Byte 27, `ext`:** bits 0–3 = count of extra records (0–2); bits 4–7 =
+  format (1).
+- **From byte 28:** extra records, strongest first, 6 bytes each:
+
+| Offset | Type | Field | Meaning |
+| --- | --- | --- | --- |
+| +0 | u16 | `src_id` | same id space as the target's |
+| +2 | i8 | `rssi_port` | mean dBm over the 1 s window; −128 = not heard |
+| +3 | i8 | `rssi_stbd` | same, starboard |
+| +4 | u8 | `hits` | bits 0–3 port samples, bits 4–7 starboard samples, each saturating at 15 (15 = 15 or more) |
+| +5 | u8 | `rflags` | bit 0 new (not in the previous window's report), bit 1 address change linked in this window, bits 2–4 `dev_class`, bits 5–7 zero |
+
+**Parsing rules** (one C parser, `btrx_bearing_parse_steer()`, used by both
+platforms; shared test vectors):
+
+1. 27 bytes: older firmware, the primary only.
+2. 28 bytes or more: byte 27 is `ext`. Format 0 or count 0 means no extras.
+   With flags bit 0 clear (nothing heard) the count is 0.
+3. Record length = (payload length − 28) / count. Read only the first 6 bytes
+   of each record and skip the rest (a later format may be longer).
+4. If the record length works out under 6, or the count is over 2, the frame
+   is cut short: use bytes 0–26 only, and count it (`steer_truncated`).
+5. The existing Kotlin and Swift `BtrxProtocol.parseSteer` check a
+   **minimum** length of 27 (`need`), so the stream-view overlay keeps working
+   on 28–40-byte payloads unchanged.
+
+**What the extras lack and how the library copes:**
+
+- **No address, maker, peak or age.** An extra's address comes from an
+  earlier STEER where that `src_id` was the primary. The library keeps a
+  `src_id` → source table per pod session (cleared when a restart is
+  detected, section 3.2, because ids restart at 1).
+- **Unresolved extra:** a `src_id` never seen as primary gets a
+  **provisional source**, keyed by a hash of (pod session, `src_id`), shown
+  with its class and colour like any other, labelled "unresolved". When that
+  `src_id` later appears as the primary with an address, the provisional
+  source is **merged** into the address's source (or simply takes that key if
+  the address is new). The merge adds the bucket tiles (integer sums, aligned
+  by absolute bucket time), so it is exact and allocation-free; the address
+  source keeps its colour.
+- **Linked address change** (target flags bit 2, or extra `rflags` bit 1):
+  the `src_id` stays, so the source stays the same; the new address key is
+  added as an alias (up to 4 **[A]**), and ignore or mute by any alias
+  applies.
+- **Age:** within the same 1 s window as the target; the library uses the
+  window time for all entries.
+- **Peak:** not used in v1 (the level term is off).
+- **Strength order:** because of the hold, an extra can read up to 2 dB
+  stronger than the primary. Nothing in the model depends on rank; rank is
+  kept for the stats and `BBLAG` only.
+- **Frame-wide fields:** flags bit 3 (attitude gated), bit 4 (IMU ok) and
+  roll/pitch apply to every source in the frame, so the gates (section 2.8)
+  accept or reject the whole frame; per-source gates (one-patch rule) still
+  apply per entry.
+
+**Hits weight each record's noise.** Every entry, primary or extra, uses its
+own hit counts in σ_Δ = 5.5 √(1/N_port + 1/N_stbd) (section 2.1) and in the
+information weight q_r = min(1, (2 dB / σ_Δ)²) (section 2.2). Fewer samples
+give a wider, fainter wedge. Extras' 4-bit counts saturate at 15; the
+library uses 15, which slightly understates a fast advertiser's information
+(σ_Δ ≥ 2.0 dB, q ≤ 1, so the weight is already at its cap). The one-patch
+rule (at least 2 hits on the heard patch, bit 4 set) applies per entry.
+
+**Pose:** every entry of a frame is posed once, at the frame's report time,
+and accumulated into its own source's buckets.
+
+**Still no negative evidence:** a source missing from a 3-entry frame may be
+muted or ignored on the pod, or simply fourth.
 
 ## 5. Rendering output
 
@@ -719,7 +810,7 @@ extern "C" {
 
 #define BTRX_BEARING_ABI_VERSION 1u
 #define BTRX_BEARING_MAX_SOURCES 8
-#define BTRX_BEARING_MAX_REPORT_SOURCES 3    /* top 2-3 per STEER (format pending BT RX) */
+#define BTRX_BEARING_MAX_REPORT_SOURCES 3    /* primary + up to 2 extras (build 0x0103) */
 #define BTRX_BEARING_RSSI_NOT_HEARD (-128)
 
 typedef struct btrx_bearing btrx_bearing_t;   /* opaque */
@@ -741,6 +832,7 @@ typedef enum {
     BTRX_BEARING_CLASS_WATCH = 2,
     BTRX_BEARING_CLASS_HEARING_AID = 3,
     BTRX_BEARING_CLASS_TAG = 4,
+    BTRX_BEARING_CLASS_AUDIO = 5,    /* pod "audio": earbuds, headphones, maybe hearing aid */
 } btrx_bearing_class_t;
 
 typedef int64_t (*btrx_bearing_now_us_fn)(void *ctx);           /* host monotonic */
@@ -822,29 +914,41 @@ typedef struct {
     float pitch_deg, roll_deg;       /* + nose up, + starboard down */
 } btrx_bearing_pose_t;
 
-/* One source entry of a STEER. */
+/* One source entry of a STEER: the primary (bytes 0-26) or an extra record. */
 typedef struct {
-    int8_t rssi_port, rssi_stbd, peak_rssi;  /* dB; -128 = not heard */
-    uint8_t hits_port, hits_stbd;
-    uint16_t age_ms;                 /* newest sample to hand-off */
-    uint8_t src_flags;               /* per-source pod flags (new, linked, muted) */
-    uint64_t source_key;             /* btrx_bearing_source_key() */
-    btrx_bearing_class_t dev_class;
-    uint16_t company_id;
-    uint8_t addr_type;
+    uint16_t src_id;                 /* pod id; same id space for primary and extras */
+    uint64_t addr_key;               /* keyed hash of the address; 0 for extras (no address) */
+    int8_t rssi_port, rssi_stbd;     /* mean dBm over the window; -128 = not heard */
+    int8_t peak_rssi;                /* primary only; -128 for extras */
+    uint8_t hits_port, hits_stbd;    /* extras: 4-bit, 15 = 15 or more */
+    uint16_t age_ms;                 /* primary only; 0xFFFF for extras */
+    uint8_t rank;                    /* 0 primary, 1-2 extras (frame order) */
+    bool is_new;                     /* primary: flags bit1; extra: rflags bit0 */
+    bool linked;                     /* primary: flags bit2; extra: rflags bit1 */
+    uint8_t pod_dev_class;           /* pod dev_class 0-5 (PROTOCOL.md table) */
+    uint16_t company_id;             /* primary only; 0 for extras */
+    uint8_t addr_type;               /* primary only */
 } btrx_bearing_report_source_t;
 
-/* One STEER (0x73), single- or multi-source, as parsed by BtrxProtocol. */
+/* One STEER (0x73): 27-byte (older firmware) or 28/34/40-byte (build 0x0103). */
 typedef struct {
     int64_t arrival_us;              /* T2: host BLE/USB arrival */
     uint32_t window_end_ms;          /* pod A millis() */
-    uint16_t steer_seq;
-    uint8_t flags;                   /* frame flags: bit0 target .. bit6 imu cal */
-    int8_t roll_x2, pitch_x2;        /* pod, at send time */
+    uint8_t steer_seq;
+    uint8_t flags;                   /* frame flags: bit0 target .. bit6 imu cal; bit3/4 apply to all entries */
+    int8_t roll_x2, pitch_x2;        /* pod, at send time; whole frame */
     bool backlog;                    /* BtrxClient marked it queued by the Desk Pod */
-    uint8_t source_count;            /* 0 (no target) .. BTRX_BEARING_MAX_REPORT_SOURCES */
-    btrx_bearing_report_source_t src[BTRX_BEARING_MAX_REPORT_SOURCES]; /* strongest first */
+    uint8_t ext_format;              /* byte 27 bits 4-7; 0 for 27-byte frames */
+    bool truncated;                  /* extension unreadable: bytes 0-26 used only */
+    uint8_t source_count;            /* 0 (nothing heard) .. BTRX_BEARING_MAX_REPORT_SOURCES */
+    btrx_bearing_report_source_t src[BTRX_BEARING_MAX_REPORT_SOURCES]; /* frame order */
 } btrx_bearing_report_t;
+
+/* Parse a STEER payload by the section 4.1 rules. Pure apart from reading the
+ * handle's incident key (to hash the primary's address). Any thread. */
+btrx_bearing_status_t btrx_bearing_parse_steer(const btrx_bearing_t *h,
+        const uint8_t *payload, size_t len, int64_t arrival_us, bool backlog,
+        btrx_bearing_report_t *out);
 
 /* Lifecycle */
 uint32_t btrx_bearing_abi_version(void);
@@ -874,6 +978,10 @@ enum {
 /* Sets or clears `mask` bits to `value` for each key (panel rows, "Mute all"). */
 btrx_bearing_status_t btrx_bearing_set_source_flags(btrx_bearing_t *h, const uint64_t *keys,
         size_t key_count, uint32_t mask, uint32_t value);
+
+/* Class upgrade from boundary evidence, e.g. AUDIO -> HEARING_AID. */
+btrx_bearing_status_t btrx_bearing_set_source_class(btrx_bearing_t *h, uint64_t key,
+        btrx_bearing_class_t cls);
 
 /* Fade settings (section 2.4): any thread, applied at the next tick.
  * total_s in [120, 1800], shape_p >= 1. Shortening drops older buckets. */
@@ -905,7 +1013,8 @@ typedef struct {                     /* latest-ray outline, section 5.1 */
 } btrx_bearing_ray_t;
 
 typedef struct {
-    uint64_t key;
+    uint64_t key;                    /* address key, or provisional (pod session, src_id) */
+    bool provisional;                /* "unresolved": seen only as an extra so far */
     char short_id[8];
     btrx_bearing_class_t dev_class;
     uint8_t rgb[3];
@@ -941,7 +1050,8 @@ typedef struct {
 
 typedef struct {
     uint32_t reports_in, entries_in, used, gated, no_heading, no_position,
-             late_dropped, ring_dropped, buckets_expired_early, ignored;
+             late_dropped, ring_dropped, buckets_expired_early, ignored,
+             backlog_history, steer_truncated, extras_unresolved, provisional_merges;
     uint32_t tiles_in_use, tiles_total; /* pool use */
     float fade_total_s, fade_shape_p;   /* settings in effect */
     int32_t pod_offset_ms;           /* host - pod */
@@ -1011,6 +1121,7 @@ apple/Sources/CBtrxBearing/
   bb_render.c                RGBA composite, alpha rasters, latest ray, triple buffer,
                              sources_at
   bb_siphash.c               SipHash-2-4, short ID
+  bb_steer.c                 STEER parser (27/28/34/40 bytes), src_id table, provisional merge
   README.md                  rules from 6.1; excluded from the SwiftPM target
 ```
 
@@ -1026,7 +1137,7 @@ the switch, **stamp and push** inputs, **drive tick** on its BTRX worker,
 | Wrapper class | `btrx/BtrxBearingNative.kt` (`external fun`s, `System.loadLibrary("btrx_bearing")` in `runCatching` as in `MappingSurfaceNative`) and `btrx/BtrxBearingLayer.kt` | `R2CCore/Btrx/BtrxBearingLayer.swift` (owns the `OpaquePointer`, `deinit` destroys) |
 | Switch | Settings > Developer Tools, off by default, never at launch | same |
 | Fade settings (section 2.4) | BTRX settings in Developer Tools: "Fade time" (2–30 min, default 10) and "Fade shape" (Linear / Hold / Strong hold, with the "half strength at m:ss" hint), saved in the app config; `set_fade` on change | same controls, labels and defaults, saved in the iPad settings; `set_fade` on change |
-| STEER, PONG, HEALTH | `BtrxClient.Listener.onFrame` (stamps T2 at the BLE/USB read) → `BtrxProtocol.parseSteer` (single-source today; multi-source once BT RX defines it, section 4.1) → `push_report` with `source_key` per entry; PONG → `push_time_sync`; HEALTH → `push_pod_uptime`. TIME_PING sent every 30 s by the same client (new: `BtrxClient` can send the frame, but nothing sends it periodically today) | `BtrxClient` listener `onFrame` → same fields |
+| STEER, PONG, HEALTH | `BtrxClient.Listener.onFrame` (stamps T2 at the BLE/USB read) → raw payload to `btrx_bearing_parse_steer` (the shared C parser, section 4.1) → `push_report`; the existing `BtrxProtocol.parseSteer` stays for the stream overlay; PONG → `push_time_sync`; HEALTH → `push_pod_uptime`. TIME_PING sent every 30 s by the same client (new: `BtrxClient` can send the frame, but nothing sends it periodically today) | `BtrxClient` listener `onFrame` → same fields |
 | DJI yaw | the SEI path that fills `DjiCameraOrientation` (from `ffmpeg_bridge.c`, `native/R2CDJICameraTelemetry.h`) → `push_pose(YAW)` with `R2CDJIAircraftYawTrueNorthDegrees` | `R2CFFmpegSessionCopyLatestDJICameraTelemetry` (`R2CFFmpegMobile.c`, same header) → `push_pose(YAW)` |
 | Position, AGL | RID track points + `DroneAltitudeCoordinator` → `push_pose(POSITION, AGL)` | RID track + the iPad altitude source → same |
 | Own aircraft (ignore) | BTRX pane action → `set_source_flags(IGNORED)` | same |
@@ -1126,6 +1237,20 @@ and in `apple/release-check.sh`:
    drops counted against the right stage; `BBLAG`/`BBRND` line format.
    **Multi-source:** a 3-entry report feeds three grids with one pose; a
    1-entry report matches today's single-source path bit for bit.
+   **STEER parser vectors** (shared with the Kotlin/Swift tests): 27 bytes
+   (old firmware); 28 bytes with count 0; 34 and 40 bytes; format 0 with a
+   count; count 3 (invalid → first 27 only); a 30-byte payload with count 1
+   (record under 6 bytes → first 27 only); a future format with 8-byte
+   records (first 6 read); hits nibbles at 0, 1, 15; `rflags` class bits;
+   bit 0 clear with count 0. BT RX's `r2c_sim` encoder output is the source
+   of truth for the bytes.
+   **Source resolution:** an extra with an unknown `src_id` makes a
+   provisional source; the same id later as primary merges it exactly (tile
+   sums add, colour of the address source kept); a pod restart clears the
+   id table; a linked address change adds an alias.
+   **Backlog:** 32 queued frames, oldest first, after a reconnect: those
+   within 15 s with poses are used, older ones get `history` and stay out of
+   the lag histograms.
 7. **Threading:** pushes from 3 threads while ticking and acquiring for 10 s
    under ThreadSanitizer (`-fsanitize=thread`, host only); no `malloc` after
    create (an interposed counting allocator).
@@ -1136,8 +1261,9 @@ and in `apple/release-check.sh`:
 - **Input log `BBv1`:** the boundary writes one text line per input, keys
   only, no addresses:
   `BBv1 P <t_us> <mask> <lat> <lon> <agl> <yaw> <pitch> <roll>`,
-  `BBv1 R <arrival_us> <window_end_ms> <seq> <flags> <roll_x2> <pitch_x2> <backlog> <n>`
-  followed by n entries `<port> <stbd> <peak> <hp> <hs> <age_ms> <src_flags> <key16hex> <class>`,
+  `BBv1 R <arrival_us> <window_end_ms> <seq> <flags> <roll_x2> <pitch_x2> <backlog> <ext_format> <truncated> <n>`
+  followed by n entries `<src_id> <addr_key16hex|0> <port> <stbd> <peak> <hp> <hs> <age_ms> <new> <linked> <pod_class> <company>`
+  (the parsed report, so replay needs no raw payload and no address),
   `BBv1 S <t1> <t2> <t3> <t4>`, `BBv1 U <t_us> <uptime_s>`,
   `BBv1 M <t_us> <key16hex> <muted>` (mute changes),
   `BBv1 F <t_us> <total_s> <shape_p>` (fade setting changes).
@@ -1237,8 +1363,8 @@ Answered by Ken (November 13, morning), r2 questions 1–5:
    question.
 3. **Moving subjects:** one fade rate for all; reconsider only if moving
    sources can be detected reliably (section 2.9).
-4. **Firmware:** yes to the top 2–3 sources per STEER (section 4.1); format
-   pending BT RX.
+4. **Firmware:** yes to the top 2–3 sources per STEER. BT RX defined the
+   frame (btrx `684cfa5`, build 0x0103, not flashed); section 4.1.
 5. **Latest ray:** yes, as a cheap outline over the shading (section 5.1).
 
 New, for Ken:
@@ -1259,5 +1385,13 @@ New, for BT RX:
 5. **Desk Pod receive stamp** (r3 option D, earlier judged not worth it):
    without it, the pod→arrival stage can't be split into LoRa, Desk Pod and
    BLE. Worth adding now that slow paths are being chased?
-6. **Multi-source STEER format** and the STEER air-time cap change
-   (section 4.1).
+6. **Extras' addresses:** extras carry only `src_id`. PROTOCOL.md says an
+   address can come from DETECT, but DETECT records carry no `src_id` (the
+   app's DETECT parser and the record layout have none), so in practice only
+   an earlier STEER as primary resolves one. Could DETECT records carry
+   `src_id`, or the extra records a short address hash, so extras resolve at
+   once?
+7. **Backlog order:** a full Desk Pod queue keeps the oldest 32 messages and
+   drops newer ones, so after a reconnect the app gets old history and loses
+   the latest windows. Could the Desk Pod keep the newest instead, or drop
+   STEER frames older than about 15 s from its queue?

@@ -73,8 +73,9 @@ until flight test 1 measures it.
 ## 2. What the app gets (facts)
 
 **STEER (0x73), about 1 per second.** (Ken asked for the top 2–3 sources per
-STEER, November 13; format pending BT RX, `BEARING-LAYER-spec.md` r3
-section 4.1.) The single strongest source in the pod's
+STEER, November 13. BT RX defined it in btrx `684cfa5`, build 0x0103, not
+flashed: bytes 0–26 unchanged, then an extension byte and up to 2 extra
+6-byte records; `BEARING-LAYER-spec.md` r3 section 4.1.) The single strongest source in the pod's
 1 s window. The pod keeps the current target unless another is at least 3 dB
 stronger, and leaves out ignore-listed and muted sources.
 
@@ -449,7 +450,7 @@ Not verifiable in either repo (adopted as **[BT]**):
 
 | Option | Cost (BT RX) | Gain |
 | --- | --- | --- |
-| A. Top 2–3 sources per STEER (**Ken: yes**, November 13; format pending BT RX) | ~7.9–9.4% air time; needs the STEER cap raised from 8% to 10%, or DETECT at 10 s | More sources get 1 s geometry, not just the strongest |
+| A. Top 2–3 sources per STEER (**Ken: yes**, November 13; **defined** in btrx `684cfa5`, build 0x0103) | BT RX's build: 53-byte frame, about 78 ms on air, STEER stays at 1 s under the existing 8% cap (the earlier estimate was ~7.9–9.4% and a cap raise) | More sources get 1 s geometry, not just the strongest |
 | B. STEER carries yaw rate and max roll rate over the window, and bit 3 holds for the whole window | 0–2.6 ms CPU, a few bytes | Gate turns without depending on the DJI stream; fixes the send-time snapshot |
 | C. Carry BLE Appearance (or an appearance-derived class) | not estimated | Better phone/watch/hearing-aid class |
 | D. Desk Pod receive stamp | not worth it (BT RX) | TIME_PING already covers it |
