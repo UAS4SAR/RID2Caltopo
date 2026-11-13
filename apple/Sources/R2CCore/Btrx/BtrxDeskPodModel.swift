@@ -502,6 +502,27 @@ public final class BtrxDeskPodModel {
         s.sendFrame(to: pod.node, frame: BtrxProtocol.steerMuteFrame(seq: s.nextSeq(), podId: pod.podId, op: BtrxProtocol.MUTE_ADD, srcId: v.srcId))
     }
 
+    // MARK: bearing map layer (docs/btrx/BEARING-LAYER-spec.md section 7)
+
+    public static let bearingFromOther = 0, bearingFromPod = 1, bearingFromDesk = 2
+
+    /// Where a frame comes from, for the bearing layer: the paired Drone Pod's node (backlog
+    /// included: the layer judges frames by window time), the Desk Pod itself (its own
+    /// HEALTH), or neither. Same as Android's `bearingOrigin`.
+    public func bearingOrigin(_ frame: BtrxProtocol.Frame, meta: BtrxRadioMeta) -> Int {
+        if let local = localNode, meta.fromNode == local { return Self.bearingFromDesk }
+        guard let paired = pairedPod, meta.fromNode == paired.node else { return Self.bearingFromOther }
+        return frame.podId == 0 || frame.podId == paired.podId ? Self.bearingFromPod : Self.bearingFromOther
+    }
+
+    /// TIME_PING to the paired Drone Pod (spec 3.2). False with no paired pod or no ready link.
+    @discardableResult
+    public func sendTimePing(pingSeq: Int, t1Ms: UInt32) -> Bool {
+        guard let pod = pairedPod, let s = sender, s.isReady else { return false }
+        s.sendFrame(to: pod.node, frame: BtrxProtocol.timePingFrame(seq: s.nextSeq(), podId: pod.podId, pingSeq: pingSeq, t1Ms: t1Ms))
+        return true
+    }
+
     /// Debug switch on the Desk Pod screen; off by default until the bench roll check.
     public func setSteeringRollCorrection(_ on: Bool) {
         if steering.rollCorrection != on { log.info("steering: roll correction \(on ? "on" : "off") (debug)") }

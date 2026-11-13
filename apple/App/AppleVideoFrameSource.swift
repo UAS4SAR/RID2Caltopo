@@ -1594,6 +1594,12 @@ final class AppleVideoFrameSource: ObservableObject {
                     droneTime: observeDroneClock(ptsMicroseconds: djiSourceTimestampMicroseconds)
                         .map { Date(timeIntervalSince1970: Double($0) / 1_000) }
                 )
+                // BTRX bearing layer (Developer Tools): aircraft yaw of this stream; the layer
+                // keeps it only for the "Drone Pod is on this drone" stream. Non-blocking.
+                if let sink = BtrxBearingFeed.sink,
+                   let yaw = OperationalClueGeometry.djiAircraftYawTrueNorthDegrees(seiCameraAzimuthDegrees: djiAzimuthDegrees) {
+                    sink.onYaw(designator: streamDesignator, yawTrueDeg: yaw, decodedAtWallMs: Int64(Date().timeIntervalSince1970 * 1000))
+                }
             }
             var gimbalPitchDegrees = 0.0
             if R2CFFmpegSessionCopyLatestGimbalPitchDegrees(

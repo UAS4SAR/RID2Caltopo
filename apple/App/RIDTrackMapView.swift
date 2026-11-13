@@ -1,6 +1,8 @@
 import AVKit
+import Combine
 import CryptoKit
 import MapKit
+import R2CAppleRadios
 import R2CCore
 import SwiftUI
 
@@ -681,6 +683,9 @@ struct RIDTrackMapView: View {
     @Binding var automaticStreamPairingAircraftID: String?
     @Environment(\.dismiss) private var dismissLiveView
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    /// BTRX bearing layer (not observed here: the map follows its snapshot directly).
+    @Environment(\.btrxDeskPod) private var btrxCenter
+    @State private var btrxPanel: BtrxBearingPanelRequest?
     let onReturnToMain: () -> Void
     let onConfirmPairedDrone: (RidAircraftIdentity) -> Void
     @State private var mapSettingsOpen = false
@@ -1579,8 +1584,18 @@ struct RIDTrackMapView: View {
                             mapTileNotice = "Selected tile z=\(zoom) x=\(x) y=\(y) is not cached yet."
                         }
                     }
-                }
+                },
+                btrx: btrxCenter,
+                onSelectBtrx: inset ? nil : { point, keys in btrxPanel = BtrxBearingPanelRequest(point: point, keys: keys) }
             )
+            // "BTRX sources here" at the tap point (main map only).
+            .overlay(alignment: .topLeading) {
+                if !inset, let request = btrxPanel, let btrxCenter {
+                    BtrxBearingPanel(center: btrxCenter, rows: request.keys) { btrxPanel = nil }
+                        .offset(x: request.point.x, y: request.point.y)
+                        .id(request.id)
+                }
+            }
             // Only map-content taps expand a split pane. Settings controls must
             // not also change the layout and destroy their presenting view.
             .simultaneousGesture(TapGesture().onEnded { onMapTap?() }, including: onMapTap == nil ? .none : .all)
@@ -4751,6 +4766,9 @@ private struct OperationalMKMapView: UIViewRepresentable {
     let onOperatorViewportGesture: () -> Void
     let onAttributionViewportChanged: (EsriImageryViewport) -> Void
     let onLongPressTile: (Int, Int, Int) -> Void
+    /// BTRX bearing layer (Developer Tools); nil without a Desk Pod center.
+    var btrx: BtrxDeskPodCenter? = nil
+    var onSelectBtrx: ((CGPoint, [UInt64]) -> Void)? = nil
 
     func makeCoordinator() -> Coordinator {
         Coordinator(
@@ -4803,6 +4821,7 @@ private struct OperationalMKMapView: UIViewRepresentable {
         }
         context.coordinator.installLongPress(on: map)
         context.coordinator.installArtifactTap(on: map)
+        context.coordinator.btrxMap.attach(btrx, map: map, inset: inset)
         map.onBoundsLayout = { [weak coordinator = context.coordinator] map in
             coordinator?.restoreViewportBoundsIfNeeded(on: map)
             coordinator?.reportAttributionViewport(map)
@@ -4823,6 +4842,10 @@ private struct OperationalMKMapView: UIViewRepresentable {
 
     func updateUIView(_ map: MKMapView, context: Context) {
         context.coordinator.onAttributionViewportChanged = onAttributionViewportChanged
+        defer {
+            context.coordinator.btrxMap.onSelect = onSelectBtrx
+            context.coordinator.btrxMap.attach(btrx, map: map, inset: inset)
+        }
         context.coordinator.updateMappingLayers(on:map,layers:mappingLayers)
         context.coordinator.onSelectAircraft = onSelectAircraft
         if let scale = map.subviews.first(where: { $0.accessibilityIdentifier == "RID2CaltopoMapScale" }) {
@@ -4928,6 +4951,7 @@ private struct OperationalMKMapView: UIViewRepresentable {
         private let viewportMemory: AppleMapViewportMemory
         @Binding private var operatorAdjustedViewport: Bool
         let footprintView = CameraFootprintMapView()
+        let btrxMap = BtrxBearingMapController()
         private var tileFingerprint = ""
         private var mappingLayerFingerprint: [MappingLayer] = []
         private var mappingBoundaryFingerprint: [Bool] = []
@@ -6116,6 +6140,7 @@ private struct OperationalMKMapView: UIViewRepresentable {
 
         func mapView(_ mapView: MKMapView, rendererFor overlay: MKOverlay) -> MKOverlayRenderer {
             if let tiles = overlay as? MKTileOverlay { return MKTileOverlayRenderer(tileOverlay: tiles) }
+            if let bearing = btrxMap.renderer(for: overlay) { return bearing }
             if let circle = overlay as? MKCircle, circle === operatorCircle {
                 let renderer = MKCircleRenderer(circle: circle)
                 renderer.strokeColor = .systemBlue
@@ -6263,15 +6288,13 @@ private struct OperationalMKMapView: UIViewRepresentable {
             tap.cancelsTouchesInView = false
             tap.delegate = self
             map.addGestureRecognizer(tap)
+            btrxMap.annotationHit = { [weak self] location, map in self?.annotationHit(at: location, in: map) ?? false }
+            btrxMap.installTap(on: map)
         }
 
-        @objc private func handleArtifactTap(_ gesture: UITapGestureRecognizer) {
-            guard gesture.state == .ended,
-                  !currentInset,
-                  let map = gesture.view as? MKMapView
-            else { return }
-            let location = gesture.location(in: map)
-            if map.annotations.contains(where: { annotation in
+        /// Drone, waypoint and clue markers win every tap.
+        private func annotationHit(at location: CGPoint, in map: MKMapView) -> Bool {
+            map.annotations.contains(where: { annotation in
                 guard !(annotation is MKUserLocation),
                       let view = map.view(for: annotation),
                       !view.isHidden
@@ -6280,7 +6303,21 @@ private struct OperationalMKMapView: UIViewRepresentable {
                     return view.point(inside: view.convert(location, from: map), with: nil)
                 }
                 return view.frame.insetBy(dx: -8, dy: -8).contains(location)
-            }) {
+            })
+        }
+
+        @objc private func handleArtifactTap(_ gesture: UITapGestureRecognizer) {
+            guard gesture.state == .ended,
+                  !currentInset,
+                  let map = gesture.view as? MKMapView
+            else { return }
+            let location = gesture.location(in: map)
+            if annotationHit(at: location, in: map) {
+                return
+            }
+            // BTRX shading wins over assignments, lines and areas (its own tap opens the panel
+            // once a double tap is ruled out).
+            if btrxMap.hasSources(at: location, in: map) {
                 return
             }
             let mapPoint = MKMapPoint(map.convert(location, toCoordinateFrom: map))
@@ -7402,4 +7439,283 @@ private final class UnitMapScaleView: UIView {
         bar.path = path.cgPath
         accessibilityLabel = text
     }
+}
+
+// MARK: - BTRX bearing map layer (docs/btrx/BEARING-LAYER-spec.md section 5)
+
+/// One world-sized overlay for the whole layer; the renderer draws the raster, each shown
+/// source's fading latest-ray outline (5 s, dashed mirror), the estimate with its 1 sigma /
+/// 2 sigma ellipses, and the label. Same drawing as Android's BtrxBearingMapOverlay.
+final class BtrxBearingMapOverlay: NSObject, MKOverlay {
+    let coordinate = CLLocationCoordinate2D(latitude: 0, longitude: 0)
+    let boundingMapRect = MKMapRect.world
+    func canReplaceMapContent() -> Bool { false }
+}
+
+final class BtrxBearingMapRenderer: MKOverlayRenderer, @unchecked Sendable {
+    static let rayFadeUs: Int64 = 5_000_000
+    private let lock = NSLock()
+    private var snapshot: BtrxBearingSnapshot?
+    private var image: CGImage?
+    private let nowUs: () -> Int64
+
+    init(overlay: MKOverlay, nowUs: @escaping () -> Int64) {
+        self.nowUs = nowUs
+        super.init(overlay: overlay)
+    }
+
+    /// Main thread: show `snap` (nil clears).
+    func show(_ snap: BtrxBearingSnapshot?) {
+        let img = snap.flatMap(Self.image(of:))
+        lock.lock(); snapshot = snap; image = img; lock.unlock()
+        setNeedsDisplay()
+    }
+
+    static func image(of snap: BtrxBearingSnapshot) -> CGImage? {
+        guard snap.width > 0, snap.height > 0, snap.rgba.count >= snap.width * snap.height * 4,
+              let provider = CGDataProvider(data: snap.rgba as CFData)
+        else { return nil }
+        return CGImage(width: snap.width, height: snap.height, bitsPerComponent: 8, bitsPerPixel: 32,
+                       bytesPerRow: snap.width * 4, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                       bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+                       provider: provider, decode: nil, shouldInterpolate: true, intent: .defaultIntent)
+    }
+
+    func hasFadingRay(nowUs: Int64) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return snapshot?.sources.contains { s in
+            guard !s.muted, let ray = s.latestRay else { return false }
+            return (0..<Self.rayFadeUs).contains(nowUs - ray.tUs)
+        } ?? false
+    }
+
+    override func draw(_ mapRect: MKMapRect, zoomScale: MKZoomScale, in ctx: CGContext) {
+        lock.lock(); let snap = snapshot; let img = image; lock.unlock()
+        guard let snap else { return }
+        let px = 1 / zoomScale // one screen point in map points
+        if let img {
+            let nw = point(for: MKMapPoint(CLLocationCoordinate2D(latitude: snap.north, longitude: snap.west)))
+            let se = point(for: MKMapPoint(CLLocationCoordinate2D(latitude: snap.south, longitude: snap.east)))
+            let rect = CGRect(x: nw.x, y: nw.y, width: se.x - nw.x, height: se.y - nw.y)
+            if rect.intersects(self.rect(for: mapRect)) {
+                ctx.saveGState()
+                ctx.interpolationQuality = .medium
+                ctx.translateBy(x: rect.minX, y: rect.maxY)
+                ctx.scaleBy(x: 1, y: -1) // row 0 north
+                ctx.draw(img, in: CGRect(origin: .zero, size: rect.size))
+                ctx.restoreGState()
+            }
+        }
+        let now = nowUs()
+        UIGraphicsPushContext(ctx)
+        defer { UIGraphicsPopContext() }
+        for s in snap.sources where !s.muted && !s.ignored {
+            let color = UIColor(red: CGFloat((s.rgb >> 16) & 0xFF) / 255, green: CGFloat((s.rgb >> 8) & 0xFF) / 255,
+                                blue: CGFloat(s.rgb & 0xFF) / 255, alpha: 1)
+            if let ray = s.latestRay {
+                let age = now - ray.tUs
+                if (0..<Self.rayFadeUs).contains(age) {
+                    let a = CGFloat(1 - Double(age) / Double(Self.rayFadeUs))
+                    let apex = point(for: MKMapPoint(CLLocationCoordinate2D(latitude: ray.apexLat, longitude: ray.apexLon)))
+                    ctx.setStrokeColor(color.withAlphaComponent(a).cgColor)
+                    ctx.setLineWidth(2.5 * px)
+                    ctx.setLineDash(phase: 0, lengths: [])
+                    for b in [ray.centreTrueDeg - ray.halfWidthDeg, ray.centreTrueDeg, ray.centreTrueDeg + ray.halfWidthDeg] {
+                        ctx.move(to: apex)
+                        ctx.addLine(to: point(for: MKMapPoint(Self.destination(ray.apexLat, ray.apexLon, Double(b), Double(ray.lengthM)))))
+                    }
+                    ctx.strokePath()
+                    if let m = ray.mirrorTrueDeg {
+                        ctx.setLineWidth(1.5 * px)
+                        ctx.setLineDash(phase: 0, lengths: [8 * px, 6 * px])
+                        ctx.move(to: apex)
+                        ctx.addLine(to: point(for: MKMapPoint(Self.destination(ray.apexLat, ray.apexLon, Double(m), Double(ray.lengthM)))))
+                        ctx.strokePath()
+                        ctx.setLineDash(phase: 0, lengths: [])
+                    }
+                }
+            }
+            if let est = s.estimate {
+                for k: Float in [1, 2] {
+                    let path = ellipsePath(est.lat, est.lon, k * est.axisMajor1sM, k * est.axisMinor1sM, est.axisMajorDeg)
+                    ctx.addPath(path); ctx.setStrokeColor(UIColor.white.withAlphaComponent(0.8).cgColor); ctx.setLineWidth(4 * px); ctx.strokePath()
+                    ctx.addPath(path); ctx.setStrokeColor(color.withAlphaComponent(k == 1 ? 1 : 0.67).cgColor); ctx.setLineWidth(2 * px); ctx.strokePath()
+                }
+                let c = point(for: MKMapPoint(CLLocationCoordinate2D(latitude: est.lat, longitude: est.lon)))
+                let dot = CGRect(x: c.x - 4 * px, y: c.y - 4 * px, width: 8 * px, height: 8 * px)
+                ctx.setFillColor(color.cgColor); ctx.fillEllipse(in: dot)
+                ctx.setStrokeColor(UIColor.white.withAlphaComponent(0.8).cgColor); ctx.setLineWidth(2 * px); ctx.strokeEllipse(in: dot)
+                drawLabel(BtrxBearingText.label(s), at: CGPoint(x: c.x + 8 * px, y: c.y - 8 * px), px: px)
+            } else if let ray = s.latestRay {
+                let end = point(for: MKMapPoint(Self.destination(ray.apexLat, ray.apexLon, Double(ray.centreTrueDeg), Double(ray.lengthM) * 0.6)))
+                drawLabel(BtrxBearingText.label(s), at: end, px: px)
+            }
+        }
+    }
+
+    /// `at` is the text baseline start, as on Android.
+    private func drawLabel(_ text: String, at p: CGPoint, px: CGFloat) {
+        let font = UIFont.systemFont(ofSize: 12 * px)
+        let attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: UIColor.black]
+        let size = (text as NSString).size(withAttributes: attrs)
+        let pad = 3 * px
+        let origin = CGPoint(x: p.x, y: p.y - font.ascender)
+        UIColor.white.withAlphaComponent(0.85).setFill()
+        UIBezierPath(roundedRect: CGRect(x: origin.x - pad, y: origin.y - pad / 2, width: size.width + 2 * pad, height: size.height + pad),
+                     cornerRadius: pad).fill()
+        (text as NSString).draw(at: origin, withAttributes: attrs)
+    }
+
+    private func ellipsePath(_ lat: Double, _ lon: Double, _ a: Float, _ b: Float, _ majorDeg: Float) -> CGPath {
+        let path = CGMutablePath()
+        let th = Double(majorDeg) * .pi / 180
+        let mPerDegLat = 111_320.0, mPerDegLon = 111_320.0 * cos(lat * .pi / 180)
+        for i in 0...36 {
+            let t = 2 * Double.pi * Double(i) / 36
+            let u = Double(a) * cos(t), v = Double(b) * sin(t)
+            // Major axis along true bearing th.
+            let n = u * cos(th) - v * sin(th), e = u * sin(th) + v * cos(th)
+            let pt = point(for: MKMapPoint(CLLocationCoordinate2D(latitude: lat + n / mPerDegLat, longitude: lon + e / mPerDegLon)))
+            if i == 0 { path.move(to: pt) } else { path.addLine(to: pt) }
+        }
+        path.closeSubpath()
+        return path
+    }
+
+    static func destination(_ lat: Double, _ lon: Double, _ bearingDeg: Double, _ distM: Double) -> CLLocationCoordinate2D {
+        let r = 6_371_008.8, d = distM / r, br = bearingDeg * .pi / 180
+        let p1 = lat * .pi / 180, l1 = lon * .pi / 180
+        let p2 = asin(sin(p1) * cos(d) + cos(p1) * sin(d) * cos(br))
+        let l2 = l1 + atan2(sin(br) * sin(d) * cos(p1), cos(d) - sin(p1) * sin(p2))
+        return CLLocationCoordinate2D(latitude: p2 * 180 / .pi, longitude: l2 * 180 / .pi)
+    }
+}
+
+/// Main thread. Follows the Desk Pod center's snapshot without re-rendering SwiftUI, keeps
+/// the overlay above the other overlays (below every marker), redraws fading rays, and
+/// handles the BTRX tap: drone/waypoint/clue markers win; a double tap stays a zoom (the
+/// single tap waits for it to fail, passively); inset maps draw but take no taps.
+@MainActor
+final class BtrxBearingMapController: NSObject, UIGestureRecognizerDelegate {
+    /// Spec 5.2: a 24 pt touch radius, converted to metres at the current zoom.
+    static let touchRadiusPt: CGFloat = 24
+    let overlay = BtrxBearingMapOverlay()
+    private var renderer: BtrxBearingMapRenderer?
+    private weak var center: BtrxDeskPodCenter?
+    private weak var map: MKMapView?
+    private var cancellable: AnyCancellable?
+    private var snapshot: BtrxBearingSnapshot?
+    private var inset = false
+    private var fadeTimer: Timer?
+    var onSelect: ((CGPoint, [UInt64]) -> Void)?
+    var annotationHit: ((CGPoint, MKMapView) -> Bool)?
+
+    func attach(_ center: BtrxDeskPodCenter?, map: MKMapView, inset: Bool) {
+        self.inset = inset
+        self.map = map
+        if center !== self.center {
+            self.center = center
+            cancellable = center?.$bearingSnapshot.sink { [weak self] snap in
+                // @Published fires before the value is stored; apply on the next main turn.
+                DispatchQueue.main.async { self?.show(snap) }
+            }
+            if center == nil { show(nil) }
+        }
+        ensureOnTop()
+    }
+
+    func renderer(for overlay: MKOverlay) -> MKOverlayRenderer? {
+        guard overlay === self.overlay else { return nil }
+        let layer = center?.bearing
+        let r = BtrxBearingMapRenderer(overlay: overlay, nowUs: { layer?.nowUs() ?? 0 })
+        r.show(snapshot)
+        renderer = r
+        return r
+    }
+
+    private func show(_ snap: BtrxBearingSnapshot?) {
+        snapshot = snap
+        guard let map else { return }
+        guard let snap else {
+            if map.overlays.contains(where: { $0 === overlay }) { map.removeOverlay(overlay) }
+            renderer = nil
+            fadeTimer?.invalidate(); fadeTimer = nil
+            return
+        }
+        ensureOnTop()
+        renderer?.show(snap)
+        center?.bearing.noteRendered(snap.seq)
+        updateFadeTimer()
+    }
+
+    /// Above assignments, lines and areas; markers are views and stay on top.
+    private func ensureOnTop() {
+        guard snapshot != nil, let map else { return }
+        let above = map.overlays(in: .aboveLabels)
+        guard above.last !== overlay else { return }
+        if above.contains(where: { $0 === overlay }) { map.removeOverlay(overlay) }
+        map.addOverlay(overlay, level: .aboveLabels)
+    }
+
+    private func updateFadeTimer() {
+        let fading = renderer?.hasFadingRay(nowUs: center?.bearing.nowUs() ?? 0) ?? false
+        if fading, fadeTimer == nil {
+            fadeTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    self.renderer?.setNeedsDisplay()
+                    self.updateFadeTimer()
+                }
+            }
+        } else if !fading {
+            fadeTimer?.invalidate(); fadeTimer = nil
+        }
+    }
+
+    // MARK: taps
+
+    func installTap(on map: MKMapView) {
+        let double = UITapGestureRecognizer(target: self, action: #selector(ignoreDoubleTap(_:)))
+        double.numberOfTapsRequired = 2
+        double.cancelsTouchesInView = false
+        double.delaysTouchesEnded = false
+        double.delegate = self
+        let single = UITapGestureRecognizer(target: self, action: #selector(handleTap(_:)))
+        single.cancelsTouchesInView = false
+        single.delegate = self
+        single.require(toFail: double)
+        map.addGestureRecognizer(double)
+        map.addGestureRecognizer(single)
+    }
+
+    @objc private func ignoreDoubleTap(_ gesture: UITapGestureRecognizer) {}
+
+    @objc private func handleTap(_ gesture: UITapGestureRecognizer) {
+        guard gesture.state == .ended, let map = gesture.view as? MKMapView else { return }
+        let location = gesture.location(in: map)
+        if annotationHit?(location, map) == true { return }
+        let hits = sources(at: location, in: map)
+        guard !hits.isEmpty else { return }
+        onSelect?(location, hits.map(\.key))
+    }
+
+    func hasSources(at location: CGPoint, in map: MKMapView) -> Bool { !sources(at: location, in: map).isEmpty }
+
+    private func sources(at location: CGPoint, in map: MKMapView) -> [BtrxBearingSource] {
+        guard !inset, snapshot != nil, let layer = center?.bearing else { return [] }
+        let here = map.convert(location, toCoordinateFrom: map)
+        let edge = map.convert(CGPoint(x: location.x + Self.touchRadiusPt, y: location.y), toCoordinateFrom: map)
+        let radiusM = CLLocation(latitude: here.latitude, longitude: here.longitude)
+            .distance(from: CLLocation(latitude: edge.latitude, longitude: edge.longitude))
+        return layer.sourcesAt(lat: here.latitude, lon: here.longitude, radiusM: Float(radiusM))
+    }
+
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                           shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool { true }
+}
+
+struct BtrxBearingPanelRequest: Identifiable, Equatable {
+    let id = UUID()
+    let point: CGPoint
+    let keys: [UInt64]
 }

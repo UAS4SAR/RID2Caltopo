@@ -1398,6 +1398,9 @@ struct ContentView: View {
                     try? await Task.sleep(for: .seconds(1))
                 }
             }
+            // BTRX bearing layer (Developer Tools): RID position + AGL of the "Drone Pod is on
+            // this drone" aircraft. Cheap and non-blocking; nothing goes to CalTopo.
+            .onReceive(ridTracks.$tracks) { tracks in feedBtrxBearingPosition(tracks) }
             .onChange(of: credentialMutations.isBusy) { _, busy in
                 guard !busy else { return }
                 // Publish the completed configuration together. Observers skip
@@ -3256,6 +3259,18 @@ struct ContentView: View {
 
     /// Binds the process-wide alert coordinator (iOS counterpart of Android's
     /// AlertSpeechCoordinator). Idempotent; later calls only refresh the hooks.
+    private func feedBtrxBearingPosition(_ tracks: [RidAircraftTrack]) {
+        guard deskPod.bearingOn, let stream = deskPod.steeringStreamID else { return }
+        let aircraftID = AppleStreamRegistry.shared.boundAircraftID(for: stream)
+        guard let track = tracks.first(where: {
+            $0.aircraftID == aircraftID || $0.aircraftID.caseInsensitiveCompare(stream) == .orderedSame
+        }), let point = track.points.last else { return }
+        let altitude = ridTracks.altitudeDisplayByAircraftID[track.aircraftID]
+        let agl = altitude?.aglStale == false ? altitude?.aglFeet : nil
+        deskPod.bearingRIDPoint(pointID: point.id, latitude: point.latitude, longitude: point.longitude,
+                                aglFeet: agl, fixTime: point.receivedAt)
+    }
+
     private func startAlertCoordinator() {
         AppleAlertCoordinator.shared.start(
             hooks: AppleAlertCoordinator.Hooks(

@@ -51,6 +51,7 @@ struct DeskPodView: View {
                     ForEach(Text_.healthLines(s), id: \.self) { Text($0) }
                     Text(Text_.countsLine("Live frames", s.liveCounts)).font(.footnote)
                     Text(Text_.countsLine("Backlog frames (old, display only)", s.backlogCounts)).font(.footnote)
+                    BtrxBearingStatusLines(center: center)
 
                     Divider().padding(.vertical, 6)
                     section("Pair drone pod")
@@ -91,6 +92,10 @@ struct DeskPodView: View {
                     }
                     Toggle(Text_.steerRoll, isOn: Binding(get: { s.steeringRollCorrection }, set: { center.setSteeringRollCorrection($0) }))
                         .font(.footnote)
+
+                    Divider().padding(.vertical, 6)
+                    section(BtrxBearingText.section)
+                    BtrxBearingSection(center: center)
                 }
                 .frame(maxWidth: 720, alignment: .leading)
                 .padding()
@@ -431,5 +436,131 @@ struct SteeringMark: View {
         }
         .frame(width: size, height: size)
         .opacity(view.faded ? 0.4 : 1)
+    }
+}
+
+// MARK: - BTRX bearing map layer (docs/btrx/BEARING-LAYER-spec.md sections 2.4, 3.4, 5.2, 7)
+
+/// Developer Tools > BTRX "Bearing map layer": the layer switch, fade time and shape sliders
+/// with the live "half strength at m:ss" readout, lag trace, and every source's row. Same
+/// controls, labels and order as Android's BtrxBearingSection.
+struct BtrxBearingSection: View {
+    @ObservedObject var center: BtrxDeskPodCenter
+    @State private var minutes: Double?
+    @State private var shape: Double?
+
+    var body: some View {
+        let settings = center.bearingSettings
+        let m = minutes ?? Double(settings.fadeMinutes)
+        let p = shape ?? Double(settings.fadeShapeP)
+        let draft = BtrxBearingSettings(fadeTotalS: Float(m.rounded()) * 60, fadeShapeP: Float(p))
+        VStack(alignment: .leading, spacing: 6) {
+            Toggle(BtrxBearingText.layerSwitch, isOn: Binding(get: { center.bearingOn }, set: { center.setBearingOn($0) }))
+            Text(BtrxBearingText.layerSwitchHint).font(.footnote).foregroundStyle(.secondary)
+            if !center.bearingOn, let error = center.bearingError { Text(error).font(.footnote).foregroundStyle(.red) }
+
+            Text("\(BtrxBearingText.fadeTime): \(BtrxBearingText.minutes(Int(m.rounded())))")
+            Slider(value: Binding(get: { m }, set: { minutes = $0 }), in: 1...30, step: 1) { editing in
+                if !editing { center.setBearingSettings(draft); minutes = nil }
+            }
+            Text("\(BtrxBearingText.fadeShape): \(BtrxBearingSettings.shapeLabel(Float(p))) (\(BtrxBearingText.halfStrength(draft.halfStrengthS)))")
+            HStack {
+                Text("Linear").font(.footnote)
+                Slider(value: Binding(get: { p }, set: { shape = $0 }), in: 1...4) { editing in
+                    if !editing { center.setBearingSettings(draft); shape = nil }
+                }
+                Text("Accelerating").font(.footnote)
+            }
+            Toggle(BtrxBearingText.lagTrace, isOn: Binding(get: { center.bearingLagTrace }, set: { center.setBearingLagTrace($0) }))
+                .font(.footnote)
+            if center.bearingOn, let snap = center.bearingSnapshot {
+                Text(BtrxBearingText.countsLine(snap.stats)).font(.footnote)
+                Text(BtrxBearingText.clockLine(snap.stats)).font(.footnote)
+                Text(BtrxBearingText.sources).fontWeight(.semibold)
+                if snap.sources.isEmpty { Text(BtrxBearingText.noSources).font(.footnote) }
+                ForEach(snap.sources) { src in
+                    BtrxBearingSourceRow(source: src, nowUs: snap.tUs) { shown in center.bearing.setMuted([src.key], muted: !shown) }
+                    Button(src.ignored ? BtrxBearingText.unignore : BtrxBearingText.ignore) {
+                        center.bearing.setIgnored(src.key, ignored: !src.ignored)
+                    }
+                    .font(.footnote)
+                }
+            }
+        }
+    }
+}
+
+/// "Link health" lines (spec 3.4): reports lost while no app, and the lag stats.
+struct BtrxBearingStatusLines: View {
+    @ObservedObject var center: BtrxDeskPodCenter
+
+    var body: some View {
+        if center.bearingOn, let snap = center.bearingSnapshot {
+            Text(BtrxBearingText.lostLine(snap.stats))
+            Text(BtrxBearingText.lagLine(snap.stats)).font(.footnote)
+        }
+    }
+}
+
+/// One row: swatch, checkbox (checked = shown), short ID, class, last heard, reports in the fade window.
+struct BtrxBearingSourceRow: View {
+    let source: BtrxBearingSource
+    let nowUs: Int64
+    let onShownChange: (Bool) -> Void
+
+    var body: some View {
+        HStack(spacing: 6) {
+            RoundedRectangle(cornerRadius: 3)
+                .fill(Color(rgb: source.rgb))
+                .overlay(RoundedRectangle(cornerRadius: 3).stroke(Color.black.opacity(0.4), lineWidth: 1))
+                .frame(width: 16, height: 16)
+            Button { onShownChange(source.muted) } label: {
+                Image(systemName: source.muted ? "square" : "checkmark.square.fill").imageScale(.large)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(source.muted ? "Show \(source.shortID)" : "Hide \(source.shortID)")
+            Text(source.shortID).fontWeight(.semibold)
+            Text(source.className)
+            Text(BtrxBearingText.lastHeard(nowUs: nowUs, lastUs: source.lastHeardUs)).font(.footnote)
+            Text(BtrxBearingText.reports(source.reportsInWindow)).font(.footnote)
+        }
+    }
+}
+
+/// The map tap panel (spec 5.2): "BTRX sources here", one row per source in tap order,
+/// "Mute all" / "Unmute all" for the rows listed, "Done". Rows only show or hide shading;
+/// the row content follows the live snapshot. Same as Android's BtrxBearingPanel.
+struct BtrxBearingPanel: View {
+    @ObservedObject var center: BtrxDeskPodCenter
+    let rows: [UInt64]
+    let onDismiss: () -> Void
+
+    var body: some View {
+        if let snap = center.bearingSnapshot {
+            let byKey = Dictionary(snap.sources.map { ($0.key, $0) }, uniquingKeysWith: { a, _ in a })
+            let listed = rows.compactMap { byKey[$0] }
+            VStack(alignment: .leading, spacing: 4) {
+                Text(BtrxBearingText.panelTitle).font(.headline)
+                ForEach(listed) { src in
+                    BtrxBearingSourceRow(source: src, nowUs: snap.tUs) { shown in center.bearing.setMuted([src.key], muted: !shown) }
+                }
+                HStack(spacing: 8) {
+                    Button(BtrxBearingText.muteAll) { center.bearing.setMuted(listed.map(\.key), muted: true) }.buttonStyle(.bordered)
+                    Button(BtrxBearingText.unmuteAll) { center.bearing.setMuted(listed.map(\.key), muted: false) }.buttonStyle(.bordered)
+                    Button(BtrxBearingText.done, action: onDismiss)
+                }
+            }
+            .padding(12)
+            .frame(maxWidth: 420, alignment: .leading)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+            .shadow(radius: 6)
+        }
+    }
+}
+
+extension Color {
+    /// 0xRRGGBB.
+    init(rgb: UInt32) {
+        self.init(red: Double((rgb >> 16) & 0xFF) / 255, green: Double((rgb >> 8) & 0xFF) / 255, blue: Double(rgb & 0xFF) / 255)
     }
 }

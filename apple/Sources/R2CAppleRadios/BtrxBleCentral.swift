@@ -85,6 +85,9 @@ final class BtrxBleCentral: NSObject, @unchecked Sendable {
     private var opWork: DispatchWorkItem?
     private var sessionTimers: [DispatchWorkItem] = []
     private var tickTimer: DispatchSourceTimer?
+    /// The BTRX bearing layer (Developer Tools); confined to ``queue`` like the model.
+    private(set) var bearing: BtrxBearingLayer!
+    private var bearingTimer: DispatchSourceTimer?
 
     init(events: Events, paired: Model.PairedPod?) {
         self.events = events
@@ -94,6 +97,8 @@ final class BtrxBleCentral: NSObject, @unchecked Sendable {
             model.restorePairedPod(paired)
             model.setLink(Model.LinkStatus(kind: .none, phase: .off, detail: "Bluetooth link is off."))
         }
+        let log = self.log
+        bearing = BtrxBearingLayer(log: { log.info($0) }, traceLog: { log.info($0) })
         let timer = DispatchSource.makeTimerSource(queue: queue)
         timer.schedule(deadline: .now() + 1, repeating: 1)
         timer.setEventHandler { [weak self] in self?.tick() }
@@ -101,7 +106,45 @@ final class BtrxBleCentral: NSObject, @unchecked Sendable {
         tickTimer = timer
     }
 
-    deinit { tickTimer?.cancel() }
+    deinit { tickTimer?.cancel(); bearingTimer?.cancel() }
+
+    // MARK: bearing map layer (docs/btrx/BEARING-LAYER-spec.md section 7)
+
+    /// Turns the layer on or off on ``queue``; `done(false)` when it could not start.
+    func setBearing(_ on: Bool, settings: BtrxBearingSettings, trace: Bool, steering: String?,
+                    onSnapshot: @escaping @Sendable (BtrxBearingSnapshot?) -> Void, done: @escaping @Sendable (Bool, String?) -> Void) {
+        queue.async { [self] in
+            if on {
+                bearing.steeringDesignator = steering
+                bearing.onSnapshot = onSnapshot
+                guard bearing.start(settings: settings, trace: trace, linkUp: model.snapshot().link.phase == .ready) else {
+                    done(false, bearing.lastError); return
+                }
+                BtrxBearingFeed.sink = bearing
+                if bearingTimer == nil {
+                    let t = DispatchSource.makeTimerSource(queue: queue)
+                    let ms = BtrxBearingLayer.tickMs
+                    t.schedule(deadline: .now() + .milliseconds(ms), repeating: .milliseconds(ms), leeway: .milliseconds(20))
+                    t.setEventHandler { [weak self] in
+                        guard let self else { return }
+                        self.bearing.tick { seq, t1 in self.model.sendTimePing(pingSeq: seq, t1Ms: t1) }
+                    }
+                    t.resume()
+                    bearingTimer = t
+                }
+                done(true, nil)
+            } else {
+                bearingTimer?.cancel()
+                bearingTimer = nil
+                BtrxBearingFeed.sink = nil
+                bearing.stop()
+                done(false, nil)
+            }
+        }
+    }
+
+    func setBearingFade(_ settings: BtrxBearingSettings) { queue.async { [self] in bearing.setFade(settings) } }
+    func setBearingSteering(_ id: String?) { bearing.steeringDesignator = id }
 
     // MARK: actions (any thread)
 
@@ -558,6 +601,7 @@ extension BtrxBleCentral: CBPeripheralDelegate {
 extension BtrxBleCentral: BtrxClientListener {
     func onConfigured(localNode: UInt32) {
         model.onConfigured(localNode: localNode)
+        bearing.onConnected()
         onReady()
     }
 
@@ -575,6 +619,12 @@ extension BtrxBleCentral: BtrxClientListener {
         model.onFrame(frame, meta: meta)
         // The overlay follows each STEER (about every second), not only the 1 s tick.
         if frame.type == BtrxProtocol.STEER && !meta.backlog { publish() }
+        if bearing.isRunning, frame.type == BtrxProtocol.STEER || frame.type == BtrxProtocol.TIME_PONG || frame.type == BtrxProtocol.HEALTH {
+            let origin = model.bearingOrigin(frame, meta: meta)
+            if origin != Model.bearingFromOther {
+                bearing.onFrame(frame, meta: meta, fromPairedPod: origin == Model.bearingFromPod, fromDeskPod: origin == Model.bearingFromDesk)
+            }
+        }
     }
 
     func onVersionRefused(fromNode: UInt32, version: Int) {}
@@ -604,6 +654,8 @@ public final class BtrxDeskPodCenter: ObservableObject {
         self.defaults = defaults
         bluetoothEnabled = defaults.bool(forKey: Self.keyEnabled)
         overlayShown = defaults.object(forKey: Self.keyOverlayShown) as? Bool ?? true
+        bearingSettings = (defaults.data(forKey: Self.keyBearingSettings).flatMap { try? JSONDecoder().decode(BtrxBearingSettings.self, from: $0) } ?? BtrxBearingSettings()).clamped()
+        bearingLagTrace = defaults.bool(forKey: Self.keyBearingLagTrace)
         let paired = defaults.data(forKey: Self.keyPaired).flatMap { try? JSONDecoder().decode(Model.PairedPod.self, from: $0) }
         let events = BtrxBleCentral.Events(
             snapshot: { [weak self] s in Task { @MainActor in self?.snapshot = s } },
@@ -677,6 +729,59 @@ public final class BtrxDeskPodCenter: ObservableObject {
     public func chooseSteeringStream(_ id: String?) {
         if steeringStreamID != id { OperationalBridgePacketLog.write?("INFO", "Btrx", "steering: overlay drone \(id ?? "cleared")") }
         steeringStreamID = id
+        central.setBearingSteering(id)
+    }
+
+    // MARK: bearing map layer (Developer Tools > BTRX; docs/btrx/BEARING-LAYER-spec.md)
+
+    private static let keyBearingSettings = "btrx.bearing.fade"
+    private static let keyBearingLagTrace = "btrx.bearing.lag_trace"
+
+    /// "Show bearing layer on map"; never on at launch.
+    @Published public private(set) var bearingOn = false
+    @Published public private(set) var bearingSettings = BtrxBearingSettings()
+    @Published public private(set) var bearingLagTrace = false
+    @Published public private(set) var bearingSnapshot: BtrxBearingSnapshot?
+    @Published public private(set) var bearingError: String?
+    /// The layer itself, for the map's tap query, mute and render notes (main-thread calls).
+    public var bearing: BtrxBearingLayer { central.bearing }
+
+    public func setBearingOn(_ on: Bool) {
+        bearingOn = on
+        central.setBearing(on, settings: bearingSettings, trace: bearingLagTrace, steering: steeringStreamID,
+            onSnapshot: { [weak self] snap in Task { @MainActor in self?.bearingSnapshot = snap } },
+            done: { [weak self] running, error in Task { @MainActor in
+                guard let self else { return }
+                if on && !running { self.bearingOn = false }
+                self.bearingError = error
+                if !running { self.bearingSnapshot = nil }
+            } })
+    }
+
+    /// Fade time and shape sliders: applied at once (next tick) and saved.
+    public func setBearingSettings(_ settings: BtrxBearingSettings) {
+        let s = settings.clamped()
+        bearingSettings = s
+        if let data = try? JSONEncoder().encode(s) { defaults.set(data, forKey: Self.keyBearingSettings) }
+        central.setBearingFade(s)
+    }
+
+    /// Lag trace (BBv1/BBLAG/BBRND lines in the session log); restarts a running layer.
+    public func setBearingLagTrace(_ on: Bool) {
+        bearingLagTrace = on
+        defaults.set(on, forKey: Self.keyBearingLagTrace)
+        if bearingOn { setBearingOn(false); setBearingOn(true) }
+    }
+
+    private var lastBearingPointID: UUID?
+
+    /// RID track point of the "Drone Pod is on this drone" aircraft (ContentView), with its AGL.
+    public func bearingRIDPoint(pointID: UUID, latitude: Double, longitude: Double, aglFeet: Double?, fixTime: Date) {
+        guard bearingOn, let stream = steeringStreamID, pointID != lastBearingPointID else { return }
+        lastBearingPointID = pointID
+        let layer = central.bearing!
+        layer.noteAgl(designator: stream, aglM: aglFeet.map { $0 * 0.3048 })
+        layer.onPosition(designator: stream, lat: latitude, lon: longitude, fixWallMs: Int64(fixTime.timeIntervalSince1970 * 1000))
     }
 
     /// Called about once a second with the live stream ids; the choice ends with its stream.

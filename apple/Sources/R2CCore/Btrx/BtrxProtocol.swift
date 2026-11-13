@@ -279,15 +279,35 @@ public enum BtrxProtocol {
         public let advPerSPort: Int, advPerSStbd: Int, loraRssi: Int, loraSnr: Int
         public let clockOffsetMs: Int32, cfgVersion: Int, filterVersion: Int, txPolicy: Int
         public let errorFlags: Int, scanning: Int
+        /// Offset 30, u32 LE (build 0x0104, btrx e116ac6): messages this board dropped from its
+        /// full app queue since it started (saturates at 0xFFFFFFFF). Nil for 30-byte HEALTH
+        /// from older firmware: unknown, never 0. Same as Android.
+        public var phoneLost: UInt32? = nil
     }
 
+    public static let healthLen = 30
+    public static let healthLostLen = 34
+
     public static func parseHealth(_ p: [UInt8]) throws -> Health {
-        try need(p, 30, "HEALTH")
+        try need(p, healthLen, "HEALTH")
         return Health(uptimeS: u32(p, 0), buildHash: u16(p, 4), role: Int(p[6]), source: Int(p[7]), confirmed: Int(p[8]),
                       flags: u16(p, 9), bLinkAgeS: u16(p, 11), imuOk: Int(p[13]), dieTempC: i8(p, 14),
                       advPerSPort: u16(p, 15), advPerSStbd: u16(p, 17), loraRssi: i8(p, 19), loraSnr: i8(p, 20),
                       clockOffsetMs: Int32(bitPattern: u32(p, 21)), cfgVersion: Int(p[25]), filterVersion: Int(p[26]),
-                      txPolicy: Int(p[27]), errorFlags: Int(p[28]), scanning: Int(p[29]))
+                      txPolicy: Int(p[27]), errorFlags: Int(p[28]), scanning: Int(p[29]),
+                      phoneLost: p.count >= healthLostLen ? u32(p, 30) : nil)
+    }
+
+    /// TIME_PING payload (protocol.py pack_time): ping_seq, 0, t1, t2 = 0, t3 = 0, u16 0.
+    public static func timePingPayload(pingSeq: Int, t1Ms: UInt32) -> [UInt8] {
+        var out = [UInt8](repeating: 0, count: 16)
+        out[0] = UInt8(truncatingIfNeeded: pingSeq)
+        putU32(&out, 2, t1Ms)
+        return out
+    }
+
+    public static func timePingFrame(seq: Int, podId: UInt32, pingSeq: Int, t1Ms: UInt32) -> [UInt8] {
+        encodeFrame(TIME_PING, seq: seq, podId: podId, payload: timePingPayload(pingSeq: pingSeq, t1Ms: t1Ms))
     }
 
     public static let detectHeaderLen = 11
@@ -349,10 +369,18 @@ public enum BtrxProtocol {
         /// Address as received, least significant byte first (as in DETECT).
         public let macLsbFirst: [UInt8]
         public let rollX2: Int, pitchX2: Int
+        /// Build 0x0103 multi-source records (byte 27 count 1-2); empty for 27-byte frames.
+        public let extras: [SteerExtra]
+        /// Byte 27 bits 4-7 (record format); 0 for 27-byte frames.
+        public let extFormat: Int
+        /// The extension was present but unreadable: only bytes 0-26 were used.
+        public let extTruncated: Bool
 
         public init(steerSeq: Int, flags: Int, windowEndMs: UInt32, ageMs: Int, srcId: Int, rssiPort: Int, rssiStbd: Int,
                     peakRssi: Int, hitsPort: Int, hitsStbd: Int, companyId: Int, devClass: Int, addrType: Int,
-                    macLsbFirst: [UInt8], rollX2: Int, pitchX2: Int) {
+                    macLsbFirst: [UInt8], rollX2: Int, pitchX2: Int,
+                    extras: [SteerExtra] = [], extFormat: Int = 0, extTruncated: Bool = false) {
+            self.extras = extras; self.extFormat = extFormat; self.extTruncated = extTruncated
             self.steerSeq = steerSeq; self.flags = flags; self.windowEndMs = windowEndMs; self.ageMs = ageMs; self.srcId = srcId
             self.rssiPort = rssiPort; self.rssiStbd = rssiStbd; self.peakRssi = peakRssi; self.hitsPort = hitsPort; self.hitsStbd = hitsStbd
             self.companyId = companyId; self.devClass = devClass; self.addrType = addrType; self.macLsbFirst = macLsbFirst
@@ -376,12 +404,46 @@ public enum BtrxProtocol {
         public var addressTail: String { String(macLsbFirst.reversed().map { String(format: "%02X", $0) }.joined().suffix(4)) }
     }
 
+    /// One extra STEER source record (build 0x0103, PROTOCOL.md "STEER" multi-source): 6 bytes
+    /// src_id u16, rssi_port i8, rssi_stbd i8, hits nibbles (port low, stbd high), rflags
+    /// (bit 0 new, bit 1 linked, bits 2-4 class). No address. Same as Android.
+    public struct SteerExtra: Sendable, Equatable {
+        public let srcId: Int, rssiPort: Int, rssiStbd: Int, hitsPort: Int, hitsStbd: Int
+        public let newSource: Bool, linked: Bool, devClass: Int
+    }
+
+    public static let steerExtraLen = 6
+    public static let steerMaxExtras = 2
+
     public static func parseSteer(_ p: [UInt8]) throws -> Steer {
         try need(p, steerLen, "STEER")
+        var extras: [SteerExtra] = []
+        var format = 0
+        var truncated = false
+        if p.count > steerLen {
+            let ext = Int(p[steerLen])
+            let count = ext & 0x0F
+            format = ext >> 4
+            // Same rules as btrx_bearing_parse_steer: extras only with a target and format >= 1.
+            if Int(p[1]) & STEER_F_TARGET != 0 && format != 0 && count > 0 {
+                let recLen = (p.count - (steerLen + 1)) / count
+                if count > steerMaxExtras || recLen < steerExtraLen {
+                    truncated = true
+                } else {
+                    extras = (0..<count).map { i in
+                        let o = steerLen + 1 + i * recLen
+                        let hits = Int(p[o + 4]), rf = Int(p[o + 5])
+                        return SteerExtra(srcId: u16(p, o), rssiPort: i8(p, o + 2), rssiStbd: i8(p, o + 3),
+                                          hitsPort: hits & 0x0F, hitsStbd: hits >> 4,
+                                          newSource: rf & 0x01 != 0, linked: rf & 0x02 != 0, devClass: (rf >> 2) & 0x07)
+                    }
+                }
+            }
+        }
         return Steer(steerSeq: Int(p[0]), flags: Int(p[1]), windowEndMs: u32(p, 2), ageMs: u16(p, 6), srcId: u16(p, 8),
                      rssiPort: i8(p, 10), rssiStbd: i8(p, 11), peakRssi: i8(p, 12), hitsPort: Int(p[13]), hitsStbd: Int(p[14]),
                      companyId: u16(p, 15), devClass: Int(p[17]), addrType: Int(p[18]), macLsbFirst: Array(p[19..<25]),
-                     rollX2: i8(p, 25), pitchX2: i8(p, 26))
+                     rollX2: i8(p, 25), pitchX2: i8(p, 26), extras: extras, extFormat: format, extTruncated: truncated)
     }
 
     /// STEER encoder (protocol.py pack_steer), for tests and the bench simulator.
