@@ -234,8 +234,8 @@ path [A], per source), and so is the cost. Each cell gets a better likelihood:
   distant sources it's roughly Δ − S·roll (§41.2 switch stays off). Readings
   are gated instead (below).
 - **Decay:** superseded by `BEARING-LAYER-spec.md` r3 section 2.4: weight
-  max(0, 1 − (age/N)^p), N = 10 min and p = 1 (linear) by default, both user
-  settings.
+  max(0, 1 − (age/N)^p), N = 10 min (1–30) and p = 1 (linear, slider to 4)
+  by default, both user settings.
 
 **Gating in the app**, since bit 3 is weak:
 
@@ -366,7 +366,9 @@ their wedges stack up and darken on the grid like any others.
   - faint per-reading wedges, accumulated and fading over the fade time
     (10 min, linear by default; no separate bearing lines);
   - the latest report's ray as a stroke-only outline on top;
-  - a tap on the shading opens a mute/unmute panel (r3 spec section 5.2).
+  - a single tap on the shading opens a show/hide panel (r3 spec section
+    5.2): drone markers and waypoints win over it, it wins over assignment
+    shapes, double taps still zoom; no steering hints or recommendations.
 - No smoothing and nothing sent to CalTopo.
 - The stream overlay is unchanged.
 - Milestone 1 rendering (accumulated wedges, estimate and ellipse) is

@@ -185,18 +185,18 @@ Ken:
 
 `w(a) = max(0, 1 − (a/N)^p)`
 
-- **N, total fade time:** user setting, default **10 min**, range 2–30 min
-  **[A]**. At age N a report is gone.
+- **N, total fade time:** user setting, default **10 min**, range **1–30 min**
+  (Ken: "1-30 minutes should be plenty"). At age N a report is gone.
 - **p, fade shape:** user setting, default **p = 1 (linear)**: 50% at N/2,
   as Ken asked. p > 1 holds strength longer, then fades faster toward the end
   (Ken's "accelerates towards the end"). It is still exactly 0 at N.
 - **With p > 1 the 50% point moves later**, to a₅₀ = N · 2^(−1/p):
 
-| Preset | p | Weight at N/2 | 50% at (N = 10 min) | 90% still at |
+| Slider point | p | Weight at N/2 | 50% at (N = 10 min) | 90% still at |
 | --- | --- | --- | --- | --- |
-| Linear (default) | 1 | 50% | 5:00 | 1:00 |
-| Hold | 2 | 75% | 7:04 | 3:10 |
-| Strong hold | 4 | 94% | 8:25 | 5:37 |
+| Linear (left end, default) | 1 | 50% | 5:00 | 1:00 |
+| Middle | 2 | 75% | 7:04 | 3:10 |
+| Accelerating (right end) | 4 | 94% | 8:25 | 5:37 |
 
   An exponential-family curve with the same end point,
   w = 1 − (e^(k·a/N) − 1)/(e^k − 1) (k → 0 is linear), would work equally;
@@ -214,16 +214,27 @@ Ken:
 the shape is applied when the layer is drawn, not when reports are added,
 any w(a) works, and N and p can change at any time.
 
-- **Buckets:** each source's reports go into the bucket for their report time,
-  one bucket per `bucket_s` = 60 s **[A]** of absolute time. A bucket holds the
-  integer sums of E′ and S for its reports, plus its far scalar and the mean
-  report time t̄_b of its entries.
+- **Buckets:** each source's reports go into the bucket for their report time.
+  A bucket holds the integer sums of E′ and S for its reports, plus its far
+  scalar, its start and end time and the mean report time t̄_b of its
+  entries.
+- **Bucket width scales with N:** `bucket_s = clamp(N / 10, 6 s, 60 s)`
+  **[A]**. A fixed 60 s width does **not** work at N = 1 min: the whole fade
+  would be one bucket, so a report would sit at one weight and then vanish.
+  With N/10, every N from 1 to 10 min gets 10 buckets (6 s wide at 1 min,
+  60 s at 10 min). Above 10 min the width stays at 60 s (up to 30 buckets at
+  N = 30 min), because a wider bucket could overflow the uint16 sums. When N
+  changes, existing buckets keep their own width and new buckets use the new
+  one; each bucket carries its own times, so nothing is re-bucketed. The
+  per-source bucket table holds 64 buckets **[A]** (30 at N = 30 min plus
+  room for a change from a short N); if it is full, the oldest bucket expires
+  early and is counted.
 - **Tiles:** a bucket stores only the 16 × 16-cell tiles its footprints
   touched, taken from one **tile pool** allocated at create (default 4,096
   tiles × 1 KB = 4 MB **[A]**). A tile holds 256 cells × (uint16 E′ in units of
   2⁻⁸ nat, uint16 S in units of 2⁻¹⁰ of a full report), with saturating adds.
-  One minute holds at most about 60 entries per source, so E′ stays under
-  about 23,000 and S under about 61,000, both within uint16. Integer sums are
+  A bucket of at most 60 s holds at most about 60 entries per source, so E′
+  stays under about 23,000 and S under about 61,000, both within uint16. Integer sums are
   order-independent and exact.
 - **Composite (publish):** per source, the bucket weight
   w_b = w(now − t̄_b) is evaluated once, then the view cells sum w_b × the
@@ -233,12 +244,12 @@ any w(a) works, and N and p can change at any time.
 - **Expiry:** a bucket whose weight has reached 0 (t̄_b ≤ now − N) is dropped
   whole and its tiles go back to the pool. Nothing is recomputed or
   subtracted.
-- **Timing accuracy:** reports in one bucket differ in age by at most 60 s,
-  and the bucket is weighted at its mean time. So a single report is weighted
-  as if it were up to about ±30 s (`bucket_s`/2) older or younger: with the
-  linear default, 45–55% instead of 50% at N/2, and it leaves within about
-  ±30 s of N.
-  A smaller `bucket_s` tightens this at the cost of more tiles.
+- **Timing accuracy:** reports in one bucket differ in age by at most
+  `bucket_s`, and the bucket is weighted at its mean time. So a single report
+  is weighted as if up to `bucket_s`/2 older or younger: ±N/20 for N up to
+  10 min (±3 s at N = 1 min, ±30 s at 10 min), and ±30 s above that. With the
+  linear default that is 45–55% instead of 50% at N/2 for N ≤ 10 min, and a
+  report leaves within ±`bucket_s`/2 of N.
 - **Pool full:** the oldest bucket (across sources) is expired early and
   counted in the stats (`buckets_expired_early`), and the stats show pool
   use, so pool sizing can be checked in the field. Nothing is allocated.
@@ -259,11 +270,13 @@ the next tick, which republishes at once.
 **Settings UI (identical on both platforms).** In the BTRX settings in
 Developer Tools:
 
-- **"Fade time"**: minutes, 2–30, default 10.
-- **"Fade shape"**: three presets, **Linear** (default), **Hold**, **Strong
-  hold**, with a one-line hint under the control, for example "half strength
-  at 7:04". A continuous slider over p = 1–4 is a later option; the library
-  takes any p ≥ 1.
+- **"Fade time"**: minutes, 1–30, default 10.
+- **"Fade shape"**: a **slider** over p = 1 to 4, default 1, labelled
+  **Linear** at the left end and **Accelerating** at the right (Ken: "a slider
+  would be fine"). Under it, a live readout of the half-strength point for the
+  current fade time, for example "half strength at 7:04" (N · 2^(−1/p)),
+  updated as the slider or the fade time moves. The table
+  above lists reference points on the slider.
 - Both are saved with the app settings and passed in at layer start and on
   every change.
 
@@ -280,7 +293,11 @@ no end point is not what Ken described.
   touches about 25–36 tiles per source per minute; flying 10 m/s, about 50.
   With several sources heard at once and N = 10 min, typical use is under
   half the pool. **For N = 20–30 min** the pool should be doubled to
-  8,192 tiles (8 MB); that is a create-time setting, not a runtime one. Plus
+  8,192 tiles (8 MB); that is a create-time setting, not a runtime one.
+  **Short N:** at N = 1 min there are still 10 buckets, but each is 6 s wide,
+  so a hover's bucket touches the same footprint (about 25–36 tiles) for a
+  tenth of the time: tile use is about the same as N = 10 min for hovering
+  and lower for flying, well inside the pool. Plus
   the view scratch grids (about 300 KB) and a small 30 s ring of recent
   entries for the diversity discount (about 10 KB).
 - **CPU, add:** one pass per source entry over its footprint (about 5,000
@@ -691,20 +708,59 @@ the best way to go. When running a BTRX scanner overlay on the map, that
 functionality should have right of first refusal on any single/double taps
 (aside from the basic pan/pinch/zoom)."
 
-**Tap routing (both platforms).** While the BTRX overlay is on:
+Ken (9:41 AM PT) narrowed this: "Double-tap shouldn't be intercepted
+yet"; "Drone or waypoints should win. If a user is interested in a nearby
+ray, they are going to tap on it instead of the drone or waypoint. I was
+mostly concerned about selecting an area/line assignment."
 
-1. A **single tap or double tap** on the map goes to the overlay **first**.
-2. The overlay calls `btrx_bearing_snapshot_sources_at(snapshot, lat, lon,
-   radius_m)` on the current snapshot. The radius comes from the zoom: a 24 pt
-   **[A]** touch radius converted to metres at the current zoom, at least one
-   cell.
-3. If it finds no source with shading there (α ≥ 0.02 in its raster, muted
-   sources included), the overlay **declines**, and the map's normal tap
-   handling runs (marker taps, double-tap zoom, and so on).
-4. Otherwise the overlay **consumes** the tap and opens the panel. A double
-   tap opens the same panel in v1 (open question 1).
-5. **Pan, pinch and zoom gestures are untouched**: they never reach the
-   overlay.
+**Tap routing (both platforms).** While the BTRX overlay is on, only a
+**confirmed single tap** is routed; the priority order is:
+
+1. **Point map items win first:** drone (aircraft) markers and waypoints.
+   **Clue markers are treated like waypoints [A]** (Ken named drones and
+   waypoints only).
+2. **Then the BTRX overlay:** it calls
+   `btrx_bearing_snapshot_sources_at(snapshot, lat, lon, radius_m)` on the
+   current snapshot. The radius comes from the zoom: a 24 pt **[A]** touch
+   radius converted to metres, at least one cell. If a source has shading
+   there (α ≥ 0.02 in its raster, muted sources included), the overlay
+   **consumes** the tap and opens the panel.
+3. **Then area/line assignment shapes and everything else** (assignment
+   polygons and route lines, other overlays, the map's own single-tap
+   handling). The BTRX overlay beats assignment selection: a tap on shading
+   inside an assignment opens the BTRX panel, not the assignment.
+
+- **Double taps are not intercepted:** they go straight to the map's normal
+  handling (zoom). The single-tap path waits for the double-tap timeout
+  (Android `onSingleTapConfirmed`; on the iPad a passive 2-tap recognizer the
+  BTRX path waits on), so the first tap of a double tap never opens the
+  panel.
+- **Pan, pinch and zoom gestures are untouched**: they never reach the
+  overlay.
+
+**How each platform enforces the order.**
+
+- **Android (osmdroid, `SplitMapPane` in `MapPane.kt`):** osmdroid offers a
+  single tap to overlays from the top of the overlay list down, and stops at
+  the first that returns `true`. The BTRX tap overlay
+  (`onSingleTapConfirmed` only; `onDoubleTap` not overridden, returns
+  `false`) is inserted **below** the `Marker` overlays (drone, waypoint and
+  clue markers) and **above** the assignment `Polygon`/`Polyline` overlays
+  and the existing `MapEventsOverlay` (`singleTapConfirmedHelper`, which
+  returns `false`). As a guard against list-order mistakes, the BTRX overlay
+  also declines when any visible `Marker` passes `hitTest` at the tap point.
+  Where the managed overlays are added (and in what order) is to be checked
+  when coding.
+- **iPad (`RIDTrackMapView.swift`, `OperationalMKMapView` coordinator):**
+  the existing `handleArtifactTap` already hit-tests in this order: visible
+  annotation views first (aircraft via `point(inside:)`, other annotations
+  with an 8 pt margin) and returns if one is hit, then the `StyledPolygon` /
+  `StyledPolyline` assignment overlays. The BTRX check is inserted **between
+  those two steps**: after the annotation check, before the assignment
+  shapes. When it consumes the tap, the assignment hit test is skipped. The
+  BTRX branch acts only once a passive 2-tap recognizer
+  (`cancelsTouchesInView = false`) has failed, so double taps reach MapKit's
+  zoom unchanged.
 
 `sources_at` returns up to 8 sources ordered by their contribution at the
 spot (the sum of α over the cells in the radius, highest first). It is a pure
@@ -726,6 +782,12 @@ thousand cells), and runs on the UI thread in microseconds.
   about 200 ms) and leaves the panel open. Nothing is deleted: muted sources
   keep accumulating and still fade out at N (10 min by default).
 - **Dismissing** the panel (tap outside it, or "Done") only hides the panel.
+- **Rows only show or hide** a source's shading, with its latest-ray outline
+  and estimate (Ken: "panel rows just enable/disable shading"). The panel has
+  **no steering actions**: no pod steering mute (STEER_MUTE) and no steering
+  recommendations. The map layer gives no pilot hints at all (Ken: "I don't
+  think the map-centric ray representations require any steering
+  recommendations at all"); the r1 pilot-hints section stays removed.
 - A muted source can be found again by tapping where it was (its hidden
   shading still answers `sources_at`) or from the source list in the BTRX
   pane in Developer Tools, which shows the same rows for every source.
@@ -863,9 +925,10 @@ typedef struct {
     float info_ref_db;               /* 2 */
     float diversity_m, diversity_deg;/* 5, 5 */
     int32_t diversity_window_ms, diversity_cap; /* 30000, 9 */
-    float fade_total_s;              /* N = 600 (user setting 120..1800) */
-    float fade_shape_p;              /* p = 1 linear; weight = max(0, 1 - (age/N)^p) */
-    float bucket_s;                  /* 60: age-bucket width */
+    float fade_total_s;              /* N = 600 (user setting 60..1800) */
+    float fade_shape_p;              /* p in [1, 4], 1 = linear; weight = max(0, 1 - (age/N)^p) */
+    float bucket_min_s, bucket_max_s;/* 6, 60: bucket width = clamp(N/10, min, max) */
+    int32_t buckets_per_source;      /* 64 */
     int32_t tile_pool_tiles;         /* 4096 x 1 KB (16x16 cells, uint16 E' and S) */
     float alpha_max, support_sat;    /* 0.7, 8: alpha = alpha_max * min(1, S/support_sat) */
     float alpha_visible;             /* 0.02: transparent below; sources_at threshold */
@@ -984,7 +1047,7 @@ btrx_bearing_status_t btrx_bearing_set_source_class(btrx_bearing_t *h, uint64_t 
         btrx_bearing_class_t cls);
 
 /* Fade settings (section 2.4): any thread, applied at the next tick.
- * total_s in [120, 1800], shape_p >= 1. Shortening drops older buckets. */
+ * total_s in [60, 1800], shape_p in [1, 4]. Shortening drops older buckets. */
 btrx_bearing_status_t btrx_bearing_set_fade(btrx_bearing_t *h, float total_s, float shape_p);
 
 /* Work */
@@ -1136,12 +1199,12 @@ the switch, **stamp and push** inputs, **drive tick** on its BTRX worker,
 | Native binding | `app/src/main/cpp/btrx_bearing_jni.c` (JNI, `jlong` handle, flat primitive arguments; snapshot copied into a direct `ByteBuffer` and a small `IntArray`/`DoubleArray` for metadata) | none: SwiftPM C target `CBtrxBearing`, `import CBtrxBearing` in Swift |
 | Wrapper class | `btrx/BtrxBearingNative.kt` (`external fun`s, `System.loadLibrary("btrx_bearing")` in `runCatching` as in `MappingSurfaceNative`) and `btrx/BtrxBearingLayer.kt` | `R2CCore/Btrx/BtrxBearingLayer.swift` (owns the `OpaquePointer`, `deinit` destroys) |
 | Switch | Settings > Developer Tools, off by default, never at launch | same |
-| Fade settings (section 2.4) | BTRX settings in Developer Tools: "Fade time" (2–30 min, default 10) and "Fade shape" (Linear / Hold / Strong hold, with the "half strength at m:ss" hint), saved in the app config; `set_fade` on change | same controls, labels and defaults, saved in the iPad settings; `set_fade` on change |
+| Fade settings (section 2.4) | BTRX settings in Developer Tools: "Fade time" (1–30 min, default 10) and a "Fade shape" slider (p 1–4, Linear to Accelerating, live "half strength at m:ss" readout), saved in the app config; `set_fade` on change | same controls, labels and defaults, saved in the iPad settings; `set_fade` on change |
 | STEER, PONG, HEALTH | `BtrxClient.Listener.onFrame` (stamps T2 at the BLE/USB read) → raw payload to `btrx_bearing_parse_steer` (the shared C parser, section 4.1) → `push_report`; the existing `BtrxProtocol.parseSteer` stays for the stream overlay; PONG → `push_time_sync`; HEALTH → `push_pod_uptime`. TIME_PING sent every 30 s by the same client (new: `BtrxClient` can send the frame, but nothing sends it periodically today) | `BtrxClient` listener `onFrame` → same fields |
 | DJI yaw | the SEI path that fills `DjiCameraOrientation` (from `ffmpeg_bridge.c`, `native/R2CDJICameraTelemetry.h`) → `push_pose(YAW)` with `R2CDJIAircraftYawTrueNorthDegrees` | `R2CFFmpegSessionCopyLatestDJICameraTelemetry` (`R2CFFmpegMobile.c`, same header) → `push_pose(YAW)` |
 | Position, AGL | RID track points + `DroneAltitudeCoordinator` → `push_pose(POSITION, AGL)` | RID track + the iPad altitude source → same |
 | Own aircraft (ignore) | BTRX pane action → `set_source_flags(IGNORED)` | same |
-| Map taps (section 5.2) | an osmdroid `Overlay` added **last** (on top) whose `onSingleTapConfirmed` / `onDoubleTap` call `sources_at`; return `true` to consume and open the panel, `false` to decline so osmdroid's normal handling (marker taps, double-tap zoom) runs. Scroll, fling and pinch are not overridden | a `UITapGestureRecognizer` pair (1 and 2 taps) on the `MKMapView`, whose delegate `gestureRecognizer(_:shouldReceive:)` runs `sources_at` at the touch point; declining returns `false` so MapKit's own taps run. When accepted, MapKit's double-tap zoom is made to wait for ours (`shouldBeRequiredToFailBy`). Pan and pinch recognizers untouched |
+| Map taps (section 5.2) | confirmed **single taps only**: an osmdroid `Overlay` overriding `onSingleTapConfirmed` only, placed below the `Marker` overlays and above the assignment `Polygon`/`Polyline` overlays and the `MapEventsOverlay`; it declines (`false`) if a visible `Marker` is hit or no source has shading there, else consumes (`true`) and opens the panel. Double taps, scroll, fling and pinch untouched | the BTRX check inside the existing `handleArtifactTap`, after the annotation hit test and before the `StyledPolygon`/`StyledPolyline` assignment hit test; acts only after a passive 2-tap recognizer fails. Double taps, pan and pinch untouched |
 | Mute panel (section 5.2) | Compose card anchored at the tap point: swatch, checkbox, short ID, class, last heard, report count; "Mute all" / "Unmute all"; "Done" | SwiftUI card (popover style) with the same rows, order, labels and buttons |
 | Tick | BTRX single-thread executor, background priority, every 200 ms | serial `DispatchQueue`, `.utility`, every 200 ms |
 | Overlay | `SplitMapPane` (osmdroid): `Bitmap.copyPixelsFromBuffer` from the RGBA buffer, drawn as an osmdroid `GroundOverlay` on the snapshot bounds; ellipses as osmdroid `Polygon`s; the latest-ray outline (section 5.1) as stroke-only `Polyline`s with an alpha animation; labels as markers; muted sources skipped | `RIDTrackMapView` (`OperationalMKMapView`): `MKOverlay` with the snapshot bounds and an `MKOverlayRenderer` drawing a `CGImage` from the RGBA bytes; ellipses as `MKPolygon`; the latest-ray outline as stroke-only `MKPolyline` with an alpha animation; labels as annotations; muted sources skipped |
@@ -1223,7 +1286,9 @@ and in `apple/release-check.sh`:
    diversity discount for repeated geometry.
    **Fade:** for p = 1, 2 and 4 a single report's weight follows
    1 − (a/N)^p within the bucket tolerance (age ± `bucket_s`/2) and is
-   exactly 0 after N + `bucket_s`; when every bucket has expired the pool is full again (no
+   exactly 0 after N + `bucket_s`, at N = 1, 10 and 30 min (bucket width 6,
+   60 and 60 s); a change from N = 30 to 1 min and back keeps each bucket's
+   own width; when every bucket has expired the pool is full again (no
    leaked tiles); `set_fade` shortening drops old buckets at the next tick,
    lengthening keeps held ones, changing p drops nothing; pool exhaustion
    expires the oldest bucket early and counts it; tile sums are identical
@@ -1321,9 +1386,12 @@ The same `vectors/` run in all three places with one tolerance
   tests in `app/src/test` for the Kotlin feed and frame mapping with a fake
   native layer. `docs/PLATFORM_PARITY_LEDGER.md` gets an entry when coded.
 - **Tap routing (UI tests, both platforms):** with the overlay on, a single
-  tap on shading opens the panel and does not select the map item beneath; a
-  tap off shading reaches the map as before; a double tap off shading still
-  zooms; pan and pinch behave as with the overlay off. The panel's rows,
+  tap on a drone marker, waypoint or clue marker over shading selects that
+  item, not the panel; a single tap on shading inside an assignment polygon
+  or on a route line opens the panel and does not select the assignment; a
+  single tap off shading selects the assignment as before; a double tap
+  anywhere (on or off shading) zooms and never opens the panel; pan and pinch
+  behave as with the overlay off. The panel's rows,
   order and labels match between the two platforms for the same vector.
 
 ## 10. Performance and priority
@@ -1367,20 +1435,28 @@ Answered by Ken (November 13, morning), r2 questions 1–5:
    frame (btrx `684cfa5`, build 0x0103, not flashed); section 4.1.
 5. **Latest ray:** yes, as a cheap outline over the shading (section 5.1).
 
+Answered by Ken (9:41 AM PT), the four r3 questions:
+
+1. **Double tap:** not intercepted; it zooms the map (section 5.2).
+2. **Map items:** drone markers and waypoints win over the overlay, and the
+   overlay wins over area/line assignment selection (section 5.2). Clue
+   markers are treated like waypoints **[A]**.
+3. **Panel:** rows only show or hide shading; no steering mute or steering
+   recommendations anywhere in the map layer.
+4. **Fade controls:** fade time 1–30 min; fade shape as a slider (section
+   2.4).
+
 New, for Ken:
 
-1. **Double tap:** v1 opens the same panel as a single tap. Should a double
-   tap do something else (for example mute the top source at once)?
-2. **Tap on shading over a map item** (drone, clue, waypoint): Ken's rule
-   gives the overlay first refusal, so it wins whenever shading is under the
-   finger. OK, or should map items win?
-3. **Pod steering mute in the panel:** add a separate "Stop steering to it"
-   action (STEER_MUTE) per row, or keep the panel to hide/show only?
-4. **Fade shape control:** three presets (Linear, Hold, Strong hold), or a
-   continuous slider? And is 2–30 min the right range for the total fade
-   time?
+- **Clue markers:** OK to treat them like waypoints (they win over the
+  overlay)?
 
-New, for BT RX:
+For BT RX. **BT RX has recommended three of these to Ken, not yet
+approved:** `src_id` in DETECT records (+2 bytes per record), the Desk Pod
+dropping STEER frames older than about 15 s from its queue, and a Desk Pod
+receive timestamp later. Until Ken decides, the spec keeps the
+"unresolved" provisional sources (section 4.1) and the backlog `history`
+handling (section 3.4).
 
 5. **Desk Pod receive stamp** (r3 option D, earlier judged not worth it):
    without it, the pod→arrival stage can't be split into LoRa, Desk Pod and

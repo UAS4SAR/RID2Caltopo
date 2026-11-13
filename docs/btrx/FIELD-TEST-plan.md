@@ -188,7 +188,7 @@ environments before changing anything else.
   layer's first valid estimate and ellipse, and the miss distance then.
   Ken: 10 min (the default fade time) should be plenty; if a technique needs
   longer, the design needs revisiting (`BEARING-LAYER-spec.md` r3
-  section 2.4). Record the fade time and shape in use.
+  section 2.4). Record the fade time (1–30 min) and shape (slider p) in use.
 
 ## 5. Logging (enable before every flight)
 
