@@ -31,6 +31,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.DialogProperties
@@ -82,6 +83,7 @@ fun DeskPodScreen(onDismiss: () -> Unit) {
                     TextButton(onClick = onDismiss) { Text("Dismiss") }
                 }
                 Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    LearnMoreLink()
                     SectionTitle("Connection")
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(BtrxDeskPodText.BLUETOOTH_TOGGLE, Modifier.weight(1f))
@@ -274,4 +276,22 @@ private fun PairingSection(s: org.ncssar.rid2caltopo.btrx.BtrxDeskPodModel.Snaps
         }
     }
     Spacer(Modifier.fillMaxWidth().height(8.dp))
+}
+
+/** Menu > BTRX top link: the BTRX page in the system browser (matches the iPad's Link). */
+@Composable
+private fun LearnMoreLink() {
+    val context = LocalContext.current
+    TextButton(
+        onClick = {
+            val intent = android.content.Intent(
+                android.content.Intent.ACTION_VIEW,
+                android.net.Uri.parse(BtrxDeskPodText.LEARN_MORE_URL),
+            ).addCategory(android.content.Intent.CATEGORY_BROWSABLE)
+                .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+            runCatching { context.startActivity(intent) }
+                .onFailure { android.util.Log.w("DeskPodScreen", "No browser for ${BtrxDeskPodText.LEARN_MORE_URL}: $it") }
+        },
+        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 0.dp),
+    ) { Text(BtrxDeskPodText.LEARN_MORE) }
 }

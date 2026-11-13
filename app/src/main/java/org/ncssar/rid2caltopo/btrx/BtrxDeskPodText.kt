@@ -13,6 +13,9 @@ import org.ncssar.rid2caltopo.btrx.BtrxProtocol as P
 object BtrxDeskPodText {
     /** Main menu item and screen title (the btrx receiver system; the pods keep their names inside). */
     const val TITLE = "BTRX"
+    /** Top of Menu > BTRX: opens the BTRX page in the system browser. */
+    const val LEARN_MORE = "Learn more about BTRX"
+    const val LEARN_MORE_URL = "https://rid2caltopo.com/btrx"
     const val USB_PAUSED = "Desk Pod is attached by USB; Bluetooth paused"
     const val BLUETOOTH_TOGGLE = "Connect over Bluetooth"
     const val POD_STALE_HINT = "Not asking any more: nod the drone pod twice again."

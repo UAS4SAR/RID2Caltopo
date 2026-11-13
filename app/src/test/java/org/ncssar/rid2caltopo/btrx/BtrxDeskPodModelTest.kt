@@ -741,4 +741,16 @@ class BtrxDeskPodModelTest {
         model.setSteeringRollCorrection(true)
         assertTrue(model.snapshot().steeringRollCorrection)
     }
+
+    @Test
+    fun learnMoreLinkOpensTheBtrxPageAtTheTopOfThePane() {
+        assertEquals("Learn more about BTRX", BtrxDeskPodText.LEARN_MORE)
+        assertEquals("https://rid2caltopo.com/btrx", BtrxDeskPodText.LEARN_MORE_URL)
+        val wd = java.io.File(requireNotNull(System.getProperty("user.dir")))
+        val rel = "app/src/main/java/org/ncssar/rid2caltopo/ui/DeskPodScreen.kt"
+        val src = listOf(java.io.File(wd, rel), java.io.File(wd.parentFile ?: wd, rel)).first { it.isFile }.readText()
+        val link = src.indexOf("LearnMoreLink()")
+        assertTrue(link in 0 until src.indexOf("SectionTitle(\"Connection\")"))
+        assertTrue(src.contains("Intent.ACTION_VIEW"))
+    }
 }
