@@ -126,3 +126,25 @@ add_library(aol_prepare SHARED aol_jni.cpp "${AOL_SOURCE_ROOT}/aol_grid.cpp" ${A
 target_include_directories(aol_prepare PRIVATE "${AOL_SOURCE_ROOT}/include" "${AOL_SOURCE_ROOT}/geographiclib/include")
 target_compile_features(aol_prepare PRIVATE cxx_std_17)
 target_compile_definitions(aol_prepare PRIVATE LAZPERF_VENDORED)
+
+# BTRX bearing layer (docs/btrx/BEARING-LAYER-spec.md section 8). Shared C11 library from
+# the SwiftPM target, as for CAOL; its own .so, no FFmpeg linkage.
+set(BTRX_BEARING_ROOT "${CMAKE_SOURCE_DIR}/../../../../apple/Sources/CBtrxBearing")
+add_library(btrx_bearing SHARED
+    btrx_bearing_jni.c
+    "${BTRX_BEARING_ROOT}/btrx_bearing.c"
+    "${BTRX_BEARING_ROOT}/bb_clock.c"
+    "${BTRX_BEARING_ROOT}/bb_diversity.c"
+    "${BTRX_BEARING_ROOT}/bb_estimate.c"
+    "${BTRX_BEARING_ROOT}/bb_grid.c"
+    "${BTRX_BEARING_ROOT}/bb_lag.c"
+    "${BTRX_BEARING_ROOT}/bb_pattern.c"
+    "${BTRX_BEARING_ROOT}/bb_pose.c"
+    "${BTRX_BEARING_ROOT}/bb_render.c"
+    "${BTRX_BEARING_ROOT}/bb_siphash.c"
+    "${BTRX_BEARING_ROOT}/bb_steer.c"
+    "${BTRX_BEARING_ROOT}/bb_tiles.c"
+)
+target_include_directories(btrx_bearing PRIVATE "${BTRX_BEARING_ROOT}/include")
+target_compile_options(btrx_bearing PRIVATE -std=c11 -O2 -ffp-contract=off)
+target_link_libraries(btrx_bearing PRIVATE m)

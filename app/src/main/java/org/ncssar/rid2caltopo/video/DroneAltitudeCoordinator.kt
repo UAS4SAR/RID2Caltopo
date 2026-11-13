@@ -797,6 +797,8 @@ internal class DroneAltitudeCoordinator(
             atoFt = atoFt,
             rangeFt = rangeFt,
         )
+        // BTRX bearing layer (Developer Tools): height above ground for its pose ring.
+        org.ncssar.rid2caltopo.btrx.BtrxBearingFeed.sink?.noteAgl(designator, aglFt?.takeIf { !aglStale }?.times(0.3048))
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────────────────────

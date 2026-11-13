@@ -92,6 +92,10 @@ object StreamCameraTelemetryRegistry {
     fun update(designator: String, telemetry: FfmpegTelemetry, nowMs: Long = System.currentTimeMillis()) {
         if (telemetry.sourceTag != "dji-sei-245") return
         observeFramePts(designator, telemetry.sourceTimestampUs, nowMs)
+        // BTRX bearing layer (Developer Tools): aircraft yaw, true north, stamped at decode.
+        org.ncssar.rid2caltopo.btrx.BtrxBearingFeed.sink?.let { layer ->
+            DjiCameraOrientation.aircraftYawTrueNorthDeg(telemetry.cameraYawDeg)?.let { layer.onYaw(designator, it, nowMs) }
+        }
         val rawTilt = telemetry.gimbalPitchDeg?.takeIf { it.isFinite() } ?: return
         val tilt = DjiCameraOrientation.calibratedTiltDeg(rawTilt) ?: return
         synchronized(lock) { tiltSamples[designator.trim().uppercase()] = tilt to nowMs }

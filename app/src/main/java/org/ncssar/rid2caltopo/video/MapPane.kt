@@ -965,6 +965,39 @@ internal fun SplitMapPane(
     var localDeviceRefreshToken by remember { mutableIntStateOf(0) }
     var positionFreshnessRefreshToken by remember { mutableIntStateOf(0) }
     val managedOverlays = remember { mutableListOf<Overlay>() }
+    // BTRX bearing layer (Developer Tools > BTRX; docs/btrx/BEARING-LAYER-spec.md section 5).
+    val btrxBearingOn by org.ncssar.rid2caltopo.btrx.BtrxManager.bearingOn.collectAsState()
+    var btrxPanel by remember { mutableStateOf<Pair<List<Long>, androidx.compose.ui.unit.IntOffset>?>(null) }
+    val btrxOverlay = remember {
+        BtrxBearingMapOverlay(
+            density = context.resources.displayMetrics.density,
+            sourcesAt = { lat, lon, r -> org.ncssar.rid2caltopo.btrx.BtrxManager.bearing.sourcesAt(lat, lon, r) },
+            onSourcesTapped = { keys, x, y -> btrxPanel = keys to androidx.compose.ui.unit.IntOffset(x.toInt(), y.toInt()) },
+        )
+    }
+    LaunchedEffect(btrxBearingOn) {
+        if (!btrxBearingOn) {
+            btrxOverlay.show(null, null)
+            btrxPanel = null
+            currentMapView?.invalidate()
+            return@LaunchedEffect
+        }
+        launch {
+            // Snapshots change at most once a second (sooner after a mute); the bitmap is built off the main thread.
+            org.ncssar.rid2caltopo.btrx.BtrxManager.bearing.snapshot.collect { snap ->
+                val bmp = snap?.let { withContext(Dispatchers.Default) { BtrxBearingMapOverlay.bitmapOf(it) } }
+                btrxOverlay.show(snap, bmp)
+                val map = currentMapView
+                map?.invalidate()
+                if (snap != null) map?.post { org.ncssar.rid2caltopo.btrx.BtrxManager.bearing.noteRendered(snap.seq) }
+            }
+        }
+        // Step the latest-ray fade (5 s) a few times a second while one is visible.
+        while (true) {
+            delay(250)
+            if (btrxOverlay.hasFadingRay(android.os.SystemClock.elapsedRealtimeNanos() / 1000L)) currentMapView?.invalidate()
+        }
+    }
     var preparedFlightLines by remember { mutableStateOf(emptyMap<String, PreparedTrackRender<Polyline>>()) }
     var preparedRecentLines by remember { mutableStateOf(emptyMap<String, PreparedTrackRender<Polyline>>()) }
     val markerInfoWindow = remember { MapOwnedReusable<LocalMarkerInfoWindow>() }
@@ -3735,6 +3768,7 @@ internal fun SplitMapPane(
                 val tapOverlay = MapEventsOverlay(
                     object : MapEventsReceiver {
                         override fun singleTapConfirmedHelper(p: GeoPoint?): Boolean {
+                            btrxPanel = null
                             InfoWindow.closeAllInfoWindowsOn(mapView)
                             if (!isInsetMode) {
                                 onSingleTapFocus?.invoke()
@@ -3990,6 +4024,14 @@ internal fun SplitMapPane(
                     }
                     mapView.overlays.add(line)
                     managedOverlays.add(line)
+                }
+
+                // BTRX bearing layer: above the assignment polygons/lines and the tap overlay,
+                // below every Marker (drone, waypoint, clue), so markers win single taps.
+                if (btrxBearingOn) {
+                    btrxOverlay.tapsEnabled = !isInsetMode
+                    mapView.overlays.add(btrxOverlay)
+                    managedOverlays.add(btrxOverlay)
                 }
 
                 viewModel.localMapMarkers.forEach { point ->
@@ -4896,6 +4938,14 @@ internal fun SplitMapPane(
                 mapView.invalidate()
             }
         )
+
+        btrxPanel?.let { (keys, at) ->
+            org.ncssar.rid2caltopo.ui.BtrxBearingPanel(
+                rows = keys,
+                onDismiss = { btrxPanel = null },
+                modifier = Modifier.align(Alignment.TopStart).offset { at },
+            )
+        }
 
         CameraFootprintHud(
             viewModel = viewModel,

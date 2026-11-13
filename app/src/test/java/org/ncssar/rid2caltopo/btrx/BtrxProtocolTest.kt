@@ -545,4 +545,63 @@ class BtrxProtocolTest {
             "627472780000000000000000" +
             "74fe"
     }
+
+    // ---- bearing layer extensions (shared vectors with btrx_bearing and the Swift tests) ----
+
+    private fun steer40(count: Int, format: Int = 1, len: Int = 40, target: Boolean = true): ByteArray {
+        val p = ByteArray(len)
+        p[0] = 9; p[1] = if (target) P.STEER_F_TARGET.toByte() else 0
+        P.putU32(p, 2, 123456)
+        p[8] = 0x34; p[9] = 0x12
+        if (len > 27) p[27] = ((format shl 4) or count).toByte()
+        if (len >= 34) { p[28] = 0x05; p[29] = 0x00; p[30] = (-70).toByte(); p[31] = (-128).toByte(); p[32] = 0xF1.toByte(); p[33] = (0x01 or 0x02 or (2 shl 2)).toByte() }
+        if (len >= 40) { p[34] = 0x06; p[35] = 0x00; p[36] = (-80).toByte(); p[37] = (-75).toByte(); p[38] = 0x0F; p[39] = (4 shl 2).toByte() }
+        return p
+    }
+
+    @Test fun healthPhoneLostOptional() {
+        val h30 = ByteArray(30).also { P.putU32(it, 0, 99); it[6] = 3 }
+        assertEquals(null, P.parseHealth(h30).phoneLost)
+        val h34 = ByteArray(34).also { P.putU32(it, 0, 99); it[6] = 3; P.putU32(it, 30, 0xFFFFFFFFL) }
+        val hl = P.parseHealth(h34)
+        assertEquals(0xFFFFFFFFL, hl.phoneLost)
+        assertEquals(99L, hl.uptimeS)
+        assertEquals(3, hl.role)
+    }
+
+    @Test fun steerExtras() {
+        assertTrue(P.parseSteer(steer40(0, len = 27)).extras.isEmpty())
+        assertTrue(P.parseSteer(steer40(0, len = 28)).extras.isEmpty())
+        val one = P.parseSteer(steer40(1, len = 34))
+        assertEquals(1, one.extras.size)
+        val x = one.extras[0]
+        assertEquals(5, x.srcId); assertEquals(-70, x.rssiPort); assertEquals(-128, x.rssiStbd)
+        assertEquals(1, x.hitsPort); assertEquals(15, x.hitsStbd)
+        assertTrue(x.newSource); assertTrue(x.linked); assertEquals(2, x.devClass)
+        val two = P.parseSteer(steer40(2))
+        assertEquals(listOf(5, 6), two.extras.map { it.srcId })
+        assertEquals(15, two.extras[1].hitsPort); assertEquals(0, two.extras[1].hitsStbd)
+        assertFalse(two.extras[1].newSource); assertEquals(4, two.extras[1].devClass)
+        assertEquals(1, two.extFormat)
+        assertEquals(0x1234, two.srcId)
+        // count 3 or a short record: first 27 bytes only.
+        assertTrue(P.parseSteer(steer40(3)).let { it.extTruncated && it.extras.isEmpty() })
+        assertTrue(P.parseSteer(steer40(1, len = 30)).let { it.extTruncated && it.extras.isEmpty() })
+        // format 0 with a count, or no target: no extras.
+        assertTrue(P.parseSteer(steer40(1, format = 0, len = 34)).extras.isEmpty())
+        assertTrue(P.parseSteer(steer40(1, len = 34, target = false)).extras.isEmpty())
+        // future format with 8-byte records: first 6 bytes of each read.
+        val f2 = steer40(2, format = 2, len = 44)
+        f2[28] = 7; f2[36] = 8; f2[29] = 0; f2[37] = 0
+        assertEquals(listOf(7, 8), P.parseSteer(f2).extras.map { it.srcId })
+    }
+
+    @Test fun timePingPayloadMatchesPackTime() {
+        val p = P.timePingPayload(0x2A, 0x1_0000_0102L)
+        assertEquals("2a000201000000000000000000000000", p.joinToString("") { "%02x".format(it.toInt() and 0xFF) })
+        val f = P.decodeFrame(P.timePingFrame(3, 0x11223344L, 1, 1000))
+        assertEquals(P.TIME_PING, f.type)
+        assertEquals(0x11223344L, f.podId)
+        assertEquals(1000L, P.parseTime(f.payload).t1)
+    }
 }

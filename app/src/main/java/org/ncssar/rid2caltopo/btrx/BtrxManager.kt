@@ -49,6 +49,9 @@ object BtrxManager {
     private const val KEY_PAIRED = "paired_pod"
     private const val KEY_USB_DEBUG = "usb_debug"
     private const val KEY_OVERLAY_SHOWN = "steer_overlay_shown"
+    private const val KEY_BEARING_FADE_S = "bearing_fade_total_s"
+    private const val KEY_BEARING_FADE_P = "bearing_fade_shape_p"
+    private const val KEY_BEARING_LAG_TRACE = "bearing_lag_trace"
     /** Time the Desk Pod takes to advertise again after a clean USB close. */
     private const val BLE_RESUME_AFTER_USB_MS = 3_000L
 
@@ -87,13 +90,97 @@ object BtrxManager {
     val usbDebugEnabled: StateFlow<Boolean> = _usbDebugEnabled.asStateFlow()
     @Volatile private var powerOnlyLogged = false
 
+    // ---- bearing map layer (Developer Tools; docs/btrx/BEARING-LAYER-spec.md) ----
+
+    /** The BTRX bearing layer. Off at every launch; only the worker starts, ticks and stops it. */
+    val bearing = BtrxBearingLayer(
+        engine = BtrxBearingNative,
+        monoUs = { android.os.SystemClock.elapsedRealtimeNanos() / 1000L },
+        log = { logger.info(it) },
+        traceLog = { logger.info(it) },
+    )
+    private val _bearingOn = MutableStateFlow(false)
+    /** "Show bearing layer on map" (Developer Tools > BTRX); never on at launch. */
+    val bearingOn: StateFlow<Boolean> = _bearingOn.asStateFlow()
+    private val _bearingSettings = MutableStateFlow(BtrxBearingSettings())
+    val bearingSettings: StateFlow<BtrxBearingSettings> = _bearingSettings.asStateFlow()
+    private val _bearingLagTrace = MutableStateFlow(false)
+    val bearingLagTrace: StateFlow<Boolean> = _bearingLagTrace.asStateFlow()
+    private var bearingTick: java.util.concurrent.ScheduledFuture<*>? = null
+    /** RID track points of every drone; the layer keeps only the "Drone Pod is on this drone" stream. */
+    private val bearingTrackListener = org.ncssar.rid2caltopo.data.CaltopoLiveTrack.LocalTrackListener { _, mappedId, lat, lng, _, timestampMsec ->
+        bearing.onPosition(mappedId, lat, lng, timestampMsec)
+    }
+
+    fun setBearingOn(on: Boolean) {
+        _bearingOn.value = on
+        worker.execute { applyBearingOn(on) }
+    }
+
+    private fun applyBearingOn(on: Boolean) {
+        if (on) {
+            bearing.steeringDesignator = _steeringStream.value
+            val linkUp = _snapshot.value.link.phase == LinkPhase.READY
+            if (!bearing.start(_bearingSettings.value, _bearingLagTrace.value, linkUp)) {
+                _bearingOn.value = false
+                return
+            }
+            BtrxBearingFeed.sink = bearing
+            org.ncssar.rid2caltopo.data.CaltopoLiveTrack.AddLocalTrackListener(bearingTrackListener)
+            if (bearingTick == null) {
+                bearingTick = worker.scheduleWithFixedDelay({
+                    try {
+                        bearing.steeringDesignator = _steeringStream.value
+                        bearing.tick { pingSeq, t1Ms -> model.sendTimePing(pingSeq, t1Ms) }
+                    } catch (e: Exception) {
+                        logger.warn("bearing: tick failed: ${e.message}")
+                    }
+                }, BtrxBearingLayer.TICK_MS, BtrxBearingLayer.TICK_MS, TimeUnit.MILLISECONDS)
+            }
+        } else {
+            bearingTick?.cancel(false)
+            bearingTick = null
+            BtrxBearingFeed.sink = null
+            org.ncssar.rid2caltopo.data.CaltopoLiveTrack.RemoveLocalTrackListener(bearingTrackListener)
+            bearing.stop()
+        }
+    }
+
+    /** Fade time and shape sliders: applied at once (next tick) and saved. */
+    fun setBearingSettings(settings: BtrxBearingSettings) {
+        val s = settings.clamped()
+        _bearingSettings.value = s
+        worker.execute {
+            bearing.setFade(s)
+            prefs().edit().putFloat(KEY_BEARING_FADE_S, s.fadeTotalS).putFloat(KEY_BEARING_FADE_P, s.fadeShapeP).apply()
+        }
+    }
+
+    /** Lag trace (BBv1/BBLAG/BBRND lines in the session log); restarts a running layer. */
+    fun setBearingLagTrace(on: Boolean) {
+        _bearingLagTrace.value = on
+        worker.execute {
+            prefs().edit().putBoolean(KEY_BEARING_LAG_TRACE, on).apply()
+            if (bearing.isRunning) { applyBearingOn(false); applyBearingOn(true) }
+        }
+    }
+
     private val modelListener = object : BtrxClient.Listener {
-        override fun onConfigured(localNode: Long) = model.onConfigured(localNode)
+        override fun onConfigured(localNode: Long) {
+            model.onConfigured(localNode)
+            worker.execute { bearing.onConnected() }
+        }
         override fun onLocalRoleReport(report: BtrxProtocol.RoleReport) = model.onLocalRoleReport(report)
         override fun onFrame(frame: BtrxProtocol.Frame, meta: BtrxClient.RadioMeta) {
             model.onFrame(frame, meta)
             // The overlay follows each STEER (about every second), not only the 1 s tick.
             if (frame.type == BtrxProtocol.STEER && !meta.backlog) worker.execute { publish() }
+            if (bearing.isRunning && (frame.type == BtrxProtocol.STEER || frame.type == BtrxProtocol.TIME_PONG || frame.type == BtrxProtocol.HEALTH)) {
+                val origin = model.bearingOrigin(frame, meta)
+                if (origin != BtrxDeskPodModel.BEARING_FROM_OTHER) worker.execute {
+                    bearing.onFrame(frame, meta, origin == BtrxDeskPodModel.BEARING_FROM_POD, origin == BtrxDeskPodModel.BEARING_FROM_DESK)
+                }
+            }
         }
     }
 
@@ -124,6 +211,11 @@ object BtrxManager {
             val usbDebug = p.getBoolean(KEY_USB_DEBUG, false)
             _usbDebugEnabled.value = usbDebug
             _overlayShown.value = p.getBoolean(KEY_OVERLAY_SHOWN, true)
+            _bearingSettings.value = BtrxBearingSettings(
+                p.getFloat(KEY_BEARING_FADE_S, BtrxBearingSettings.DEFAULT_TOTAL_S),
+                p.getFloat(KEY_BEARING_FADE_P, BtrxBearingSettings.DEFAULT_SHAPE_P),
+            ).clamped()
+            _bearingLagTrace.value = p.getBoolean(KEY_BEARING_LAG_TRACE, false)
             setAttachActivityEnabled(usbDebug)
             if (usbHost && usbDebug) scanAttached()
             applyArbiter(arbiter.update(bluetoothEnabled = enabled, usbDebugEnabled = usbDebug))
@@ -239,6 +331,7 @@ object BtrxManager {
     fun chooseSteeringStream(designator: String?) {
         if (_steeringStream.value != designator) logger.info("steering: overlay drone ${designator ?: "cleared"}")
         _steeringStream.value = designator
+        bearing.steeringDesignator = designator
     }
 
     /** Live, non-playback stream designators (the tiles that can carry the overlay). */

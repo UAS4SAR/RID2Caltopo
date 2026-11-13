@@ -657,6 +657,34 @@ class BtrxDeskPodModel(
         outbox += c.node to { seq -> P.pairConfirmFrame(seq, c.assignedPodId, nonce, c.roleA.takeIf { it != 0 } ?: P.ROLE_STARBOARD, c.roleB.takeIf { it != 0 } ?: P.ROLE_PORT) }
     }
 
+    // ---- bearing map layer (docs/btrx/BEARING-LAYER-spec.md section 7) ----
+
+    /**
+     * Where a frame comes from, for the bearing layer: [BEARING_FROM_POD] the paired Drone
+     * Pod's node (backlog included: the layer judges frames by window time),
+     * [BEARING_FROM_DESK] the Desk Pod itself (its own HEALTH), else [BEARING_FROM_OTHER].
+     */
+    @Synchronized
+    fun bearingOrigin(frame: P.Frame, meta: BtrxClient.RadioMeta): Int {
+        val local = localNode
+        if (local != null && meta.fromNode == local) return BEARING_FROM_DESK
+        val paired = pairedPod ?: return BEARING_FROM_OTHER
+        if (meta.fromNode != paired.node) return BEARING_FROM_OTHER
+        return if (frame.podId == 0L || frame.podId == paired.podId) BEARING_FROM_POD else BEARING_FROM_OTHER
+    }
+
+    /** TIME_PING to the paired Drone Pod (spec 3.2). False with no paired pod or no ready link. */
+    fun sendTimePing(pingSeq: Int, t1Ms: Long): Boolean {
+        val sends = synchronized(this) {
+            val pod = pairedPod ?: return false
+            if (sender?.isReady != true) return false
+            outbox += pod.node to { seq -> P.timePingFrame(seq, pod.podId, pingSeq, t1Ms) }
+            takeOutbox()
+        }
+        deliver(sends)
+        return true
+    }
+
     private fun takeOutbox(): List<Pair<Long, (Int) -> ByteArray>> {
         if (outbox.isEmpty()) return emptyList()
         val out = ArrayList(outbox)
@@ -675,6 +703,9 @@ class BtrxDeskPodModel(
     }
 
     companion object {
+        const val BEARING_FROM_OTHER = 0
+        const val BEARING_FROM_POD = 1
+        const val BEARING_FROM_DESK = 2
         const val BUTTON_WAIT_MS = 120_000L
         const val ACK_TIMEOUT_MS = 30_000L
         const val MAX_CONFIRM_TRIES = 8

@@ -116,6 +116,7 @@ fun DeskPodScreen(onDismiss: () -> Unit) {
                     BtrxDeskPodText.healthLines(s).forEach { Text(it) }
                     Text(BtrxDeskPodText.countsLine("Live frames", s.liveCounts), style = MaterialTheme.typography.bodySmall)
                     Text(BtrxDeskPodText.countsLine("Backlog frames (old, display only)", s.backlogCounts), style = MaterialTheme.typography.bodySmall)
+                    BtrxBearingStatusLines()
 
                     HorizontalDivider(Modifier.padding(vertical = 6.dp))
                     SectionTitle("Pair drone pod")
@@ -165,6 +166,10 @@ fun DeskPodScreen(onDismiss: () -> Unit) {
                         Text(BtrxDeskPodText.STEER_ROLL, Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
                         Switch(checked = s.steeringRollCorrection, onCheckedChange = { BtrxManager.setSteeringRollCorrection(it) })
                     }
+
+                    HorizontalDivider(Modifier.padding(vertical = 6.dp))
+                    SectionTitle(org.ncssar.rid2caltopo.btrx.BtrxBearingText.SECTION)
+                    BtrxBearingSection()
                 }
             }
         }

@@ -333,16 +333,37 @@ object BtrxProtocol {
         val advPerSPort: Int, val advPerSStbd: Int, val loraRssi: Int, val loraSnr: Int,
         val clockOffsetMs: Int, val cfgVersion: Int, val filterVersion: Int, val txPolicy: Int,
         val errorFlags: Int, val scanning: Int,
+        /**
+         * Offset 30, u32 LE (build 0x0104, btrx e116ac6): messages this board dropped from its
+         * full app queue since it started (saturates at 0xFFFFFFFF). Null for 30-byte HEALTH
+         * from older firmware: unknown, never 0.
+         */
+        val phoneLost: Long? = null,
     )
 
+    const val HEALTH_LEN = 30
+    const val HEALTH_LOST_LEN = 34
+
     fun parseHealth(p: ByteArray): Health {
-        need(p, 30, "HEALTH")
+        need(p, HEALTH_LEN, "HEALTH")
         return Health(
             u32(p, 0), u16(p, 4), u8(p, 6), u8(p, 7), u8(p, 8), u16(p, 9), u16(p, 11), u8(p, 13), i8(p, 14),
             u16(p, 15), u16(p, 17), i8(p, 19), i8(p, 20), i32(p, 21), u8(p, 25), u8(p, 26), u8(p, 27),
             u8(p, 28), u8(p, 29),
+            phoneLost = if (p.size >= HEALTH_LOST_LEN) u32(p, 30) else null,
         )
     }
+
+    /** TIME_PING payload (protocol.py pack_time): ping_seq, 0, t1, t2 = 0, t3 = 0, u16 0. */
+    fun timePingPayload(pingSeq: Int, t1Ms: Long): ByteArray {
+        val out = ByteArray(16)
+        out[0] = pingSeq.toByte()
+        putU32(out, 2, t1Ms and 0xFFFFFFFFL)
+        return out
+    }
+
+    fun timePingFrame(seq: Int, podId: Long, pingSeq: Int, t1Ms: Long): ByteArray =
+        encodeFrame(TIME_PING, seq = seq, podId = podId, payload = timePingPayload(pingSeq, t1Ms))
 
     const val DETECT_HEADER_LEN = 11
     const val DETECT_RECORD_LEN = 29
@@ -411,6 +432,12 @@ object BtrxProtocol {
         /** Address as received, least significant byte first (as in DETECT). */
         val macLsbFirst: ByteArray,
         val rollX2: Int, val pitchX2: Int,
+        /** Build 0x0103 multi-source records (byte 27 count 1-2); empty for 27-byte frames. */
+        val extras: List<SteerExtra> = emptyList(),
+        /** Byte 27 bits 4-7 (record format); 0 for 27-byte frames. */
+        val extFormat: Int = 0,
+        /** The extension was present but unreadable: only bytes 0-26 were used. */
+        val extTruncated: Boolean = false,
     ) {
         val target: Boolean get() = flags and STEER_F_TARGET != 0
         val newSource: Boolean get() = flags and STEER_F_NEW != 0
@@ -432,13 +459,53 @@ object BtrxProtocol {
         val addressTail: String get() = macLsbFirst.reversed().joinToString("") { "%02X".format(it.toInt() and 0xFF) }.takeLast(4)
     }
 
+    /**
+     * One extra STEER source record (build 0x0103, PROTOCOL.md "STEER" multi-source): 6 bytes
+     * src_id u16, rssi_port i8, rssi_stbd i8, hits nibbles (port low, stbd high), rflags
+     * (bit 0 new, bit 1 linked, bits 2-4 class). No address.
+     */
+    data class SteerExtra(
+        val srcId: Int, val rssiPort: Int, val rssiStbd: Int, val hitsPort: Int, val hitsStbd: Int,
+        val newSource: Boolean, val linked: Boolean, val devClass: Int,
+    )
+
+    const val STEER_EXTRA_LEN = 6
+    const val STEER_MAX_EXTRAS = 2
+
     fun parseSteer(p: ByteArray): Steer {
         need(p, STEER_LEN, "STEER")
+        var extras = emptyList<SteerExtra>()
+        var format = 0
+        var truncated = false
+        if (p.size > STEER_LEN) {
+            val ext = u8(p, STEER_LEN)
+            val count = ext and 0x0F
+            format = ext ushr 4
+            // Same rules as btrx_bearing_parse_steer: extras only with a target and format >= 1.
+            if (u8(p, 1) and STEER_F_TARGET != 0 && format != 0 && count > 0) {
+                val recLen = (p.size - (STEER_LEN + 1)) / count
+                if (count > STEER_MAX_EXTRAS || recLen < STEER_EXTRA_LEN) {
+                    truncated = true
+                } else {
+                    extras = (0 until count).map { i ->
+                        val o = STEER_LEN + 1 + i * recLen
+                        val hits = u8(p, o + 4)
+                        val rf = u8(p, o + 5)
+                        SteerExtra(
+                            srcId = u16(p, o), rssiPort = i8(p, o + 2), rssiStbd = i8(p, o + 3),
+                            hitsPort = hits and 0x0F, hitsStbd = hits ushr 4,
+                            newSource = rf and 0x01 != 0, linked = rf and 0x02 != 0, devClass = (rf ushr 2) and 0x07,
+                        )
+                    }
+                }
+            }
+        }
         return Steer(
             steerSeq = u8(p, 0), flags = u8(p, 1), windowEndMs = u32(p, 2), ageMs = u16(p, 6), srcId = u16(p, 8),
             rssiPort = i8(p, 10), rssiStbd = i8(p, 11), peakRssi = i8(p, 12), hitsPort = u8(p, 13), hitsStbd = u8(p, 14),
             companyId = u16(p, 15), devClass = u8(p, 17), addrType = u8(p, 18), macLsbFirst = p.copyOfRange(19, 25),
             rollX2 = i8(p, 25), pitchX2 = i8(p, 26),
+            extras = extras, extFormat = format, extTruncated = truncated,
         )
     }
 
