@@ -1,5 +1,6 @@
 package org.ncssar.rid2caltopo.app
 
+import kotlin.concurrent.withLock
 import android.content.Context
 import androidx.documentfile.provider.DocumentFile
 import org.ncssar.rid2caltopo.data.CaltopoClient
@@ -100,7 +101,8 @@ internal fun flightStorageIssue(archiveReady: Boolean, deviceLow: Boolean, allow
 object FlightStorage {
     const val DEFAULT_MAX_BYTES = 10_000_000_000L
     const val DEFAULT_MAX_DAYS = 30L
-    private val lock = Any()
+    /** Serializes archive scans and retention cleanup. Live paths never wait on it. */
+    private val lock = java.util.concurrent.locks.ReentrantLock()
     private val stateLock = Any()
     private val protectedDays = mutableMapOf<String, String>()
     val changes = kotlinx.coroutines.flow.MutableStateFlow(0L)
@@ -225,14 +227,10 @@ object FlightStorage {
      * storageIo path does not.
      */
     @JvmStatic fun prepareAppPrivateWrite(context: Context, incoming: Long) {
+        // Clue saves never scan and never take [lock]: cleanup and sizing are queued on the
+        // storage worker, which notifies the listener when it is done.
         val needed = synchronized(stateLock) { !initialized || (!captureBlocked && needsDemandCheck(context, incoming)) }
-        if (!needed) return
-        storageMetadata(context) {
-            synchronized(lock) { scanOnWorker(context, false, incoming.coerceAtLeast(0), seedEstimate = true) }
-        }
-        requestCheck(context, true)
-        val callback = synchronized(stateLock) { listener }
-        callback?.run()
+        if (needed) requestCheck(context, true)
     }
     private var transientCheckAttempt = 0
     private var transientRetryQueued = false
@@ -595,7 +593,7 @@ object FlightStorage {
     @JvmStatic fun requestRecordingStartCheck(context: Context) {
         startCheck.execute {
             try {
-                storageMetadata(context) { synchronized(lock) { scanOnWorker(context, false, 0, seedEstimate = true) } }
+                storageMetadata(context) { lock.withLock { scanOnWorker(context, false, 0, seedEstimate = true) } }
             } catch (error: Exception) {
                 CaltopoClient.CTError("FlightStorage", "Recording start check failed", error)
             }
@@ -605,15 +603,26 @@ object FlightStorage {
     }
     fun peekSnapshot(): Snapshot? = synchronized(stateLock) { lastRead }
     fun snapshot(context: Context, cancelled: () -> Unit = {}): Snapshot = storageMetadata(context) {
-        synchronized(lock) {
-            val recent = lastRead
+        // A screen asking for usage shows the last result while cleanup holds [lock]
+        // instead of waiting for it (a purge scan took 70 s on 2026-11-12).
+        readUnlessBusy(lock, synchronized(stateLock) { lastRead }) {
+            val recent = synchronized(stateLock) { lastRead }
             val age = android.os.SystemClock.elapsedRealtime() - lastReadAt
             if (recent != null && age in 0..READ_TTL_MS) {
                 CaltopoClient.CTDebug("FlightStorage", "Sized flights reason=cache elapsedMs=0")
-                return@synchronized recent
-            }
-            scanOnWorker(context, false, 0, cancelled)
+                recent
+            } else scanOnWorker(context, false, 0, cancelled)
         }
+    }
+
+    /** Runs [read] under [lock]; when [lock] is busy and a [cached] value exists, returns it. */
+    internal fun <T : Any> readUnlessBusy(lock: java.util.concurrent.locks.ReentrantLock, cached: T?, read: () -> T): T {
+        if (cached != null && !lock.tryLock()) {
+            CaltopoClient.CTDebug("FlightStorage", "Sized flights reason=busy-cache elapsedMs=0")
+            return cached
+        }
+        if (cached == null) lock.lock()
+        try { return read() } finally { lock.unlock() }
     }
     private fun scan(context: Context, purge: Boolean, reserving: Long = 0): Snapshot = storageIo(context) {
         scanOnWorker(context, purge, reserving)
@@ -703,7 +712,7 @@ object FlightStorage {
     private inline fun <T> storageIo(context: Context, action: () -> T): T {
         check(android.os.Looper.myLooper() != android.os.Looper.getMainLooper()) { "Flight storage must run on a worker" }
         org.ncssar.rid2caltopo.storage.OperationalStorage.tryRequireReady(context)
-        return synchronized(lock, action)
+        return lock.withLock(action)
     }
     private fun availableBytes(context: Context, archive: DocumentFile?): Long? = try {
         if (archive == null) null
