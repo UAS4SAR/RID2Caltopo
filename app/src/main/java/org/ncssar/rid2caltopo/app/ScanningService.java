@@ -98,6 +98,9 @@ public class ScanningService extends Service {
         }
     };
     private static volatile boolean serviceRunning = false;
+    /** The running service, for the swipe-away shutdown started from R2CActivity.onDestroy(). */
+    private static volatile ScanningService RunningInstance;
+    private static volatile TaskRemovalShutdown TaskRemoval = new TaskRemovalShutdown();
     private static Context AppContext = R2CApplication.getAppCtxt();
     private static OpenDroneIdDataManager DataManager = new OpenDroneIdDataManager(null);
     public static long GetStartTimeInMsec() {return ScannerUptime.getStartTimeInMsec();}
@@ -187,6 +190,8 @@ public class ScanningService extends Service {
 
         if (startForegroundSafely(buildForegroundNotification())) {
             serviceRunning = true;
+            RunningInstance = this;
+            TaskRemoval = new TaskRemovalShutdown();
         } else {
             foregroundStartBlocked = true;
             serviceRunning = false;
@@ -218,6 +223,7 @@ public class ScanningService extends Service {
         foregroundStarted = false;
         foregroundStartBlocked = false;
         serviceRunning = false;
+        if (RunningInstance == this) RunningInstance = null;
         super.onDestroy();
     }
 
@@ -319,13 +325,50 @@ public class ScanningService extends Service {
         return START_STICKY;
     }
 
+    /**
+     * Recents swipe (stopWithTask=false): keep this foreground service, and so the process,
+     * alive until the clean shutdown has run (bounded by TaskRemovalShutdown.CAP_MSEC).
+     */
     @Override
     public void onTaskRemoved(Intent rootIntent) {
-        CTDebug(TAG, "onTaskRemoved()");
-        stopForegroundSafely();
-        stopSelf();
-        CaltopoClient.ShutdownAsync();
+        CTDebug(TAG, "onTaskRemoved(): running the clean shutdown before stopping.");
+        startTaskRemovalShutdown("task removed from Recents");
         super.onTaskRemoved(rootIntent);
+    }
+
+    /**
+     * Starts the swipe-away shutdown on the running service. Returns false when the service is
+     * not running (the caller then shuts down the old way).
+     */
+    public static boolean BeginTaskRemovalShutdown(@NonNull String reason) {
+        ScanningService service = RunningInstance;
+        if (service == null || !serviceRunning) return false;
+        service.startTaskRemovalShutdown(reason);
+        return true;
+    }
+
+    /** True while the swipe-away shutdown is running; stop requests wait for it. */
+    public static boolean IsHandlingTaskRemoval() {
+        return TaskRemoval.isActive();
+    }
+
+    private void startTaskRemovalShutdown(@NonNull String reason) {
+        final Context appContext = getApplicationContext();
+        TaskRemoval.begin(reason, new TaskRemovalShutdown.Steps() {
+            @Override public void shutdown() { CaltopoClient.ShutdownAndWait(); }
+            @Override public void stopMediaServer() { MediaMTXService.requestStop(appContext); }
+            @Override public void release() {
+                lifecycleHandler.post(() -> {
+                    stopForegroundSafely();
+                    stopSelf();
+                });
+            }
+            @Override public void log(@NonNull String message) {
+                // Logcat as well: the session log is already closed at the end.
+                android.util.Log.i(TAG, message);
+                CTDebug(TAG, message);
+            }
+        }, TaskRemovalShutdown.CAP_MSEC);
     }
 
     public static void requestStart(@NonNull Context context) {
@@ -341,6 +384,10 @@ public class ScanningService extends Service {
     public static void requestStop(@NonNull Context context) {
         if (!IsRunning()) {
             CTDebug(TAG, "requestStop(): ScanningService already stopped; ignoring stop request.");
+            return;
+        }
+        if (IsHandlingTaskRemoval()) {
+            CTDebug(TAG, "requestStop(): swipe-away shutdown in progress; the service stops when it ends.");
             return;
         }
         Intent stopIntent = new Intent(context, ScanningService.class);

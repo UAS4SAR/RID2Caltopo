@@ -467,6 +467,13 @@ private fun OrganizationAccessGate(
     )
 }
 
+/**
+ * A finish without Quit (Recents swipe) hands the shutdown to the running ScanningService, which
+ * keeps the process alive until it is done. Quit keeps its own path (services stopped first).
+ */
+internal fun shouldServiceOwnShutdown(exitRequested: Boolean, serviceRunning: Boolean): Boolean =
+    !exitRequested && serviceRunning
+
 internal fun shouldShutdownOnActivityDestroy(
     isPrimaryActivity: Boolean,
     isFinishing: Boolean,
@@ -2913,13 +2920,23 @@ class R2CActivity :
                 R2cRuntimeRegistry.getDefaultRuntime().peerCoordinator.setPeerListChangedListener(null)
                 R2cRuntimeRegistry.getDefaultRuntime().peerCoordinator
                     .setVideoStreamRequestListener(null)
-                CTDebug(TAG,"onDestroy() shutting down streaming service..." )
-                MediaMTXService.requestStop(this)
-                CTDebug(TAG,"onDestroy() shutting down scanning service..." )
-                ScanningService.requestStop(this)
+                val serviceOwnsShutdown = shouldServiceOwnShutdown(
+                    exitRequested = exitRequested,
+                    serviceRunning = ScanningService.IsRunning(),
+                ) && ScanningService.BeginTaskRemovalShutdown("activity finished without Quit")
                 AlertSpeechCoordinator.stop()
-                CaltopoClient.ShutdownAsync()
-                CTDebug(TAG, "onDestroy() archiving tracks...")
+                if (serviceOwnsShutdown) {
+                    // Recents swipe: ScanningService keeps the process alive until the shutdown
+                    // (markers, map, tracks, state, session log, stream server) has finished.
+                    CTDebug(TAG, "onDestroy() ScanningService runs the clean shutdown, then stops.")
+                } else {
+                    CTDebug(TAG,"onDestroy() shutting down streaming service..." )
+                    MediaMTXService.requestStop(this)
+                    CTDebug(TAG,"onDestroy() shutting down scanning service..." )
+                    ScanningService.requestStop(this)
+                    CaltopoClient.ShutdownAsync()
+                    CTDebug(TAG, "onDestroy() archiving tracks...")
+                }
                 AppActivity = null
             } catch (e: Exception) {
                 CTError(TAG, "onDestroy() raised:", e)

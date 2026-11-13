@@ -75,7 +75,7 @@
             android:name=".app.R2CActivity"
             android:exported="true"
             android:launchMode="singleTop"
-            android:configChanges="keyboardHidden|orientation|screenSize|smallestScreenSize|uiMode"
+            android:configChanges="keyboardHidden|orientation|screenSize|smallestScreenSize|screenLayout|uiMode"
             android:theme="@style/Theme.AppCompat.DayNight.NoActionBar" >
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -166,9 +166,11 @@
         </activity>
         <service android:name=".mapping.DjiCloudForegroundService" android:exported="false" android:foregroundServiceType="dataSync" />
         <service android:name=".mapping.MappingProcessingForegroundService" android:exported="false" android:foregroundServiceType="dataSync" />
+        <!-- stopWithTask=false: on a Recents swipe this service keeps the process alive until
+             the clean shutdown (TaskRemovalShutdown) has run, then stops itself. -->
         <service android:name=".app.ScanningService"
             android:foregroundServiceType="connectedDevice|location"
-            android:stopWithTask="true"
+            android:stopWithTask="false"
             android:enabled="true"
             android:exported="false"/>
         <receiver

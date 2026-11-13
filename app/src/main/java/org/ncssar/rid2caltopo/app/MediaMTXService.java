@@ -581,13 +581,9 @@ public class MediaMTXService extends Service {
         return null;
     }
 
-    @Override
-    public void onTaskRemoved(Intent rootIntent) {
-        stopForegroundSafely();
-        stopSelf();
-        CaltopoClient.ShutdownAsync();
-        super.onTaskRemoved(rootIntent);
-    }
+    // No onTaskRemoved(): this service is stopWithTask="true", so Android stops it on a Recents
+    // swipe without calling onTaskRemoved(). ScanningService (stopWithTask="false") owns the
+    // swipe-away shutdown and stops this service when that shutdown ends.
 
     private boolean startForegroundSafely(Notification notification) {
         try {

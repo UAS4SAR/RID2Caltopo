@@ -4463,8 +4463,29 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
         } finally {
             synchronized (ShutdownLock) {
                 ShutdownInProgress = false;
+                ShutdownLock.notifyAll();
             }
         }
+    }
+
+    /**
+     * Runs {@link #Shutdown()} on the calling thread, or, when another caller (Quit,
+     * R2CActivity.onDestroy) already started it, waits until that shutdown has finished.
+     * Used by the swipe-away path, which must not release the process early.
+     */
+    public static void ShutdownAndWait() {
+        synchronized (ShutdownLock) {
+            while (ShutdownInProgress) {
+                try {
+                    ShutdownLock.wait();
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    return;
+                }
+                if (!ShutdownInProgress) return;
+            }
+        }
+        Shutdown();
     }
 
     public static void MarkAppActive() {
