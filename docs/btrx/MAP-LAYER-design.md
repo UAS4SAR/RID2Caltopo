@@ -1,292 +1,435 @@
-# BTRX map layer: design (draft, November 12, 2026)
+# BTRX map layer: design (draft r2, November 12, 2026)
 
-Status: design only, no code. The layer is experimental and opens only from
-Settings > Developer Tools on Android and the iPad. The stream-view steering
-overlay (`BtrxSteering`) stays as it is.
+Status: design only. **Map-layer code is on hold.** The layer is
+experimental and opens only from Settings > Developer Tools on Android and the
+iPad. The stream-view steering overlay (`BtrxSteering`) stays as it is.
+**Nothing from BTRX goes to CalTopo**: subjects are marked through the
+existing video clue capture.
 
-Why: the overlay shows one source, with left/right hysteresis and smoothing so
-the pilot's arrow doesn't flicker (`BtrxSteering`: confirm a side change over
-two reports, EMA plus slew limit on the length). That makes it lag. Each
-reading is timestamped and the app already knows where the drone was, so the
-map can show what every reading says, at the place it was taken, with no
-smoothing. The estimate comes from many readings agreeing, not from filtering
-one stream.
+r2 folds in BT RX's review of r1 (1667bdd3) and Ken's answers (8:06 PM PT).
+Each review point was checked against btrx `af2549e` (branch `steering-report`,
+read with `git show`) and the RID2Caltopo code. Section 12 lists where this
+doc qualifies or does not adopt a point. **[A]** marks an assumption; **[BT]**
+marks a BT RX statement that could not be checked in either repo.
 
-Sources: app code on `feature/btrx-integration`; btrx `firmware/PROTOCOL.md`
-and `docs/ble-sar-detector-design.md` at btrx `af2549e` (branch
-`steering-report`, read with `git show`); tonight's A5 session logs
-`~/btrx-build-logs/crash-1916-a5-Log_12Nov2026-185050/191149-PST-0800.txt`.
-**[A]** marks an assumption. Everything else is from code, the protocol doc or
-the logs.
+Why: the overlay shows one source with hysteresis and smoothing
+(`BtrxSteering`: a side change needs two reports; EMA plus slew limit on the
+length), so it lags. Every reading is timestamped and the app knows where the
+drone was, so the map can show each reading at once, where it was taken,
+unsmoothed. The estimate comes from many readings agreeing.
 
-## 1. What the app gets today (facts)
+## 1. As-built geometry and signs
 
-**STEER (0x73)**, 27 bytes, the single strongest source in the pod's last 1 s
-window, about once a second (PROTOCOL.md "STEER"; `BtrxProtocol.Steer`):
+**Patches (design doc §40, v0.27, by construction).** Two Linx ANT-2.4-CPA
+patches. Their boresights in level flight point azimuth −45° (port-forward)
+and +45° (starboard-forward), each 45° below horizontal. Both look forward.
+The ceramic centres are at (∓76, 18, −30) mm, so they are 152 mm apart (more
+than λ = 125 mm). The port patch is fed by pod B (the IMU board) and the
+starboard patch by pod A (the LoRa board). The v0.12 "20° outboard,
+0.12 dB/deg" numbers (§24) are superseded and not used here.
+**Beamwidth is not measured.** HPBW ≈ 90° is an estimate.
+
+**Signs used in this doc** (PROTOCOL.md STEER; `BtrxProtocol.Steer`):
+
+- Δ = rssi_port − rssi_stbd. Positive means the source is to the **left**.
+- −128 means not heard.
+- Roll is positive with the starboard side down; pitch is positive nose up.
+
+Design doc §24.2 defines Δ the other way (S − P), so none of its formulas are
+copied here.
+
+**What Δ says.**
+
+- The sign of Δ gives the side, both ahead and behind: a source behind-left is
+  still nearer the port boresight.
+- Δ ≈ 0 on the fore/aft line, ahead or behind.
+- |Δ| depends on azimuth **and** depression angle, so it is not a fixed slope
+  times bearing.
+- Ahead and behind look the same in Δ. They differ in total level: behind
+  means both back lobes, so for the same RSSI the source must be much closer.
+  That can only be used **across readings**: P0 (transmit power plus body
+  loss, 10–20 dB of body loss alone, design doc §8.7) is unknown, so one
+  reading's level can't tell "behind and close" from "ahead and far".
+- Each board has a fixed offset (cable, ceramic, foil, radio), so the model
+  carries a board offset c0. It is estimated, not assumed zero.
+
+**Rough slope [A].** Model each pattern as G(θ) ≈ −12(θ/HPBW)² dB. Count
+azimuth only, ignore the 45° depression, and take HPBW 90°. Then near the nose
+Δ ≈ −0.27 dB/deg × φ, where φ is the source azimuth, positive to starboard.
+The depression and the source's elevation lower this. Use 0.2–0.27 dB/deg
+until flight test 1 measures it.
+
+## 2. What the app gets (facts)
+
+**STEER (0x73), about 1 per second.** The single strongest source in the pod's
+1 s window. The pod keeps the current target unless another is at least 3 dB
+stronger, and leaves out ignore-listed and muted sources.
 
 | Field | Meaning |
 | --- | --- |
-| `steer_seq` | counts STEER frames; a gap means one was dropped |
-| `flags` | bit 0 target heard, 1 new source, 2 address change linked, 3 attitude gated, 4 IMU ok, 5 a source is muted, 6 IMU calibrated |
-| `window_end_ms` (u32) | pod A's clock at the end of the window, in **ms since power-up**. Not wall time. Going backward means the pod restarted |
-| `age_ms` | time from the target's newest sample until the frame was handed to the radio |
-| `src_id` | pod-assigned id; restarts at 1 on power-up; kept across a linked address change |
-| `rssi_port`, `rssi_stbd` | mean dBm per patch over the window; −128 means not heard. Port is pod B; port stronger means the source is to the left |
-| `peak_rssi`, `hits_port`, `hits_stbd` | strongest single sample, and the sample count per patch |
-| `company_id`, `dev_class`, `addr_type` | maker; device kind; 0 public, 1 random static, 2 resolvable private, 3 non-resolvable |
-| `mac` (6 bytes) | **the full address as received** |
-| `roll_x2`, `pitch_x2` | from pod B's accelerometer, 0.5° units |
+| `steer_seq` | incremented only after the frame is handed to the mesh (`send_steer`), so gaps are losses after hand-off. Windows the pod skipped (stale, busy, pairing) don't bump it; they show as `window_end_ms` steps over 1 s |
+| `flags` | bit 0 target, 1 new source, 2 linked, 3 gated, 4 IMU ok, 5 muted, 6 IMU calibrated |
+| `window_end_ms` | pod A's `millis()` at the window end, since power-up |
+| `age_ms` | target's newest sample until hand-off |
+| `src_id` | pod id; restarts at 1 at power-up; a source unheard for 60 s is forgotten (the pod remembers 16) and comes back with a new id |
+| `rssi_port`/`rssi_stbd` | **mean dB** of that patch's samples (`mean8`) |
+| `peak_rssi`, `hits_port`, `hits_stbd` | strongest single sample; sample counts per patch |
+| `company_id`, `dev_class`, `addr_type` | maker; pod-decided kind (phone, wearable, tracker, audio, computer, unknown); address type 0–3 |
+| `mac` | **the full 6-byte address** |
+| `roll_x2`, `pitch_x2` | attitude at **send time** (below) |
 
-Facts that matter for this design:
+**The patches aren't paired.** Each board runs its own BLE scan, and pod B's
+samples reach pod A over the UART (§40, PROTOCOL.md). The two means come from
+different packets **[BT]** on different channels, so Δ is not measured on the
+same packet. Expect 5–6 dB of noise per sample **[BT]** (design doc §8.7 says
+5–10 dB). Ground reflection and body loss mostly change the total level, not
+Δ **[BT]**.
 
-- **The full 6-byte address already reaches the app.** STEER and the DETECT
-  record both carry it (`macLsbFirst`). The app cuts it to the last 4 hex
-  characters on purpose: the log is shared for support and must not hold
-  bystanders' full addresses (`BtrxFrameLog` header comment; `addressTail`,
-  "decision 3", on both platforms). Using the full address needs no firmware
-  change. It is a privacy decision (Q2).
-- **No wall-clock time comes from the pod.** PROTOCOL.md still marks clock sync
-  (`TIME`/`RESYNC`) and the Desk Pod's "time it received the frame" as TBD.
-  The app parses `TIME` (`parseTime`) but nothing uses it. HEALTH's
-  `clock_offset_ms` is the firmware's internal clock-sync value, reported as
-  0 when that clock isn't valid (`BtrxModule.cpp`). **[A]** It is not a pod
-  to tablet offset.
-- **Gating.** Bit 3 is set when the pod judges its attitude unusable (design
-  doc §24.2 suggests |roll| > 10°, |roll rate| > 15°/s or |pitch| > 15°; the
-  firmware sets the bit from its own aggregate). Bit 4 clear with port at
-  −128 means pod B dropped off the link, not that the source is to starboard
-  (`Steer.portBoardSilent`).
-- **STEER covers one source only.** It is the strongest single sample. The
-  current source is kept unless another is at least 3 dB stronger, and
-  ignore-listed or muted sources are left out. Other sources are only in
-  **DETECT (0x70)**: up to 7 records every 5 s, each covering a 5 s window,
-  with per-record `age_ms`, `rssi_port`/`rssi_stbd`, `hits`, full address,
-  `company_id`, `fp_hash`, `dev_class` and `addr_type`, plus window-level
-  `window_end_ms`, roll and pitch. **Tonight's two session logs have no DETECT
-  lines at all.** Whether DETECT isn't arriving or just isn't logged is Q4.
-- **Air time.** On US SHORT_FAST a STEER is 63–71 ms on air. It is dropped,
-  not queued, if it is more than 1 s old when the radio is free.
+**Attitude flags (checked in firmware).**
 
-**Measured tonight** (live, non-backlog STEER only; arrival = the app log
-timestamp; offsets measured against the smallest arrival − `window_end_ms`):
+- Roll and pitch come from `atan2` of the **latest** pod B accelerometer
+  sample (`btrx_attitude_from_accel`, overwritten on every `IMU_SAMPLE`).
+  STEER copies whatever is current at send time (`send_steer` reads
+  `agg.att_flags`, `agg.roll_x2`).
+- Bit 3 (gated) is set when |roll| > 10°, |pitch| > 15° or |roll rate|
+  > 15°/s (`btrx_attitude_gated`; the roll rate is gx/10).
+- In a coordinated banked turn, or while accelerating, the accelerometer still
+  reads near level. Only the roll-rate check works then, and a steady turn has
+  yaw rate but no roll rate. **Bit 3 is a weak gate.**
+- Bit 4 (IMU ok) means the latest `IMU_SAMPLE` said IMU ok **and** arrived
+  within 1 s (`last_imu_ms`). Bit 4 clear with port at −128 means pod B
+  dropped off the link, not a direction (`Steer.portBoardSilent`).
 
-| Session | Reports | Span | Extra delay, median / p90 / p99 / max | `age_ms` median | `steer_seq` gaps |
-| --- | --- | --- | --- | --- | --- |
-| 18:50 | 1,522 | 26 min | 75 / 119 / 232 / 689 ms | 81 ms | 3 |
-| 19:11 | 318 | 5 min | 54 / 103 / 392 / 1,032 ms | 51 ms | 0 |
+**DETECT (0x70).** Up to 7 records every 5 s, each covering a 5 s window. Each
+record's `meta` carries a **class_hint**, a different list from STEER's
+`dev_class`: unknown, Apple, Google, Samsung, hearing, tracker, fitness,
+other. The app names it `deviceClass`; that's a naming bug to fix later.
+`hits` is port + stbd combined, and `rx_mask` says which patches heard it.
+**No DETECT lines in tonight's logs.** BT RX says DETECT should arrive every
+5 s when anything is heard and will bench-check it. A 5 s window is 25–50 m of
+path, so DETECT is a poor geometry source: use it for the source list and
+class only.
 
-The extra delay includes any pod clock drift over the span. The 43 "rx
-backlog" frames that arrived when the link opened came in 5–20 s late and
-must not be timed by arrival.
+**HEALTH.** `clock_offset_ms` is the pod A/B cable clock offset
+(`btrx_clock.cpp`), not the tablet offset. `uptime_s` is useful for spotting
+restarts.
 
-Address types tonight across 1,840 live STEER: type 0: 345, type 1: 1,
-type 2: 707, type 3: 787. Most readings came from addresses that rotate.
+**Measured tonight** (A5 session logs 18:50 and 19:11, 1,840 live STEER
+frames). Delay over the smallest arrival − `window_end_ms`:
 
-**Drone pose the app has at a given time:**
+| | Median | p90 | p99 | Max |
+| --- | --- | --- | --- | --- |
+| Delay | 54–75 ms | 103–119 ms | 0.23–0.39 s | 1.03 s |
 
-- **RID track points:** `WaypointTrack.TrackPoint` (lat, lng, ele,
-  `timestampMsec`, `receivedAtMsec`) and `DroneMapPoint`.
-  `CtDroneSpec.PositionTelemetry.aircraftTrackDeg` is the **ground track**,
-  not nose heading. PROTOCOL.md: "Remote ID gives the drone's track. It does
-  not give nose heading." **[A]** Points arrive about once a second.
-- **DJI stream SEI** (`FfmpegTelemetry`): `headingDeg`, `cameraYawDeg`,
-  `gimbalPitchDeg`, lat/lon/alt, `sourceTimestampUs` and `renderLatencyMs`.
-  Available only while a stream with SEI is live and bound to the aircraft.
-  **[A]** `headingDeg` is the aircraft's nose yaw; this needs checking (Q1).
+- `steer_seq` gaps: 3 and 0.
+- 43 "backlog" frames came in 5–20 s late. In the app, backlog means frames
+  the Desk Pod queued while R2C was away (`BtrxClient`). PROTOCOL.md says
+  messages waiting for an app are dropped when no app is attached, so the
+  queue is short.
+- Address types: 0: 345, 1: 1, 2: 707, 3: 787.
+- Hits: the DJI source (0x08AA, `..493D`) gave 39–41 per patch per window;
+  phone-class sources often about 5.
+
+**Drone pose in the app.**
+
+- **RID track points** (`WaypointTrack.TrackPoint`: lat, lng, ele,
+  `timestampMsec`) give position. `PositionTelemetry.aircraftTrackDeg` is the
+  **ground track**.
+- **DJI stream SEI.** The DJI binary SEI path (`emit_dji_camera_telemetry`,
+  tag `dji-sei-245`) fills `cameraYawDeg` from the attitude block's azimuth and
+  passes **NaN for `headingDeg`**. The Nov 11 field logs show
+  `headingDeg=null`. The nine `djiAttitudeAnglesDeg` values are logged as
+  diagnostic only, and none is identified as aircraft yaw yet. Only the
+  text-key SEI path sets `headingDeg`, from a key containing "heading" **or
+  "course"**. **So the app does not decode DJI aircraft yaw today.**
 - **Pod:** roll and pitch only. There is no magnetometer, and gyro data
-  (`IMU_SAMPLE`) stays on the pod's internal cable. The pod can't give yaw.
+  doesn't leave the pod.
 
-## 2. Data model
+## 3. Heading rule (Ken, 8:06 PM PT)
 
-One `BtrxReading` per STEER that has a target (bit 0), and later one per
-DETECT record:
+The pod's front lines up with the drone's camera direction: the aircraft nose
+(yaw), not the direction of travel. The drone can move in any direction.
+**Geometry uses DJI aircraft yaw only, never the RID track.**
+
+Because aircraft yaw isn't decoded (section 2), v1 needs a small decode step
+first:
+
+1. Identify aircraft yaw in the tag-4 attitude block (the nine angles), using
+   a yaw-in-place flight with the gimbal held forward. Compare against
+   `cameraYawDeg`.
+2. Until then, `cameraYawDeg` stands in for nose yaw **only while the gimbal
+   faces forward [A]** (M4TD gimbal yaw behaviour not checked).
+
+Readings with no fresh yaw (older than 0.5 s at reading time) are shown as
+wedges with a gray "no heading" style and don't feed the grid.
+
+## 4. Data model
+
+One reading per STEER that has a target:
 
 ```
-t_ms            reading time, tablet clock (section 4); window centre
-pose            lat, lon, alt, nose heading, heading source (SEI | RID track), pose age
-rssi_port/stbd  dBm or null (−128); hits_port/stbd; peak
-delta_db        port − stbd (only when both patches heard and IMU ok)
-source_key      full 6-byte address (in memory only), plus addr_type
-group_id        per-source group (section 5)
-maker           company_id, dev_class
-flags           gated, imu_ok, imu_cal, linked, new
-pod_session     changes when window_end_ms goes backward (pod restart)
+t_ms             reading time on the tablet clock (section 6)
+pose             lat, lon, alt from RID; yaw, roll, pitch from DJI SEI; yaw rate over the window
+rssi_port/stbd   mean dB or null; hits_port/hits_stbd; peak
+source_id        short ID: base64 of a keyed hash of the full address (section 7)
+class            phone / watch / hearing aid / tag / unknown (section 7)
+company_id, addr_type, flags (gated, imu_ok, imu_cal, linked, new)
+pod_session      section 6
 ```
 
-A reading is used for geometry only when: the target was heard, it isn't
-gated, the IMU is ok (pod B present), both patches heard it (or one patch with
-2 or more hits, the overlay's existing rule), and the pose has a heading
-(section 4). The rest are kept for display only.
+The full address stays in memory only, where it's needed: grouping, the
+own-aircraft ignore list, and mutes.
 
-## 3. Geometry
+## 5. Model (v1)
 
-The two patches are tilted outboard (the design doc's default is 20°,
-adjustable). Δ = port − stbd gives which side the source is on and roughly how
-far off the fore/aft line, with about 0.12 dB/deg at 20° tilt (design doc
-§24.2, an estimate). It **does not give a bearing**: ahead and behind look the
-same, and fading of 5–10 dB per reading (design doc §8.7) swamps single
-readings. So each reading is a soft half-plane, not a ray.
+The grid is the same as r1 (local metres, 10 m cells, about 500 m around the
+path [A], per source), and so is the cost. Each cell gets a better likelihood:
 
-| Option | What it is | Pros | Cons |
-| --- | --- | --- | --- |
-| A. Raw wedges | Draw each reading as a translucent half-disc (side, Δ-weighted), fading with age | Simplest; shows the raw data honestly | Clutter; the eye has to find the intersection |
-| **B. Per-source score grid (v1)** | A grid of ground cells per source group; each reading adds a log-likelihood score to cells by side, with a weak range term | Shows where the half-planes agree; cheap; replayable; handles ahead/behind on its own as the path turns | Needs tuning; its range term is weak |
-| C. Bayesian grid (design doc §8.4b) | Full path-loss model with unknown P0 and n marginalised; adds "heard nothing here" | Principled; gives an ellipse and next leg (§8.5) | More parameters to tune and more compute; needs antenna patterns |
-| D. Particle filter (§8.4c) | Particles over x, y, P0, n | Handles a moving subject | Heaviest; v3 at best |
+- **Look-up.** For each cell, compute azimuth φ and depression ε from the
+  drone pose (position plus DJI yaw, roll and pitch). Look up the predicted Δ
+  and the summed gain Gp + Gs in a pattern table. v1 table: HPBW ≈ 90°
+  patterns at the as-built boresights. Replace it with the measured
+  Δ-versus-azimuth curve from flight test 1 (yaw in place).
+- **Δ term (robust).** Use a Student-t or Huber likelihood on
+  `Δ_obs − Δ_pred(φ, ε) − c0` with variance
+  `σ² = σ_fade² (1/N_port + 1/N_stbd) + σ_c0²`, where σ_fade ≈ 5.5 dB.
+  BT RX proposed `σ_fade²/N` with N the smaller hit count. Section 12 explains
+  the difference.
+- **One-patch readings.** When only one patch heard the source, treat the
+  other side as censored below the scan floor. That is strong side evidence
+  near abeam, but only with bit 4 set (pod B present) and at least 2 hits on
+  the heard patch. With fewer hits, a slow advertiser may simply not have been
+  caught on the other board.
+- **Range term (weak).** Path loss with unknown P0, using the summed-gain
+  look-up. Including the gain is what separates ahead from behind over several
+  readings.
+- **Negative evidence.** STEER carries only the strongest source, so a source
+  missing from a window is **not** evidence it isn't there. A no-target STEER
+  (bit 0 clear) is evidence: nothing above the floor was heard in that window.
+- **Roll correction:** not applied yet. The sign depends on elevation, and for
+  distant sources it's roughly Δ − S·roll (§41.2 switch stays off). Readings
+  are gated instead (below).
+- **Decay:** a 10 min half-life to start (Ken).
 
-**Recommendation: B for v1**, built so it can grow into C, since both use the
-same grid.
+**Gating in the app**, since bit 3 is weak:
 
-- **Grid:** local east/north metres, 10 m cells. The grid grows to cover
-  500 m around the path **[A]**. A score grid is kept only for groups with at
-  least 5 usable readings.
-- **Side term:** for each cell, β = the angle off the drone's fore/aft
-  vertical plane, positive to port. Score
-  `w × tanh(Δ / 4 dB) × sin(β)`, clipped. This is positive on the side the
-  reading points to and negative on the other side. With |Δ| < 2 dB (balanced)
-  it instead adds a small positive score near the fore/aft line, ahead and
-  behind: balanced readings are crossing lines too.
-- **Weight `w`:** grows with hits (more samples, less fading) and drops with
-  pose age and in turns (heading rate). Each reading's total is capped so one
-  strong reading can't dominate.
-- **Range term (weak prior):** strength fits a broad band of distances from the
-  drone under log-distance path loss (design doc §8.3: n ≈ 2.5 ± 0.5, P0
-  unknown). In v1 it only lowers the score of cells far beyond what the
-  strength allows. **[A]** No hard ring: body loss alone is 10–20 dB (§8.7).
-- **Decay:** each cell's score is multiplied by 0.5 per half-life (default
-  10 min **[A]**). This forgets old readings without smoothing new ones.
-- **Output per group:** a heat surface (normalised score), the top cell with
-  the area holding the top 50% of the score, the reading count and the last
-  heard time.
+- Drop a reading from the grid when DJI attitude over the window shows
+  |roll| > 10°, |pitch| > 15°, or yaw rate > 10°/s [A].
+- Also drop it when bit 3 is set or bit 4 is clear.
 
-## 4. Time alignment and pose
+**Smear:**
 
-- **Reading time.** Estimate the offset `off = min(arrival − window_end_ms)`
-  over a sliding 2 min window of live frames, and restart the estimate when
-  `window_end_ms` goes backward. Reading time is
-  `t = window_end_ms + off − 500 ms` (the window's centre). The minimum
-  absorbs the fixed air time and relay delay, and the sliding window tracks
-  clock drift. Backlog frames are timed the same way once `off` is known, and
-  dropped before then.
-- **Error from LoRa and the relay.** Using arrival time alone would add the
-  measured 54–75 ms median (p99 0.23–0.39 s, max about 1 s). At 6 m/s that is
-  0.3–0.5 m median and about 2.5 m at p99. The 1 s window is itself a smear of
-  about 6 m of path. Both are small next to RF geometry (tens of metres,
-  §4.5). The `off` estimate removes most of the delay anyway.
-- **Pose at reading time.** Interpolate linearly between the RID points either
-  side of `t` (§4.5), using RID `timestampMsec`, not `receivedAtMsec`. Reject
-  the reading if the gap between points is over 3 s.
-- **Heading** matters most: a 10° error moves the half-plane edge about 35 m
-  at 200 m. Use SEI `headingDeg` when it is fresh (≤ 1 s, bound to this
-  aircraft). Otherwise use the RID ground track only when ground speed is at
-  least 3 m/s **[A]**, and drop the reading's geometry in a hover with no SEI.
-  **[A]** The pod's fore/aft axis is aligned with the aircraft nose.
+- The 1 s window is 5–10 m of path, which is fine.
+- A 30°/s turn smears heading by 30° within one window; that is what the yaw
+  rate gate is for.
 
-## 5. Filtering and source grouping
+## 6. Time and sessions
 
-- **Own aircraft.** Tonight the DJI source was company 0x08AA, `..493D`,
-  addr_type 0 (public, stable). Developer Tools gets "Mark as own aircraft",
-  which stores the public address plus company ID. That source is left out of
-  the layer and can also go on the pod's ignore list (`FILTER_LIST`, static
-  identifiers only), so it never wins STEER. A company-ID-only rule (0x08AA)
-  stays a separate switch, since it would also hide other DJI aircraft.
-  **[A]** The M4TD's in-flight emission, with props spinning, is not
-  characterised yet (Ken saw nothing strong with props stopped).
-- **Groups.** The key is the full address. The pod's `src_id` with bit 2
-  (linked) joins address changes the pod judged to be the same device (rules
-  in PROTOCOL.md: same company, kind and first 2 bytes of manufacturer data,
-  the old address quiet ≤ 3 s before the new one, within 6 dB, exactly one
-  candidate). The app adds the design doc §8.8 continuation rule using DETECT
-  `fp_hash` (same company and kind, within 60 s, never heard together) and
-  marks the result "probable". Type 3 sources with no company ID (tonight's
-  likely watch) can't be linked reliably and show as short separate tracks.
-  `src_id` is never a key across pod restarts.
+- **Now.** Estimate the offset as the minimum of `arrival − window_end_ms`
+  over a sliding 2 min window. Reading time is
+  `window_end_ms + offset − 500 ms`, the window's centre.
+- **Better, no firmware change.** `TIME_PING` (0x30) and `TIME_PONG` (0x31)
+  exist. The 16-byte payload is seq, t1, t2, t3. The Drone Pod answers on the
+  mesh with `t2 = now` and `t3 = millis()`, pod A's clock, the same clock as
+  `window_end_ms` (`BtrxModule::on_mesh_frame`, any role, no extra policy past
+  TX on). The app already names these types. A min-RTT ping every 30 s [A]
+  gives the offset directly. One thing not checked: that the Desk Pod relays a
+  ping from the app to the Drone Pod. The bench check settles it. A Desk Pod
+  receive stamp isn't needed **[BT]**.
+- **Backlog frames:** buffer them, and time them once live frames (or a pong)
+  give the offset. Don't time them by arrival.
+- **New pod session** when any of these happens:
+  - `window_end_ms` goes backward;
+  - the arrival offset jumps by more than 2 s [A];
+  - HEALTH `uptime_s` drops.
 
-## 6. Rendering
+  `window_end_ms` alone can miss a restart if the pod ran longer than it had
+  before.
+- **Error.** Arrival-only timing adds 54–75 ms median (about 0.3–0.5 m at
+  6 m/s). The min-offset or ping estimate removes most of it.
+- **Pose interpolation.** Interpolate RID positions linearly at reading time
+  (reject gaps over 3 s), and DJI attitude likewise from SEI
+  `sourceTimestampUs` mapped to the tablet clock [A].
 
-- **Where:** a local overlay on the in-app map: Android `SplitMapPane`
-  (StreamsScreen), iPad `RIDTrackMapView`. Per group:
-  - a heat surface in the group's palette colour (the same palette as the
-    overlay where `src_id` matches);
-  - the top-cell marker with maker, kind, last 4 address characters, count
-    and age;
-  - optionally the last 30 s of raw half-planes as thin wedges, for checking.
-- **Decay:** opacity follows the decayed score. Nothing is smoothed on top of
-  it.
-- **CalTopo:** nothing goes up automatically in v1. A later "Send estimate to
-  CalTopo" (polygon of the top 50% area plus marker, per §8.5) would go
-  through the existing clue workflow, only on an operator tap (Q8).
-- **Stream view:** unchanged.
+## 7. Sources, IDs and class
 
-## 7. Performance (standing rule)
+- **Key: the full address, never `src_id`.** `src_id` restarts at power-up and
+  changes after 60 s unheard. The pod's bit 2 links are suggestions only.
+- **Shown ID (Ken):** a short base64 ID from a keyed hash of the full address,
+  for example 6 characters. The key is per incident and never saved, so logs
+  and replays can group sources without holding bystanders' addresses. That
+  keeps today's rule (`BtrxFrameLog`: no full addresses in shared logs).
+- **Class, shown first (Ken):** phone / watch / hearing aid / tag / unknown,
+  from STEER `dev_class`, then DETECT `class_hint`, then company ID
+  (`BtrxMakers`) and DETECT service UUIDs (hearing 0xFDF0/0x1854/0x1850/0x184E,
+  heart rate 0x180D, Tile 0xFEED/0xFEEC, per PROTOCOL.md). BLE Appearance isn't
+  carried in STEER or DETECT. That would be a firmware option.
+- **Rotation (warnings).**
+  - The pod's link rule needs the same 2-byte manufacturer-data prefix. For
+    Apple that's the Continuity type and length, which every nearby iPhone
+    shares **[BT]**, so false links are possible. The app marks Apple links
+    "probable".
+  - AirTags away from their owner rotate about every 24 h **[BT]**, so they
+    work well as a single key.
+  - Type 3 sources with no maker (tonight's likely watch) stay as short
+    separate tracks.
+- **Own aircraft.** Ignore it by **full address**, never by company ID (0x08AA
+  is DJI; other DJI aircraft must still show).
+  - The M4TD has Bluetooth per FCC **[BT]**; its RID goes over Wi-Fi **[BT]**.
+  - Whether `..493D` is the aircraft or the RC Plus 2 is unverified.
+  - "Mark as own aircraft" in the BTRX pane can also push the address to the
+    pod's ignore list (`FILTER_LIST`, static identifiers only).
 
-- All of it runs on a background worker: Android a single-thread executor,
-  iPad a serial queue or actor. The BTRX model hands each reading over without
-  blocking.
-- The work is small: about 1 reading per second per source, 10 m cells over a
-  1 km square (10,000 cells), so a few hundred microseconds per reading
-  **[A]**.
-- The worker publishes an immutable snapshot at most once a second. The map
-  draws it as a bitmap or polygon overlay. If the worker falls behind it drops
-  readings and never queues them.
-- The layer starts only when switched on in Developer Tools, and never at app
-  start. Stream server, pod link, overlay and live views keep priority.
+## 8. Single readings and turn-and-compare
 
-## 8. Parity and placement
+**Per-sample noise is 5–6 dB [BT], so a 1–2 dB Δ from one sample means
+nothing.** Each reading is still plotted at once as a faint wedge, with
+opacity set by its confidence:
 
-- The same pure logic lives in `BtrxMapLayer.kt` and R2CCore
-  `BtrxMapLayer.swift`, with shared test vectors, as with `BtrxSteering`.
-- One Developer Tools switch, "BTRX map layer (experimental)", on both
-  platforms, plus "Mark as own aircraft" in the BTRX pane. Ledger entry when
-  built.
+- σ_Δ = 5.5 · √(1/N_port + 1/N_stbd) dB;
+- confidence ≈ |Δ − c0| / σ_Δ, clipped to 0–3;
+- wedge direction from the sign of Δ (port or starboard of the DJI yaw);
+- wedge width from the pattern table.
 
-## 9. Validation
+**Samples needed** (σ = 5.5 dB per sample, N per patch, independent samples
+**[A]**; samples from a hovering drone are correlated, so the real N needed is
+larger):
 
-1. **Replay tonight's logs** (bench; the pod didn't move; no flight):
-   - check the time mapping (offset stability, backlog handling, the 3
-     `steer_seq` gaps);
-   - check grouping (address-type counts, link rate, how many short type 3
-     tracks);
-   - check that the own-aircraft filter removes `..493D`.
-   - Geometry can't be checked from these logs, because there was no pose.
-2. **Synthetic tests:** simulated legs, a source at a known point, log-distance
-   RSSI with 6–8 dB fading, the 0.12 dB/deg Δ slope. Pass if the top cell is
-   within 30 m after two crossing legs, and no mirror solution remains after a
-   turn **[A]**.
-3. **Rotation test (bench or hover):** source fixed, rotate the pod 360° in
-   30° steps with heading known. Check Δ's sign and sine shape (design doc
-   §24.2 sweep), the gating, and the roll sign.
-4. **Field test:** a known source with a stable address (static-address beacon
-   or a phone app) at a surveyed point. First carry the pod along a path with
-   a pose source; then fly lawnmower and crossing legs at 30 m AGL and
-   5 m/s. Log the sessions with keyed address hashes (Q2) so they can be
-   replayed.
+| N per patch | σ_Δ | Bearing σ at 0.25 dB/deg [A] |
+| --- | --- | --- |
+| 1 | 7.8 dB | not usable |
+| 5 | 3.5 dB | ~14° |
+| 15 | 2.0 dB | ~8° |
+| 40 | 1.2 dB | ~5° |
+| 60 | 1.0 dB | ~4° |
+| 120 | 0.7 dB | ~3° |
 
-## 10. Open questions
+Rule of thumb: N ≈ 2 · (5.5 / target σ_Δ)². That means about 15 samples per
+patch for 2 dB and about 60 for 1 dB. Tonight's DJI source gave about 40 per
+patch per second, so about 1.2 dB per STEER. A phone at 5 hits per window
+takes about 12 s of hovering for 1 dB.
 
-For Ken:
+**Turn-and-compare (null-seeking).**
 
-1. **Q1.** Is the pod mounted with fore/aft on the aircraft nose axis? Is SEI
-   `headingDeg` the aircraft's yaw? (Check against `djiAttitudeAnglesDeg` on a
-   flight log.)
-2. **Q2.** Can the layer use the full address in memory, and write a keyed hash
-   to the log (with a per-incident key that is never saved) so replays can
-   group sources? Today's rule is last 4 only.
-3. **Q8.** Local-only for v1, or also an operator-tap CalTopo push?
-4. Is a 10 min default decay half-life right?
+1. Hover, hold yaw, and average Δ over K windows until σ_Δ is about 1 dB.
+2. Yaw 20° to port, hold, and average again.
+3. The change ΔΔ ≈ S × 20° (about 5 dB at 0.25 dB/deg). **Board offset c0 and
+   P0 cancel in the difference**, so two holds also measure S on this source.
+4. The zero crossing is at yaw ψ* = ψ0 − (Δ0 − c0)/S. A third hold near ψ*
+   confirms it: Δ ≈ 0 means the source is on the nose or the tail. Higher
+   total level means the nose; the tail is both back lobes.
+5. To see a 5 dB change at 3σ, the difference needs σ ≤ 1.7 dB, so each hold
+   needs σ_Δ ≤ 1.2 dB: about 40 samples per patch. That's about 1 s for a fast
+   advertiser and about 8 s for a phone.
 
-For BT RX (firmware):
+The map shows each hold's averaged Δ as one stronger wedge and the fitted
+bearing as a line with its ±σ. The grid uses the same holds as ordinary
+readings. Yaw-hold detection uses the DJI yaw (steady within 3° [A]).
 
-5. **Q3.** Should the Desk Pod stamp its receive time, or should `TIME` sync
-   be finished? Not needed for v1 (the offset estimate works), but it would
-   remove the guesswork.
-6. **Q4.** Should DETECT arrive at the app? None appeared in tonight's logs.
-   Can STEER carry the top 2–3 sources, or a 1 s DETECT for the current
-   target?
-7. **Q5.** Could STEER carry the window's yaw rate (from pod B's gyro), so
-   readings taken in turns can be dropped without depending on SEI?
-8. **Q6.** What are the measured patch beamwidth and current tilt? They set the
-   half-plane width and the dB/deg slope.
-9. **Q7.** Does the M4TD emit BLE in flight (props spinning)? Is its address
-   stable across power cycles? That decides how strong the own-aircraft
-   filter needs to be.
+## 9. Rendering
+
+- A local overlay on the in-app map: Android `SplitMapPane`, iPad
+  `RIDTrackMapView`. Per source it shows:
+  - the heat surface in the source's colour;
+  - the top-cell marker labelled with class, short ID, count and age;
+  - faint per-reading wedges for the last 30 s;
+  - turn-and-compare bearing lines.
+- No smoothing and nothing sent to CalTopo.
+- The stream overlay is unchanged.
+
+## 10. Performance, parity, placement
+
+- All computation runs on a background worker (an Android single-thread
+  executor; an iPad serial queue or actor). The worker drops readings rather
+  than queueing them, and publishes a snapshot at most once a second.
+- The layer starts only from its Developer Tools switch, never at app start.
+  The stream server, pod link, overlay and live views keep priority.
+- Shared logic will live in `BtrxMapLayer.kt` and `BtrxMapLayer.swift` with
+  shared test vectors, as with `BtrxSteering`. The DJI SEI decoder is shared C
+  (the Android `ffmpeg_bridge.c` / `native/R2CDJICameraTelemetry.h`; the iPad
+  uses `R2CFFmpegMobile.c`), so an aircraft-yaw decode lands on both.
+
+## 11. Validation
+
+1. **Replay tonight's logs:** check timing, backlog buffering, session
+   detection, the short IDs and the own-aircraft filter. They can't check
+   geometry: the pod sat still and there was no pose.
+2. **Synthetic tests:** the pattern table, 5.5 dB per-sample noise, and
+   independent boards. Pass if the top cell is within 30 m after two crossing
+   legs [A], no mirror solution remains, and turn-and-compare recovers a set
+   bearing within 2σ.
+3. **Flight test 1 (yaw in place):** a source at a known bearing and distance.
+   Hover and step yaw in 30° increments, holding each step for about 40
+   samples per patch. This gives the Δ-versus-azimuth table, c0, S, and the
+   aircraft-yaw decode check.
+4. **Field test:** a stable-address source at a surveyed point, with
+   lawnmower and crossing legs, then turn-and-compare holds. Logs keep the
+   short IDs only.
+
+## 12. Review points: adopted, qualified, not verified
+
+Adopted after checking the code or the design doc:
+
+- **1:** geometry (§40).
+- **2:** signs.
+- **6:** firmware attitude, gate and snapshot.
+- **7:** smear.
+- **9:** `src_id` lifetime; uptime for restarts.
+- **12:** `steer_seq` increments after hand-off.
+- **14:** class_hint, combined `hits`, `rx_mask`, `clock_offset_ms`.
+- **Firmware answer:** the TIME_PING/PONG handler.
+
+Qualified:
+
+- **3:** ahead versus behind from total level holds only across readings,
+  since P0 is unknown.
+- **4:**
+  - Var(Δ) of two independent means is `σ²(1/N_port + 1/N_stbd)`.
+    `σ²/min(N)` understates it by up to 2× when the counts are equal. This
+    doc uses the sum, which is the same idea.
+  - One-patch censoring only with bit 4 set and at least 2 hits.
+- **5 and Ken's rule:** "use DJI aircraft yaw" needs decode work first. Today
+  the DJI SEI path gives camera azimuth only; `headingDeg` is NaN or null.
+- **8:** bit 4 also requires the sample's own IMU-ok flag, not just arrival
+  within 1 s.
+- **11:** consistent with app code (the Desk Pod queue while R2C is away) and
+  with PROTOCOL.md (the queue is dropped when no app is attached). Queue depth
+  not checked.
+- **13:** independent boards checked; "different channels" and the 5–6 dB
+  figure are BT RX's.
+
+Not verifiable in either repo (adopted as **[BT]**):
+
+- **10:** the Apple prefix is shared by all iPhones; AirTag rotation is
+  about 24 h.
+- The M4TD FCC Bluetooth and Wi-Fi RID facts.
+- Whether the Desk Pod relays TIME_PING (bench check).
+
+## 13. Firmware options for Ken (not decided)
+
+| Option | Cost (BT RX) | Gain |
+| --- | --- | --- |
+| A. Top 2–3 sources per STEER | ~7.9–9.4% air time; needs the STEER cap raised from 8% to 10%, or DETECT at 10 s | More sources get 1 s geometry, not just the strongest |
+| B. STEER carries yaw rate and max roll rate over the window, and bit 3 holds for the whole window | 0–2.6 ms CPU, a few bytes | Gate turns without depending on the DJI stream; fixes the send-time snapshot |
+| C. Carry BLE Appearance (or an appearance-derived class) | not estimated | Better phone/watch/hearing-aid class |
+| D. Desk Pod receive stamp | not worth it (BT RX) | TIME_PING already covers it |
+
+## 14. Open questions
+
+Answered by Ken (8:06 PM PT):
+
+- Pod front = camera/nose direction; use aircraft yaw, never track.
+- A short base64 ID is fine; full address only where needed; class matters
+  most.
+- No BTRX data to CalTopo.
+- Fade 10 min to start.
+
+Still open:
+
+- **Ken:** do pilots hover and yaw for turn-and-compare, or should the layer
+  rely on passes only? Which firmware options (section 13), if any?
+- **Ken:** is the gimbal held forward during searches, so camera yaw can stand
+  in until aircraft yaw is decoded?
+- **BT RX:** bench-check that DETECT arrives, and that a TIME_PING from the
+  app reaches the Drone Pod. Which board is `..493D` (aircraft or RC Plus 2)?
+- **App:** find aircraft yaw in the DJI tag-4 attitude block (flight test 1).
