@@ -14,9 +14,14 @@ read with `git show`) and the RID2Caltopo code. Section 12 lists where this
 doc qualifies or does not adopt a point. **[A]** marks an assumption; **[BT]**
 marks a BT RX statement that could not be checked in either repo.
 
-**Milestone 1 is the bearing layer** (`BEARING-LAYER-spec.md`): bearing rays
-from hover-and-yaw stations, crossed between stations, using the same data
-model. The grid in section 5 is milestone 2.
+**Milestone 1 is the bearing layer** (`BEARING-LAYER-spec.md` r2,
+November 13): a **continuous** layer with no hover stations and no button.
+While it is on, every STEER report is posed at its own time and paints a
+faint wedge into a per-source grid that darkens where reports agree. That
+grid **is** the section 5 model, so the former milestone 2 is folded into
+milestone 1. The core is a shared C library (C11, stdlib, pthreads) with thin
+Android and iPad layers; the bearing-layer spec supersedes sections 5, 6, 8
+and 10 below where they differ.
 
 Why: the overlay shows one source with hysteresis and smoothing
 (`BtrxSteering`: a side change needs two reports; EMA plus slew limit on the
@@ -340,9 +345,9 @@ takes about 12 s of hovering for 1 dB.
    needs σ_Δ ≤ 1.2 dB: about 40 samples per patch. That's about 1 s for a fast
    advertiser and about 8 s for a phone.
 
-The map shows each hold's averaged Δ as one stronger wedge and the fitted
-bearing as a line with its ±σ. The grid uses the same holds as ordinary
-readings. Yaw-hold detection uses the DJI yaw (steady within 3° [A]).
+In the continuous layer (`BEARING-LAYER-spec.md` r2) holds need no
+detection or special drawing: each hold's reports are ordinary readings, and
+their wedges stack up and darken on the grid like any others.
 
 ## 9. Rendering
 
@@ -350,12 +355,13 @@ readings. Yaw-hold detection uses the DJI yaw (steady within 3° [A]).
   `RIDTrackMapView`. Per source it shows:
   - the heat surface in the source's colour;
   - the top-cell marker labelled with class, short ID, count and age;
-  - faint per-reading wedges for the last 30 s;
-  - turn-and-compare bearing lines.
+  - faint per-reading wedges, accumulated and fading with the 10 min
+    half-life (no separate bearing lines).
 - No smoothing and nothing sent to CalTopo.
 - The stream overlay is unchanged.
-- Milestone 1 rendering (station rays, wedges, crossings) is specified in
-  `BEARING-LAYER-spec.md` section 3.
+- Milestone 1 rendering (accumulated wedges, estimate and ellipse) is
+  specified in `BEARING-LAYER-spec.md` r2 section 5. The library renders the
+  raster; the platforms only show it.
 
 ## 10. Performance, parity, placement
 
@@ -364,9 +370,11 @@ readings. Yaw-hold detection uses the DJI yaw (steady within 3° [A]).
   than queueing them, and publishes a snapshot at most once a second.
 - The layer starts only from its Developer Tools switch, never at app start.
   The stream server, pod link, overlay and live views keep priority.
-- Shared logic will live in `BtrxMapLayer.kt` and `BtrxMapLayer.swift` with
-  shared test vectors, as with `BtrxSteering`. The DJI SEI decoder is shared C
-  (the Android `ffmpeg_bridge.c` / `native/R2CDJICameraTelemetry.h`; the iPad
+- Shared logic will live in the C library `btrx_bearing`
+  (`apple/Sources/CBtrxBearing`, built by SwiftPM and by the Android CMake
+  file, as CAOL is), with thin `BtrxBearingLayer.kt` / `BtrxBearingLayer.swift`
+  wrappers and shared test vectors (`BEARING-LAYER-spec.md` r2 sections
+  6–9). The DJI SEI decoder is shared C (the Android `ffmpeg_bridge.c` / `native/R2CDJICameraTelemetry.h`; the iPad
   uses `R2CFFmpegMobile.c`), so the yaw field and its true-north helper are
   the same on both.
 
@@ -451,8 +459,9 @@ Answered by Ken (8:06 PM PT):
 
 Still open:
 
-- **Ken:** do pilots hover and yaw for turn-and-compare, or should the layer
-  rely on passes only? Which firmware options (section 13), if any?
+- **Ken:** which firmware options (section 13), if any? (Hover versus passes
+  is answered, November 13: the layer runs continuously with no enforced
+  hover; hover-and-yaw just sharpens a spot. See `BEARING-LAYER-spec.md` r2.)
 - **BT RX:** bench-check that DETECT arrives, and that a TIME_PING from the
   app reaches the Drone Pod. Which board is `..493D` (aircraft or RC Plus 2)?
 - **Outdoor landmark check** of the yaw's north offset (indoors read 308.8°

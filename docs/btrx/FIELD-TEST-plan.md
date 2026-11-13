@@ -101,9 +101,10 @@ preference).**
   20° sector, and the map layer's yaw-rate gate (10°/s **[A]**) drops those
   readings. So the quick look runs at its gate, and the bearing pass under it.
 - **Where Δ crosses zero:** stop yaw there and do (e).
-- **Output:** a bearing (nose or tail decided by total level) and a rough
-  range from strength. Repeat from a second edge point to cross the
-  bearings.
+- **Output:** the bearing layer (`BEARING-LAYER-spec.md` r2, continuous, no
+  button) paints the hover spot's wedges, which darken along the bearing as
+  the yaw passes add up. Repeat from a second edge point: the two spots'
+  wedges darken where they cross. Record the layer's estimate and ellipse.
 - **Multiple sources:** STEER shows only the strongest, so mute it from the
   BTRX pane and sweep again to find the next. DETECT's 5 s windows (30° of
   smear at 6°/s) give a presence list only.
