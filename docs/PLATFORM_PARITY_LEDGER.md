@@ -12,6 +12,25 @@ Project-only engineering record; do not package in the app, copy into store meta
 
 ## Cumulative release history
 
+### 2.6.0 (445) — Stream startup: listener before housekeeping (November 12, 2026)
+
+- Both, same rules: MediaMTX starts on a non-scanning storage estimate (live, last or
+  persisted usage plus free space; 90% allowance; 1 GB reserve) with record settings
+  written but held off; the retention sweep runs afterwards. Storage and capture switch
+  recording via `PATCH /v3/config/pathdefaults/patch` (Android
+  `MediaMTXRecordingReconciler`, iPad `MediaMTXRecordingReconciler` actor), not by
+  restarting; a restart is only the fallback when `record=no` is refused after retries.
+  Android 2458e465, iPad 74513db6.
+- Android only: recorder prep is off the start path (2458e465); clue saves and the
+  storage snapshot never wait on cleanup (0b761264); the FFmpeg bridge loads on a
+  background thread at process start (7354bb68). iPad: no equivalent lock or
+  main-thread native load.
+- iPad: recording finalization runs on a serial background chain so stream lifecycle
+  events are not queued behind normalize (97c9e380). Android already finalizes on
+  `recordingSyncExecutor`.
+- Evidence and estimates: `docs/validation/2026-11-12-stream-startup-housekeeping.md`.
+  Not yet installed on either device.
+
 ### 2.6.0 (445) — BTRX steering: NO PORT, clue line, hide/show (November 12, 2026)
 
 - Both, same logic and words: a STEER with port -128 and IMU-ok clear
