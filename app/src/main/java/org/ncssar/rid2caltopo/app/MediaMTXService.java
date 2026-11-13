@@ -65,6 +65,19 @@ public class MediaMTXService extends Service {
                 thread.setDaemon(true);
                 return thread;
             });
+    private static final ExecutorService recordingControlExecutor =
+            Executors.newSingleThreadExecutor(runnable -> {
+                Thread thread = new Thread(runnable, "mediamtx-recording-control");
+                thread.setDaemon(true);
+                return thread;
+            });
+    // Storage, capture and recorder readiness toggle recording through the MediaMTX API,
+    // never by restarting the server. A restart is only the fallback for turning it off.
+    private final org.ncssar.rid2caltopo.data.MediaMTXRecordingReconciler recordingReconciler =
+            new org.ncssar.rid2caltopo.data.MediaMTXRecordingReconciler(
+                    new org.ncssar.rid2caltopo.data.MediaMTXHttpRecordingApi(),
+                    recordingControlExecutor,
+                    () -> enqueueNativeControl(NativeControlAction.RESTART));
     private static boolean listenersRegistered = false;
     private static boolean recordingListenerRegistered = false;
     private static int processPid = 0;
@@ -213,9 +226,10 @@ public class MediaMTXService extends Service {
             if (isServiceDestroying()) return;
             boolean blocked = FlightStorage.INSTANCE.getCaptureBlocked();
             if (storageCaptureBlocked != blocked) {
-                storageCaptureBlocked = blocked;
-                if (CaltopoClient.GetCaptureVideoStreamsFlag()) enqueueNativeControl(NativeControlAction.RESTART);
+                CTDebug(TAG, "Storage capture " + (blocked ? "blocked" : "allowed") + "; updating recording via API");
             }
+            storageCaptureBlocked = blocked;
+            recordingReconciler.updateStorageBlocked(blocked);
         });
     }
 
@@ -288,6 +302,7 @@ public class MediaMTXService extends Service {
         processPid = 0;
         stopForegroundSafely();
         final Context appContext = getApplicationContext();
+        recordingReconciler.onServerStopped();
         nativeControlExecutor.execute(() -> {
             MediaMTXNative.stop();
             // Android 14+ enforces a short foreground-service shutdown timeout. Keep the
@@ -418,6 +433,7 @@ public class MediaMTXService extends Service {
             expectedRestartExitPid = restartingPid;
         }
         org.ncssar.rid2caltopo.video.StreamRegistry.onServerStopped();
+        recordingReconciler.onServerStopped();
         MediaMTXNative.stop();
         if (!waitForNativeServerStop(restartingPid)) {
             expectedRestartExitPid = 0;
@@ -469,13 +485,23 @@ public class MediaMTXService extends Service {
             if (isServiceDestroying()) return;
 
             File bin = extractAsset("mediamtx");
-            File cfg = buildConfigAsset("mediamtx.yml");
+            // Nothing below scans Archive Dir or prepares recorder state: the listener opens
+            // first, and recording is switched on through the API once both are confirmed.
+            FlightStorage.Snapshot storage = FlightStorage.recordingStartEstimate(appContext);
+            storageCaptureBlocked = storage.getBlocked();
+            final boolean captureEnabled = CaltopoClient.GetCaptureVideoStreamsFlag();
+            final boolean recorderReady =
+                    org.ncssar.rid2caltopo.storage.OperationalStorage.INSTANCE.recorderReadyWithoutWaiting();
+            final File recordingRoot = MediaMTXRecordingSync.recordingStagingDirWithoutPreparing(appContext);
+            final boolean recordNow = captureEnabled && !storage.getBlocked() && recorderReady;
+            if (storage.getBlocked() && captureEnabled) {
+                CaltopoClient.ShowToast(storage.getMessage());
+            }
+            File cfg = buildConfigAsset("mediamtx.yml", recordingRoot, captureEnabled, recordNow);
             if (isServiceDestroying()) return;
 
-            CTDebug(TAG, "Starting MediaMTX Server...");
-            if (CaltopoClient.GetArchiveUri() != null) {
-                org.ncssar.rid2caltopo.storage.OperationalStorage.INSTANCE.requireRecorderReady(getApplicationContext());
-            }
+            CTDebug(TAG, "Starting MediaMTX Server... record=" + recordNow
+                    + " storageBlocked=" + storage.getBlocked() + " recorderReady=" + recorderReady);
 
             // Shutdown cleanup is queued on this same executor, so it cannot call stop until
             // this start returns. Avoid holding nativeControlLock across the JNI call: onDestroy
@@ -487,6 +513,17 @@ public class MediaMTXService extends Service {
                 serviceRunning = false;
                 MediaMTXStatus.onServerExited("failed to start");
                 stopSelf();
+                return;
+            }
+            recordingReconciler.onServerStarted(
+                    new org.ncssar.rid2caltopo.data.MediaMTXRecordingState(recordNow, recordingRoot),
+                    captureEnabled, storageCaptureBlocked, recorderReady ? recordingRoot : null);
+            // Housekeeping after the listener is open: confirm storage, prepare the recorder
+            // (then recording can go on), and normalize leftovers.
+            FlightStorage.requestRecordingStartCheck(appContext);
+            if (!recorderReady) {
+                recordingSyncExecutor.execute(() ->
+                        recordingReconciler.updateRecorderRoot(MediaMTXRecordingSync.getRecordingStagingDir(appContext)));
             }
             if (!orphans.isEmpty()) {
                 CTDebug(TAG, "Syncing " + orphans.size() + " orphaned recording path(s) after server start");
@@ -680,26 +717,22 @@ public class MediaMTXService extends Service {
         }
     }
 
-    private File buildConfigAsset(String assetName) throws IOException {
+    private File buildConfigAsset(String assetName, File recordingRoot, boolean captureEnabled, boolean recordNow)
+            throws IOException {
         File etcDir = new File(getFilesDir(), "etc");
         checkFile(etcDir);
         etcDir.mkdirs();
         File outFile = new File(etcDir, assetName);
         String baseConfig = loadAssetText(assetName);
-        File recordingRoot = MediaMTXRecordingSync.getRecordingStagingDir(getApplicationContext());
         if (!recordingRoot.exists() && !recordingRoot.mkdirs()) {
             CTError(TAG, "Unable to create MediaMTX recording staging dir " + recordingRoot);
         }
-        FlightStorage.Snapshot storage = FlightStorage.prepareRecordingStart(getApplicationContext());
-        storageCaptureBlocked = storage.getBlocked();
-        if (storage.getBlocked() && CaltopoClient.GetCaptureVideoStreamsFlag()) {
-            CaltopoClient.ShowToast(storage.getMessage());
-        }
         String runtimeConfig = MediaMTXConfig.buildRuntimeConfig(
                 baseConfig,
-                CaltopoClient.GetCaptureVideoStreamsFlag() && !storage.getBlocked(),
+                captureEnabled,
                 recordingRoot,
-                org.ncssar.rid2caltopo.data.MediaServerAccessPrefs.isRestricted(getApplicationContext())
+                org.ncssar.rid2caltopo.data.MediaServerAccessPrefs.isRestricted(getApplicationContext()),
+                recordNow
         );
         try (OutputStream out = new FileOutputStream(outFile)) {
             out.write(runtimeConfig.getBytes(StandardCharsets.UTF_8));

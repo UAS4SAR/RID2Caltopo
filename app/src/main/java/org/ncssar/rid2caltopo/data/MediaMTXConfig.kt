@@ -3,14 +3,27 @@ package org.ncssar.rid2caltopo.data
 import java.io.File
 
 object MediaMTXConfig {
-    private const val RECORD_FORMAT_FMP4 = "fmp4"
+    const val RECORD_FORMAT_FMP4 = "fmp4"
 
+    /** MediaMTX record path template under a staging root. */
     @JvmStatic
+    fun recordPathFor(recordingRoot: File): String =
+        File(recordingRoot, "%path/%path_%Y-%m-%d_%H-%M-%S-%f").absolutePath
+
+    /**
+     * [captureEnabled] is the user's capture setting. [recordNow] says whether recording
+     * starts on immediately; when capture is on but storage or recorder readiness is still
+     * being checked, the record settings are written with `record: no` and switched on
+     * later through the API (see [MediaMTXRecordingReconciler]).
+     */
+    @JvmStatic
+    @JvmOverloads
     fun buildRuntimeConfig(
         baseConfig: String,
         captureEnabled: Boolean,
         recordingRoot: File,
         restrictNetworkAccess: Boolean = true,
+        recordNow: Boolean = captureEnabled,
     ): String {
         val normalizedBase = withNetworkAccess(baseConfig, restrictNetworkAccess).trimEnd()
         val logLevel = if (CaltopoClient.DebugLevel >= CaltopoClient.DebugLevelDebug) "debug" else "info"
@@ -25,11 +38,8 @@ object MediaMTXConfig {
             }
         }
 
-        val recordPath = File(
-            recordingRoot,
-            "%path/%path_%Y-%m-%d_%H-%M-%S-%f",
-        ).absolutePath
-        recordSettings.add("record: yes")
+        val recordPath = recordPathFor(recordingRoot)
+        recordSettings.add(if (recordNow) "record: yes" else "record: no")
         recordSettings.add("recordPath: '${yamlSingleQuoted(recordPath)}'")
         recordSettings.add("recordFormat: $RECORD_FORMAT_FMP4")
         recordSettings.add("recordDeleteAfter: 0s")

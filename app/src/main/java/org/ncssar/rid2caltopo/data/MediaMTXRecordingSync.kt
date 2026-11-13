@@ -33,6 +33,19 @@ object MediaMTXRecordingSync {
         return File(context.filesDir, "mediamtx-recordings")
     }
 
+    /**
+     * The staging root [getRecordingStagingDir] will choose, without preparing recorder
+     * state in Archive Dir. Used to write the MediaMTX config before the listener opens;
+     * recording itself is only switched on once the recorder is ready.
+     */
+    @JvmStatic
+    fun recordingStagingDirWithoutPreparing(context: Context): File =
+        if (CaltopoClient.GetArchiveUri() == null) {
+            org.ncssar.rid2caltopo.storage.TemporaryStorage.directory(context, "recording-staging")
+        } else {
+            File(context.filesDir, "mediamtx-recordings")
+        }
+
     @JvmStatic
     @JvmOverloads
     @Synchronized
@@ -68,7 +81,10 @@ object MediaMTXRecordingSync {
     @JvmStatic
     fun snapshotOrphanedRecordings(context: Context): List<OrphanedRecording> =
         try {
-            snapshotOrphanedRecordings(getRecordingStagingDir(context))
+            // Never prepares Archive Dir state: this runs before the RTMP listener opens.
+            // Temporary staging is per process, so only the app-private root can hold orphans.
+            if (CaltopoClient.GetArchiveUri() == null) emptyList()
+            else snapshotOrphanedRecordings(File(context.filesDir, "mediamtx-recordings"))
         } catch (e: Exception) {
             CaltopoClient.CTError(TAG, "snapshotOrphanedRecordings() raised", e)
             emptyList()

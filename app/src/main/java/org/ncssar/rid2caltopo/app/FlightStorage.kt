@@ -287,6 +287,7 @@ object FlightStorage {
         }
     }
     private const val RESERVE = 1_000_000_000L
+    private const val ESTIMATED_USED_KEY = "estimated_used_bytes"
     @Volatile var captureBlocked = false; private set
     data class Snapshot(val used: Long, val auxiliary: Long, val failures: List<String>,
                         val issue: FlightStorageIssue?, val archiveReady: Boolean, val deviceAvailable: Long,
@@ -549,13 +550,58 @@ object FlightStorage {
         ArchiveCleanupDeleteResult(deleted, failures)
     }
     @JvmStatic fun maintain(context: Context): Snapshot = scan(context, true)
-    /** A metadata-only allowance check; bulk cleanup is queued without delaying RTMP. */
-    @JvmStatic fun prepareRecordingStart(context: Context): Snapshot = storageMetadata(context) {
-        // Serialize allowance initialization with actual retention cleanup, without
-        // entering the unrelated operational-storage preparation barrier.
-        val snapshot = synchronized(lock) { scanOnWorker(context, false, 0, seedEstimate = true) }
-        requestCheck(context)
-        snapshot
+    /**
+     * Recording-start allowance from what is already known: the live estimate, the last
+     * scan, or the usage persisted by the previous run, plus app-private free space. It
+     * never scans Archive Dir and never takes [lock], so it cannot delay the RTMP listener.
+     * [requestRecordingStartCheck] then sizes the archive in the background; the listener
+     * set by [observe] runs afterwards so the server can switch recording off promptly.
+     */
+    @JvmStatic fun recordingStartEstimate(context: Context): Snapshot {
+        val known = synchronized(stateLock) { if (initialized) estimatedUsed else lastRead?.used }
+        val used = known ?: prefs(context).getLong(ESTIMATED_USED_KEY, 0L)
+        val archiveUriPresent = CaltopoClient.GetArchiveUri() != null
+        val deviceAvailable = context.filesDir.usableSpace
+        val estimated = recordingStartIssue(archiveUriPresent, used, maximumBytes(context), deviceAvailable, recordingArchiveWriteFailed)
+        // Once a scan has run its verdict stands until the next one clears it.
+        val scanned = synchronized(stateLock) { if (initialized && captureBlocked) lastIssue ?: FlightStorageIssue.ALLOWANCE else null }
+        val issue = estimated ?: scanned
+        val snapshot = Snapshot(used, 0L, emptyList(), issue, archiveUriPresent, deviceAvailable, preparingWorkingCopies = true)
+        synchronized(stateLock) { if (!initialized) captureBlocked = snapshot.blocked }
+        CaltopoClient.CTDebug("FlightStorage", "Recording start estimate used=$used source=${if (known != null) "memory" else "persisted"} deviceAvailable=$deviceAvailable issue=${issue?.name ?: "none"}")
+        return snapshot
+    }
+
+    /** Same rules as a scan (archive required, write failure, 1 GB reserve, 90% allowance). */
+    internal fun recordingStartIssue(
+        archiveUriPresent: Boolean,
+        usedEstimate: Long,
+        maximum: Long,
+        deviceAvailable: Long,
+        archiveWriteFailed: Boolean,
+    ): FlightStorageIssue? = flightStorageIssue(
+        archiveReady = archiveUriPresent,
+        deviceLow = deviceAvailable < RESERVE,
+        allowanceInsufficient = usedEstimate > maximum * 9 / 10,
+        archiveWriteFailed = archiveWriteFailed,
+    )
+
+    /** Own thread: [worker] can be busy preparing operational storage at startup. */
+    private val startCheck = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
+        Thread(r, "flight-storage-start-check").apply { isDaemon = true }
+    }
+
+    /** Background archive sizing after the server starts; notifies the [observe] listener. */
+    @JvmStatic fun requestRecordingStartCheck(context: Context) {
+        startCheck.execute {
+            try {
+                storageMetadata(context) { synchronized(lock) { scanOnWorker(context, false, 0, seedEstimate = true) } }
+            } catch (error: Exception) {
+                CaltopoClient.CTError("FlightStorage", "Recording start check failed", error)
+            }
+            synchronized(stateLock) { listener }?.run()
+            requestCheck(context)
+        }
     }
     fun peekSnapshot(): Snapshot? = synchronized(stateLock) { lastRead }
     fun snapshot(context: Context, cancelled: () -> Unit = {}): Snapshot = storageMetadata(context) {
@@ -636,6 +682,7 @@ object FlightStorage {
             captureBlocked = blocked
             sweepUsed = used; sweepAvailable = minOf(deviceAvailable, free ?: Long.MAX_VALUE)
             initialized = true; estimatedUsed = used; lastSweepDay = todayArchiveDirectoryName()
+            prefs(context).edit().putLong(ESTIMATED_USED_KEY, used).apply()
             fileSizes = ledger
             if (issue?.shouldNotify == true) {
                 if (!wasBlocked || lastIssue != issue) pressure.value = result.message

@@ -715,6 +715,9 @@ internal object OperationalStorage {
         prepareRecorder(context.applicationContext)
     }
 
+    /** True when recording needs no preparation, or it is already done. Never waits. */
+    fun recorderReadyWithoutWaiting(): Boolean = preparedRecorder != null || !archiveUriPresent()
+
     /** Soft recorder prepare: false when Archive Dir is unavailable (use TemporaryStorage). */
     fun tryRequireRecorderReady(context: Context): Boolean {
         if (preparedRecorder != null) return true
