@@ -92,6 +92,30 @@ static void test_recorded_heading_wrap(void) {
     assert(fabs(headings[1] - headings[0] - 0.6696217) < 0.0000001);
 }
 
+// Raw tag-4 yaw words from the 2026-11-12 20:18 PT indoor yaw test (M4TD on a
+// table, turned by hand): the start heading, and two consecutive frames that
+// cross +/-180 during the second clockwise quarter turn.
+static void test_aircraft_yaw_true_north_from_yaw_test(void) {
+    uint8_t payload[128] = {0};
+    size_t size = make_payload(payload);
+    const size_t attitudeOffset = 55;
+    const int32_t recorded[] = {387905055, 1782200987, -1794660618};
+    const double camera[] = {38.7905055, 178.2200987, 180.5339382};
+    const double trueNorth[] = {308.7905055, 88.2200987, 90.5339382};
+    for (size_t i = 0; i < 3; ++i) {
+        put_u32_le(payload + attitudeOffset + 3, (uint32_t) recorded[i]);
+        R2CDJICameraTelemetry sample = {0};
+        assert(R2CDJIDecodeType245Payload(payload, size, &sample));
+        assert(fabs(sample.azimuthDegrees - camera[i]) < 0.0000001);
+        assert(fabs(R2CDJIAircraftYawTrueNorthDegrees(sample.azimuthDegrees) - trueNorth[i]) < 0.0000001);
+    }
+    assert(R2CDJIAircraftYawTrueNorthDegrees(90.0) == 0.0);
+    assert(fabs(R2CDJIAircraftYawTrueNorthDegrees(89.9999) - 359.9999) < 0.0000001);
+    assert(fabs(R2CDJIAircraftYawTrueNorthDegrees(-179.4660618) - 90.5339382) < 0.0000001);
+    assert(isnan(R2CDJIAircraftYawTrueNorthDegrees(NAN)));
+    assert(isnan(R2CDJIAircraftYawTrueNorthDegrees(INFINITY)));
+}
+
 static size_t hex_to_bytes(const char *hex, uint8_t *bytes, size_t capacity) {
     size_t length = strlen(hex) / 2;
     assert(length <= capacity);
@@ -201,6 +225,7 @@ static void test_implausible_optics_are_rejected(void) {
 
 int main(int argc, char **argv) {
     test_recorded_heading_wrap();
+    test_aircraft_yaw_true_north_from_yaw_test();
     test_real_tag10_optics_vectors();
     test_implausible_optics_are_rejected();
     uint8_t payload[128] = {0};

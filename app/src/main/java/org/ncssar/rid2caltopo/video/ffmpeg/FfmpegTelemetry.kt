@@ -10,6 +10,11 @@ data class FfmpegTelemetry(
     val longitude: Double? = null,
     val altitudeMeters: Double? = null,
     val gimbalPitchDeg: Double? = null,
+    /**
+     * Raw DJI camera yaw (tag-4 bytes 3-6, signed degrees x 1e7, normalized 0..360). On the
+     * Matrice 4TD it equals the aircraft nose yaw; use DjiCameraOrientation to get a
+     * true-north bearing (raw - 90).
+     */
     val cameraYawDeg: Double? = null,
     val headingDeg: Double? = null,
     val horizontalFovDeg: Double? = null,

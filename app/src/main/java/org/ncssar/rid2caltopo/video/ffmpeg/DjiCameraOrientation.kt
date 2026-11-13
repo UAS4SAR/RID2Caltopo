@@ -13,6 +13,16 @@ object DjiCameraOrientation {
         return normalize(finite - 90.0)
     }
 
+    /**
+     * True-north bearing of the aircraft nose. On the Matrice 4TD the camera's yaw only
+     * changes by yawing the aircraft (Ken, 2026-11-12), so this is the same value as
+     * [controllerAzimuthDeg]: tag-4 bytes 3-6 (`FfmpegTelemetry.cameraYawDeg`) minus 90,
+     * normalized to [0, 360). Read-only alias for BTRX heading; existing callers keep
+     * using [controllerAzimuthDeg].
+     */
+    @JvmStatic
+    fun aircraftYawTrueNorthDeg(cameraAzimuthDeg: Double?): Double? = controllerAzimuthDeg(cameraAzimuthDeg)
+
     private fun normalize(degrees: Double): Double = ((degrees % 360.0) + 360.0) % 360.0
 
     /**

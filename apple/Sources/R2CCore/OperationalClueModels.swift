@@ -451,6 +451,14 @@ public enum OperationalClueGeometry {
         return RidHeading.normalized(seiCameraAzimuthDegrees - 90)
     }
 
+    /// True-north bearing of the aircraft nose. On the Matrice 4TD the camera's yaw only
+    /// changes by yawing the aircraft (Ken, 2026-11-12), so this equals
+    /// `djiControllerCameraAzimuthDegrees`: the type-245 tag-4 yaw (bytes 3-6, signed
+    /// degrees x 1e7) minus 90, normalized to [0, 360). Read-only alias for BTRX heading.
+    public static func djiAircraftYawTrueNorthDegrees(seiCameraAzimuthDegrees: Double?) -> Double? {
+        djiControllerCameraAzimuthDegrees(seiCameraAzimuthDegrees: seiCameraAzimuthDegrees)
+    }
+
     /// Matrice 4TD calibration: raw -90 is down; controlled raw -14.5625 is horizontal.
     public static func djiCalibratedTiltDegrees(rawTiltDegrees: Double?) -> Double? {
         guard let rawTiltDegrees, rawTiltDegrees.isFinite else { return nil }

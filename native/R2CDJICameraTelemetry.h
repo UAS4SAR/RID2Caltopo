@@ -10,6 +10,15 @@
 typedef struct R2CDJICameraTelemetry {
     bool valid;
     bool positionValid;
+    // Camera yaw, degrees 0..360, increasing clockwise seen from above: tag 4
+    // bytes 3-6, signed degrees * 1e7 (normalized here; raw value unchanged).
+    // On the Matrice 4TD this is also the aircraft nose yaw: the camera's yaw
+    // only changes by yawing the aircraft (Ken, 2026-11-12; the 20:18 PT
+    // indoor yaw test turned it +358.7 degrees clockwise and back with the
+    // airframe). Callers convert it to a true-north bearing by subtracting
+    // 90 degrees (R2CDJIAircraftYawTrueNorthDegrees below, Android
+    // DjiCameraOrientation.controllerAzimuthDeg, iPad
+    // OperationalClueGeometry.djiControllerCameraAzimuthDegrees).
     double azimuthDegrees;
     double tiltDegrees;
     // Pinhole field of view computed per frame from tag 10 (see
@@ -49,9 +58,18 @@ typedef struct R2CDJICameraTelemetry {
     bool packedTag9Valid;
     uint8_t packedTag9Header;
     uint32_t packedTag9Words[4];
-    // Diagnostic-only aligned binary-angle fields from tag 4. Their semantic
-    // frames are not yet all established; operational values above remain
-    // explicit until controlled captures identify them.
+    // Diagnostic-only: the nine little-endian u32 words at tag 4 bytes
+    // 3, 7, ..., 35, each scaled as a full-turn binary angle (u32 * 360 / 2^32).
+    // Only entries 0-2 are angles, and only entry 2's scale is right:
+    //   [0] bytes 3-6   camera/aircraft yaw; really signed degrees * 1e7, so
+    //                   use azimuthDegrees, not this entry
+    //   [1] bytes 7-10  likely gimbal roll; jitters only during yaw turns;
+    //                   scale unconfirmed
+    //   [2] bytes 11-14 gimbal pitch (tiltDegrees; raw -14.5625 = horizontal)
+    //   [3..5] bytes 15-26 the split low/high words of north/east/down above;
+    //                   not angles
+    //   [6..8] bytes 27-38 home reference latitude/longitude/altitude; not angles
+    // Operational code uses the named fields above.
     double attitudeAnglesDegrees[9];
 } R2CDJICameraTelemetry;
 
@@ -145,6 +163,18 @@ static inline bool R2CDJIDecodeOptics(
     if (horizontalFovDegrees) *horizontalFovDegrees = horizontal;
     if (verticalFovDegrees) *verticalFovDegrees = vertical;
     return true;
+}
+
+// True-north bearing of the aircraft nose (equal to the camera yaw on the
+// Matrice 4TD) from azimuthDegrees: raw - 90, normalized to [0, 360). The same
+// rule as the existing Android and iPad camera-bearing helpers (2026-10-06
+// circular flights: the value already references true north, no declination).
+// NAN for a non-finite input. Read-only helper; the decoder does not call it.
+static inline double R2CDJIAircraftYawTrueNorthDegrees(double azimuthDegrees) {
+    if (!isfinite(azimuthDegrees)) return NAN;
+    double bearing = fmod(azimuthDegrees - 90.0, 360.0);
+    if (bearing < 0.0) bearing += 360.0;
+    return bearing >= 360.0 ? 0.0 : bearing;
 }
 
 static inline bool R2CDJIDecodeType245Payload(
