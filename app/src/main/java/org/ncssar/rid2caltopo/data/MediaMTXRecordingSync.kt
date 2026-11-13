@@ -57,6 +57,58 @@ object MediaMTXRecordingSync {
         }
     }
 
+    /** Fragments one stream path left staged by an earlier run. */
+    data class OrphanedRecording(val streamPath: String, val fragments: List<File>)
+
+    /**
+     * Lists staged fragments before MediaMTX launches. Anything staged then belongs to an
+     * earlier run (for example the app was killed by an update mid-recording), so it can be
+     * normalized after the RTMP listener is up instead of holding the server start.
+     */
+    @JvmStatic
+    fun snapshotOrphanedRecordings(context: Context): List<OrphanedRecording> =
+        try {
+            snapshotOrphanedRecordings(getRecordingStagingDir(context))
+        } catch (e: Exception) {
+            CaltopoClient.CTError(TAG, "snapshotOrphanedRecordings() raised", e)
+            emptyList()
+        }
+
+    @JvmStatic
+    fun snapshotOrphanedRecordings(stagingRoot: File): List<OrphanedRecording> {
+        if (!stagingRoot.isDirectory) return emptyList()
+        val found = ArrayList<OrphanedRecording>()
+        fun walk(dir: File, relativePath: String) {
+            val children = dir.listFiles()?.sortedBy { it.name } ?: return
+            val fragments = children.filter { it.isFile && isMediaFragment(it) }
+            if (fragments.isNotEmpty() && relativePath.isNotBlank()) {
+                found += OrphanedRecording(relativePath, fragments)
+            }
+            children.filter { it.isDirectory }.forEach { child ->
+                walk(child, if (relativePath.isBlank()) child.name else "$relativePath/${child.name}")
+            }
+        }
+        walk(stagingRoot, "")
+        return found
+    }
+
+    /** Normalizes only the fragments captured by [snapshotOrphanedRecordings]. */
+    @JvmStatic
+    @Synchronized
+    fun syncOrphanedRecordings(context: Context, orphans: List<OrphanedRecording>) {
+        orphans.forEach { orphan ->
+            try {
+                val stagingRoot = getRecordingStagingDir(context)
+                val source = File(stagingRoot, orphan.streamPath)
+                check(source.canonicalFile.toPath().startsWith(stagingRoot.canonicalFile.toPath())) { "Invalid recording stream path" }
+                syncStreamPath(context, source, orphan.streamPath, onlyFragments = orphan.fragments)
+                CaltopoClient.CTDebug(TAG, "Synced orphaned recording path=${orphan.streamPath} fragments=${orphan.fragments.size}")
+            } catch (e: Exception) {
+                CaltopoClient.CTError(TAG, "syncOrphanedRecordings() raised for path=${orphan.streamPath}", e)
+            }
+        }
+    }
+
     private fun syncDirectoryTree(
         context: Context,
         root: File,
@@ -80,9 +132,11 @@ object MediaMTXRecordingSync {
         sourceRoot: File,
         streamPath: String,
         completedFilePath: String? = null,
+        onlyFragments: List<File>? = null,
     ) {
         if (!sourceRoot.exists()) return
-        val fragments = (completedFilePath?.let { completedRecordingFragment(sourceRoot, it) }
+        val fragments = (onlyFragments
+            ?: completedFilePath?.let { completedRecordingFragment(sourceRoot, it) }
             ?: sourceRoot.listFiles().orEmpty().toList())
             .filter { it.isFile && isMediaFragment(it) }.sortedBy { it.name }
         if (fragments.isEmpty()) return

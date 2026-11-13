@@ -460,7 +460,12 @@ public class MediaMTXService extends Service {
             }
         }
         try {
-            MediaMTXRecordingSync.syncAll(getApplicationContext(), null);
+            // Leftover fragments from an earlier run (e.g. killed by an app update) are
+            // normalized after the server is up: remuxing them can take minutes and must
+            // not keep the RTMP listener closed.
+            final Context appContext = getApplicationContext();
+            final java.util.List<MediaMTXRecordingSync.OrphanedRecording> orphans =
+                    MediaMTXRecordingSync.snapshotOrphanedRecordings(appContext);
             if (isServiceDestroying()) return;
 
             File bin = extractAsset("mediamtx");
@@ -482,6 +487,11 @@ public class MediaMTXService extends Service {
                 serviceRunning = false;
                 MediaMTXStatus.onServerExited("failed to start");
                 stopSelf();
+            }
+            if (!orphans.isEmpty()) {
+                CTDebug(TAG, "Syncing " + orphans.size() + " orphaned recording path(s) after server start");
+                recordingSyncExecutor.execute(() ->
+                        MediaMTXRecordingSync.syncOrphanedRecordings(appContext, orphans));
             }
         } catch (InterruptedIOException e) {
             if (!isServiceDestroying()) {
