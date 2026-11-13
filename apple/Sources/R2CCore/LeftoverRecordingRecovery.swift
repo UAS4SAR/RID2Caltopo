@@ -79,6 +79,14 @@ public enum LeftoverRecordingRecovery {
         }
     }
 
+    /// The recording catalog orders and scopes files by mtime. Conversion rewrites the
+    /// file, so put back the time the segment was last written: a recovered recording
+    /// then sorts and scopes as if it had finished normally, not as new today.
+    @discardableResult
+    public static func restoreRecordedTime(of url: URL, to candidate: Candidate, fileManager: FileManager = .default) -> Bool {
+        (try? fileManager.setAttributes([.modificationDate: candidate.modified], ofItemAtPath: url.path)) != nil
+    }
+
     /// Raw MediaMTX segment name (UTC timestamp), not a localized completed name, not a
     /// conversion temporary and not a preserved research original.
     public static func isRawRecordingName(_ url: URL) -> Bool {

@@ -361,6 +361,7 @@ final class MediaMTXViewModel: ObservableObject {
             return
         }
         ledger.clear(path: raw.path)
+        LeftoverRecordingRecovery.restoreRecordedTime(of: URL(fileURLWithPath: localizedPath), to: candidate)
         AppleLog.info("MediaMTX", "Recovered leftover recording from=\(raw.lastPathComponent) to=\(URL(fileURLWithPath: localizedPath).path.replacingOccurrences(of: AppleFlightStorage.root.path + "/", with: ""))")
         await deliver(delivered)
     }

@@ -135,6 +135,18 @@ struct LeftoverRecordingRecoveryTests {
         }
     }
 
+    @Test func recoveredFileKeepsItsRecordedTime() throws {
+        let root = try tempRoot()
+        let ended = Date(timeIntervalSince1970: 1_794_534_170)  // 17:42:50 PST, Nov 12 2026
+        let raw = try write(root, "2026-11-13/p/p_2026-11-13_01-40-13-393436.mp4", fmp4(), modified: ended)
+        let candidate = try #require(LeftoverRecordingRecovery.candidates(root: root, notTouchedSince: Date()).first)
+        // Conversion replaces the file (new mtime).
+        try fmp4(fragments: 3).write(to: raw)
+        #expect(LeftoverRecordingRecovery.restoreRecordedTime(of: raw, to: candidate))
+        let modified = try raw.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+        #expect(modified == ended)
+    }
+
     @Test func ordersOldestSegmentFirst() throws {
         let root = try tempRoot()
         let old = Date().addingTimeInterval(-600)
