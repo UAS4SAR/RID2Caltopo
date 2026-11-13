@@ -447,7 +447,7 @@ the host clock.
   so the fallback adds about 60 ms of bias (about 0.4 m at 6 m/s).
 - **New pod session** (offset state reset) when window_end_ms goes backward,
   the arrival offset jumps by more than 2 s **[A]**, or HEALTH `uptime_s`
-  drops (`push_pod_uptime()`).
+  drops (`push_health()`).
 
 ### 3.3 Pose ring buffers
 
@@ -486,18 +486,44 @@ lowered once field logs show the maximum normal delay.
 
 **Desk Pod backlog is history, not live steering** (btrx PROTOCOL.md at
 `684cfa5`). While no app is attached, the Desk Pod keeps up to 32 messages
-for the app. **Ken's decision (via BT RX, November 13): when the queue is
-full, the Desk Pod discards the oldest frame before accepting a new one**, so
-the newest are kept. After a reconnect the app receives up to the 32 most
-recent queued frames.
+for the app. **Ken's decision (via BT RX, November 13), in Desk Pod build
+0x0104 (btrx `e116ac6`, draft, not flashed): when the queue is full, the
+oldest message is discarded before a new one is accepted**, so the newest
+32 are kept. This covers all queued messages, btrx and Meshtastic alike.
+After a reconnect the app receives up to the 32 most recent queued messages.
+Backlog STEER frames with an old `window_end_ms` are still history (below).
 
-- **Lost count:** the Desk Pod's periodic status will report a count of
-  unserviced reports it discarded. **The field layout is pending BT RX.**
-  The boundary passes it to `btrx_bearing_push_desk_lost()`; the stats carry
-  the running total and the increase since the last reconnect
-  (`desk_queue_lost`), and the BTRX status screen (the Desk Pod
-  status/health screen, `BtrxDeskPodModel`/`BtrxDeskPodText` on both
-  platforms) shows it as "Reports lost while no app: N".
+- **Lost count: HEALTH (0x80) `phone_lost`** (btrx `firmware/PROTOCOL.md`
+  at `e116ac6`, "HEALTH (0x80)"):
+  - HEALTH is now **34 bytes**. Bytes 0–29 are unchanged; **offset 30 is
+    `phone_lost`, u32 little-endian**: messages that board dropped from its
+    full app queue (oldest first) since it started. It stops at 0xFFFFFFFF.
+  - It resets only when the board restarts (its `uptime_s` goes down) and is
+    **not cleared by reading**. So lost between two HEALTH frames from the
+    same board = the difference; after a restart, the new value **is** the
+    delta.
+  - A **30-byte HEALTH** is older firmware with no count: shown as
+    **unknown**, never as 0.
+  - The **Desk Pod's own HEALTH (role = 3)** reaches the app every 30 s (60 s
+    while scanning) plus one about 2 s after the app connects, after any
+    backlog, so the count is seen at once. Pod A's HEALTH carries the field
+    too and is normally 0 (the Drone Pod boards' once-a-second emptying with
+    no app attached is not counted).
+  - The boundary passes each HEALTH's role, `uptime_s` and `phone_lost` (or
+    "unknown") to `btrx_bearing_push_health()`, which also does the restart
+    detection of section 3.2. The library keeps the running total per role
+    and the increase since the last app connect (`desk_queue_lost`,
+    `desk_queue_lost_since_connect`; `desk_queue_lost_known` false for
+    30-byte HEALTH).
+  - The **BTRX status screen** (the Desk Pod status/health screen,
+    `BtrxDeskPodModel`/`BtrxDeskPodText` on both platforms) shows "Reports
+    lost while no app: N" (N since connect, plus the total since the Desk Pod
+    started), or "unknown (older firmware)".
+  - **Parsers:** the Kotlin and Swift `BtrxProtocol.parseHealth` check a
+    **minimum** of 30 bytes (`need(p, 30, …)`), not exactly 30, so they
+    already accept 34-byte HEALTH without error. They ignore bytes 30–33
+    today; both need an optional `phoneLost` field (null for 30 bytes), with
+    shared test vectors for 30- and 34-byte payloads.
 
 - The library judges every frame by its own time (`window_end_ms` + offset),
   never by arrival. A backlog frame within the 15 s budget whose pose is
@@ -849,7 +875,7 @@ thousand cells), and runs on the UI thread in microseconds.
 
 | Call | Threads | Blocking |
 | --- | --- | --- |
-| `push_pose`, `push_report`, `push_time_sync`, `push_pod_uptime`, `set_source_flags`, `set_fade`, `note_rendered`, `source_key` | any thread, concurrently | takes only the **input mutex**, for an O(1) copy; never waits for tick |
+| `push_pose`, `push_report`, `push_time_sync`, `push_health`, `set_source_flags`, `set_fade`, `note_rendered`, `source_key` | any thread, concurrently | takes only the **input mutex**, for an O(1) copy; never waits for tick |
 | `tick` | one thread at a time (a second concurrent caller gets `BTRX_BEARING_E_BUSY`) | drains inputs in a bounded batch under the input mutex, then works with no input lock held |
 | `snapshot_acquire` / `snapshot_release` | **one** reader thread (the UI or render thread) | triple buffer; a pointer swap under a separate tiny mutex. Never waits for tick |
 | `snapshot_sources_at` | the reader thread, between acquire and release | pure function of the snapshot; no lock |
@@ -1040,9 +1066,12 @@ btrx_bearing_status_t btrx_bearing_push_pose(btrx_bearing_t *h, const btrx_beari
 btrx_bearing_status_t btrx_bearing_push_report(btrx_bearing_t *h, const btrx_bearing_report_t *r);
 btrx_bearing_status_t btrx_bearing_push_time_sync(btrx_bearing_t *h, int64_t t1_host_us,
         uint32_t t2_pod_ms, uint32_t t3_pod_ms, int64_t t4_host_us);
-btrx_bearing_status_t btrx_bearing_push_pod_uptime(btrx_bearing_t *h, int64_t host_us, uint32_t uptime_s);
-/* Desk Pod status: running count of unserviced reports it discarded (layout pending BT RX). */
-btrx_bearing_status_t btrx_bearing_push_desk_lost(btrx_bearing_t *h, int64_t host_us, uint32_t lost_total);
+/* HEALTH (0x80): role (3 = Desk Pod, 2 = pod A), uptime_s, and phone_lost (payload
+ * offset 30, u32 LE; lost_known = false for 30-byte HEALTH from older firmware).
+ * Also feeds restart detection. Lost between frames = difference; after a
+ * restart (uptime_s lower) the new value is the delta. */
+btrx_bearing_status_t btrx_bearing_push_health(btrx_bearing_t *h, int64_t host_us, uint8_t role,
+        uint32_t uptime_s, bool lost_known, uint32_t phone_lost);
 /* T7: the overlay showing snapshot `seq` is on screen. */
 btrx_bearing_status_t btrx_bearing_note_rendered(btrx_bearing_t *h, uint64_t seq, int64_t host_us);
 
@@ -1131,8 +1160,10 @@ typedef struct {
     uint32_t reports_in, entries_in, used, gated, no_heading, no_position,
              late_dropped, ring_dropped, buckets_expired_early, ignored,
              backlog_history, steer_truncated, extras_unresolved, provisional_merges;
-    uint32_t desk_queue_lost;        /* Desk Pod "unserviced reports lost" total (field pending BT RX) */
+    bool desk_queue_lost_known;      /* false until a 34-byte Desk Pod HEALTH arrives */
+    uint32_t desk_queue_lost;        /* Desk Pod phone_lost, summed across its restarts */
     uint32_t desk_queue_lost_since_connect;
+    uint32_t pod_a_queue_lost;       /* pod A phone_lost, normally 0 */
     uint32_t tiles_in_use, tiles_total; /* pool use */
     float fade_total_s, fade_shape_p;   /* settings in effect */
     int32_t pod_offset_ms;           /* host - pod */
@@ -1218,7 +1249,7 @@ the switch, **stamp and push** inputs, **drive tick** on its BTRX worker,
 | Wrapper class | `btrx/BtrxBearingNative.kt` (`external fun`s, `System.loadLibrary("btrx_bearing")` in `runCatching` as in `MappingSurfaceNative`) and `btrx/BtrxBearingLayer.kt` | `R2CCore/Btrx/BtrxBearingLayer.swift` (owns the `OpaquePointer`, `deinit` destroys) |
 | Switch | Settings > Developer Tools, off by default, never at launch | same |
 | Fade settings (section 2.4) | BTRX settings in Developer Tools: "Fade time" (1–30 min, default 10) and a "Fade shape" slider (p 1–4, Linear to Accelerating, live "half strength at m:ss" readout), saved in the app config; `set_fade` on change | same controls, labels and defaults, saved in the iPad settings; `set_fade` on change |
-| STEER, PONG, HEALTH | `BtrxClient.Listener.onFrame` (stamps T2 at the BLE/USB read) → raw payload to `btrx_bearing_parse_steer` (the shared C parser, section 4.1) → `push_report`; the existing `BtrxProtocol.parseSteer` stays for the stream overlay; PONG → `push_time_sync`; HEALTH → `push_pod_uptime`; Desk Pod status lost count → `push_desk_lost` (field pending BT RX). **TIME_PING sent by the same client every 30 s plus a burst of 3 at start, restart and reconnect** (new work) | `BtrxClient` listener `onFrame` → same fields; same TIME_PING schedule (new work) |
+| STEER, PONG, HEALTH | `BtrxClient.Listener.onFrame` (stamps T2 at the BLE/USB read) → raw payload to `btrx_bearing_parse_steer` (the shared C parser, section 4.1) → `push_report`; the existing `BtrxProtocol.parseSteer` stays for the stream overlay; PONG → `push_time_sync`; HEALTH (30 or 34 bytes) → `push_health` (role, uptime, `phone_lost` or unknown). **TIME_PING sent by the same client every 30 s plus a burst of 3 at start, restart and reconnect** (new work) | `BtrxClient` listener `onFrame` → same fields; same TIME_PING schedule (new work) |
 | DJI yaw | the SEI path that fills `DjiCameraOrientation` (from `ffmpeg_bridge.c`, `native/R2CDJICameraTelemetry.h`) → `push_pose(YAW)` with `R2CDJIAircraftYawTrueNorthDegrees` | `R2CFFmpegSessionCopyLatestDJICameraTelemetry` (`R2CFFmpegMobile.c`, same header) → `push_pose(YAW)` |
 | Position, AGL | RID track points + `DroneAltitudeCoordinator` → `push_pose(POSITION, AGL)` | RID track + the iPad altitude source → same |
 | Own aircraft (ignore) | BTRX pane action → `set_source_flags(IGNORED)` | same |
@@ -1333,7 +1364,7 @@ and in `apple/release-check.sh`:
    id table; a linked address change adds an alias.
    **Backlog:** the 32 newest queued frames (oldest discarded by the Desk
    Pod) after a reconnect: those within 15 s with poses are used, older ones
-   get `history` and stay out of the lag histograms; `push_desk_lost` totals
+   get `history` and stay out of the lag histograms; `push_health` lost totals (difference, restart, saturation, 30-byte unknown)
    and the since-connect increase reach the stats.
    **Clock sync:** the TIME_PING schedule (every 30 s, burst of 3 at start,
    restart and reconnect) on both platforms' boundary tests.
@@ -1350,7 +1381,7 @@ and in `apple/release-check.sh`:
   `BBv1 R <arrival_us> <window_end_ms> <seq> <flags> <roll_x2> <pitch_x2> <backlog> <ext_format> <truncated> <n>`
   followed by n entries `<src_id> <addr_key16hex|0> <port> <stbd> <peak> <hp> <hs> <age_ms> <new> <linked> <pod_class> <company>`
   (the parsed report, so replay needs no raw payload and no address),
-  `BBv1 S <t1> <t2> <t3> <t4>`, `BBv1 U <t_us> <uptime_s>`,
+  `BBv1 S <t1> <t2> <t3> <t4>`, `BBv1 H <t_us> <role> <uptime_s> <phone_lost|unknown>`,
   `BBv1 M <t_us> <key16hex> <muted>` (mute changes),
   `BBv1 F <t_us> <total_s> <shape_p>` (fade setting changes).
 - **`btrx_bearing_replay`** (host tool, same directory) feeds a log through
@@ -1477,16 +1508,14 @@ Firmware decisions (Ken, relayed by BT RX, November 13):
 - **Desk Pod receive timestamp:** never planned. Clock sync is TIME_PING/
   TIME_PONG with the Drone Pod; only `window_end_ms` mapped to tablet time
   matters (section 3.2).
-- **Desk Pod queue full:** the oldest frame is discarded and the newest kept;
-  periodic status will carry a lost-report count, **field layout pending BT
-  RX** (section 3.4). Backlog frames are still judged by window time
+- **Desk Pod queue full:** the oldest message is discarded and the newest
+  32 kept; HEALTH (0x80) `phone_lost` at offset 30 carries the count (build
+  0x0104, btrx `e116ac6`, not flashed; section 3.4). Backlog frames are still judged by window time
   (over 15 s old = history).
 - **`src_id` in DETECT records:** **undecided.** The spec keeps the
   "unresolved" provisional sources (section 4.1).
 
 For BT RX:
 
-5. **Lost-report counter:** the field layout in the Desk Pod's periodic
-   status.
-6. **Extras' addresses:** until `src_id` in DETECT is decided, extras
+5. **Extras' addresses:** until `src_id` in DETECT is decided, extras
    resolve only after the same `src_id` appears as primary.

@@ -126,7 +126,10 @@ class only.
 
 **HEALTH.** `clock_offset_ms` is the pod A/B cable clock offset
 (`btrx_clock.cpp`), not the tablet offset. `uptime_s` is useful for spotting
-restarts.
+restarts. Build 0x0104 (btrx `e116ac6`, not flashed) makes HEALTH 34 bytes:
+`phone_lost` (u32 LE, offset 30) counts messages a board dropped from its
+full app queue, oldest first, since it started; 30-byte HEALTH means older
+firmware and an unknown count (`BEARING-LAYER-spec.md` section 3.4).
 
 **Measured tonight** (A5 session logs 18:50 and 19:11, 1,840 live STEER
 frames). Delay over the smallest arrival − `window_end_ms`:
