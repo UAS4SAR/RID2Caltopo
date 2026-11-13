@@ -259,6 +259,12 @@ final class MediaMTXViewModel: ObservableObject {
                     storageBlocked: !recordingAllowed,
                     recordingRoot: recordingRoot
                 )
+                if !leftoverRecoveryScheduled {
+                    // Once per process: anything raw-named and untouched since this
+                    // recorder started was left by an earlier run.
+                    leftoverRecoveryScheduled = true
+                    scheduleLeftoverRecordingRecovery(cutoff: recorderStartedAt)
+                }
                 Task.detached(priority: .utility) {
                     let swept = AppleFlightStorage.maintain()
                     await self.handleStorageSnapshot(swept)
@@ -279,6 +285,85 @@ final class MediaMTXViewModel: ObservableObject {
     }
 
     private let recordingFinalization = SerialTaskChain()
+    private let leftoverRecovery = SerialTaskChain()
+    private var leftoverRecoveryScheduled = false
+
+    /// Startup recovery for segments an earlier run never finished (killed, updated or
+    /// crashed mid-segment). Runs after the listener is open, on its own background
+    /// chain, so it never delays the UI, publishers or this run's own finalization.
+    /// Matches Android's startup orphan sync (1c366086).
+    private func scheduleLeftoverRecordingRecovery(cutoff: Date) {
+        leftoverRecovery.enqueue(priority: .background) { [weak self, storageControl] in
+            let ledger = LeftoverRecordingFailureLedger()
+            let found = LeftoverRecordingRecovery.candidates(
+                root: AppleFlightStorage.root,
+                notTouchedSince: cutoff,
+                failures: ledger
+            )
+            AppleLog.info("MediaMTX", "Leftover recording scan found=\(found.count)")
+            for candidate in found {
+                await Self.recoverLeftoverRecording(candidate, ledger: ledger, storageControl: storageControl) { event in
+                    await MainActor.run { self?.eventHandler?(event) }
+                }
+            }
+        }
+    }
+
+    private nonisolated static func recoverLeftoverRecording(
+        _ candidate: LeftoverRecordingRecovery.Candidate,
+        ledger: LeftoverRecordingFailureLedger,
+        storageControl: OperationalWorkQueue,
+        deliver: @escaping @Sendable (MediaServerEvent) async -> Void
+    ) async {
+        let raw = candidate.url
+        let header = LeftoverRecordingRecovery.checkHeader(raw)
+        guard header == .playable else {
+            AppleLog.error("MediaMTX", "Leftover recording left in place file=\(raw.lastPathComponent) size=\(candidate.size) reason=\(header.reason)")
+            ledger.record(candidate, reason: header.reason)
+            return
+        }
+        AppleLog.info("MediaMTX", "Recovering leftover recording file=\(raw.lastPathComponent) size=\(candidate.size) folder=\(raw.deletingLastPathComponent().deletingLastPathComponent().lastPathComponent)")
+        let owner = "leftover-" + UUID().uuidString
+        // Protect both the folder it sits in (often the UTC date) and the local day it moves to.
+        let sourceDay = raw.deletingLastPathComponent().deletingLastPathComponent().lastPathComponent
+        let localDay = ManagedVideoRecordingIdentity.recordingStartedAt(forPath: raw.path).map(AppleFlightStorage.dayName)
+        await storageControl.perform {
+            AppleFlightStorage.protect(sourceDay, owner: owner + "-source")
+            if let localDay { AppleFlightStorage.protect(localDay, owner: owner + "-local") }
+        }
+        defer {
+            storageControl.enqueue {
+                AppleFlightStorage.release(owner: owner + "-source")
+                AppleFlightStorage.release(owner: owner + "-local")
+            }
+        }
+        let completed = MediaServerEvent.recordFileCompleted(path: candidate.streamPath, filePath: raw.path, durationMilliseconds: 0)
+        let localized = localizeCompletedRecordingIfNeeded(completed)
+        guard case let .recordFileCompleted(_, localizedPath, _) = localized, localizedPath != raw.path else {
+            AppleLog.error("MediaMTX", "Leftover recording left in place file=\(raw.lastPathComponent) reason=rename failed")
+            ledger.record(candidate, reason: "rename failed")
+            return
+        }
+        let (delivered, converted) = await normalizeCompletedRecording(localized)
+        guard converted else {
+            // Never delete: put the untouched original back under its raw name.
+            let localizedURL = URL(fileURLWithPath: localizedPath)
+            if !FileManager.default.fileExists(atPath: raw.path),
+               (try? FileManager.default.moveItem(at: localizedURL, to: raw)) != nil {
+                AppleLog.error("MediaMTX", "Leftover recording left in place file=\(raw.lastPathComponent) reason=conversion failed")
+                if let values = try? raw.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey]),
+                   let size = values.fileSize, let modified = values.contentModificationDate {
+                    ledger.record(.init(url: raw, size: Int64(size), modified: modified), reason: "conversion failed")
+                }
+            } else {
+                AppleLog.error("MediaMTX", "Leftover recording conversion failed; kept original as \(localizedURL.lastPathComponent)")
+            }
+            return
+        }
+        ledger.clear(path: raw.path)
+        AppleLog.info("MediaMTX", "Recovered leftover recording from=\(raw.lastPathComponent) to=\(URL(fileURLWithPath: localizedPath).path.replacingOccurrences(of: AppleFlightStorage.root.path + "/", with: ""))")
+        await deliver(delivered)
+    }
 
     private func enqueueRecordingFinalization(_ event: MediaServerEvent) {
         guard case let .recordFileCompleted(path, filePath, _) = event else { return }
@@ -339,8 +424,16 @@ final class MediaMTXViewModel: ObservableObject {
     private static func normalizeCompletedRecordingIfNeeded(
         _ event: MediaServerEvent
     ) async -> MediaServerEvent {
+        await normalizeCompletedRecording(event).0
+    }
+
+    /// Converts in place for iOS playback; `true` once the converted file replaced the
+    /// original. On failure the original is untouched.
+    private nonisolated static func normalizeCompletedRecording(
+        _ event: MediaServerEvent
+    ) async -> (MediaServerEvent, Bool) {
         guard case let .recordFileCompleted(path, filePath, durationMs) = event else {
-            return event
+            return (event, false)
         }
         let preserveOriginal = await MainActor.run { AppleSEIHexDiagnostics.preserveOriginals }
         let result = await Task.detached(priority: .utility) { () -> (Bool, String) in
@@ -402,11 +495,11 @@ final class MediaMTXViewModel: ObservableObject {
                 "Recording normalization failed file=\(URL(fileURLWithPath: filePath).lastPathComponent) detail=\(result.1)"
             )
         }
-        return .recordFileCompleted(
+        return (.recordFileCompleted(
             path: path,
             filePath: filePath,
             durationMilliseconds: durationMs
-        )
+        ), result.0)
     }
 
     func stop() {
