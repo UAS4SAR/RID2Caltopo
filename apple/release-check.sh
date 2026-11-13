@@ -149,6 +149,19 @@ cmake --build "$work_dir/anomaly-test" --target anomaly_test -j 1
 "$work_dir/anomaly-test/anomaly_test" | tee "$work_dir/anomaly-test.txt"
 grep -Eq 'Results: [0-9]+ passed, 0 failed' "$work_dir/anomaly-test.txt"
 
+echo "[4b/10] BTRX bearing layer host tests (CBtrxBearing)"
+cmake -S "$repo_root/tools/btrx_bearing_test" -B "$work_dir/btrx-bearing-test" -DCMAKE_BUILD_TYPE=Release
+cmake --build "$work_dir/btrx-bearing-test" --target btrx_bearing_test btrx_bearing_replay -j 4
+"$work_dir/btrx-bearing-test/btrx_bearing_test" --quick | tee "$work_dir/btrx-bearing-test.txt"
+grep -Eq '^[0-9]+ checks, 0 failures$' "$work_dir/btrx-bearing-test.txt"
+yawtest_log="$HOME/btrx-build-logs/yawtest-2021-Log_201714-card.txt"
+yawtest_sei="$HOME/btrx-build-logs/yawtest-2021-sei-fields.csv"
+if [[ -f "$yawtest_log" && -f "$yawtest_sei" ]]; then
+    python3 "$repo_root/tools/btrx_bearing_test/convert_yawtest.py" --log "$yawtest_log" --sei "$yawtest_sei" --out "$work_dir/yawtest.bbv1"
+    "$work_dir/btrx-bearing-test/btrx_bearing_replay" "$work_dir/yawtest.bbv1" | tee "$work_dir/btrx-bearing-replay.txt"
+    grep -Eq 'BBREPLAY lines=[0-9]+ bad=0 reports_in=335 ' "$work_dir/btrx-bearing-replay.txt"
+fi
+
 echo "[5/10] Color and person-relevance qualifications"
 (
     cd "$repo_root"
