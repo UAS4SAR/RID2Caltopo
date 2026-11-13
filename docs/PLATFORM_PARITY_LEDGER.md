@@ -12,6 +12,24 @@ Project-only engineering record; do not package in the app, copy into store meta
 
 ## Cumulative release history
 
+### 2.6.0 (445) — DJI camera yaw documented as aircraft nose yaw (November 12, 2026)
+
+- Both (shared `native/R2CDJICameraTelemetry.h`): `azimuthDegrees` is documented as the
+  camera yaw, tag 4 bytes 3–6, signed degrees × 1e7; on the Matrice 4TD it equals the
+  aircraft nose yaw (the camera's yaw only changes by yawing the aircraft; 2026-11-12
+  20:18 PT indoor yaw test: +358.7° clockwise and back, the only SEI field that follows
+  yaw). The misleading "nine attitude angles" comment is corrected: [0] yaw (scaled wrong
+  there; use `azimuthDegrees`), [1] likely gimbal roll (scale unconfirmed), [2] gimbal
+  pitch, [3..5] split N/E/Down words, [6..8] home point.
+- New read-only aliases, same rule as the existing helpers (raw − 90, normalized, true
+  north): C `R2CDJIAircraftYawTrueNorthDegrees`, Android
+  `DjiCameraOrientation.aircraftYawTrueNorthDeg`, iPad
+  `OperationalClueGeometry.djiAircraftYawTrueNorthDegrees`. No existing field name, value
+  or caller changed. Tests use the yaw test's raw words (38.79 → 308.79 true; the ±180
+  crossing 178.22/−179.47 → 88.22/90.53): native `R2CDJICameraTelemetryTests.c`, Android
+  `DjiAircraftYawTest` (3), iPad `DjiAircraftYawTests` (3). Indoors the "about north"
+  start read 308.8° true (Ken: indoor metal); an outdoor landmark check is pending.
+
 ### 2.6.0 (445) — BTRX moved to Developer Tools (November 12, 2026)
 
 - Both: BTRX is no longer in the main menu; it opens from **Settings > Developer

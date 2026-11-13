@@ -1,4 +1,4 @@
-# BTRX map layer: design (draft r2, November 12, 2026)
+# BTRX map layer: design (draft r3, November 12, 2026)
 
 Status: design only. **Map-layer code is on hold.** The layer is
 experimental and opens only from Settings > Developer Tools on Android and the
@@ -6,7 +6,9 @@ iPad. The stream-view steering overlay (`BtrxSteering`) stays as it is.
 **Nothing from BTRX goes to CalTopo**: subjects are marked through the
 existing video clue capture.
 
-r2 folds in BT RX's review of r1 (1667bdd3) and Ken's answers (8:06 PM PT).
+r2 folds in BT RX's review of r1 (1667bdd3) and Ken's answers (8:06 PM PT). r3 (after the 20:18 PT indoor yaw test and Ken's 8:39 PM PT note) makes
+the DJI camera yaw, equal to the aircraft nose yaw on the M4TD, the heading
+source.
 Each review point was checked against btrx `af2549e` (branch `steering-report`,
 read with `git show`) and the RID2Caltopo code. Section 12 lists where this
 doc qualifies or does not adopt a point. **[A]** marks an assumption; **[BT]**
@@ -136,12 +138,23 @@ frames). Delay over the smallest arrival − `window_end_ms`:
   `timestampMsec`) give position. `PositionTelemetry.aircraftTrackDeg` is the
   **ground track**.
 - **DJI stream SEI.** The DJI binary SEI path (`emit_dji_camera_telemetry`,
-  tag `dji-sei-245`) fills `cameraYawDeg` from the attitude block's azimuth and
-  passes **NaN for `headingDeg`**. The Nov 11 field logs show
-  `headingDeg=null`. The nine `djiAttitudeAnglesDeg` values are logged as
-  diagnostic only, and none is identified as aircraft yaw yet. Only the
-  text-key SEI path sets `headingDeg`, from a key containing "heading" **or
-  "course"**. **So the app does not decode DJI aircraft yaw today.**
+  tag `dji-sei-245`) fills `cameraYawDeg` from tag 4 bytes 3–6 (signed
+  degrees × 1e7) and passes NaN for `headingDeg` (field logs show
+  `headingDeg=null`; that field is only set by the text-key SEI path, from a
+  key containing "heading" or "course"). **On the M4TD the camera yaw is the
+  aircraft nose yaw**: the camera's yaw only changes by yawing the aircraft
+  (Ken, 8:39 PM PT). The 20:18 PT indoor yaw test confirmed it is the only
+  field in the type-245 SEI that follows yaw: +358.7° clockwise in four
+  quarter turns and back (r = 0.993; tags 6 and 9 constant). The other angles
+  are gimbal pitch (bytes 11–14) and a likely gimbal roll (bytes 7–10, scale
+  unconfirmed). Aircraft roll and pitch are not in the SEI.
+  True-north bearing = raw − 90, normalized (the existing rule from the
+  2026-10-06 circular flights; now also `R2CDJIAircraftYawTrueNorthDegrees`,
+  `DjiCameraOrientation.aircraftYawTrueNorthDeg`,
+  `OperationalClueGeometry.djiAircraftYawTrueNorthDegrees`). Indoors the start
+  heading read 308.8° true for a nose set "about north" on the mat; Ken puts
+  that on indoor metal. **An outdoor check with the nose on a known landmark
+  is still needed to confirm the north offset.**
 - **Pod:** roll and pitch only. There is no magnetometer, and gyro data
   doesn't leave the pod.
 
@@ -151,14 +164,12 @@ The pod's front lines up with the drone's camera direction: the aircraft nose
 (yaw), not the direction of travel. The drone can move in any direction.
 **Geometry uses DJI aircraft yaw only, never the RID track.**
 
-Because aircraft yaw isn't decoded (section 2), v1 needs a small decode step
-first:
-
-1. Identify aircraft yaw in the tag-4 attitude block (the nine angles), using
-   a yaw-in-place flight with the gimbal held forward. Compare against
-   `cameraYawDeg`.
-2. Until then, `cameraYawDeg` stands in for nose yaw **only while the gimbal
-   faces forward [A]** (M4TD gimbal yaw behaviour not checked).
+**Heading source:** the DJI camera yaw, which on the M4TD is the aircraft
+nose yaw (section 2), converted with the existing true-north rule (raw − 90).
+Yaw rate comes from differencing it (about 30 frames per second); the yaw test
+saw hand turns at up to 145°/s. The pod's fore/aft axis is aligned with the
+nose **[A]** (mounting, not checked). Other aircraft would need their own
+check that camera yaw equals nose yaw.
 
 Readings with no fresh yaw (older than 0.5 s at reading time) are shown as
 wedges with a gray "no heading" style and don't feed the grid.
@@ -169,7 +180,7 @@ One reading per STEER that has a target:
 
 ```
 t_ms             reading time on the tablet clock (section 6)
-pose             lat, lon, alt from RID; yaw, roll, pitch from DJI SEI; yaw rate over the window
+pose             lat, lon, alt from RID; aircraft yaw and yaw rate over the window from DJI SEI; roll, pitch from the pod
 rssi_port/stbd   mean dB or null; hits_port/hits_stbd; peak
 source_id        short ID: base64 of a keyed hash of the full address (section 7)
 class            phone / watch / hearing aid / tag / unknown (section 7)
@@ -213,8 +224,11 @@ path [A], per source), and so is the cost. Each cell gets a better likelihood:
 
 **Gating in the app**, since bit 3 is weak:
 
-- Drop a reading from the grid when DJI attitude over the window shows
-  |roll| > 10°, |pitch| > 15°, or yaw rate > 10°/s [A].
+- Drop a reading from the grid when the DJI yaw rate over the window exceeds
+  10°/s [A], or the yaw changed more than 5° within the window [A]. Aircraft
+  roll and pitch aren't in the SEI, so banked-turn gating relies on the yaw
+  rate (a steady turn is a yaw-rate turn) plus the pod's roll-rate check
+  (bit 3).
 - Also drop it when bit 3 is set or bit 4 is clear.
 
 **Smear:**
@@ -347,7 +361,8 @@ readings. Yaw-hold detection uses the DJI yaw (steady within 3° [A]).
 - Shared logic will live in `BtrxMapLayer.kt` and `BtrxMapLayer.swift` with
   shared test vectors, as with `BtrxSteering`. The DJI SEI decoder is shared C
   (the Android `ffmpeg_bridge.c` / `native/R2CDJICameraTelemetry.h`; the iPad
-  uses `R2CFFmpegMobile.c`), so an aircraft-yaw decode lands on both.
+  uses `R2CFFmpegMobile.c`), so the yaw field and its true-north helper are
+  the same on both.
 
 ## 11. Validation
 
@@ -360,8 +375,9 @@ readings. Yaw-hold detection uses the DJI yaw (steady within 3° [A]).
    bearing within 2σ.
 3. **Flight test 1 (yaw in place):** a source at a known bearing and distance.
    Hover and step yaw in 30° increments, holding each step for about 40
-   samples per patch. This gives the Δ-versus-azimuth table, c0, S, and the
-   aircraft-yaw decode check.
+   samples per patch. This gives the Δ-versus-azimuth table, c0 and S. Before
+   it, point the nose at a known outdoor landmark to confirm the yaw's north
+   offset (raw − 90 = true north).
 4. **Field test:** a stable-address source at a surveyed point, with
    lawnmower and crossing legs, then turn-and-compare holds. Logs keep the
    short IDs only.
@@ -388,8 +404,9 @@ Qualified:
     `σ²/min(N)` understates it by up to 2× when the counts are equal. This
     doc uses the sum, which is the same idea.
   - One-patch censoring only with bit 4 set and at least 2 hits.
-- **5 and Ken's rule:** "use DJI aircraft yaw" needs decode work first. Today
-  the DJI SEI path gives camera azimuth only; `headingDeg` is NaN or null.
+- **5 and Ken's rule:** adopted. The DJI camera yaw is the aircraft nose yaw
+  on the M4TD (Ken; confirmed by the 20:18 PT yaw test). `headingDeg` stays
+  NaN and is not used.
 - **8:** bit 4 also requires the sample's own IMU-ok flag, not just arrival
   within 1 s.
 - **11:** consistent with app code (the Desk Pod queue while R2C is away) and
@@ -418,7 +435,9 @@ Not verifiable in either repo (adopted as **[BT]**):
 
 Answered by Ken (8:06 PM PT):
 
-- Pod front = camera/nose direction; use aircraft yaw, never track.
+- Pod front = camera/nose direction; use aircraft yaw, never track. On the
+  M4TD the camera yaw only changes by yawing the aircraft, so camera yaw =
+  nose yaw (8:39 PM PT).
 - A short base64 ID is fine; full address only where needed; class matters
   most.
 - No BTRX data to CalTopo.
@@ -428,8 +447,7 @@ Still open:
 
 - **Ken:** do pilots hover and yaw for turn-and-compare, or should the layer
   rely on passes only? Which firmware options (section 13), if any?
-- **Ken:** is the gimbal held forward during searches, so camera yaw can stand
-  in until aircraft yaw is decoded?
 - **BT RX:** bench-check that DETECT arrives, and that a TIME_PING from the
   app reaches the Drone Pod. Which board is `..493D` (aircraft or RC Plus 2)?
-- **App:** find aircraft yaw in the DJI tag-4 attitude block (flight test 1).
+- **Outdoor landmark check** of the yaw's north offset (indoors read 308.8°
+  true at a nose set about north; Ken expects indoor metal).
