@@ -12,6 +12,15 @@ Project-only engineering record; do not package in the app, copy into store meta
 
 ## Cumulative release history
 
+### 2.6.0 (445) — "Learn more about BTRX" link (November 12, 2026)
+
+- Both: the first line of Menu > BTRX is a **Learn more about BTRX** link that opens
+  https://rid2caltopo.com/btrx in the system browser (Android `ACTION_VIEW` from
+  `DeskPodScreen`, 3b66cee0; iPad SwiftUI `Link` in `DeskPodView`, 5d22735e). Wording and
+  URL live in `BtrxDeskPodText` on both (`LEARN_MORE`/`LEARN_MORE_URL`,
+  `learnMore`/`learnMoreURL`). Tests: Android `BtrxDeskPodModelTest`, iPad
+  `BtrxDeskPodModelTests.testLearnMoreLinkMatchesAndroid`. Built, not installed.
+
 ### 2.6.0 (445) — Session log no longer held open on the SD card (November 12, 2026)
 
 - Android: the Log_ session log is written to app-private storage
