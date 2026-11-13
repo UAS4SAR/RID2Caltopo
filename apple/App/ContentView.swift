@@ -154,7 +154,6 @@ struct ContentView: View {
     @State private var showDiagnosticLogs = false
     @State private var showStatus = false
     @State private var showReleaseNotes = false
-    @State private var showDeskPod = false
     @State private var showTerms = false
     @State private var showAboutPrivacy = false
     @State private var showImportConfig = false
@@ -291,9 +290,6 @@ struct ContentView: View {
                     panelAlreadyShowingForThisAircraft: showing
                 ) else { return }
                 pendingDroneConfirmation = DroneConfirmationRequest(id: remoteID)
-            }
-            .sheet(isPresented: $showDeskPod) {
-                DeskPodView(center: deskPod, onDismiss: { showDeskPod = false })
             }
             .sheet(isPresented: $showWorkspaceAbout) {
                 NavigationStack {
@@ -2660,7 +2656,7 @@ struct ContentView: View {
             viewportMemory: mapViewportMemory,
             workspaceMenu: AnyView(MainScreenMenu(
                 showDiagnosticLogs: $showDiagnosticLogs, showWorkspaceStats: $showWorkspaceStats,
-                showDeskPod: $showDeskPod, showReleaseNotes: $showReleaseNotes, showImportConfig: $showImportConfig,
+                showReleaseNotes: $showReleaseNotes, showImportConfig: $showImportConfig,
                 showStorageManagement: $showStorageManagement,
                 showCaltopoSettings: $showCaltopoSettings, showAboutPrivacy: $showAboutPrivacy,
                 showTerms: $showTerms, showConfirmExit: $showConfirmExit).equatable()),
@@ -3646,7 +3642,6 @@ private struct ShortFlightRecordingPanel: View {
 private struct MainScreenMenu: View, Equatable {
     @Binding var showDiagnosticLogs: Bool
     @Binding var showWorkspaceStats: Bool
-    @Binding var showDeskPod: Bool
     @Binding var showReleaseNotes: Bool
     @Binding var showImportConfig: Bool
     @Binding var showStorageManagement: Bool
@@ -3666,7 +3661,6 @@ private struct MainScreenMenu: View, Equatable {
         #endif
         Menu {
             Button("Aircraft and Reception", systemImage: "antenna.radiowaves.left.and.right") { showWorkspaceStats = true }
-            Button(BtrxDeskPodText.title, systemImage: "dot.radiowaves.left.and.right") { showDeskPod = true }
             Button("Settings", systemImage: "gearshape") { showCaltopoSettings = true }
             Button("Release Notes", systemImage: "doc.text") { showReleaseNotes = true }
             Divider()
@@ -4281,7 +4275,7 @@ struct AppleMainMenuUIProbe: View {
             Text("Menu builds: \(MainMenuUIProbeMetrics.menuBodies)").accessibilityIdentifier("menu-body-count")
             MainScreenMenu(
                 showDiagnosticLogs: selection("diagnostics"), showWorkspaceStats: selection("aircraft-reception"),
-                showDeskPod: selection("desk-pod"), showReleaseNotes: selection("release-notes"),
+                showReleaseNotes: selection("release-notes"),
                 showImportConfig: selection("import"),
                 showStorageManagement: selection("storage"), showCaltopoSettings: selection("settings"),
                 showAboutPrivacy: selection("privacy"), showTerms: selection("terms"), showConfirmExit: selection("quit")).equatable()

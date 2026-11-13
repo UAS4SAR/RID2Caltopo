@@ -707,4 +707,20 @@ final class BtrxDeskPodModelTests: XCTestCase {
         XCTAssertEqual(BtrxDeskPodText.learnMoreURL, "https://rid2caltopo.com/btrx")
         XCTAssertEqual(URL(string: BtrxDeskPodText.learnMoreURL)?.scheme, "https")
     }
+
+    func testBtrxOpensFromDeveloperToolsNotTheMainMenu() throws {
+        let appleRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let content = try String(contentsOf: appleRoot.appendingPathComponent("App/ContentView.swift"), encoding: .utf8)
+        let settings = try String(contentsOf: appleRoot.appendingPathComponent("App/CaltopoSettingsView.swift"), encoding: .utf8)
+        XCTAssertFalse(content.contains("Button(BtrxDeskPodText.title"))
+        XCTAssertFalse(content.contains("showDeskPod"))
+        let tools = try XCTUnwrap(settings.range(of: "private struct AppleDeveloperToolsView"))
+        let body = String(settings[tools.lowerBound...])
+        let entry = try XCTUnwrap(body.range(of: "Button(BtrxDeskPodText.title"))
+        let title = try XCTUnwrap(body.range(of: ".navigationTitle(\"Developer Tools\")"))
+        XCTAssertTrue(entry.lowerBound < title.lowerBound)
+        XCTAssertTrue(body.contains("DeskPodView(center: deskPod, onDismiss: { showDeskPod = false })"))
+    }
 }
+

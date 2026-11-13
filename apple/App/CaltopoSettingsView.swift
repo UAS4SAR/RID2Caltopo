@@ -742,9 +742,17 @@ private struct AppleDeveloperToolsView: View {
     @State private var recentDays = 2
     @State private var resubmitting = false
     @State private var showingResetConfirmation = false
+    @Environment(\.btrxDeskPod) private var deskPod
+    @State private var showDeskPod = false
 
     var body: some View {
         Form {
+            // BTRX lives here (not the main menu) until the pod is at least tentatively working.
+            Section(BtrxDeskPodText.title) {
+                Button(BtrxDeskPodText.title, systemImage: "dot.radiowaves.left.and.right") { showDeskPod = true }
+                    .disabled(deskPod == nil)
+            }
+
             Section("Tracker archive") {
                 Stepper("Recent days: \(recentDays)", value: $recentDays, in: 1 ... 30)
                 Button(resubmitting ? "Resubmitting…" : "Resubmit Recent Tracks To Tracker") {
@@ -822,6 +830,11 @@ private struct AppleDeveloperToolsView: View {
             }
         }
         .navigationTitle("Developer Tools")
+        .sheet(isPresented: $showDeskPod) {
+            if let deskPod {
+                DeskPodView(center: deskPod, onDismiss: { showDeskPod = false })
+            }
+        }
         .alert("Reset Persisted App State?", isPresented: $showingResetConfirmation) {
             Button("Cancel", role: .cancel) {}
             Button("Reset", role: .destructive) {

@@ -11,10 +11,11 @@ final class MainMenuUITests: XCTestCase {
         XCTAssertTrue(menu.waitForExistence(timeout: 20))
         menu.tap()
         XCTAssertTrue(app.buttons["Settings"].waitForExistence(timeout: 5))
-        for title in ["BTRX", "Settings", "Release Notes", "Import Config", "Manage Storage...",
+        for title in ["Settings", "Release Notes", "Import Config", "Manage Storage...",
                       "Send diagnostics to developer...", "Terms of Use", "About & Privacy", "Quit"] {
             XCTAssertTrue(app.buttons[title].exists, title)
         }
+        XCTAssertFalse(app.buttons["BTRX"].exists, "BTRX opens from Settings > Developer Tools")
         XCTAssertFalse(app.buttons["Backup & Transfer"].exists)
         XCTAssertFalse(app.buttons["Archive Storage..."].exists)
         func waitForTick(_ minimum: Int) {
