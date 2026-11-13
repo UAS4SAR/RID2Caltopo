@@ -22,7 +22,8 @@ replaces the team's own flight rules (section 6).
   - about 40 per patch per hold are needed to see a 20° turn-and-compare
     change at 3σ (about 5 dB at an estimated 0.25 dB/deg).
 - **Reports:** STEER is about 1 per second (1 s windows) and covers the
-  **single strongest** source only. DETECT lists up to 7 sources every 5 s.
+  **single strongest** source only (top 2–3 requested, pending BT RX).
+  DETECT lists up to 7 sources every 5 s.
 - **Link:** LoRa on US SHORT_FAST. A STEER is about 63–71 ms on air.
 - **Sample rates seen on the bench (Nov 12):** the DJI source gave about 40
   samples per patch per second; phone-class sources often about 5. So
@@ -76,7 +77,11 @@ replaces the team's own flight rules (section 6).
 - **Record:**
   - Desk Pod LoRa RSSI and SNR (in the app's frame log);
   - `steer_seq` gaps, which mean losses after the pod handed the frame off;
-  - arrival − `window_end_ms` delay, and backlog.
+  - arrival − `window_end_ms` delay, and backlog;
+  - the bearing layer's per-stage lag (`BBLAG`/`BBRND` lines and
+    `lag_report.py` CSV, `BEARING-LAYER-spec.md` r3 section 3.5), to find
+    the maximum normal delay and any slow path before lowering the 15 s
+    budget.
 
 ## 1. Techniques against a known source at a surveyed point
 
@@ -105,7 +110,9 @@ preference).**
   button) paints the hover spot's wedges, which darken along the bearing as
   the yaw passes add up. Repeat from a second edge point: the two spots'
   wedges darken where they cross. Record the layer's estimate and ellipse.
-- **Multiple sources:** STEER shows only the strongest, so mute it from the
+- **Multiple sources:** until the top-2–3 STEER firmware lands, STEER shows
+  only the strongest, so steering-mute it (the pod's STEER_MUTE, not the map
+  panel's hide) from the
   BTRX pane and sweep again to find the next. DETECT's 5 s windows (30° of
   smear at 6°/s) give a presence list only.
 
@@ -176,6 +183,11 @@ environments before changing anything else.
 - **Bearing error:** for (a) and (e), the estimated bearing against the true
   bearing from the drone position.
 - **Cost:** flight time, battery used, and the number of yaw holds or legs.
+- **Time to first estimate:** from first report of the source to the bearing
+  layer's first valid estimate and ellipse, and the miss distance then.
+  Ken: 10 min (the default fade time) should be plenty; if a technique needs
+  longer, the design needs revisiting (`BEARING-LAYER-spec.md` r3
+  section 2.4). Record the fade time and shape in use.
 
 ## 5. Logging (enable before every flight)
 

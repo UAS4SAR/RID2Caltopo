@@ -1,4 +1,4 @@
-# BTRX bearing layer: spec r2, continuous (milestone 1 of the map layer, draft, November 13, 2026)
+# BTRX bearing layer: spec r3, continuous (milestone 1 of the map layer, draft, November 13, 2026)
 
 Status: spec only. **Map-layer code is on hold.** r2 replaces the r1
 hover-station design (`8130f673`). There is **no station, no "Start station"
@@ -7,6 +7,14 @@ STEER report is matched to where the drone was and where its nose pointed at
 that report's time, and it paints a faint wedge on the map. Areas where many
 different reports agree get darker. This folds the former milestone 2 (the
 grid of `MAP-LAYER-design.md` r3 section 5) into milestone 1.
+
+r3 (November 13, morning) folds in Ken's answers to the five r2 open
+questions: a **10 min fade, linear by default** (section 2.4; Ken's 9:18 AM
+addition makes the total time and the fade shape user settings), a **tap-to-mute panel**
+(section 5.2), **15 s of pose history with lag instrumentation** (sections
+3.3–3.5), **one fade rate for all sources** (section 2.9), **top 2–3 sources
+per STEER** (section 4.1, frame format pending BT RX) and a **latest-ray
+outline** (section 5.1).
 
 The core is a **portable C library** (C11, stdlib, pthreads only), shared by
 Android and the iPad, with thin platform boundary layers for inputs and
@@ -44,8 +52,11 @@ Ken (November 13):
 ## 1. Facts the model uses
 
 - **STEER (0x73), about 1 Hz** on LoRa ShortFast (SF7, 250 kHz). One report
-  per 1 s window, for the **single strongest** source only (firmware may
-  later send the top 2–3, r3 section 13 option A).
+  per 1 s window. Today it carries the **single strongest** source. Ken
+  asked for the top 2–3 (r3 section 13 option A, "Yes please"), so the
+  library takes up to 3 sources per report (section 4.1). **The frame format
+  is pending BT RX's firmware definition**; single-source STEER stays
+  supported.
 - **Δ = rssi_port − rssi_stbd** (mean dB per patch). Positive Δ means the
   source is to the **left (port)**. −128 means that patch did not hear it.
 - **Roll** is positive with the starboard side down; **pitch** is positive
@@ -64,8 +75,10 @@ Ken (November 13):
 - **Sources:** keyed by the full address in memory only; shown as a **short
   base64 ID** plus a **device class** (phone / watch / hearing aid / tag /
   unknown) when known (r3 section 7).
-- **Fade:** 10 minutes to start (Ken). v1 uses a 10 min half-life **[A]**
-  (open question 1).
+- **Fade:** total fade time N = 10 min by default and linear by default
+  (Ken): a report counts in full when new, half at 5 min and not at all at
+  10 min. N and the fade shape are user settings (section 2.4). All sources
+  fade at the same rate.
 
 ## 2. Continuous model
 
@@ -107,18 +120,20 @@ changes fast with φ (near the nose and the tail) and wide abeam.
 
 ### 2.2 Accumulation per source
 
-Each source has a georeferenced grid: 10 m cells, 192 × 192 (1.92 km square)
-**[A]**, north-up in a local east/north tangent plane anchored at the first
-pose after the layer is switched on. When the drone comes within 300 m of an
-edge, the grid shifts by whole cells (ring indexing, no copy). Two
-accumulators per cell, both float:
+Each source accumulates on 10 m cells in a north-up local east/north tangent
+plane anchored at the first pose after the layer is switched on. Storage is
+in 16 × 16-cell tiles keyed by world tile position (section 2.4), so there
+is no fixed grid to shift. The rendered and estimated **view** is 192 × 192
+cells (1.92 km square) **[A]**, re-centred by whole tiles when the drone comes
+within 300 m of its edge. Two quantities per cell:
 
 - **Evidence E** (for the estimate). Each report adds κ_r · ℓ_r(cell) inside
   its footprint. Cells outside the footprint get the constant ln p_far
   (p_far = 0.05 **[A]**: a source heard at all is probably within detection
   range). That constant is kept as one per-source scalar, so a report touches
-  only its footprint (about 5,000 cells), and cells that shift into the grid
-  start with the correct "far from every report" value.
+  only its footprint (about 5,000 cells), and cells with no tile yet have the
+  correct "far from every report" value. Stored per cell as
+  E′ = κ_r · (ℓ_r − ln p_far) ≥ 0, so E = E′ + the far scalar.
 - **Support S** (for the display). Each report adds q_r · exp(ℓ_r(cell))
   inside its footprint: up to q_r in its wedge, near 0 outside it. Overlapping
   wedges from different reports add up. This is the "faint wedges that darken"
@@ -139,20 +154,141 @@ Per-report weights:
 
 ### 2.3 How single reports stay faint
 
-Display opacity for a cell is α = α_max · (1 − exp(−S / S0)), with
-α_max = 0.7 and S0 = 8 **[A]**. One full-weight report gives at most
-1 − e^(−1/8) ≈ 12% of α_max (about 0.08), a phone report about 4% (about 0.03). A cell needs
-roughly 8 full reports from different geometry that agree to reach 63% of
-α_max. One noisy report never paints a dark patch, and a dark patch always
-means many reports agree.
+Display opacity for a cell is a linear ramp,
+α = α_max · min(1, S / S_sat), with α_max = 0.7 and S_sat = 8 **[A]**. One
+full-weight report gives at most 1/8 of α_max (about 0.09), a phone report
+about 0.03. A cell needs about 8 full reports from different geometry that
+agree to reach full opacity. One noisy report never paints a dark patch, and
+a dark patch always means many reports agree.
 
-### 2.4 Time decay
+The ramp is linear (r2 used 1 − exp(−S/S0)) so that the fade in section 2.4
+shows up one-for-one in opacity: below saturation, with the default linear
+shape, a patch whose reports are all 5 min old is 50% as opaque as when they
+were new (within the bucket tolerance of section 2.4). A saturated
+patch (S > S_sat) stays at α_max until it fades below S_sat.
 
-Both E and S, and the per-source far scalar, decay with the same half-life
-T½ = 10 min **[A]**. The library uses a global scale: a report at time t adds
-its value × 2^(t/T½), and readers divide by 2^(now/T½). When the scale
-passes 1e6, every cell is rescaled once (O(cells), rare). Decay costs nothing
-per cell per report.
+### 2.4 Fade: total time N and shape p (user settings)
+
+Ken:
+
+> "N=10 minutes should be plenty of time to detect and locate a source - if
+> it isn't our design needs to be updated. Within that N minutes though, an
+> original source should be 50% as opaque at 50% * N minutes."
+
+> (9:18 AM PT) "I think the user should be able to configure the 10 minute
+> total fade value and we might want to have an option for controlling the
+> rate of fade from linear to exponential, where the fade accelerates towards
+> the end of that period."
+
+**Rule.** A report of age a = now − t_r counts with weight
+
+`w(a) = max(0, 1 − (a/N)^p)`
+
+- **N, total fade time:** user setting, default **10 min**, range 2–30 min
+  **[A]**. At age N a report is gone.
+- **p, fade shape:** user setting, default **p = 1 (linear)**: 50% at N/2,
+  as Ken asked. p > 1 holds strength longer, then fades faster toward the end
+  (Ken's "accelerates towards the end"). It is still exactly 0 at N.
+- **With p > 1 the 50% point moves later**, to a₅₀ = N · 2^(−1/p):
+
+| Preset | p | Weight at N/2 | 50% at (N = 10 min) | 90% still at |
+| --- | --- | --- | --- | --- |
+| Linear (default) | 1 | 50% | 5:00 | 1:00 |
+| Hold | 2 | 75% | 7:04 | 3:10 |
+| Strong hold | 4 | 94% | 8:25 | 5:37 |
+
+  An exponential-family curve with the same end point,
+  w = 1 − (e^(k·a/N) − 1)/(e^k − 1) (k → 0 is linear), would work equally;
+  the power curve is used because one number describes it. The mechanism
+  below supports any shape, so this choice can change without touching the
+  storage.
+- The same weight applies to evidence E, support S and the far scalar, so
+  the estimate and the shading forget at the same rate. With the linear
+  opacity ramp (section 2.3), opacity follows w one-for-one below saturation.
+- **If 10 min turns out not to be enough to detect and locate a source, the
+  design needs revisiting, not just N** (Ken). The field plan records time to
+  first estimate to check this.
+
+**Mechanism: per-age buckets of tiles, weighted at composite time.** Because
+the shape is applied when the layer is drawn, not when reports are added,
+any w(a) works, and N and p can change at any time.
+
+- **Buckets:** each source's reports go into the bucket for their report time,
+  one bucket per `bucket_s` = 60 s **[A]** of absolute time. A bucket holds the
+  integer sums of E′ and S for its reports, plus its far scalar and the mean
+  report time t̄_b of its entries.
+- **Tiles:** a bucket stores only the 16 × 16-cell tiles its footprints
+  touched, taken from one **tile pool** allocated at create (default 4,096
+  tiles × 1 KB = 4 MB **[A]**). A tile holds 256 cells × (uint16 E′ in units of
+  2⁻⁸ nat, uint16 S in units of 2⁻¹⁰ of a full report), with saturating adds.
+  One minute holds at most about 60 entries per source, so E′ stays under
+  about 23,000 and S under about 61,000, both within uint16. Integer sums are
+  order-independent and exact.
+- **Composite (publish):** per source, the bucket weight
+  w_b = w(now − t̄_b) is evaluated once, then the view cells sum w_b × the
+  bucket's tile values over the live buckets, into two reused float scratch
+  grids (E and S for the 192² view, about 300 KB in total). The estimate and
+  the α raster are computed from those.
+- **Expiry:** a bucket whose weight has reached 0 (t̄_b ≤ now − N) is dropped
+  whole and its tiles go back to the pool. Nothing is recomputed or
+  subtracted.
+- **Timing accuracy:** reports in one bucket differ in age by at most 60 s,
+  and the bucket is weighted at its mean time. So a single report is weighted
+  as if it were up to about ±30 s (`bucket_s`/2) older or younger: with the
+  linear default, 45–55% instead of 50% at N/2, and it leaves within about
+  ±30 s of N.
+  A smaller `bucket_s` tightens this at the cost of more tiles.
+- **Pool full:** the oldest bucket (across sources) is expired early and
+  counted in the stats (`buckets_expired_early`), and the stats show pool
+  use, so pool sizing can be checked in the field. Nothing is allocated.
+
+**Changing N or p at runtime.** `btrx_bearing_set_fade(h, total_s, shape_p)`
+can be called from any thread (the settings UI). It is queued and applied at
+the next tick, which republishes at once.
+
+- No re-bucketing is needed: buckets are kept by absolute report time, and
+  the new w(a) is applied to every held bucket's real age at the next
+  composite.
+- **Shortening N** immediately drops buckets older than the new N.
+- **Lengthening N** applies to every report still held. Reports already
+  expired under the shorter N stay gone: the library does not keep data past
+  the current N.
+- **Changing p** only changes the weights; nothing is dropped.
+
+**Settings UI (identical on both platforms).** In the BTRX settings in
+Developer Tools:
+
+- **"Fade time"**: minutes, 2–30, default 10.
+- **"Fade shape"**: three presets, **Linear** (default), **Hold**, **Strong
+  hold**, with a one-line hint under the control, for example "half strength
+  at 7:04". A continuous slider over p = 1–4 is a later option; the library
+  takes any p ≥ 1.
+- Both are saved with the app settings and passed in at layer start and on
+  every change.
+
+**Alternatives not used.** r3's first draft kept exact linear sums
+(Σv and Σv·t per cell, subtracting each report again at expiry). That only
+gives an exact *linear* fade, does not allow a shape change, and needs every
+report recomputed at expiry. Dense per-bucket grids over the whole view cost about
+12–24 MB at 10 buckets and 8 sources; tiles keep only the area actually flown. Exponential decay with
+no end point is not what Ken described.
+
+**Cost.**
+
+- **Memory:** tile pool 4 MB at the default (`tile_pool_tiles`). A hover
+  touches about 25–36 tiles per source per minute; flying 10 m/s, about 50.
+  With several sources heard at once and N = 10 min, typical use is under
+  half the pool. **For N = 20–30 min** the pool should be doubled to
+  8,192 tiles (8 MB); that is a create-time setting, not a runtime one. Plus
+  the view scratch grids (about 300 KB) and a small 30 s ring of recent
+  entries for the diversity discount (about 10 KB).
+- **CPU, add:** one pass per source entry over its footprint (about 5,000
+  cells), roughly 0.2–0.5 ms on the A5 **[A]**. At 1 Hz with 3 entries per
+  STEER, about 1–1.5 ms per second.
+- **CPU, composite:** live tiles × 256 cells × 2 multiply-adds. At a typical
+  1,000–2,000 live tiles that is 0.5–1 M operations, about 1–3 ms **[A]**, at
+  most once a second.
+- **CPU, expiry:** returning tiles to the pool, O(tiles in the bucket).
 
 ### 2.5 Front/back ambiguity
 
@@ -224,22 +360,34 @@ A report is not accumulated (it is counted per reason in the stats) when:
 - there is no yaw sample within 0.5 s of the report time ("no heading");
 - there is no position within 3 s, or the height above ground is unknown and
   no default is configured (default 30 m **[A]**, flagged in the stats);
-- the source is on the ignore list (own aircraft, by full address) or muted.
+- the source is on the ignore list (own aircraft, by full address).
+
+**Muted (hidden) sources are still accumulated** (section 5.2), so unmuting
+shows them as if they had never been hidden.
 
 A no-target STEER (bit 0 clear) is evidence that nothing was above the floor,
 but v1 ignores it. A source missing from a window is not evidence, because
-STEER reports only the strongest.
+STEER reports only the strongest one (or, later, the strongest 2–3).
 
 ### 2.9 Moving subject caveat
 
 The model assumes a **stationary source**. A walking subject at 1 m/s moves
-600 m in one half-life. Old wedges then point at old positions: the patch
-smears along the subject's path and the estimate lags behind the subject,
-sitting between old and new positions. The fade lets the old trail lighten
-rather than vanish. A shorter half-life for one source is a config value
-(open question 3). The estimate's covariance growing over time with a
-consistent drift is a hint that the source is moving. v1 only shows the
-ellipse and does not model motion.
+600 m within the default 10 min fade time. Old wedges then point at old positions:
+the patch smears along the subject's path, and the estimate lags behind the
+subject, sitting between old and new positions. Searchers carrying phones are
+the common case. The fade clears the oldest part of the trail.
+
+**All sources fade at the same rate** (Ken: "Initially, I'd say all fade at
+same rate, but if it turns out we can determine a moving source with any
+level of accuracy/reliability, then we should reconsider this"). Meanwhile
+the user hides a smear with the mute panel (section 5.2).
+
+**Future item: moving-source detection.** Candidate signals: the estimate
+drifting consistently over minutes; recent reports' residuals at the
+estimate growing with report age; a widening ellipse while reports still
+agree among themselves. Only if one of these proves reliable in field logs
+should the fade become per source. v1 shows the ellipse and does not model
+motion.
 
 ## 3. Time and pose
 
@@ -279,12 +427,17 @@ the host clock.
 
 ### 3.3 Pose ring buffers
 
-Two fixed rings, allocated at create:
+Ken: "The initial design should track 10-15 s of previous telemetry while we
+determine what the maximum normal delay is." Two fixed rings, allocated at
+create, sized for at least 15 s plus the 1 s window:
 
 | Ring | Rate | Capacity | Span |
 | --- | --- | --- | --- |
-| Yaw (and optional aircraft pitch/roll) | about 30 Hz | 2,048 | about 60 s |
-| Position (lat, lon, height above ground) | about 1 Hz | 128 | about 2 min |
+| Yaw (and optional aircraft pitch/roll) | about 30 Hz (up to 60) | 1,024 | about 34 s at 30 Hz, 17 s at 60 Hz |
+| Position (lat, lon, height above ground) | about 1 Hz | 64 | about 60 s |
+
+Create fails with `BTRX_BEARING_E_INVALID` if the configured capacities
+cannot cover `max_report_lag_ms` + 2 s at the configured maximum rates.
 
 Interpolation at the report time: yaw by shortest-arc linear interpolation
 (0/360 wrap), position linearly in the local tangent plane. The window's yaw
@@ -294,16 +447,55 @@ makes the report unusable (section 2.8).
 
 ### 3.4 Lag budget and late reports
 
-A report waits in a pending ring (capacity 32) until the pose rings cover its
-window: a yaw sample at or after t_end, and a position sample at or after the
-report time (or one within 1.5 s **[A]** before it, extrapolated with the last
-velocity). This is the natural display lag Ken expects: usually under 1 s,
-limited by the 1 Hz RID position.
+A report waits in a pending ring (capacity 32 frames) until the pose rings
+cover its window: a yaw sample at or after t_end, and a position sample at or
+after the report time (or one within 1.5 s **[A]** before it, extrapolated
+with the last velocity). This is the natural display lag Ken expects: usually
+under 1 s, limited by the 1 Hz RID position.
 
-A report older than the **lag budget**, 5 s **[A]** (`max_report_lag_ms`),
-when it arrives or while it waits, is **dropped** and counted. That drops the
-Desk Pod backlog frames (5–20 s late, r3 section 2) by default (open
-question 2).
+A report older than the **lag budget**, `max_report_lag_ms`, **15 s by
+default** (configurable), when it arrives or while it waits, is **dropped**
+and counted with the stage that made it late (section 3.5). This answers the
+r2 Desk Pod backlog question: backlog frames up to 15 s late are used, and
+older ones (r3 measured 5–20 s) are dropped and counted. The budget is
+lowered once field logs show the maximum normal delay.
+
+### 3.5 Lag instrumentation
+
+Ken: "I think we want to measure and debug the slow path so that we can
+locate and eliminate any significant delays."
+
+**Per-report stage times**, all on the host clock:
+
+| Stamp | Meaning | Source |
+| --- | --- | --- |
+| T0 window end | `window_end_ms` + pod offset | pod, section 3.2 |
+| T0′ hand-off | T0 + (time to `send_steer`); `age_ms` gives the newest sample's age at hand-off | pod |
+| T1 Desk Pod | **not available**: the Desk Pod adds no receive stamp (r3 option D). Until firmware adds one, T0→T2 is one stage (LoRa air time 63–71 ms + Desk Pod relay + BLE) | — |
+| T2 BLE arrival | the BLE/USB read callback in `BtrxClient` | boundary |
+| T3 push | `btrx_bearing_push_report()` call | library |
+| T4 pose ready | pending report gets its pose; records which ring it waited for (yaw or position) | library |
+| T5 accumulated | added to the grids in `tick` | library |
+| T6 published | the snapshot containing it is published | library |
+| T7 rendered | the boundary calls `btrx_bearing_note_rendered(seq, host_us)` once the overlay with that snapshot is on screen | boundary |
+
+Stages reported: **pod→arrival** (T2 − T0), **arrival→push** (T3 − T2),
+**pose wait** (T4 − T3, split by yaw or position), **tick wait**
+(T5 − T4), **publish wait** (T6 − T5), **render** (T7 − T6) and **total**
+(T7 − T0). Pose inputs get the same treatment: **yaw input lag** (push time
+− the yaw stamp) and **position input lag** (push time − RID fix time).
+
+- **Histograms:** per stage, a ring of the last 600 reports (about 10 min,
+  14 KB). At publish the snapshot carries count, p50, p90, p99 and max per
+  stage, plus late-drop counts by the stage that crossed the budget.
+- **Debug log line** (`lag_trace` config, Developer Tools only): one line per
+  report when its fate is final, through the log callback, which the
+  boundary writes to the session log:
+  `BBLAG seq=<steer_seq> src=<short_id> fate=used|gated|late|ignored wait=yaw|pos|none t0=… t2=… t3=… t4=… t5=… t6=…`
+  and one `BBRND snap=<seq> t7=<host_us>` line per rendered snapshot.
+- **CSV:** `tools/btrx_bearing_test/lag_report.py` joins `BBLAG` and `BBRND`
+  lines from a session log into one CSV row per report (all stamps and
+  stages) and prints the percentiles, so slow paths can be found per stage.
 
 ## 4. Sources, IDs, colours
 
@@ -323,28 +515,129 @@ question 2).
 - **Slots:** 8 sources **[A]**. A new source when all slots are full replaces
   the least recently heard source without a valid estimate (or, failing
   that, the least recently heard).
-- **Own aircraft / mute:** `btrx_bearing_set_source_flags()` by key, from the
-  existing BTRX pane actions. Ignored sources are never accumulated.
+- **Ignore (own aircraft):** `btrx_bearing_set_source_flags(IGNORED)` by key
+  from the BTRX pane. Ignored sources are never accumulated.
+- **Mute / unmute = hide / show on the map** (section 5.2). A muted source is
+  not drawn, but its data keeps accumulating and fading, so unmuting restores
+  it. Mute never deletes anything. The flag lasts as long as the source's
+  slot: until the layer is switched off, the source is evicted, or
+  `reset`.
+- **Map mute is not the pod's steering mute.** The stream overlay's "Mute"
+  sends STEER_MUTE (0x74), which makes the pod stop choosing that source, so
+  no more reports arrive for it. The map panel only hides; it never sends
+  STEER_MUTE.
+
+### 4.1 Multi-source STEER (pending BT RX)
+
+Ken said yes to the top 2–3 sources per STEER (r3 section 13 option A: about
+7.9–9.4% air time, needs the STEER cap raised from 8% to 10% **[BT]**). **The
+frame format is not defined yet; BT RX owns it.** The library is ready for
+it:
+
+- `btrx_bearing_report_t` holds the frame fields once (`window_end_ms`,
+  `steer_seq`, frame flags, pod roll/pitch, arrival) and **1–3 source
+  entries** (rssi_port/stbd, peak, hits, age, per-source flags, key, class,
+  company ID, address type).
+- A single-source STEER (today's frame) maps to one entry, so nothing changes
+  for current firmware.
+- Each entry is posed with the same report time and pose, and goes through
+  the gates and accumulation on its own, into its own source's grid.
+- Order in the frame (strongest first) is kept for the stats only; the
+  weights don't depend on rank.
+- Still no negative evidence: a source missing from a 3-entry frame may be
+  muted or ignored on the pod, or just fourth.
+- The boundary parser changes when BT RX defines the format (Kotlin and
+  Swift `BtrxProtocol.parseSteer`, with shared test vectors); the library
+  struct does not.
 
 ## 5. Rendering output
 
-The library renders. The platforms only show its pixels and labels.
+The library renders the shading. The platforms only show its pixels, the
+outlines and labels.
 
 - **Composite raster:** one RGBA8 premultiplied image, one pixel per cell,
   north-up, with its north/south/east/west bounds in degrees. Per cell, each
-  source's colour at its opacity α (section 2.3) is blended "over" in order
-  of last heard (most recent on top). Cells with α < 0.02 are transparent.
-- **Per source:** short ID, class, colour, last heard, report counts, and
-  the estimate (point, 1σ/2σ ellipses as semi-axes in metres plus
-  orientation, optional second peak) when one exists.
-- **Latest wedge** per source (apex, centre bearing, half-width, length,
-  front and mirror), for a brief outline so the user sees each report land.
-  Optional in the UI.
+  **unmuted** source's colour at its opacity α (section 2.3) is blended
+  "over" in order of last heard (most recent on top). Cells with α < 0.02
+  are transparent.
+- **Per-source opacity rasters:** one uint8 α per cell per source, muted ones
+  included, for the tap query (section 5.2). 192² × 8 = 295 KB per snapshot.
+- **Per source:** short ID, class, colour, muted flag, last heard, report
+  counts, and the estimate (point, 1σ/2σ ellipses as semi-axes in metres plus
+  orientation, optional second peak) when one exists. **A muted source's
+  estimate and ellipse are not drawn** (still computed, so unmute shows them
+  at once).
 - **Label:** `phone · Q3x9Kd · 23 rpt · ±18 m` (2σ long axis) or
   `phone · Q3x9Kd · 23 rpt` without an estimate, plus "ambiguous" when a
   second peak is shown.
 - Published at most once a second, with a sequence number so the UI skips
-  unchanged snapshots. No smoothing: each snapshot is the current state.
+  unchanged snapshots, and **at the next tick after a mute change** (within
+  200 ms). No smoothing: each snapshot is the current state.
+
+### 5.1 Latest-ray outline
+
+Ken: "I don't want to add a lot of processing yet, but would be nice if new
+rays were obvious overlays on top of previous."
+
+- Per unmuted source, the **latest accepted report's wedge** is drawn as a
+  **stroke-only** outline in the source's colour, on top of the shading:
+  apex at the drone's position at report time, centre line, and the two
+  edges out to the footprint radius. A dashed thinner outline shows the
+  mirror lobe while it is significant (section 2.5).
+- Geometry comes from the report itself, not the grid: the library evaluates
+  ℓ on a 1° ring at one range (360 evaluations) to find the centre bearing
+  and the half-width where ℓ > −0.5 **[A]**. No extra grid work.
+- The outline fades out over 5 s **[A]** (stroke alpha 1 → 0, from the
+  report's time) or is replaced by the source's next report, whichever is
+  first. The fade is a native animation on the platform (or stepped at the
+  1 Hz snapshot rate); the library supplies only the geometry and t_us.
+
+### 5.2 Tap-to-mute panel
+
+Ken: "having the ability to click on a location and get a panel of
+color-coded checkboxes along with their descriptions to mute/unmute might be
+the best way to go. When running a BTRX scanner overlay on the map, that
+functionality should have right of first refusal on any single/double taps
+(aside from the basic pan/pinch/zoom)."
+
+**Tap routing (both platforms).** While the BTRX overlay is on:
+
+1. A **single tap or double tap** on the map goes to the overlay **first**.
+2. The overlay calls `btrx_bearing_snapshot_sources_at(snapshot, lat, lon,
+   radius_m)` on the current snapshot. The radius comes from the zoom: a 24 pt
+   **[A]** touch radius converted to metres at the current zoom, at least one
+   cell.
+3. If it finds no source with shading there (α ≥ 0.02 in its raster, muted
+   sources included), the overlay **declines**, and the map's normal tap
+   handling runs (marker taps, double-tap zoom, and so on).
+4. Otherwise the overlay **consumes** the tap and opens the panel. A double
+   tap opens the same panel in v1 (open question 1).
+5. **Pan, pinch and zoom gestures are untouched**: they never reach the
+   overlay.
+
+`sources_at` returns up to 8 sources ordered by their contribution at the
+spot (the sum of α over the cells in the radius, highest first). It is a pure
+function of an acquired snapshot, bounded by the radius (at most a few
+thousand cells), and runs on the UI thread in microseconds.
+
+**Panel (identical on Android and iPad).**
+
+- A small card anchored at the tap point, titled **"BTRX sources here"**.
+- One row per source, in `sources_at` order:
+  - colour swatch (the source's colour);
+  - checkbox: **checked = shown, unchecked = muted (hidden)**;
+  - short ID, for example `Q3x9Kd`;
+  - device class: phone / watch / hearing aid / tag / unknown;
+  - last heard, for example "12 s ago";
+  - report count in the fade window.
+- Footer: **"Mute all"** and **"Unmute all"**, applied to the rows listed.
+- Changing a checkbox applies at once (`set_source_flags`, shown within
+  about 200 ms) and leaves the panel open. Nothing is deleted: muted sources
+  keep accumulating and still fade out at N (10 min by default).
+- **Dismissing** the panel (tap outside it, or "Done") only hides the panel.
+- A muted source can be found again by tapping where it was (its hidden
+  shading still answers `sources_at`) or from the source list in the BTRX
+  pane in Developer Tools, which shows the same rows for every source.
 
 ## 6. C library: `btrx_bearing`
 
@@ -359,18 +652,27 @@ The library renders. The platforms only show its pixels and labels.
   `struct_size` and `abi_version` in the config, and
   `btrx_bearing_abi_version()`. A mismatch fails create with
   `BTRX_BEARING_E_ABI`.
-- **No allocation after create.** Rings, grids (8 × 192² × 2 floats, about
-  2.4 MB), the pattern table (about 130 KB), the pending ring and three
-  snapshot buffers (each about 150 KB of RGBA plus metadata) are allocated in
-  `btrx_bearing_create()`. `push_*`, `tick`, `acquire` and `release` never
-  call `malloc`.
+- **No allocation after create.** Allocated in `btrx_bearing_create()`:
+  - the tile pool, 4,096 tiles × 1 KB (section 2.4), 4 MB, plus bucket
+    tables and the view scratch grids (about 300 KB);
+  - the diversity ring of recent entries (about 10 KB);
+  - pose rings, pending ring and lag histograms (under 100 KB);
+  - the pattern table (about 130 KB);
+  - three snapshot buffers, each 147 KB RGBA + 295 KB per-source α +
+    metadata, about 1.3 MB in total.
+
+  About 6 MB in all at the defaults. `push_*`, `tick`, `acquire`,
+  `release`, `sources_at` and `note_rendered` never call `malloc`.
 - **Bounded work.** Push is O(1). Tick processes at most
-  `max_reports_per_tick` reports (default 4), each about 5,000 footprint
-  cells, plus at most one publish (192² cells × sources). The limits are
+  `max_reports_per_tick` frames (default 4, up to 3 source entries each),
+  each about 5,000 footprint cells, plus bucket expiry (returning tiles) and
+  at most one publish (live tiles × 256 cells). The limits are
   counts, not time, so results stay deterministic.
 - **Deterministic.** Same inputs in the same order give the same outputs.
-  Both builds use `-std=c11 -O2 -ffp-contract=off` and no `-ffast-math`. libm
-  differs between bionic and Apple in the last bits, so cross-platform tests
+  Both builds use `-std=c11 -O2 -ffp-contract=off` and no `-ffast-math`.
+  The tiles hold fixed-point integer sums, so they match exactly whenever the
+  per-cell values do. libm differs between bionic and Apple in the last
+  bits, which can move a value by one quantum, so cross-platform tests
   compare with tolerances (section 9).
 - **Errors:** every call returns a `btrx_bearing_status_t`; nothing aborts.
   A full input ring drops the **oldest** item and returns
@@ -380,9 +682,10 @@ The library renders. The platforms only show its pixels and labels.
 
 | Call | Threads | Blocking |
 | --- | --- | --- |
-| `push_pose`, `push_report`, `push_time_sync`, `push_pod_uptime`, `set_source_flags`, `source_key` | any thread, concurrently | takes only the **input mutex**, for an O(1) copy; never waits for tick |
+| `push_pose`, `push_report`, `push_time_sync`, `push_pod_uptime`, `set_source_flags`, `set_fade`, `note_rendered`, `source_key` | any thread, concurrently | takes only the **input mutex**, for an O(1) copy; never waits for tick |
 | `tick` | one thread at a time (a second concurrent caller gets `BTRX_BEARING_E_BUSY`) | drains inputs in a bounded batch under the input mutex, then works with no input lock held |
 | `snapshot_acquire` / `snapshot_release` | **one** reader thread (the UI or render thread) | triple buffer; a pointer swap under a separate tiny mutex. Never waits for tick |
+| `snapshot_sources_at` | the reader thread, between acquire and release | pure function of the snapshot; no lock |
 | `start_worker` / `stop_worker` | the owner thread | stop joins the worker |
 | `reset` | any thread | queued as a command, applied at the next tick |
 | `destroy` | the owner, after `stop_worker` and with no call in flight | |
@@ -398,8 +701,9 @@ Two ways to run the work, chosen by the boundary:
   pthread that waits on a condition variable and ticks when input arrives or
   every 200 ms, with `now` from the `now_us` callback in the config.
 
-The UI thread only calls `push_*` (never needed there) and
-`snapshot_acquire/release`. Neither can block on model work.
+The UI thread calls only `set_source_flags` (from the panel),
+`note_rendered`, `snapshot_acquire/release` and `snapshot_sources_at`. None
+of them can block on model work.
 
 ### 6.3 Header sketch (`include/btrx_bearing.h`)
 
@@ -415,6 +719,7 @@ extern "C" {
 
 #define BTRX_BEARING_ABI_VERSION 1u
 #define BTRX_BEARING_MAX_SOURCES 8
+#define BTRX_BEARING_MAX_REPORT_SOURCES 3    /* top 2-3 per STEER (format pending BT RX) */
 #define BTRX_BEARING_RSSI_NOT_HEARD (-128)
 
 typedef struct btrx_bearing btrx_bearing_t;   /* opaque */
@@ -422,7 +727,7 @@ typedef struct btrx_bearing btrx_bearing_t;   /* opaque */
 typedef enum {
     BTRX_BEARING_OK = 0,
     BTRX_BEARING_W_DROPPED = 1,      /* accepted; oldest item in a full ring dropped */
-    BTRX_BEARING_E_INVALID = -1,     /* NULL, NaN, out-of-range field */
+    BTRX_BEARING_E_INVALID = -1,     /* NULL, NaN, out-of-range field, rings too small */
     BTRX_BEARING_E_NOMEM = -2,       /* create only */
     BTRX_BEARING_E_ABI = -3,
     BTRX_BEARING_E_BUSY = -4,        /* concurrent tick */
@@ -447,6 +752,7 @@ typedef struct {
     /* grid */
     float cell_m;                    /* 10 */
     int32_t grid_cells;              /* 192 (square) */
+    int32_t max_sources;             /* 8 (<= BTRX_BEARING_MAX_SOURCES) */
     float footprint_m;               /* 400 */
     float recentre_margin_m;         /* 300 */
     /* model */
@@ -460,29 +766,40 @@ typedef struct {
     const float *pattern_delta_db;   /* optional measured table, NULL = v1 */
     const float *pattern_sum_db;     /* same shape: 360 az x 46 depression */
     float level_term_weight;         /* 0 in v1 */
-    /* weights and display */
+    /* weights, fade, display */
     float tempering;                 /* 0.5 */
     float info_ref_db;               /* 2 */
     float diversity_m, diversity_deg;/* 5, 5 */
     int32_t diversity_window_ms, diversity_cap; /* 30000, 9 */
-    float half_life_s;               /* 600 */
-    float alpha_max, support_s0;     /* 0.7, 8 */
+    float fade_total_s;              /* N = 600 (user setting 120..1800) */
+    float fade_shape_p;              /* p = 1 linear; weight = max(0, 1 - (age/N)^p) */
+    float bucket_s;                  /* 60: age-bucket width */
+    int32_t tile_pool_tiles;         /* 4096 x 1 KB (16x16 cells, uint16 E' and S) */
+    float alpha_max, support_sat;    /* 0.7, 8: alpha = alpha_max * min(1, S/support_sat) */
+    float alpha_visible;             /* 0.02: transparent below; sources_at threshold */
+    float ray_halfwidth_ll;          /* -0.5: latest-ray edge level */
     /* gates and timing */
     float max_yaw_rate_dps, max_yaw_change_deg; /* 10, 5 */
     int32_t max_yaw_gap_ms, max_pos_gap_ms;     /* 500, 3000 */
     int32_t max_pos_extrapolate_ms;  /* 1500 */
-    int32_t max_report_lag_ms;       /* 5000 */
+    int32_t max_report_lag_ms;       /* 15000 (Ken: 10-15 s while measuring) */
+    int32_t yaw_ring_capacity;       /* 1024 */
+    int32_t pos_ring_capacity;       /* 64 */
+    float max_yaw_rate_hz, max_pos_rate_hz; /* 60, 2: create checks ring span */
     int32_t yaw_latency_ms;          /* L_v, 0 until measured */
     float default_agl_m;             /* 30; NaN = unknown AGL drops the report */
     int32_t sync_window_ms;          /* 120000 */
+    /* lag instrumentation */
+    bool lag_trace;                  /* BBLAG/BBRND lines through log() */
+    int32_t lag_history;             /* 600 reports */
     /* estimate */
     int32_t est_min_reports;         /* 10 */
     float est_min_yaw_span_deg, est_min_baseline_m; /* 60, 50 */
     float est_max_axis_2s_m;         /* 200 */
     float second_peak_mass;          /* 0.25 */
     /* work */
-    int32_t max_reports_per_tick;    /* 4 */
-    int32_t publish_interval_ms;     /* 1000 */
+    int32_t max_reports_per_tick;    /* 4 frames */
+    int32_t publish_interval_ms;     /* 1000; a mute or fade change publishes at the next tick */
     btrx_bearing_now_us_fn now_us;   /* own-worker mode only; may be NULL */
     btrx_bearing_log_fn log;         /* may be NULL */
     void *callback_ctx;
@@ -497,6 +814,7 @@ enum {
 };
 typedef struct {
     int64_t t_us;                    /* host time the pose applies to */
+    int64_t push_us;                 /* host time the boundary got it (input-lag stats) */
     uint32_t mask;
     double lat_deg, lon_deg;
     float agl_m;
@@ -504,21 +822,28 @@ typedef struct {
     float pitch_deg, roll_deg;       /* + nose up, + starboard down */
 } btrx_bearing_pose_t;
 
-/* One STEER (0x73) as parsed by BtrxProtocol, addresses already keyed. */
+/* One source entry of a STEER. */
 typedef struct {
-    int64_t arrival_us;              /* host arrival */
-    uint32_t window_end_ms;          /* pod A millis() */
-    uint16_t steer_seq;
-    uint8_t flags;                   /* bit0 target .. bit6 imu cal */
-    uint16_t age_ms;
     int8_t rssi_port, rssi_stbd, peak_rssi;  /* dB; -128 = not heard */
     uint8_t hits_port, hits_stbd;
-    int8_t roll_x2, pitch_x2;        /* pod, at send time */
+    uint16_t age_ms;                 /* newest sample to hand-off */
+    uint8_t src_flags;               /* per-source pod flags (new, linked, muted) */
     uint64_t source_key;             /* btrx_bearing_source_key() */
     btrx_bearing_class_t dev_class;
     uint16_t company_id;
     uint8_t addr_type;
+} btrx_bearing_report_source_t;
+
+/* One STEER (0x73), single- or multi-source, as parsed by BtrxProtocol. */
+typedef struct {
+    int64_t arrival_us;              /* T2: host BLE/USB arrival */
+    uint32_t window_end_ms;          /* pod A millis() */
+    uint16_t steer_seq;
+    uint8_t flags;                   /* frame flags: bit0 target .. bit6 imu cal */
+    int8_t roll_x2, pitch_x2;        /* pod, at send time */
     bool backlog;                    /* BtrxClient marked it queued by the Desk Pod */
+    uint8_t source_count;            /* 0 (no target) .. BTRX_BEARING_MAX_REPORT_SOURCES */
+    btrx_bearing_report_source_t src[BTRX_BEARING_MAX_REPORT_SOURCES]; /* strongest first */
 } btrx_bearing_report_t;
 
 /* Lifecycle */
@@ -535,13 +860,24 @@ btrx_bearing_status_t btrx_bearing_push_report(btrx_bearing_t *h, const btrx_bea
 btrx_bearing_status_t btrx_bearing_push_time_sync(btrx_bearing_t *h, int64_t t1_host_us,
         uint32_t t2_pod_ms, uint32_t t3_pod_ms, int64_t t4_host_us);
 btrx_bearing_status_t btrx_bearing_push_pod_uptime(btrx_bearing_t *h, int64_t host_us, uint32_t uptime_s);
+/* T7: the overlay showing snapshot `seq` is on screen. */
+btrx_bearing_status_t btrx_bearing_note_rendered(btrx_bearing_t *h, uint64_t seq, int64_t host_us);
 
 /* Sources */
 btrx_bearing_status_t btrx_bearing_source_key(const btrx_bearing_t *h,
         const uint8_t addr_msb_first[6], uint8_t addr_type, uint64_t *key_out);
 void btrx_bearing_short_id(uint64_t key, char out[8]);    /* 6 chars + NUL */
-enum { BTRX_BEARING_SRC_IGNORED = 1u << 0, BTRX_BEARING_SRC_MUTED = 1u << 1 };
-btrx_bearing_status_t btrx_bearing_set_source_flags(btrx_bearing_t *h, uint64_t key, uint32_t flags);
+enum {
+    BTRX_BEARING_SRC_IGNORED = 1u << 0,  /* own aircraft: never accumulated */
+    BTRX_BEARING_SRC_MUTED = 1u << 1,    /* hidden on the map; still accumulated */
+};
+/* Sets or clears `mask` bits to `value` for each key (panel rows, "Mute all"). */
+btrx_bearing_status_t btrx_bearing_set_source_flags(btrx_bearing_t *h, const uint64_t *keys,
+        size_t key_count, uint32_t mask, uint32_t value);
+
+/* Fade settings (section 2.4): any thread, applied at the next tick.
+ * total_s in [120, 1800], shape_p >= 1. Shortening drops older buckets. */
+btrx_bearing_status_t btrx_bearing_set_fade(btrx_bearing_t *h, float total_s, float shape_p);
 
 /* Work */
 btrx_bearing_status_t btrx_bearing_tick(btrx_bearing_t *h, int64_t now_us, bool *published);
@@ -560,36 +896,60 @@ typedef struct {
     float second_mass;
 } btrx_bearing_estimate_t;
 
-typedef struct {
+typedef struct {                     /* latest-ray outline, section 5.1 */
     bool valid;
     double apex_lat_deg, apex_lon_deg;
     float centre_true_deg, half_width_deg, length_m;
-    float mirror_true_deg;           /* NaN when no mirror lobe */
-    int64_t t_us;
-} btrx_bearing_wedge_t;
+    float mirror_true_deg;           /* NaN when the mirror lobe is not significant */
+    int64_t t_us;                    /* report time; the outline fades over 5 s from here */
+} btrx_bearing_ray_t;
 
 typedef struct {
     uint64_t key;
     char short_id[8];
     btrx_bearing_class_t dev_class;
     uint8_t rgb[3];
-    uint32_t flags;
+    uint32_t flags;                  /* IGNORED, MUTED */
     int64_t first_heard_us, last_heard_us;
-    uint32_t reports_in, reports_used;
+    uint32_t reports_in, reports_used, reports_in_window;
     float effective_reports;
     float peak_alpha;
-    btrx_bearing_estimate_t estimate;
-    btrx_bearing_wedge_t latest_wedge;
+    const uint8_t *alpha;            /* width*height, row 0 = north; muted sources too */
+    btrx_bearing_estimate_t estimate;   /* drawn only when not muted */
+    btrx_bearing_ray_t latest_ray;      /* drawn only when not muted */
 } btrx_bearing_source_t;
 
+typedef enum {
+    BTRX_BEARING_STAGE_POD_TO_ARRIVAL = 0,  /* T2 - T0 (LoRa + Desk Pod + BLE) */
+    BTRX_BEARING_STAGE_ARRIVAL_TO_PUSH,     /* T3 - T2 */
+    BTRX_BEARING_STAGE_POSE_WAIT_YAW,       /* T4 - T3, waited for yaw */
+    BTRX_BEARING_STAGE_POSE_WAIT_POS,       /* T4 - T3, waited for position */
+    BTRX_BEARING_STAGE_TICK_WAIT,           /* T5 - T4 */
+    BTRX_BEARING_STAGE_PUBLISH_WAIT,        /* T6 - T5 */
+    BTRX_BEARING_STAGE_RENDER,              /* T7 - T6 */
+    BTRX_BEARING_STAGE_TOTAL,               /* T7 - T0 */
+    BTRX_BEARING_STAGE_YAW_INPUT,           /* yaw push - yaw stamp */
+    BTRX_BEARING_STAGE_POS_INPUT,           /* position push - RID fix time */
+    BTRX_BEARING_STAGE_COUNT
+} btrx_bearing_stage_t;
+
 typedef struct {
-    uint32_t reports_in, used, gated, no_heading, no_position, late_dropped,
-             ring_dropped, ignored;
+    uint32_t count;
+    int32_t p50_ms, p90_ms, p99_ms, max_ms;
+    uint32_t late_drops;             /* reports that crossed the budget in this stage */
+} btrx_bearing_lag_t;
+
+typedef struct {
+    uint32_t reports_in, entries_in, used, gated, no_heading, no_position,
+             late_dropped, ring_dropped, buckets_expired_early, ignored;
+    uint32_t tiles_in_use, tiles_total; /* pool use */
+    float fade_total_s, fade_shape_p;   /* settings in effect */
     int32_t pod_offset_ms;           /* host - pod */
     int32_t pod_offset_err_ms;       /* RTT/2, or -1 for the arrival fallback */
     uint8_t offset_source;           /* 0 none, 1 arrival minimum, 2 TIME_PONG */
     uint32_t pod_session;
     int32_t display_lag_ms;          /* now - newest accumulated report time */
+    btrx_bearing_lag_t lag[BTRX_BEARING_STAGE_COUNT];  /* last lag_history reports */
 } btrx_bearing_stats_t;
 
 typedef struct {
@@ -597,7 +957,7 @@ typedef struct {
     int64_t t_us;
     int32_t width, height;           /* cells = pixels */
     double north_deg, south_deg, east_deg, west_deg;
-    const uint8_t *rgba;             /* width*height*4, premultiplied, row 0 = north */
+    const uint8_t *rgba;             /* width*height*4, premultiplied, row 0 = north; unmuted only */
     int32_t source_count;
     btrx_bearing_source_t sources[BTRX_BEARING_MAX_SOURCES];
     btrx_bearing_stats_t stats;
@@ -607,10 +967,22 @@ typedef struct {
 const btrx_bearing_snapshot_t *btrx_bearing_snapshot_acquire(btrx_bearing_t *h);
 void btrx_bearing_snapshot_release(btrx_bearing_t *h, const btrx_bearing_snapshot_t *s);
 
-/* Tests and debugging: copy one source's E or S grid (row 0 = north). */
+/* Tap query (section 5.2): sources with visible shading (muted included)
+ * within radius_m of the point, by contribution, highest first.
+ * Returns the number written to out (<= max_out). Pure; reader thread. */
+typedef struct {
+    int32_t source_index;            /* into snapshot->sources */
+    float contribution;              /* sum of alpha over cells in the radius */
+    float max_alpha;
+} btrx_bearing_hit_t;
+int32_t btrx_bearing_snapshot_sources_at(const btrx_bearing_snapshot_t *s,
+        double lat_deg, double lon_deg, float radius_m,
+        btrx_bearing_hit_t *out, int32_t max_out);
+
+/* Tests and debugging: one source's faded E or S grid as float (row 0 = north). */
 enum { BTRX_BEARING_GRID_EVIDENCE = 0, BTRX_BEARING_GRID_SUPPORT = 1 };
 btrx_bearing_status_t btrx_bearing_copy_grid(btrx_bearing_t *h, uint64_t key, int which,
-        float *out, size_t out_count, int32_t *width, int32_t *height);
+        int64_t now_us, float *out, size_t out_count, int32_t *width, int32_t *height);
 
 #ifdef __cplusplus
 }
@@ -631,9 +1003,13 @@ apple/Sources/CBtrxBearing/
   bb_clock.c                 pod offset (min-RTT, arrival fallback), sessions
   bb_pose.c                  pose rings, interpolation, gates
   bb_pattern.c               v1 pattern table, measured-table loader
-  bb_grid.c                  likelihood, E/S accumulation, decay scale, recentre
+  bb_grid.c                  likelihood, footprint add into bucket tiles
+  bb_tiles.c                 tile pool, age buckets, expiry, fade weights, composite
+  bb_diversity.c             30 s ring of recent entries (diversity discount)
+  bb_lag.c                   stage stamps, histograms, BBLAG/BBRND lines
   bb_estimate.c              posterior region, mean, ellipse, second peak
-  bb_render.c                RGBA composite, wedges, snapshot triple buffer
+  bb_render.c                RGBA composite, alpha rasters, latest ray, triple buffer,
+                             sources_at
   bb_siphash.c               SipHash-2-4, short ID
   README.md                  rules from 6.1; excluded from the SwiftPM target
 ```
@@ -649,18 +1025,23 @@ the switch, **stamp and push** inputs, **drive tick** on its BTRX worker,
 | Native binding | `app/src/main/cpp/btrx_bearing_jni.c` (JNI, `jlong` handle, flat primitive arguments; snapshot copied into a direct `ByteBuffer` and a small `IntArray`/`DoubleArray` for metadata) | none: SwiftPM C target `CBtrxBearing`, `import CBtrxBearing` in Swift |
 | Wrapper class | `btrx/BtrxBearingNative.kt` (`external fun`s, `System.loadLibrary("btrx_bearing")` in `runCatching` as in `MappingSurfaceNative`) and `btrx/BtrxBearingLayer.kt` | `R2CCore/Btrx/BtrxBearingLayer.swift` (owns the `OpaquePointer`, `deinit` destroys) |
 | Switch | Settings > Developer Tools, off by default, never at launch | same |
-| STEER, PONG, HEALTH | `BtrxClient.Listener.onFrame` → `BtrxProtocol.parseSteer` → `push_report` with `source_key` from the address; PONG → `push_time_sync`; HEALTH → `push_pod_uptime`. TIME_PING sent every 30 s by the same client (new: `BtrxClient` can send the frame, but nothing sends it periodically today) | `BtrxClient` listener `onFrame` → same fields |
+| Fade settings (section 2.4) | BTRX settings in Developer Tools: "Fade time" (2–30 min, default 10) and "Fade shape" (Linear / Hold / Strong hold, with the "half strength at m:ss" hint), saved in the app config; `set_fade` on change | same controls, labels and defaults, saved in the iPad settings; `set_fade` on change |
+| STEER, PONG, HEALTH | `BtrxClient.Listener.onFrame` (stamps T2 at the BLE/USB read) → `BtrxProtocol.parseSteer` (single-source today; multi-source once BT RX defines it, section 4.1) → `push_report` with `source_key` per entry; PONG → `push_time_sync`; HEALTH → `push_pod_uptime`. TIME_PING sent every 30 s by the same client (new: `BtrxClient` can send the frame, but nothing sends it periodically today) | `BtrxClient` listener `onFrame` → same fields |
 | DJI yaw | the SEI path that fills `DjiCameraOrientation` (from `ffmpeg_bridge.c`, `native/R2CDJICameraTelemetry.h`) → `push_pose(YAW)` with `R2CDJIAircraftYawTrueNorthDegrees` | `R2CFFmpegSessionCopyLatestDJICameraTelemetry` (`R2CFFmpegMobile.c`, same header) → `push_pose(YAW)` |
 | Position, AGL | RID track points + `DroneAltitudeCoordinator` → `push_pose(POSITION, AGL)` | RID track + the iPad altitude source → same |
-| Own aircraft, mute | BTRX pane actions → `set_source_flags` | same |
+| Own aircraft (ignore) | BTRX pane action → `set_source_flags(IGNORED)` | same |
+| Map taps (section 5.2) | an osmdroid `Overlay` added **last** (on top) whose `onSingleTapConfirmed` / `onDoubleTap` call `sources_at`; return `true` to consume and open the panel, `false` to decline so osmdroid's normal handling (marker taps, double-tap zoom) runs. Scroll, fling and pinch are not overridden | a `UITapGestureRecognizer` pair (1 and 2 taps) on the `MKMapView`, whose delegate `gestureRecognizer(_:shouldReceive:)` runs `sources_at` at the touch point; declining returns `false` so MapKit's own taps run. When accepted, MapKit's double-tap zoom is made to wait for ours (`shouldBeRequiredToFailBy`). Pan and pinch recognizers untouched |
+| Mute panel (section 5.2) | Compose card anchored at the tap point: swatch, checkbox, short ID, class, last heard, report count; "Mute all" / "Unmute all"; "Done" | SwiftUI card (popover style) with the same rows, order, labels and buttons |
 | Tick | BTRX single-thread executor, background priority, every 200 ms | serial `DispatchQueue`, `.utility`, every 200 ms |
-| Overlay | `SplitMapPane` (osmdroid): `Bitmap.copyPixelsFromBuffer` from the RGBA buffer, drawn as an osmdroid `GroundOverlay` on the snapshot bounds; ellipses and wedges as osmdroid `Polygon`s; labels as markers | `RIDTrackMapView` (`OperationalMKMapView`): `MKOverlay` with the snapshot bounds and an `MKOverlayRenderer` drawing a `CGImage` from the RGBA bytes; ellipses/wedges as `MKPolygon`; labels as annotations |
-| UI update | on `seq` change only, at most 1 Hz; bitmap built off the main thread, swapped on it | same |
-| Input log | one `BBv1` line per input in the session log (section 9.2), Developer Tools only | same |
+| Overlay | `SplitMapPane` (osmdroid): `Bitmap.copyPixelsFromBuffer` from the RGBA buffer, drawn as an osmdroid `GroundOverlay` on the snapshot bounds; ellipses as osmdroid `Polygon`s; the latest-ray outline (section 5.1) as stroke-only `Polyline`s with an alpha animation; labels as markers; muted sources skipped | `RIDTrackMapView` (`OperationalMKMapView`): `MKOverlay` with the snapshot bounds and an `MKOverlayRenderer` drawing a `CGImage` from the RGBA bytes; ellipses as `MKPolygon`; the latest-ray outline as stroke-only `MKPolyline` with an alpha animation; labels as annotations; muted sources skipped |
+| UI update | on `seq` change only, at most 1 Hz (sooner after a mute change); bitmap built off the main thread, swapped on it; `note_rendered(seq)` after the swap | same |
+| Input and lag log | one `BBv1` line per input, plus the library's `BBLAG`/`BBRND` lines (section 3.5), in the session log; Developer Tools only | same |
 
 Both wrappers expose the same Kotlin/Swift surface:
 `start(incidentKey)`, `stop()`, `onSteer`, `onPong`, `onHealth`, `onYaw`,
-`onPosition`, `setSourceFlags`, `reset`, and a `snapshot` flow / publisher.
+`onPosition`, `setSourceFlags(keys, muted)`, `setFade(totalS, shapeP)`,
+`sourcesAt(lat, lon, radiusM)`,
+`noteRendered(seq)`, `reset`, and a `snapshot` flow / publisher.
 Constants (the config defaults) live only in C (`btrx_bearing_config_default`);
 the wrappers do not repeat them.
 
@@ -726,9 +1107,25 @@ and in `apple/release-check.sh`:
    dropped and counted; pending-ring overflow drops the oldest.
 5. **Model:** the v1 table's signs (source to port → Δ_pred > 0; Δ_pred ≈ 0
    on the nose and tail); the censored likelihood; the clamp at ln p_far.
-6. **Accumulation:** one report keeps α under 0.1 everywhere; decay halves
-   S after 600 s; the rescale is invisible; a recentre keeps cells and the
-   far value; the diversity discount for repeated geometry.
+6. **Accumulation:** one report keeps α under 0.1 everywhere; the view
+   re-centres by whole tiles and cells without tiles have the far value; the
+   diversity discount for repeated geometry.
+   **Fade:** for p = 1, 2 and 4 a single report's weight follows
+   1 − (a/N)^p within the bucket tolerance (age ± `bucket_s`/2) and is
+   exactly 0 after N + `bucket_s`; when every bucket has expired the pool is full again (no
+   leaked tiles); `set_fade` shortening drops old buckets at the next tick,
+   lengthening keeps held ones, changing p drops nothing; pool exhaustion
+   expires the oldest bucket early and counts it; tile sums are identical
+   for any input order within a bucket.
+   **Mute:** a muted source is absent from the RGBA composite and its estimate
+   and ray are flagged hidden, while its grids keep changing; unmute gives the
+   same snapshot as never muting.
+   **Tap query:** `sources_at` ordering by contribution, radius clipping at
+   the grid edge, muted sources included, empty result off the shading.
+   **Lag:** stage stamps and percentiles against a scripted timeline; late
+   drops counted against the right stage; `BBLAG`/`BBRND` line format.
+   **Multi-source:** a 3-entry report feeds three grids with one pose; a
+   1-entry report matches today's single-source path bit for bit.
 7. **Threading:** pushes from 3 threads while ticking and acquiring for 10 s
    under ThreadSanitizer (`-fsanitize=thread`, host only); no `malloc` after
    create (an interposed counting allocator).
@@ -739,8 +1136,11 @@ and in `apple/release-check.sh`:
 - **Input log `BBv1`:** the boundary writes one text line per input, keys
   only, no addresses:
   `BBv1 P <t_us> <mask> <lat> <lon> <agl> <yaw> <pitch> <roll>`,
-  `BBv1 R <arrival_us> <window_end_ms> <seq> <flags> <port> <stbd> <peak> <hp> <hs> <roll_x2> <pitch_x2> <key16hex> <class> <backlog>`,
-  `BBv1 S <t1> <t2> <t3> <t4>`, `BBv1 U <t_us> <uptime_s>`.
+  `BBv1 R <arrival_us> <window_end_ms> <seq> <flags> <roll_x2> <pitch_x2> <backlog> <n>`
+  followed by n entries `<port> <stbd> <peak> <hp> <hs> <age_ms> <src_flags> <key16hex> <class>`,
+  `BBv1 S <t1> <t2> <t3> <t4>`, `BBv1 U <t_us> <uptime_s>`,
+  `BBv1 M <t_us> <key16hex> <muted>` (mute changes),
+  `BBv1 F <t_us> <total_s> <shape_p>` (fade setting changes).
 - **`btrx_bearing_replay`** (host tool, same directory) feeds a log through
   the library in own-worker-free mode (it calls `tick` with the logged
   times) and writes the snapshots as PNG plus a CSV of estimates and stats.
@@ -772,8 +1172,15 @@ AR(1) correlation:
    solution left.
 4. Turns above 10°/s are gated; one-patch windows count only with bit 4 set.
 5. Moving source at 1 m/s: the estimate trails it, and the doc's caveat
-   holds (documented, not a pass/fail).
+   holds (documented, not a pass/fail). Muting it hides the smear; unmuting
+   restores it.
 6. Two sources alternating as the strongest: separate colours, no merging.
+   The same with three entries per report (section 4.1).
+7. **Ten-minute check:** for the techniques in scenarios 1–3, the time to
+   the first valid estimate is well under 10 min. If a technique needs more,
+   flag it: the fade window, or the design, needs revisiting (section 2.4).
+8. Delayed inputs: reports and poses delayed 0–15 s with jitter are all used;
+   over 15 s they are dropped and counted in the right stage.
 
 ### 9.4 Platform suites
 
@@ -787,29 +1194,70 @@ The same `vectors/` run in all three places with one tolerance
   JNI on the device (needs an install, so only with Ken's OK), plus JVM unit
   tests in `app/src/test` for the Kotlin feed and frame mapping with a fake
   native layer. `docs/PLATFORM_PARITY_LEDGER.md` gets an entry when coded.
+- **Tap routing (UI tests, both platforms):** with the overlay on, a single
+  tap on shading opens the panel and does not select the map item beneath; a
+  tap off shading reaches the map as before; a double tap off shading still
+  zooms; pan and pinch behave as with the overlay off. The panel's rows,
+  order and labels match between the two platforms for the same vector.
 
 ## 10. Performance and priority
 
 - Push: one struct copy under a mutex, well under 1 µs.
-- Per report: about 5,000 cells × (atan2, table look-up, log1p, exp), about
-  0.2–0.5 ms on the A5 **[A]**. At 1 Hz that is under 0.1% of a core.
-- Publish: 192² cells × up to 8 sources, about 1–3 ms **[A]**, at most 1 Hz.
+- Per source entry: about 5,000 cells × (atan2, table look-up, log1p, exp),
+  once, about 0.2–0.5 ms on the A5 **[A]**. At 1 Hz with 3 entries per
+  report, about 1–1.5 ms per second.
+- Publish: live tiles × 256 cells weighted per bucket, then α, estimate and
+  composite over the 192² view, about 2–4 ms **[A]**, at most 1 Hz plus one
+  after each mute or fade change.
+- Expiry: returning a bucket's tiles to the pool, no recomputation.
 - Estimate: one pass over the posterior per source per publish.
-- Memory: about 3 MB, all at create.
-- Nothing runs on the UI thread except acquire/release and showing the
-  bitmap. The stream server, pod link, overlay and live views keep priority;
-  if the worker falls behind, reports age past the lag budget and are dropped,
+- Latest ray: 360 evaluations per accepted entry.
+- `sources_at`: at most a few thousand byte reads on the UI thread per tap.
+- Lag stats: a few stamps per report; percentiles over 600 samples per stage
+  at publish.
+- Memory: about 6 MB at the defaults (8 MB pool advised for N over
+  20 min), all at create (section 6.1).
+- Nothing runs on the UI thread except acquire/release, `sources_at`,
+  `set_source_flags` and showing the bitmap. The stream server, pod link,
+  overlay and live views keep priority; if the worker falls behind, reports
+  age past the lag budget and are dropped (and the lag stats show where),
   never queued without limit.
 
-## 11. Open questions for Ken
+## 11. Open questions
 
-1. **Fade:** a 10 min half-life (a wedge is at half strength after 10 min,
-   still faint after 30), or fully gone after 10 min?
-2. **Late reports:** drop anything over 5 s late, including the Desk Pod's
-   backlog frames from while R2C was away? Or keep backlog up to 30 s?
-3. **Moving subjects:** keep one fade for all sources, or a shorter one for a
-   source you mark as moving?
-4. **Firmware:** worth asking BT RX for the top 2–3 sources per STEER
-   (r3 section 13 option A), so several sources paint at once?
-5. **Latest wedge outline:** show a brief outline as each report lands, or
-   only the accumulated shading?
+Answered by Ken (November 13, morning), r2 questions 1–5:
+
+1. **Fade:** 10 min, linear, 50% at 5 min (section 2.4); if 10 min isn't
+   enough to locate a source, the design needs revisiting. Plus the
+   tap-to-mute panel with first refusal on taps (section 5.2). 9:18 AM
+   addition: total fade time and fade shape (Linear to accelerating) are
+   user settings, changeable while running.
+2. **Lag:** keep 10–15 s of telemetry, measure and debug the slow path
+   (sections 3.3–3.5). Late budget 15 s, so this settles the backlog
+   question.
+3. **Moving subjects:** one fade rate for all; reconsider only if moving
+   sources can be detected reliably (section 2.9).
+4. **Firmware:** yes to the top 2–3 sources per STEER (section 4.1); format
+   pending BT RX.
+5. **Latest ray:** yes, as a cheap outline over the shading (section 5.1).
+
+New, for Ken:
+
+1. **Double tap:** v1 opens the same panel as a single tap. Should a double
+   tap do something else (for example mute the top source at once)?
+2. **Tap on shading over a map item** (drone, clue, waypoint): Ken's rule
+   gives the overlay first refusal, so it wins whenever shading is under the
+   finger. OK, or should map items win?
+3. **Pod steering mute in the panel:** add a separate "Stop steering to it"
+   action (STEER_MUTE) per row, or keep the panel to hide/show only?
+4. **Fade shape control:** three presets (Linear, Hold, Strong hold), or a
+   continuous slider? And is 2–30 min the right range for the total fade
+   time?
+
+New, for BT RX:
+
+5. **Desk Pod receive stamp** (r3 option D, earlier judged not worth it):
+   without it, the pod→arrival stage can't be split into LoRa, Desk Pod and
+   BLE. Worth adding now that slow paths are being chased?
+6. **Multi-source STEER format** and the STEER air-time cap change
+   (section 4.1).

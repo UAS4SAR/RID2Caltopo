@@ -72,7 +72,9 @@ until flight test 1 measures it.
 
 ## 2. What the app gets (facts)
 
-**STEER (0x73), about 1 per second.** The single strongest source in the pod's
+**STEER (0x73), about 1 per second.** (Ken asked for the top 2–3 sources per
+STEER, November 13; format pending BT RX, `BEARING-LAYER-spec.md` r3
+section 4.1.) The single strongest source in the pod's
 1 s window. The pod keeps the current target unless another is at least 3 dB
 stronger, and leaves out ignore-listed and muted sources.
 
@@ -223,13 +225,16 @@ path [A], per source), and so is the cost. Each cell gets a better likelihood:
 - **Range term (weak).** Path loss with unknown P0, using the summed-gain
   look-up. Including the gain is what separates ahead from behind over several
   readings.
-- **Negative evidence.** STEER carries only the strongest source, so a source
+- **Negative evidence.** STEER carries only the strongest source (later the
+  top 2–3), so a source
   missing from a window is **not** evidence it isn't there. A no-target STEER
   (bit 0 clear) is evidence: nothing above the floor was heard in that window.
 - **Roll correction:** not applied yet. The sign depends on elevation, and for
   distant sources it's roughly Δ − S·roll (§41.2 switch stays off). Readings
   are gated instead (below).
-- **Decay:** a 10 min half-life to start (Ken).
+- **Decay:** superseded by `BEARING-LAYER-spec.md` r3 section 2.4: weight
+  max(0, 1 − (age/N)^p), N = 10 min and p = 1 (linear) by default, both user
+  settings.
 
 **Gating in the app**, since bit 3 is weak:
 
@@ -259,7 +264,9 @@ path [A], per source), and so is the cost. Each cell gets a better likelihood:
   gives the offset directly. One thing not checked: that the Desk Pod relays a
   ping from the app to the Drone Pod. The bench check settles it. A Desk Pod
   receive stamp isn't needed **[BT]**.
-- **Backlog frames:** buffer them, and time them once live frames (or a pong)
+- **Backlog frames:** used if no more than 15 s late, the initial lag budget
+  (Ken, November 13; `BEARING-LAYER-spec.md` r3 sections 3.4–3.5, with
+  per-stage lag instrumentation). Buffer them, and time them once live frames (or a pong)
   give the offset. Don't time them by arrival.
 - **New pod session** when any of these happens:
   - `window_end_ms` goes backward;
@@ -355,8 +362,10 @@ their wedges stack up and darken on the grid like any others.
   `RIDTrackMapView`. Per source it shows:
   - the heat surface in the source's colour;
   - the top-cell marker labelled with class, short ID, count and age;
-  - faint per-reading wedges, accumulated and fading with the 10 min
-    half-life (no separate bearing lines).
+  - faint per-reading wedges, accumulated and fading over the fade time
+    (10 min, linear by default; no separate bearing lines);
+  - the latest report's ray as a stroke-only outline on top;
+  - a tap on the shading opens a mute/unmute panel (r3 spec section 5.2).
 - No smoothing and nothing sent to CalTopo.
 - The stream overlay is unchanged.
 - Milestone 1 rendering (accumulated wedges, estimate and ellipse) is
@@ -440,7 +449,7 @@ Not verifiable in either repo (adopted as **[BT]**):
 
 | Option | Cost (BT RX) | Gain |
 | --- | --- | --- |
-| A. Top 2–3 sources per STEER | ~7.9–9.4% air time; needs the STEER cap raised from 8% to 10%, or DETECT at 10 s | More sources get 1 s geometry, not just the strongest |
+| A. Top 2–3 sources per STEER (**Ken: yes**, November 13; format pending BT RX) | ~7.9–9.4% air time; needs the STEER cap raised from 8% to 10%, or DETECT at 10 s | More sources get 1 s geometry, not just the strongest |
 | B. STEER carries yaw rate and max roll rate over the window, and bit 3 holds for the whole window | 0–2.6 ms CPU, a few bytes | Gate turns without depending on the DJI stream; fixes the send-time snapshot |
 | C. Carry BLE Appearance (or an appearance-derived class) | not estimated | Better phone/watch/hearing-aid class |
 | D. Desk Pod receive stamp | not worth it (BT RX) | TIME_PING already covers it |
@@ -455,11 +464,13 @@ Answered by Ken (8:06 PM PT):
 - A short base64 ID is fine; full address only where needed; class matters
   most.
 - No BTRX data to CalTopo.
-- Fade 10 min to start.
+- Fade 10 min to start; November 13: linear (50% at 5 min), with the total
+  time and the fade shape as user settings (`BEARING-LAYER-spec.md` r3
+  section 2.4).
 
 Still open:
 
-- **Ken:** which firmware options (section 13), if any? (Hover versus passes
+- **Ken:** which firmware options (section 13), if any? (A: yes.) (Hover versus passes
   is answered, November 13: the layer runs continuously with no enforced
   hover; hover-and-yaw just sharpens a spot. See `BEARING-LAYER-spec.md` r2.)
 - **BT RX:** bench-check that DETECT arrives, and that a TIME_PING from the
