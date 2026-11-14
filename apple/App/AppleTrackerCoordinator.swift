@@ -349,7 +349,25 @@ struct ApplePreparedOrganizationSnapshot: Sendable {
 
 @MainActor
 enum AppleManagedOrganizationConfig {
-    static let versionDefaultsKey = "org.managedConfigVersionMs"
+    nonisolated static let versionDefaultsKey = "org.managedConfigVersionMs"
+
+    /// Version label recorded with each applied organization configuration.
+    nonisolated static var currentAppVersion: String {
+        ManagedConfigurationRefreshPolicy.appVersionLabel(
+            shortVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "",
+            build: Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "0")
+    }
+
+    /// True when the advertised or fetched version still has to be applied by this app version.
+    nonisolated static func needsApply(version: Int64, defaults: UserDefaults) -> Bool {
+        ManagedConfigurationRefreshPolicy.shouldApply(
+            remoteVersion: version,
+            localVersion: Int64(defaults.integer(forKey: versionDefaultsKey)),
+            hasCredentials: true,
+            readinessSchemaVersion: defaults.integer(forKey: "org.managedReadinessSchemaVersion"),
+            appliedByAppVersion: defaults.string(forKey: ManagedConfigurationRefreshPolicy.appliedAppVersionDefaultsKey),
+            currentAppVersion: currentAppVersion)
+    }
 
     static func snapshot(
         caltopo: AppleCaltopoSettings,
@@ -478,6 +496,7 @@ enum AppleManagedOrganizationConfig {
             }
             defaults.set(versionMs, forKey: versionDefaultsKey)
             defaults.set(prepared.aircraftSchema, forKey: "org.managedReadinessSchemaVersion")
+            defaults.set(currentAppVersion, forKey: ManagedConfigurationRefreshPolicy.appliedAppVersionDefaultsKey)
             AppleLog.info("OrgConfig", "Applied managed organization configuration \(versionMs)")
         }
     }
@@ -1588,12 +1607,15 @@ final class AppleTrackerCoordinator: ObservableObject {
             return true
         }
         if (type == "hello_ack" || type == "organization_config_changed"),
-           let version = (object["organizationConfigVersionMs"] as? NSNumber)?.int64Value,
-           version != 0,
-           (version != Int64(defaults.integer(forKey: AppleManagedOrganizationConfig.versionDefaultsKey)) ||
-            defaults.integer(forKey: "org.managedReadinessSchemaVersion") < 1) {
-            organizationConfigSyncInProgress = true
-            synchronizeOrganizationConfig(advertisedVersionMs: version)
+           let version = (object["organizationConfigVersionMs"] as? NSNumber)?.int64Value {
+            if version == 0 {
+                AppleLog.info("OrgConfig", "Tracker advertised no managed organization configuration (\(type))")
+            } else if AppleManagedOrganizationConfig.needsApply(version: version, defaults: defaults) {
+                organizationConfigSyncInProgress = true
+                synchronizeOrganizationConfig(advertisedVersionMs: version)
+            } else {
+                AppleLog.info("OrgConfig", "Skipped organization configuration \(version) from \(type): already applied by \(AppleManagedOrganizationConfig.currentAppVersion)")
+            }
         }
         if type == "organization_config_changed" { return true }
         return false
@@ -1651,7 +1673,11 @@ final class AppleTrackerCoordinator: ObservableObject {
                 }.value
                 guard self?.trackerAPIKey == requestedToken, self?.trackerURLPrefix == requestedPrefix else { return }
                 let version = decoded.version, snapshot = decoded.snapshot
-                guard version != Int64(self?.defaults.integer(forKey: AppleManagedOrganizationConfig.versionDefaultsKey) ?? 0) else { return }
+                guard let defaults = self?.defaults,
+                      AppleManagedOrganizationConfig.needsApply(version: version, defaults: defaults) else {
+                    AppleLog.info("OrgConfig", "Skipped organization configuration \(version): already applied by \(AppleManagedOrganizationConfig.currentAppVersion)")
+                    return
+                }
                 try await applyHandler(snapshot, version)
             } catch {
                 AppleLog.error("OrgConfig", "Managed configuration sync failed: \(error.localizedDescription)")

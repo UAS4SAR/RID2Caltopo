@@ -70,11 +70,11 @@ final class CaltopoPersonalAccountConnectionTests: XCTestCase {
         XCTAssertFalse(url.absoluteString.contains(secret))
     }
 
-    func testPersonalLoginModeKeepsAnExistingCookieSessionUntilChosen() {
-        XCTAssertEqual(CaltopoPersonalLoginMode.resolve(stored: nil, cookieSessionAlreadyInUse: false), .credentials)
-        XCTAssertEqual(CaltopoPersonalLoginMode.resolve(stored: nil, cookieSessionAlreadyInUse: true), .sessionCookies)
-        XCTAssertEqual(CaltopoPersonalLoginMode.resolve(stored: "credentials", cookieSessionAlreadyInUse: true), .credentials)
-        XCTAssertEqual(CaltopoPersonalLoginMode.resolve(stored: "sessionCookies", cookieSessionAlreadyInUse: false), .sessionCookies)
+    func testPersonalLoginModeDefaultsToCredentialsForEveryone() {
+        XCTAssertEqual(CaltopoPersonalLoginMode.resolve(stored: nil), .credentials)
+        XCTAssertEqual(CaltopoPersonalLoginMode.resolve(stored: "credentials"), .credentials)
+        XCTAssertEqual(CaltopoPersonalLoginMode.migrate(stored: "sessionCookies", storedPolicyVersion: 0), .credentials)
+        XCTAssertEqual(CaltopoPersonalLoginMode.migrate(stored: "sessionCookies", storedPolicyVersion: CaltopoPersonalLoginMode.policyVersion), .sessionCookies)
     }
 
     func testSignedPersonalMapDoesNotUseTheCookieConfiguration() throws {

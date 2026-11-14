@@ -501,6 +501,27 @@ public class CaltopoMap {
         if (null == DomainAndPort || DomainAndPort.isEmpty()) {
             DomainAndPort = "caltopo.com";
         }
+        // Team credentials wait for the startup Tracker check-in, and are refused for
+        // caltopo.com when the Tracker could not be reached (personal account instead).
+        String teamBlocked = TrackerStartupGate.teamAccessBlockReason(DomainAndPort);
+        if (teamBlocked != null) {
+            LastErrorString = teamBlocked;
+            if (TrackerStartupGate.state() == TrackerStartupGate.State.PENDING) {
+                CTInfo(TAG, "Init(): waiting for the Tracker check-in before team CalTopo access.");
+                CaltopoClient.ShowToast(teamBlocked);
+                TrackerStartupGate.runWhenDecided(() -> new android.os.Handler(android.os.Looper.getMainLooper()).post(() -> {
+                    if (ShutdownInProgress || MapStatus != MapStatusListener.mapStatus.down) return;
+                    String retry = Init();
+                    if (retry != null) {
+                        CaltopoClient.ShowToast(retry);
+                        SetMapStatus(MapStatusListener.mapStatus.down, retry);
+                    }
+                }));
+                return null;
+            }
+            CTWarn(TAG, "Init(): team CalTopo access refused: " + teamBlocked);
+            return teamBlocked;
+        }
 
         MyCaltopoCredentials = sessionCredentials;
         SessionNodeMap = null;

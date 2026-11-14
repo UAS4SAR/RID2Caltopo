@@ -7,13 +7,20 @@ public enum CaltopoPersonalLoginMode: String, Sendable, Hashable {
     case credentials
     case sessionCookies
 
-    /// A saved cookie personal login keeps Session Cookies until the operator chooses otherwise.
-    public static func resolve(stored: String?, cookieSessionAlreadyInUse: Bool) -> CaltopoPersonalLoginMode {
-        switch stored {
-        case "credentials": return .credentials
-        case "sessionCookies": return .sessionCookies
-        default: return cookieSessionAlreadyInUse ? .sessionCookies : .credentials
-        }
+    /// Version 2 (November 2026): Credentials is the default for everyone. Earlier versions
+    /// stored an automatically chosen Session Cookies value under the same key as an operator's
+    /// choice, so the two cannot be told apart; both move to Credentials once. A Session
+    /// Cookies choice made after that is kept. Matches Android `CaltopoPersonalLoginMode`.
+    public static let policyVersion = 2
+    public static let policyVersionDefaultsKey = "caltopo.personalLoginSupportPolicyVersion"
+
+    public static func resolve(stored: String?) -> CaltopoPersonalLoginMode {
+        stored == "sessionCookies" ? .sessionCookies : .credentials
+    }
+
+    /// Mode to use at launch, given the stored value and the policy version it was saved under.
+    public static func migrate(stored: String?, storedPolicyVersion: Int) -> CaltopoPersonalLoginMode {
+        storedPolicyVersion < policyVersion ? .credentials : resolve(stored: stored)
     }
 }
 

@@ -566,10 +566,19 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
                     // Show the picker while saved credentials load its hierarchy.
                     mapHierarchy = null
                     overlay = OverlayState.MapBrowser
-                    if (restorePersonal) {
-                        restoreRememberedBrowseProfileIfNeeded()
+                    if (org.ncssar.rid2caltopo.data.TrackerStartupGate.teamAccessRefused(
+                            CaltopoClient.GetCaltopoDomainAndPort())) {
+                        // Tracker unreachable or refused: CalTopo access is the personal account.
+                        // Missing personal credentials raise the personal sync prompt.
+                        org.ncssar.rid2caltopo.data.TrackerStartupGate.teamAccessBlockReason(
+                            CaltopoClient.GetCaltopoDomainAndPort())?.let { CaltopoClient.ShowToast(it) }
+                        loadStoredPersonalCatalog()
+                    } else {
+                        if (restorePersonal) {
+                            restoreRememberedBrowseProfileIfNeeded()
+                        }
+                        CaltopoMap.Init()?.let { overlay = OverlayState.Error(it) }
                     }
-                    CaltopoMap.Init()?.let { overlay = OverlayState.Error(it) }
                 } else {
                     overlay = when (connectionState) {
                         is CaltopoConnectionState.StandAlone -> if (CaltopoPersonalSession.browsingPersonal) OverlayState.MapBrowser else OverlayState.ConnectionSetup
@@ -605,7 +614,8 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
                             "onUIEvent(${uiEvent}): have credentials, fetching team info..."
                         )
                         overlay = OverlayState.Connecting
-                        CaltopoMap.Init() // Use credentials to fetch/update the CaltopoNode List
+                        // Use credentials to fetch/update the CaltopoNode List
+                        CaltopoMap.Init()?.let { overlay = OverlayState.Error(it) }
                     } else {
                         CTDebug(
                             tag,
@@ -622,7 +632,8 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
                 } else {
                     if (this.hasCredentials) {
                         overlay = OverlayState.Connecting
-                        CaltopoMap.Init() // Use credentials to fetch/update the CaltopoNode List
+                        // Use credentials to fetch/update the CaltopoNode List
+                        CaltopoMap.Init()?.let { overlay = OverlayState.Error(it) }
                     } else {
                         // We don't have creds, go get the file
                         overlay = OverlayState.RequestConfigFile

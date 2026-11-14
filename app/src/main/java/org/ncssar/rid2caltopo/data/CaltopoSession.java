@@ -484,6 +484,18 @@ public class CaltopoSession {
         final boolean fullMapRead = CaltopoFullMapReads.isFullMapRead(op.method.toString(), op.url);
         final CaltopoCredentials fullReadCredentials = Cred;
         final String fullReadDomain = DomainAndPort;
+        if (!op.goNaked && op.personalAuthorization == null) {
+            // Team-signed requests wait for this process's Tracker check-in (worker thread).
+            String teamBlocked = TrackerStartupGate.awaitTeamAccess(
+                    op.cleanupAuthorizationBound ? op.cleanupDomain : DomainAndPort);
+            if (teamBlocked != null) {
+                op.response = teamBlocked;
+                CTWarn(TAG, "BgSendRequest(): team CalTopo request held: " + teamBlocked);
+                op.goodResponse = false;
+                op.setOperationIsDone(false);
+                return op;
+            }
+        }
         for (int attemptNum = 1; attemptNum <= (op.positionReport ? 1 : MAX_RETRY_ATTEMPTS); attemptNum++) {
             boolean loggedTransport = false;
             final boolean signedFullRead = op.personalAuthorization != null

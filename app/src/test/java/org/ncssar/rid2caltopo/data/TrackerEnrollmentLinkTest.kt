@@ -146,9 +146,9 @@ class TrackerEnrollmentLinkTest {
             "src/main/java/org/ncssar/rid2caltopo/app/R2CApplication.kt"
         ).readText()
 
-        assertTrue(enrollmentClient.contains("syncManagedConfigurationAfterEnrollment"))
+        assertTrue(enrollmentClient.contains("TrackerStartupSync.retryNow(context, \"enrollment\")"))
         assertTrue(enrollmentClient.contains("installation_id"))
         assertTrue(enrollmentClient.contains("CaltopoMap.GetMyUUID()"))
-        assertTrue(application.contains("retryManagedConfigurationBootstrap(this)"))
+        assertTrue(application.contains("TrackerStartupSync.start(this)"))
     }
 }

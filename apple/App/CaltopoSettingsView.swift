@@ -1075,6 +1075,12 @@ struct CaltopoTeamMapBrowser: View {
                 }
                 return
             }
+            if personalAvailable, TrackerStartupGate.shared.teamAccessRefused(domainAndPort: settings.domainAndPort) {
+                // Tracker unreachable or refused: CalTopo access is the personal account.
+                AppleLog.info("CalTopo", "Team access refused by the Tracker check-in; loading personal maps")
+                await settings.loadCredentialPersonalMaps()
+                return
+            }
             await settings.loadTeamMaps()
             return
         }

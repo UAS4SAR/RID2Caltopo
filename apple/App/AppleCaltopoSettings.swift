@@ -153,11 +153,17 @@ final class AppleCaltopoSettings: ObservableObject {
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         let storedLoginMode = defaults.string(forKey: Self.personalLoginModeKey)
-        let resolvedLoginMode = CaltopoPersonalLoginMode.resolve(
-            stored: storedLoginMode,
-            cookieSessionAlreadyInUse: defaults.bool(forKey: "caltopo.usesPersonalCredentials")
-        )
-        if storedLoginMode == nil { defaults.set(resolvedLoginMode.rawValue, forKey: Self.personalLoginModeKey) }
+        let storedPolicy = defaults.integer(forKey: CaltopoPersonalLoginMode.policyVersionDefaultsKey)
+        let resolvedLoginMode = CaltopoPersonalLoginMode.migrate(stored: storedLoginMode, storedPolicyVersion: storedPolicy)
+        if storedPolicy < CaltopoPersonalLoginMode.policyVersion || storedLoginMode == nil {
+            if storedLoginMode == CaltopoPersonalLoginMode.sessionCookies.rawValue, resolvedLoginMode == .credentials {
+                // A cookie personal selection is not used under Credentials.
+                defaults.set(false, forKey: "caltopo.usesPersonalCredentials")
+                AppleLog.info("CalTopo", "Personal Login Support migrated from Session Cookies to Credentials")
+            }
+            defaults.set(resolvedLoginMode.rawValue, forKey: Self.personalLoginModeKey)
+            defaults.set(CaltopoPersonalLoginMode.policyVersion, forKey: CaltopoPersonalLoginMode.policyVersionDefaultsKey)
+        }
         personalLoginMode = resolvedLoginMode
         usesPersonalCredentials = defaults.bool(forKey: "caltopo.usesPersonalCredentials")
         // Seed the last-profile preference from the legacy personal flag on first launch
@@ -359,7 +365,8 @@ final class AppleCaltopoSettings: ObservableObject {
             return
         }
         isLoadingTeamMaps = true
-        status = "Loading CalTopo team maps…"
+        status = TrackerStartupGate.shared.teamAccessBlockReason(domainAndPort: value.domainAndPort)
+            ?? "Loading CalTopo team maps…"
         AppleLog.info(
             "CalTopo",
             "Loading team maps domain='\(value.domainAndPort)' teamPresent=\(!value.teamID.isEmpty) credentialPresent=\(!value.credentialID.isEmpty) secretPresent=\(!value.credentialSecret.isEmpty)"
@@ -392,6 +399,7 @@ final class AppleCaltopoSettings: ObservableObject {
         personalCredentialRevision &+= 1
         personalLoginMode = mode
         defaults.set(mode.rawValue, forKey: Self.personalLoginModeKey)
+        defaults.set(CaltopoPersonalLoginMode.policyVersion, forKey: CaltopoPersonalLoginMode.policyVersionDefaultsKey)
         CaltopoPersonalAccountConnection.shared.setFeatureEnabled(mode == .credentials)
         if mode == .credentials { refreshPersonalCredentialSummary() }
         if usesPersonalCredentials || personalSessionID != nil {

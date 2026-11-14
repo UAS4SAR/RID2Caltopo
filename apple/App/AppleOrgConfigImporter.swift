@@ -1069,16 +1069,20 @@ final class AppleOrgConfigImporter: ObservableObject {
     }
 
     /// Retry after browser sign-in and on reopening, even before selecting a map.
+    /// Returns nil when this device has no Tracker check-in to make (not enrolled,
+    /// another profile active, or an import in progress).
+    @discardableResult
     func refreshManagedConfiguration(
         caltopoSettings: AppleCaltopoSettings,
         orgSettings: AppleOrgConfigSettings,
         identityStore: AppleDroneConfirmationStore,
         force: Bool = false,
         waitForInFlight: Bool = false
-    ) async {
+    ) async -> TrackerCheckInOutcome? {
         guard !isBusy, orgSettings.hasManagedTrackerEnrollment,
               profileLifecycle.activeProfileID == "home" || profileLifecycle.activeProfileID.isEmpty
-        else { return }
+        else { return nil }
+        var outcome = TrackerCheckInOutcome.unreachable("not attempted")
         let prefix = orgSettings.trackerURLPrefix
         let credential = orgSettings.trackerAPIKey
         let profileID = profileLifecycle.activeProfileID
@@ -1093,14 +1097,24 @@ final class AppleOrgConfigImporter: ObservableObject {
                     guard let managed = try await AppleTrackerEnrollmentClient.fetchManagedOrganizationConfig(
                         trackerBaseURL: prefix, deviceToken: credential) else {
                         AppleLog.info("OrgConfig", "Tracker check-in completed; no managed configuration published")
+                        outcome = .checkedIn
                         return nil
                     }
                     AppleLog.info("OrgConfig", "Tracker check-in completed; organization configuration version=\(managed.versionMs)")
+                    let defaults = UserDefaults.standard
+                    let currentApp = AppleManagedOrganizationConfig.currentAppVersion
                     guard ManagedConfigurationRefreshPolicy.shouldApply(
                         remoteVersion: managed.versionMs,
-                        localVersion: Int64(UserDefaults.standard.integer(forKey: AppleManagedOrganizationConfig.versionDefaultsKey)),
-                        hasCredentials: !caltopoSettings.credentialID.isEmpty && !caltopoSettings.credentialSecret.isEmpty
-                    ) else { return nil }
+                        localVersion: Int64(defaults.integer(forKey: AppleManagedOrganizationConfig.versionDefaultsKey)),
+                        hasCredentials: !caltopoSettings.credentialID.isEmpty && !caltopoSettings.credentialSecret.isEmpty,
+                        readinessSchemaVersion: defaults.integer(forKey: "org.managedReadinessSchemaVersion"),
+                        appliedByAppVersion: defaults.string(forKey: ManagedConfigurationRefreshPolicy.appliedAppVersionDefaultsKey),
+                        currentAppVersion: currentApp
+                    ) else {
+                        AppleLog.info("OrgConfig", "Organization configuration \(managed.versionMs) already applied by \(currentApp); skipped")
+                        outcome = .checkedIn
+                        return nil
+                    }
                     return managed
                 },
                 isCurrent: isCurrent,
@@ -1111,19 +1125,32 @@ final class AppleOrgConfigImporter: ObservableObject {
                     try await self.profileLifecycle.captureHome(org: orgSettings, caltopo: caltopoSettings)
                 }
             )
-            guard applied else { return }
+            guard applied else {
+                // Throttled or joined an in-flight check-in: nothing new was learned.
+                if case .unreachable("not attempted") = outcome { return nil }
+                return outcome
+            }
+            outcome = .checkedIn
             state = .applied("Organization configuration loaded. Choose a CalTopo map to connect.")
             caltopoConfigurationHandler?(caltopoSettings.configuration)
             notamEnrollmentAppliedHandler?(orgSettings.faaProxyURL, prefix, credential)
-            AppleLog.info("OrgConfig", "Managed configuration recovered without requiring an incident map")
+            AppleLog.info("OrgConfig", "Applied managed organization configuration without requiring an incident map; droneOwnership=\(orgSettings.droneOwnership)")
+            return outcome
         } catch {
-            guard isCurrent() else { return }
+            guard isCurrent() else { return nil }
             if case let AppleTrackerEnrollmentClient.EnrollmentError.reauthenticationRequired(url) = error {
                 state = .awaitingSignIn("Sign in to finish loading the organization's aircraft and CalTopo configuration.")
                 trackerReauthenticationRequiredHandler?(url)
+                return .rejected
+            } else if case let AppleTrackerEnrollmentClient.EnrollmentError.httpStatus(status) = error,
+                      status == 401 || status == 403 {
+                state = .failed("The organization Tracker did not accept this device.")
+                AppleLog.error("OrgConfig", "Managed configuration refresh rejected: HTTP \(status)")
+                return .rejected
             } else {
                 state = .failed("Organization configuration has not loaded. \(error.localizedDescription)")
                 AppleLog.error("OrgConfig", "Managed configuration refresh failed: \(error.localizedDescription)")
+                return .unreachable(error.localizedDescription)
             }
         }
     }
