@@ -42,7 +42,24 @@ public final class ManagedConfigurationBootstrap<Snapshot> {
 }
 
 public enum ManagedConfigurationRefreshPolicy {
-    public static func shouldApply(remoteVersion: Int64, localVersion: Int64, hasCredentials: Bool) -> Bool {
-        remoteVersion != localVersion || !hasCredentials
+    public static let appliedAppVersionDefaultsKey = "org.managedConfigAppliedAppVersion"
+
+    /// Matches Android `ManagedConfigApplyPolicy.needsApply`. A stored version applied by a
+    /// different app version is applied again, so an upgraded app reads fields its
+    /// predecessor ignored (such as Drone Ownership) without a new organization publish.
+    public static func shouldApply(
+        remoteVersion: Int64,
+        localVersion: Int64,
+        hasCredentials: Bool,
+        readinessSchemaVersion: Int = 1,
+        appliedByAppVersion: String? = nil,
+        currentAppVersion: String? = nil
+    ) -> Bool {
+        remoteVersion != localVersion || !hasCredentials || readinessSchemaVersion < 1
+            || (currentAppVersion != nil && appliedByAppVersion != currentAppVersion)
+    }
+
+    public static func appVersionLabel(shortVersion: String, build: String) -> String {
+        "\(shortVersion)(\(build))"
     }
 }

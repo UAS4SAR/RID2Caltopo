@@ -382,6 +382,54 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
      * When [restoreRemembered] is true, a missing credential falls back to the active team
      * profile instead of prompting to sync a new personal account.
      */
+    /**
+     * Runs [teamAction] when this device may use its team CalTopo credentials. An
+     * organization device waits (without blocking the UI) for its Tracker check-in; when
+     * the Tracker has not authorized it, CalTopo access opens the personal account instead.
+     */
+    private fun withTeamAccessOrPersonal(stillWanted: () -> Boolean, teamAction: () -> Unit) {
+        val gate = org.ncssar.rid2caltopo.data.TrackerStartupGate
+        when {
+            gate.state() == org.ncssar.rid2caltopo.data.TrackerStartupGate.State.PENDING -> {
+                CaltopoClient.ShowToast(org.ncssar.rid2caltopo.data.TrackerStartupGate.WAITING_MESSAGE)
+                gate.runWhenDecided {
+                    viewModelScope.launch(Dispatchers.Main) {
+                        if (stillWanted()) withTeamAccessOrPersonal(stillWanted, teamAction)
+                    }
+                }
+            }
+            gate.teamAccessRefused() -> openPersonalBecauseTeamRefused()
+            else -> teamAction()
+        }
+    }
+
+    /**
+     * Team access refused by the Tracker check-in: open the map browser on the personal
+     * account using Personal Login Support: Credentials (the CalTopo Desktop activation).
+     * A stored personal credential loads its maps; otherwise the activation prompt opens.
+     */
+    fun openPersonalBecauseTeamRefused() {
+        val reason = org.ncssar.rid2caltopo.data.TrackerStartupGate.teamAccessBlockReason() ?: return
+        CTInfo(tag, "Team CalTopo access refused by the Tracker check-in; opening personal account sign-in.")
+        CaltopoClient.ShowToast(reason)
+        mapHierarchy = null
+        overlay = OverlayState.MapBrowser
+        viewModelScope.launch {
+            if (org.ncssar.rid2caltopo.data.CaltopoPersonalAccountConnection.loginMode !=
+                org.ncssar.rid2caltopo.data.CaltopoPersonalLoginMode.CREDENTIALS) {
+                val context = org.ncssar.rid2caltopo.app.R2CApplication.getAppCtxt()
+                if (context != null) {
+                    kotlinx.coroutines.withContext(Dispatchers.IO) {
+                        org.ncssar.rid2caltopo.data.CaltopoPersonalCredentialSignIn.switchMode(
+                            context, org.ncssar.rid2caltopo.data.CaltopoPersonalLoginMode.CREDENTIALS)
+                    }
+                    CTInfo(tag, "Personal Login Support switched to Credentials for personal CalTopo access.")
+                }
+            }
+            loadStoredPersonalCatalog()
+        }
+    }
+
     fun loadStoredPersonalCatalog(restoreRemembered: Boolean = false) {
         if (storedPersonalCatalogLoad?.isActive == true) return
         personalSyncPrompt = false
@@ -566,10 +614,12 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
                     // Show the picker while saved credentials load its hierarchy.
                     mapHierarchy = null
                     overlay = OverlayState.MapBrowser
-                    if (restorePersonal) {
-                        restoreRememberedBrowseProfileIfNeeded()
+                    withTeamAccessOrPersonal(stillWanted = { overlay is OverlayState.MapBrowser }) {
+                        if (restorePersonal) {
+                            restoreRememberedBrowseProfileIfNeeded()
+                        }
+                        CaltopoMap.Init()?.let { overlay = OverlayState.Error(it) }
                     }
-                    CaltopoMap.Init()?.let { overlay = OverlayState.Error(it) }
                 } else {
                     overlay = when (connectionState) {
                         is CaltopoConnectionState.StandAlone -> if (CaltopoPersonalSession.browsingPersonal) OverlayState.MapBrowser else OverlayState.ConnectionSetup
@@ -586,7 +636,12 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
                         else -> overlay // do nothing if busy
                     }
                     if (overlay == OverlayState.MapBrowser) {
-                        restoreRememberedBrowseProfileIfNeeded()
+                        if (!CaltopoPersonalSession.browsingPersonal &&
+                            org.ncssar.rid2caltopo.data.TrackerStartupGate.teamAccessRefused()) {
+                            openPersonalBecauseTeamRefused()
+                        } else {
+                            restoreRememberedBrowseProfileIfNeeded()
+                        }
                     }
                 }
             }
@@ -605,7 +660,10 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
                             "onUIEvent(${uiEvent}): have credentials, fetching team info..."
                         )
                         overlay = OverlayState.Connecting
-                        CaltopoMap.Init() // Use credentials to fetch/update the CaltopoNode List
+                        // Use credentials to fetch/update the CaltopoNode List
+                        withTeamAccessOrPersonal(stillWanted = { overlay is OverlayState.Connecting }) {
+                            CaltopoMap.Init()?.let { overlay = OverlayState.Error(it) }
+                        }
                     } else {
                         CTDebug(
                             tag,
@@ -622,7 +680,10 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
                 } else {
                     if (this.hasCredentials) {
                         overlay = OverlayState.Connecting
-                        CaltopoMap.Init() // Use credentials to fetch/update the CaltopoNode List
+                        // Use credentials to fetch/update the CaltopoNode List
+                        withTeamAccessOrPersonal(stillWanted = { overlay is OverlayState.Connecting }) {
+                            CaltopoMap.Init()?.let { overlay = OverlayState.Error(it) }
+                        }
                     } else {
                         // We don't have creds, go get the file
                         overlay = OverlayState.RequestConfigFile

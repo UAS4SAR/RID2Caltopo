@@ -177,11 +177,7 @@ object TrackerEnrollmentClient {
         CaltopoClient.SetNotamEnabled(true)
         if (result.reauthenticationUrl == null) {
             R2CApplication.getAppCtxt()?.let { context ->
-                OrgConfigManager.syncManagedConfigurationAfterEnrollment(
-                    context,
-                    result.trackerBaseUrl,
-                    result.deviceToken
-                )
+                TrackerStartupSync.retryNow(context, "enrollment")
             }
         }
     }
@@ -190,11 +186,7 @@ object TrackerEnrollmentClient {
         val trackerBaseUrl = CaltopoClient.GetHomeTrackerUrlPfx().trim()
         val deviceToken = CaltopoClient.GetHomeTrackerApiKey().trim()
         if (trackerBaseUrl.isBlank() || deviceToken.isBlank()) return
-        OrgConfigManager.syncManagedConfigurationAfterEnrollment(
-            context.applicationContext,
-            trackerBaseUrl,
-            deviceToken
-        )
+        TrackerStartupSync.retryNow(context.applicationContext, "tracker access restored")
     }
 
     fun markDeviceReconciliationPending(context: Context) {

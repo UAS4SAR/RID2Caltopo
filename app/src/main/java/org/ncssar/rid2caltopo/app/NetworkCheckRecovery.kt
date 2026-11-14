@@ -47,18 +47,13 @@ object NetworkCheckRecovery {
                 LandRestrictionCenter.requestImmediateRefresh()
                 // Connectivity callbacks can run on Main — never block it with disk/network.
                 trackerExecutor.execute {
-                    if (!CaltopoClient.IsExitRequested()) {
-                        org.ncssar.rid2caltopo.data.TrackerEnrollmentClient.retryManagedConfigurationBootstrap(context.applicationContext)
-                        if (org.ncssar.rid2caltopo.data.AircraftOrganizationAccess.belongsToOrganization()) {
-                            org.ncssar.rid2caltopo.data.AircraftOrganizationAccess.refresh()
-                        }
-                    }
-                }
-                trackerExecutor.execute {
                     if (CaltopoClient.IsExitRequested()) return@execute
                     // Drop stale sockets / hung POSTs started while the path was dead, then flush.
                     CaltopoSession.cancelInFlightRequestsForConnectivityRestore()
                     CaltopoInterruptedTrackJournal.clearInFlightForConnectivityRestore()
+                    // Tracker check-in after the CalTopo cancel above. It also uses its own
+                    // HTTP client, which that cancel cannot reach.
+                    org.ncssar.rid2caltopo.data.TrackerStartupSync.onNetworkAvailable(context.applicationContext)
                     val archives = CaltopoMap.pendingInterruptedArchiveCount()
                     val liveTracks = CaltopoLiveTrack.countOwnedActivePublications()
                     CaltopoClient.CTInfo(
@@ -79,6 +74,13 @@ object NetworkCheckRecovery {
                         CaltopoLiveTrack.wakePublicationAfterInternetRestored()
                     } catch (error: Exception) {
                         CaltopoClient.CTWarn("NetworkChecks", "LiveTrack wake after reconnect raised", error)
+                    }
+                }
+                // Organization access check after the urgent CalTopo flush above.
+                trackerExecutor.execute {
+                    if (!CaltopoClient.IsExitRequested() &&
+                        org.ncssar.rid2caltopo.data.AircraftOrganizationAccess.belongsToOrganization()) {
+                        org.ncssar.rid2caltopo.data.AircraftOrganizationAccess.refresh()
                     }
                 }
             }

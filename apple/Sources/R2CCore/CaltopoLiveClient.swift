@@ -1574,6 +1574,10 @@ public actor CaltopoLiveClient {
         let path = request.url?.path ?? "/"
         let logTransport = credential != "team" || !path.hasPrefix("/api/v1/position/report/")
         let networkLane = lane ?? startLane
+        if credential == "team", !path.hasPrefix("/api/v1/position/report/") {
+            // Team-signed requests wait for this launch's Tracker check-in.
+            try await TrackerStartupGate.shared.awaitTeamAccess()
+        }
         do {
             if let personalID = configuration.personalSessionID, let cookieURL = personalCookieURL {
                 (data, response) = try await CaltopoPersonalSessions.shared.perform(personalID, cookieURL: cookieURL,

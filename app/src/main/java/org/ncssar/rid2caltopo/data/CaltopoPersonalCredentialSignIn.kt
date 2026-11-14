@@ -86,6 +86,7 @@ object CaltopoPersonalCredentialSignIn {
         context.getSharedPreferences(CaltopoPersonalAccountConnection.FEATURE_PREFERENCE, Context.MODE_PRIVATE)
             .edit()
             .putString(CaltopoPersonalAccountConnection.LOGIN_MODE_KEY, mode.wire())
+            .putInt(CaltopoPersonalLoginMode.POLICY_VERSION_KEY, CaltopoPersonalLoginMode.POLICY_VERSION)
             .apply()
         CaltopoPersonalAccountConnection.applyLoginMode(mode)
         // Keep the unused login's stored secret. Drop the active personal map so the two are not mixed.

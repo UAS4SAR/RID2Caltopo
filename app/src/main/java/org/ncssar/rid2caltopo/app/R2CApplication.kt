@@ -57,6 +57,9 @@ class R2CApplication : Application() {
                 .detectDiskReads().detectDiskWrites().detectNetwork().penaltyLog().build())
         }
         MainThreadStallMonitor.start()
+        // Team CalTopo access waits for the startup Tracker check-in. Memory only here;
+        // the check-in itself runs on its own worker from initializeOnWorker().
+        org.ncssar.rid2caltopo.data.TrackerStartupGate.beginStartupCheckIn()
         SettingsStartup.start { initializeOnWorker() }
     }
 
@@ -68,24 +71,29 @@ class R2CApplication : Application() {
         org.ncssar.rid2caltopo.video.anomaly.AnomalyPrefs.clearLegacySettings(this)
         AppConfigStore.initialize(this)
         CaltopoClient.PrepareSavedSettings()
+        // Organization devices check in with r2c-tracker at every start, before team
+        // CalTopo access, without waiting for a map. Background worker; never blocks the UI.
+        org.ncssar.rid2caltopo.data.TrackerStartupSync.start(this)
         org.ncssar.rid2caltopo.video.prepareOsmdroid(this)
-        // Personal Login Support. A saved browser session keeps Session Cookies
-        // until the operator changes the setting. The signing key is read here,
-        // on this worker, only when Credentials is selected.
+        // Personal Login Support. Credentials is the default for everyone; installs saved
+        // under an earlier policy move to Credentials once (see CaltopoPersonalLoginMode).
+        // The signing key is read here, on this worker, only when Credentials is selected.
         val personalAccount = getSharedPreferences(
             org.ncssar.rid2caltopo.data.CaltopoPersonalAccountConnection.FEATURE_PREFERENCE,
             android.content.Context.MODE_PRIVATE
         )
         val storedMode = personalAccount.getString(org.ncssar.rid2caltopo.data.CaltopoPersonalAccountConnection.LOGIN_MODE_KEY, null)
-        val cookieSession = storedMode == null && runCatching {
-            contentResolver.call(
-                android.net.Uri.parse("content://org.ncssar.rid2caltopo.personal-session"),
-                "loginProtectionRequired", null, null
-            )?.getBoolean("required", true) == false
-        }.getOrDefault(false)
-        val personalMode = org.ncssar.rid2caltopo.data.CaltopoPersonalLoginMode.resolve(storedMode, cookieSession)
-        if (storedMode == null) {
-            personalAccount.edit().putString(org.ncssar.rid2caltopo.data.CaltopoPersonalAccountConnection.LOGIN_MODE_KEY, personalMode.wire()).apply()
+        val storedPolicy = personalAccount.getInt(org.ncssar.rid2caltopo.data.CaltopoPersonalLoginMode.POLICY_VERSION_KEY, 0)
+        val personalMode = org.ncssar.rid2caltopo.data.CaltopoPersonalLoginMode.migrate(storedMode, storedPolicy)
+        if (storedPolicy < org.ncssar.rid2caltopo.data.CaltopoPersonalLoginMode.POLICY_VERSION || storedMode == null) {
+            if (storedMode != personalMode.wire()) {
+                CTDebug(TAG, "Personal Login Support migrated from ${storedMode ?: "unset"} to ${personalMode.wire()}")
+            }
+            personalAccount.edit()
+                .putString(org.ncssar.rid2caltopo.data.CaltopoPersonalAccountConnection.LOGIN_MODE_KEY, personalMode.wire())
+                .putInt(org.ncssar.rid2caltopo.data.CaltopoPersonalLoginMode.POLICY_VERSION_KEY,
+                    org.ncssar.rid2caltopo.data.CaltopoPersonalLoginMode.POLICY_VERSION)
+                .apply()
         }
         org.ncssar.rid2caltopo.data.CaltopoPersonalAccountConnection.install(
             org.ncssar.rid2caltopo.data.CaltopoPersonalAccountKeystore(this),
@@ -118,7 +126,6 @@ class R2CApplication : Application() {
         initializeCrashlyticsProbe()
         org.ncssar.rid2caltopo.storage.OperationalStorage.start(this)
         org.ncssar.rid2caltopo.storage.ClueTrackDurabilityIntegrity.runAtStartup(this)
-        TrackerEnrollmentClient.retryManagedConfigurationBootstrap(this)
         FaaConfigManager.refreshIfNeededOnStartup(this)
         AirspaceCenter.initialize(this)
         NotamCenter.initialize(this)

@@ -45,6 +45,8 @@ object OrgConfigManager {
     private const val KEY_TOKEN = "join_token"
     private const val KEY_ORG_NAME = "org_name"
     private const val KEY_MANAGED_VERSION_MS = "managed_version_ms"
+    private const val KEY_MANAGED_READINESS_SCHEMA = "managed_readiness_schema_version"
+    private const val KEY_MANAGED_APPLIED_APP_VERSION = "managed_applied_app_version"
     private const val KEY_DRONE_OWNERSHIP = "drone_ownership"
     private const val KEY_OWNERSHIP_RECORDS = "drone_ownership_records"
     @Volatile private var ownershipMode = DroneOwnershipPolicy.ALL
@@ -369,7 +371,8 @@ object OrgConfigManager {
             )
             context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
                 .putLong(KEY_MANAGED_VERSION_MS, versionMs)
-                .putInt("managed_readiness_schema_version", snapshot.optInt("aircraftSchemaVersion", 0))
+                .putInt(KEY_MANAGED_READINESS_SCHEMA, snapshot.optInt("aircraftSchemaVersion", 0))
+                .putString(KEY_MANAGED_APPLIED_APP_VERSION, currentAppVersion())
                 .apply()
             if (snapshot.has("droneOwnership")) {
                 receivePublishedDroneOwnership(context, ownershipScope(), snapshot.optString("droneOwnership"))
@@ -412,7 +415,24 @@ object OrgConfigManager {
         advertisedVersionMs: Long,
         completion: Runnable?
     ) {
-        if (advertisedVersionMs == 0L || advertisedVersionMs == getManagedVersionMs(context)) {
+        if (advertisedVersionMs == 0L) {
+            CaltopoClient.CTInfo(TAG, "Tracker advertised no managed organization configuration; nothing to fetch.")
+            completion?.run()
+            return
+        }
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        if (!ManagedConfigApplyPolicy.needsApply(
+                remoteVersionMs = advertisedVersionMs,
+                localVersionMs = getManagedVersionMs(context),
+                readinessSchemaVersion = prefs.getInt(KEY_MANAGED_READINESS_SCHEMA, 0),
+                hasTeamCredentials = true,
+                appliedByAppVersion = prefs.getString(KEY_MANAGED_APPLIED_APP_VERSION, null),
+                currentAppVersion = currentAppVersion()
+            )) {
+            CaltopoClient.CTInfo(
+                TAG,
+                "Skipped managed organization configuration $advertisedVersionMs: already applied by ${currentAppVersion()}."
+            )
             completion?.run()
             return
         }
@@ -447,45 +467,84 @@ object OrgConfigManager {
     ) {
         executor.execute {
             try {
-                val request = Request.Builder()
-                    .url(endpoint)
-                    .header("X-SAR-Token", deviceToken)
-                    .header(
-                        "X-R2C-Functionality-Release",
-                        BuildConfig.TRACKER_FUNCTIONALITY_RELEASE.toString()
-                    )
-                    .header("Cache-Control", "no-cache")
-                    .get()
-                    .build()
-                CaltopoSession.MyOkHttpClient.newCall(request).execute().use { response ->
-                    if (response.code == 204) {
-                        CaltopoClient.CTInfo(TAG, "No managed organization configuration is published.")
-                        return@use
-                    }
-                    if (!response.isSuccessful) {
-                        TrackerEnrollmentClient.handleRejectedAuthorization(
-                            response.code, response.body?.string().orEmpty(), deviceToken
-                        )
-                        throw IllegalStateException(
-                            "Tracker returned HTTP ${response.code} for organization configuration."
-                        )
-                    }
-                    val root = JSONObject(response.body?.string().orEmpty())
-                    val versionMs = root.getLong("versionMs")
-                    val needsApply = versionMs != getManagedVersionMs(context) ||
-                        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getInt("managed_readiness_schema_version", 0) < 1 ||
-                        !CaltopoCredentials.sniffTest(CaltopoClient.GetCaltopoCredentials())
-                    if (needsApply &&
-                        !applyManagedSnapshot(context, root.getJSONObject("config"), versionMs)) {
-                        throw IllegalStateException("Organization configuration could not be applied.")
-                    }
-                    CaltopoClient.CTInfo(TAG, "Applied managed organization configuration $versionMs")
-                }
-            } catch (e: Exception) {
-                CaltopoClient.CTWarn(TAG, "Managed organization configuration sync failed.", e)
+                fetchAndApplyManagedConfiguration(context, endpoint, deviceToken, TrackerHttp.client)
             } finally {
                 completion?.run()
             }
+        }
+    }
+
+    /** Version label recorded with each applied organization configuration. */
+    @JvmStatic fun currentAppVersion(): String = "${BuildConfig.VERSION_NAME}(${BuildConfig.VERSION_CODE})"
+
+    /**
+     * Fetch the current organization configuration and apply it when needed. Blocking;
+     * call on a worker. Uses the Tracker HTTP client, which CalTopo connectivity recovery
+     * never cancels.
+     */
+    @JvmStatic
+    fun fetchAndApplyManagedConfiguration(
+        context: Context,
+        endpoint: String,
+        deviceToken: String,
+        client: okhttp3.OkHttpClient
+    ): ManagedConfigFetchOutcome {
+        try {
+            val request = Request.Builder()
+                .url(endpoint)
+                .header("X-SAR-Token", deviceToken)
+                .header(
+                    "X-R2C-Functionality-Release",
+                    BuildConfig.TRACKER_FUNCTIONALITY_RELEASE.toString()
+                )
+                .header("Cache-Control", "no-cache")
+                .get()
+                .build()
+            client.newCall(request).execute().use { response ->
+                if (response.code == 204) {
+                    CaltopoClient.CTInfo(TAG, "Tracker check-in completed; no managed organization configuration is published.")
+                    return ManagedConfigFetchOutcome.CheckedIn
+                }
+                if (!response.isSuccessful) {
+                    TrackerEnrollmentClient.handleRejectedAuthorization(
+                        response.code, response.body?.string().orEmpty(), deviceToken
+                    )
+                    CaltopoClient.CTWarn(TAG, "Tracker returned HTTP ${response.code} for organization configuration.")
+                    return if (response.code == 401 || response.code == 403) ManagedConfigFetchOutcome.Rejected
+                    else ManagedConfigFetchOutcome.Unreachable("HTTP ${response.code}")
+                }
+                val root = JSONObject(response.body?.string().orEmpty())
+                val versionMs = root.getLong("versionMs")
+                val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                val appliedBy = prefs.getString(KEY_MANAGED_APPLIED_APP_VERSION, null)
+                val needsApply = ManagedConfigApplyPolicy.needsApply(
+                    remoteVersionMs = versionMs,
+                    localVersionMs = getManagedVersionMs(context),
+                    readinessSchemaVersion = prefs.getInt(KEY_MANAGED_READINESS_SCHEMA, 0),
+                    hasTeamCredentials = CaltopoCredentials.sniffTest(CaltopoClient.GetCaltopoCredentials()),
+                    appliedByAppVersion = appliedBy,
+                    currentAppVersion = currentAppVersion()
+                )
+                if (!needsApply) {
+                    CaltopoClient.CTInfo(
+                        TAG,
+                        "Tracker check-in completed; organization configuration $versionMs already applied by ${currentAppVersion()}; skipped."
+                    )
+                    return ManagedConfigFetchOutcome.CheckedIn
+                }
+                if (!applyManagedSnapshot(context, root.getJSONObject("config"), versionMs)) {
+                    CaltopoClient.CTWarn(TAG, "Organization configuration $versionMs could not be applied.")
+                    return ManagedConfigFetchOutcome.Unreachable("apply failed")
+                }
+                CaltopoClient.CTInfo(
+                    TAG,
+                    "Applied managed organization configuration $versionMs (previously applied by ${appliedBy ?: "an earlier app version"}); droneOwnership=${droneOwnershipMode()}"
+                )
+                return ManagedConfigFetchOutcome.CheckedIn
+            }
+        } catch (e: Exception) {
+            CaltopoClient.CTWarn(TAG, "Managed organization configuration sync failed.", e)
+            return ManagedConfigFetchOutcome.Unreachable(e.javaClass.simpleName + ": " + (e.message ?: ""))
         }
     }
 

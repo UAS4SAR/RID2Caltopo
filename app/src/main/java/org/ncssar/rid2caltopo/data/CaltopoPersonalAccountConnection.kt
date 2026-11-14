@@ -759,11 +759,23 @@ enum class CaltopoPersonalLoginMode {
     fun wire(): String = if (this == CREDENTIALS) "credentials" else "sessionCookies"
 
     companion object {
-        fun resolve(stored: String?, cookieSessionAlreadyInUse: Boolean): CaltopoPersonalLoginMode = when (stored) {
-            "credentials" -> CREDENTIALS
+        /**
+         * Version 2 (November 2026): Credentials is the default for everyone. Earlier
+         * versions stored an automatically chosen Session Cookies value under the same key
+         * as an operator's choice, so the two cannot be told apart; both move to
+         * Credentials once. A Session Cookies choice made after that is kept.
+         */
+        const val POLICY_VERSION = 2
+        const val POLICY_VERSION_KEY = "login_mode_policy_version"
+
+        fun resolve(stored: String?): CaltopoPersonalLoginMode = when (stored) {
             "sessionCookies" -> SESSION_COOKIES
-            else -> if (cookieSessionAlreadyInUse) SESSION_COOKIES else CREDENTIALS
+            else -> CREDENTIALS
         }
+
+        /** Mode to use at startup, given the stored value and the policy version it was saved under. */
+        fun migrate(stored: String?, storedPolicyVersion: Int): CaltopoPersonalLoginMode =
+            if (storedPolicyVersion < POLICY_VERSION) CREDENTIALS else resolve(stored)
     }
 }
 

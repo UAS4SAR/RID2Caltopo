@@ -16,11 +16,21 @@ import java.nio.charset.StandardCharsets
 import java.util.Base64
 
 class CaltopoPersonalAccountConnectionTest {
-    @Test fun loginModeDefaultsToCredentialsUnlessACookieSessionAlreadyExists() {
-        assertEquals(CaltopoPersonalLoginMode.CREDENTIALS, CaltopoPersonalLoginMode.resolve(null, cookieSessionAlreadyInUse = false))
-        assertEquals(CaltopoPersonalLoginMode.SESSION_COOKIES, CaltopoPersonalLoginMode.resolve(null, cookieSessionAlreadyInUse = true))
-        assertEquals(CaltopoPersonalLoginMode.CREDENTIALS, CaltopoPersonalLoginMode.resolve("credentials", cookieSessionAlreadyInUse = true))
-        assertEquals(CaltopoPersonalLoginMode.SESSION_COOKIES, CaltopoPersonalLoginMode.resolve("sessionCookies", cookieSessionAlreadyInUse = false))
+    @Test fun loginModeDefaultsToCredentialsForEveryone() {
+        assertEquals(CaltopoPersonalLoginMode.CREDENTIALS, CaltopoPersonalLoginMode.resolve(null))
+        assertEquals(CaltopoPersonalLoginMode.CREDENTIALS, CaltopoPersonalLoginMode.resolve("credentials"))
+        assertEquals(CaltopoPersonalLoginMode.SESSION_COOKIES, CaltopoPersonalLoginMode.resolve("sessionCookies"))
+    }
+
+    @Test fun earlierPolicySessionCookiesMigratesToCredentialsOnce() {
+        // Unset, or stored by an earlier version (automatic or chosen; indistinguishable).
+        assertEquals(CaltopoPersonalLoginMode.CREDENTIALS, CaltopoPersonalLoginMode.migrate(null, 0))
+        assertEquals(CaltopoPersonalLoginMode.CREDENTIALS, CaltopoPersonalLoginMode.migrate("sessionCookies", 0))
+        assertEquals(CaltopoPersonalLoginMode.CREDENTIALS, CaltopoPersonalLoginMode.migrate("credentials", 0))
+        // A choice saved under the current policy is kept.
+        val current = CaltopoPersonalLoginMode.POLICY_VERSION
+        assertEquals(CaltopoPersonalLoginMode.SESSION_COOKIES, CaltopoPersonalLoginMode.migrate("sessionCookies", current))
+        assertEquals(CaltopoPersonalLoginMode.CREDENTIALS, CaltopoPersonalLoginMode.migrate(null, current))
     }
 
     @Test fun credentialsModeDoesNotFallBackToCookiesWhenNothingIsStored() {

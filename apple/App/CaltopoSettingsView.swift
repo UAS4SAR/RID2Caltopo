@@ -1068,6 +1068,14 @@ struct CaltopoTeamMapBrowser: View {
     }
 
     private func loadSelectedMaps() async {
+        // An organization device uses team credentials only after r2c-tracker authorized it
+        // in this launch. Until then CalTopo access is the personal account (Credentials).
+        let gate = TrackerStartupGate.shared
+        if gate.state == .pending { await gate.waitForDecision() }
+        if let reason = gate.teamAccessBlockReason {
+            await settings.openPersonalBecauseTeamRefused(reason)
+            return
+        }
         let activeTeam = profiles.activeProfileID
         let knownTeams = profiles.availableProfiles.map(\.id)
         if settings.personalLoginMode == .credentials {

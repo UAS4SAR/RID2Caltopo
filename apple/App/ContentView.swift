@@ -124,6 +124,9 @@ struct ContentView: View {
     @StateObject private var caltopoSettings = AppleCaltopoSettings()
     @ObservedObject private var personalLogin = PersonalProbeModel.shared
     @State private var showingFlightAllowance = false
+    @State private var trackerCheckInRunning = false
+    @State private var trackerCheckInRetryTask: Task<Void, Never>?
+    @State private var trackerCheckInRetrySeconds: TimeInterval?
     @State private var showingBluetoothDisabled = false
     @StateObject private var clueStore = AppleClueStore()
     @StateObject private var diagnostics = AppleDiagnosticsCenter()
@@ -780,6 +783,8 @@ struct ContentView: View {
                     sourceID: "bluetooth"
                 )
                 ridTracks.attachClueStore(clueStore)
+                // Team CalTopo requests wait for this launch's Tracker check-in (started below).
+                TrackerStartupGate.shared.beginStartupCheckIn()
                 _ = await orgConfigImporter.restoreActiveProfile(
                     caltopoSettings: caltopoSettings,
                     orgSettings: orgConfigSettings
@@ -793,9 +798,12 @@ struct ContentView: View {
                     trackFolderName: orgConfigSettings.trackFolder
                 )
                 if !caltopoSettings.mapID.isEmpty, caltopoSettings.mapTitle.isEmpty {
-                    await caltopoSettings.loadTeamMaps()
-                    if !caltopoSettings.mapTitle.isEmpty {
-                        orgConfigSettings.setIncidentMapTitle(caltopoSettings.displayMapTitle)
+                    // Waits for the Tracker check-in, so it must not hold up the rest of startup.
+                    Task {
+                        await caltopoSettings.loadTeamMaps()
+                        if !caltopoSettings.mapTitle.isEmpty {
+                            orgConfigSettings.setIncidentMapTitle(caltopoSettings.displayMapTitle)
+                        }
                     }
                 }
                 orgConfigImporter.caltopoConfigurationHandler = { configuration in
@@ -830,7 +838,7 @@ struct ContentView: View {
                     }
                 )
                 configurePeerCoordinator()
-                Task { await refreshManagedOrganizationConfiguration() }
+                Task { await runTrackerCheckIn(reason: "startup") }
                 configureTrackArchive()
                 configureTrackPolicy()
                 if ProcessInfo.processInfo.arguments.contains("--demo-notam") {
@@ -1188,7 +1196,11 @@ struct ContentView: View {
                 notams.refreshNow(location: locationProvider.lastLocation)
                 landRestrictions.refreshNow(location: locationProvider.lastLocation)
                 Task {
-                    await refreshManagedOrganizationConfiguration(force: true, waitForInFlight: true)
+                    if TrackerStartupGate.shared.state == .unreachable {
+                        await runTrackerCheckIn(reason: "network available")
+                    } else {
+                        await refreshManagedOrganizationConfiguration(force: true, waitForInFlight: true)
+                    }
                 }
                 Task {
                     guard !AppleApplicationCleanupCenter.shared.isShutdownRequested else { return }
@@ -1866,11 +1878,77 @@ struct ContentView: View {
         Task { await deviceReconciliation.check(baseURL: orgConfigSettings.trackerURLPrefix, token: orgConfigSettings.trackerAPIKey) }
     }
 
-    private func refreshManagedOrganizationConfiguration(force: Bool = false, waitForInFlight: Bool = false) async {
-        guard !AppleApplicationCleanupCenter.shared.isShutdownRequested else { return }
-        await orgConfigImporter.refreshManagedConfiguration(
+    @discardableResult
+    private func refreshManagedOrganizationConfiguration(force: Bool = false, waitForInFlight: Bool = false) async -> TrackerCheckInOutcome? {
+        guard !AppleApplicationCleanupCenter.shared.isShutdownRequested else { return nil }
+        let outcome = await orgConfigImporter.refreshManagedConfiguration(
             caltopoSettings: caltopoSettings, orgSettings: orgConfigSettings,
             identityStore: droneConfirmations, force: force, waitForInFlight: waitForInFlight)
+        if let outcome { updateTrackerGate(outcome) }
+        return outcome
+    }
+
+    /// Organization devices check in with the Tracker at launch, before team CalTopo access.
+    /// Runs off the UI path; the Tracker may take several seconds to wake from zero.
+    private func runTrackerCheckIn(reason: String) async {
+        guard !AppleApplicationCleanupCenter.shared.isShutdownRequested else { return }
+        let gate = TrackerStartupGate.shared
+        guard orgConfigSettings.hasManagedTrackerEnrollment else {
+            if gate.state != .notRequired {
+                AppleLog.info("OrgConfig", "Tracker check-in not required: device is not enrolled in an organization; team CalTopo access is not gated")
+            }
+            gate.set(.notRequired)
+            trackerCheckInRetryTask?.cancel()
+            trackerCheckInRetryTask = nil
+            trackerCheckInRetrySeconds = nil
+            return
+        }
+        guard !trackerCheckInRunning else { return }
+        trackerCheckInRunning = true
+        defer { trackerCheckInRunning = false }
+        let outcome = await TrackerStartupCheckIn.checkInWithRetries(
+            sleep: { seconds in try? await Task.sleep(for: .seconds(seconds)) },
+            fetch: { attempt in
+                AppleLog.info("OrgConfig", "Tracker check-in attempt \(attempt) (\(reason))")
+                if let result = await orgConfigImporter.refreshManagedConfiguration(
+                    caltopoSettings: caltopoSettings, orgSettings: orgConfigSettings,
+                    identityStore: droneConfirmations, force: true, waitForInFlight: true) {
+                    return result
+                }
+                // Another profile is active or an import is running: still ask the Tracker
+                // whether this device is authorized before allowing team access.
+                return await orgConfigImporter.authorizeWithTracker(orgSettings: orgConfigSettings)
+            })
+        updateTrackerGate(outcome)
+    }
+
+    private func updateTrackerGate(_ outcome: TrackerCheckInOutcome) {
+        let gate = TrackerStartupGate.shared
+        guard gate.state != .notRequired || orgConfigSettings.hasManagedTrackerEnrollment else { return }
+        let next = TrackerStartupCheckIn.nextGateState(previous: gate.state, outcome: outcome)
+        if next != gate.state {
+            AppleLog.info("OrgConfig", "Tracker check-in result \(String(describing: outcome)); team CalTopo access \(next.rawValue)")
+        }
+        gate.set(next)
+        if next == .unreachable {
+            scheduleTrackerCheckInRetry()
+        } else {
+            trackerCheckInRetryTask?.cancel()
+            trackerCheckInRetryTask = nil
+            trackerCheckInRetrySeconds = nil
+        }
+    }
+
+    private func scheduleTrackerCheckInRetry() {
+        let delay = TrackerStartupCheckIn.nextBackgroundRetry(after: trackerCheckInRetrySeconds)
+        trackerCheckInRetrySeconds = delay
+        trackerCheckInRetryTask?.cancel()
+        AppleLog.warning("OrgConfig", "Tracker unreachable; team CalTopo access refused (personal account only); retrying in \(Int(delay))s")
+        trackerCheckInRetryTask = Task {
+            try? await Task.sleep(for: .seconds(delay))
+            guard !Task.isCancelled else { return }
+            await runTrackerCheckIn(reason: "background retry")
+        }
     }
 
     private var rootScreen: some View {
