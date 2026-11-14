@@ -501,9 +501,9 @@ public class CaltopoMap {
         if (null == DomainAndPort || DomainAndPort.isEmpty()) {
             DomainAndPort = "caltopo.com";
         }
-        // Team credentials wait for the startup Tracker check-in, and are refused for
-        // caltopo.com when the Tracker could not be reached (personal account instead).
-        String teamBlocked = TrackerStartupGate.teamAccessBlockReason(DomainAndPort);
+        // An organization device uses team credentials only after r2c-tracker authorized it
+        // in this process; otherwise CalTopo access is the personal account.
+        String teamBlocked = TrackerStartupGate.teamAccessBlockReason();
         if (teamBlocked != null) {
             LastErrorString = teamBlocked;
             if (TrackerStartupGate.state() == TrackerStartupGate.State.PENDING) {

@@ -10,22 +10,23 @@ import android.os.Looper
 import java.util.concurrent.CopyOnWriteArrayList
 
 /**
- * Team CalTopo access waits for this process's first r2c-tracker check-in.
+ * Team CalTopo access for an organization device is allowed only after r2c-tracker has
+ * authorized the device in this process.
  *
- * An organization device must confirm its team credentials and pull the current
- * organization configuration before it signs a CalTopo request with the team
- * credential. Personal CalTopo access and every live function start immediately.
+ * Only team-credential access is regulated. Personal-account CalTopo access is never
+ * gated, on any server. A device that is not registered with an organization is never
+ * gated and keeps using its locally configured team credentials.
  *
- * - [State.PENDING]: the startup check-in has not finished. Team requests on a worker
- *   wait for it; the main thread never waits.
- * - [State.CHECKED_IN] / [State.NOT_REQUIRED]: team access is allowed.
- * - [State.UNREACHABLE]: the check-in failed after its retries. Team access to
- *   caltopo.com is refused, so CalTopo access uses the personal account. A CalTopo
- *   Desktop server on another host keeps team access, because it serves an offline
- *   incident network that cannot reach r2c-tracker.com. The check-in keeps retrying in
- *   the background and switches to [State.CHECKED_IN] when the Tracker answers.
- * - [State.REJECTED]: the Tracker refused this device. Team access to caltopo.com stays
- *   refused until the device signs in again or is re-enrolled.
+ * - [State.NOT_REQUIRED]: not an organization device. Team access is allowed.
+ * - [State.PENDING]: the startup check-in has not finished. Team requests on a worker wait
+ *   for it (bounded); the main thread never waits. Team access is not yet allowed.
+ * - [State.CHECKED_IN]: the Tracker authorized this device. Team access is allowed.
+ * - [State.UNREACHABLE]: the Tracker could not be reached. Team access is refused on every
+ *   server; the check-in keeps retrying in the background.
+ * - [State.REJECTED]: the Tracker refused this device (HTTP 401/403). Team access is refused
+ *   and retries stop until Tracker sign-in or re-enrollment.
+ *
+ * Team access returns only after a later successful authorization.
  */
 object TrackerStartupGate {
     enum class State { NOT_REQUIRED, PENDING, CHECKED_IN, UNREACHABLE, REJECTED }
@@ -33,11 +34,11 @@ object TrackerStartupGate {
     const val WAITING_MESSAGE =
         "Checking in with the organization Tracker before using the team CalTopo account…"
     const val UNREACHABLE_MESSAGE =
-        "The organization Tracker is unreachable, so team CalTopo maps are unavailable. " +
-            "Use your personal CalTopo account. The app keeps retrying the Tracker."
+        "The organization Tracker could not be reached, so team CalTopo access is unavailable. " +
+            "Sign in with your personal CalTopo account. The app keeps retrying the Tracker."
     const val REJECTED_MESSAGE =
-        "The organization Tracker did not accept this device. Sign in to the Tracker again " +
-            "before using team CalTopo maps. Your personal CalTopo account still works."
+        "The organization Tracker has not authorized this device, so team CalTopo access is " +
+            "unavailable. Sign in with your personal CalTopo account."
 
     /** Longest a worker waits for the check-in. The check-in itself gives up sooner. */
     const val MAX_WAIT_MS = 180_000L
@@ -75,33 +76,25 @@ object TrackerStartupGate {
         if (current != State.PENDING && listeners.remove(listener)) action.run()
     }
 
-    @JvmStatic fun isPublicCaltopo(domainAndPort: String?): Boolean {
-        val host = domainAndPort.orEmpty().trim().lowercase()
-            .removePrefix("https://").removePrefix("http://")
-            .substringBefore('/').substringBefore(':')
-        return host.isEmpty() || host == "caltopo.com" || host.endsWith(".caltopo.com")
-    }
-
     /** Null when team access may proceed; otherwise the reason it may not. */
-    @JvmStatic fun blockReason(state: State, domainAndPort: String?): String? = when (state) {
+    @JvmStatic fun blockReason(state: State): String? = when (state) {
         State.NOT_REQUIRED, State.CHECKED_IN -> null
         State.PENDING -> WAITING_MESSAGE
-        State.UNREACHABLE -> if (isPublicCaltopo(domainAndPort)) UNREACHABLE_MESSAGE else null
-        State.REJECTED -> if (isPublicCaltopo(domainAndPort)) REJECTED_MESSAGE else null
+        State.UNREACHABLE -> UNREACHABLE_MESSAGE
+        State.REJECTED -> REJECTED_MESSAGE
     }
 
-    @JvmStatic fun teamAccessBlockReason(domainAndPort: String?): String? = blockReason(current, domainAndPort)
+    @JvmStatic fun teamAccessBlockReason(): String? = blockReason(current)
 
     /** True when team access is refused for an outcome, not merely waiting for one. */
-    @JvmStatic fun teamAccessRefused(domainAndPort: String?): Boolean =
-        current != State.PENDING && blockReason(current, domainAndPort) != null
+    @JvmStatic fun teamAccessRefused(): Boolean = current != State.PENDING && blockReason(current) != null
 
     /**
      * Worker-thread wait for team access. Returns null when the team request may be sent.
      * On the main thread this never waits and reports the current reason instead.
      */
     @JvmStatic @JvmOverloads
-    fun awaitTeamAccess(domainAndPort: String?, maxWaitMs: Long = MAX_WAIT_MS): String? {
+    fun awaitTeamAccess(maxWaitMs: Long = MAX_WAIT_MS): String? {
         val onMain = runCatching { Looper.myLooper() == Looper.getMainLooper() && Looper.myLooper() != null }
             .getOrDefault(false)
         if (!onMain) {
@@ -116,7 +109,7 @@ object TrackerStartupGate {
                 }
             }
         }
-        return blockReason(current, domainAndPort)
+        return blockReason(current)
     }
 
     /** Tests only. */

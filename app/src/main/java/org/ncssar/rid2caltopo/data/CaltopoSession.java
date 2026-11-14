@@ -486,8 +486,7 @@ public class CaltopoSession {
         final String fullReadDomain = DomainAndPort;
         if (!op.goNaked && op.personalAuthorization == null) {
             // Team-signed requests wait for this process's Tracker check-in (worker thread).
-            String teamBlocked = TrackerStartupGate.awaitTeamAccess(
-                    op.cleanupAuthorizationBound ? op.cleanupDomain : DomainAndPort);
+            String teamBlocked = TrackerStartupGate.awaitTeamAccess();
             if (teamBlocked != null) {
                 op.response = teamBlocked;
                 CTWarn(TAG, "BgSendRequest(): team CalTopo request held: " + teamBlocked);

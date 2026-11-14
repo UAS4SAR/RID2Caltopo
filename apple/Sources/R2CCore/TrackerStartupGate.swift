@@ -1,19 +1,22 @@
 import Foundation
 
-/// Team CalTopo access waits for this launch's first r2c-tracker check-in.
+/// Team CalTopo access for an organization device is allowed only after r2c-tracker has
+/// authorized the device in this launch. Matches Android `TrackerStartupGate`.
 ///
-/// Matches Android `TrackerStartupGate`. An organization device confirms its team
-/// credentials and pulls the organization configuration before it signs a CalTopo
-/// request with the team credential. Personal CalTopo access and live functions start
-/// immediately; waiting requests are suspended, never blocking the main thread.
+/// Only team-credential access is regulated. Personal-account CalTopo access is never
+/// gated, on any server. A device that is not registered with an organization is never
+/// gated and keeps using its locally configured team credentials. Waiting requests are
+/// suspended, never blocking the main thread.
 ///
-/// - `pending`: the startup check-in has not finished. Team requests wait.
-/// - `checkedIn` / `notRequired`: team access is allowed.
-/// - `unreachable`: the check-in failed after its retries. Team access to caltopo.com
-///   is refused, so CalTopo access uses the personal account. A CalTopo Desktop server
-///   on another host keeps team access. The check-in keeps retrying in the background.
-/// - `rejected`: the Tracker refused this device. Team access to caltopo.com is refused
-///   until the device signs in again or is re-enrolled.
+/// - `notRequired`: not an organization device. Team access is allowed.
+/// - `pending`: the startup check-in has not finished. Team requests wait (bounded).
+/// - `checkedIn`: the Tracker authorized this device. Team access is allowed.
+/// - `unreachable`: the Tracker could not be reached. Team access is refused on every
+///   server; the check-in keeps retrying in the background.
+/// - `rejected`: the Tracker refused this device (HTTP 401/403). Team access is refused
+///   and retries stop until Tracker sign-in or re-enrollment.
+///
+/// Team access returns only after a later successful authorization.
 public final class TrackerStartupGate: @unchecked Sendable {
     public enum State: String, Sendable { case notRequired, pending, checkedIn, unreachable, rejected }
 
@@ -22,11 +25,11 @@ public final class TrackerStartupGate: @unchecked Sendable {
     public static let waitingMessage =
         "Checking in with the organization Tracker before using the team CalTopo account…"
     public static let unreachableMessage =
-        "The organization Tracker is unreachable, so team CalTopo maps are unavailable. "
-        + "Use your personal CalTopo account. The app keeps retrying the Tracker."
+        "The organization Tracker could not be reached, so team CalTopo access is unavailable. "
+        + "Sign in with your personal CalTopo account. The app keeps retrying the Tracker."
     public static let rejectedMessage =
-        "The organization Tracker did not accept this device. Sign in to the Tracker again "
-        + "before using team CalTopo maps. Your personal CalTopo account still works."
+        "The organization Tracker has not authorized this device, so team CalTopo access is "
+        + "unavailable. Sign in with your personal CalTopo account."
     public static let maximumWaitSeconds: TimeInterval = 180
 
     public struct Refused: LocalizedError, Sendable, Equatable {
@@ -70,62 +73,56 @@ public final class TrackerStartupGate: @unchecked Sendable {
 
     public func removeObserver(_ id: UUID) { _ = lock.withLock { observers.removeValue(forKey: id) } }
 
-    public static func isPublicCaltopo(_ domainAndPort: String) -> Bool {
-        var host = domainAndPort.trimmingCharacters(in: .whitespaces).lowercased()
-        for prefix in ["https://", "http://"] where host.hasPrefix(prefix) { host.removeFirst(prefix.count) }
-        host = String(host.split(separator: "/", maxSplits: 1, omittingEmptySubsequences: false).first ?? "")
-        host = String(host.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false).first ?? "")
-        return host.isEmpty || host == "caltopo.com" || host.hasSuffix(".caltopo.com")
-    }
-
     /// Nil when team access may proceed; otherwise the reason it may not.
-    public static func blockReason(_ state: State, domainAndPort: String) -> String? {
+    public static func blockReason(_ state: State) -> String? {
         switch state {
         case .notRequired, .checkedIn: nil
         case .pending: waitingMessage
-        case .unreachable: isPublicCaltopo(domainAndPort) ? unreachableMessage : nil
-        case .rejected: isPublicCaltopo(domainAndPort) ? rejectedMessage : nil
+        case .unreachable: unreachableMessage
+        case .rejected: rejectedMessage
         }
     }
 
-    public func teamAccessBlockReason(domainAndPort: String) -> String? {
-        Self.blockReason(state, domainAndPort: domainAndPort)
-    }
+    public var teamAccessBlockReason: String? { Self.blockReason(state) }
 
     /// Refused for an outcome, not merely waiting for one.
-    public func teamAccessRefused(domainAndPort: String) -> Bool {
+    public var teamAccessRefused: Bool {
         let value = state
-        return value != .pending && Self.blockReason(value, domainAndPort: domainAndPort) != nil
+        return value != .pending && Self.blockReason(value) != nil
+    }
+
+    /// Suspends until the check-in has an outcome (or the wait limit). Never throws.
+    public func waitForDecision(maximumWait: TimeInterval = maximumWaitSeconds) async {
+        guard state == .pending else { return }
+        let id = UUID()
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask {
+                await withCheckedContinuation { continuation in
+                    let resumeNow: Bool = self.lock.withLock {
+                        if self.current != .pending { return true }
+                        self.waiters[id] = continuation
+                        return false
+                    }
+                    if resumeNow { continuation.resume() }
+                }
+            }
+            group.addTask {
+                try? await Task.sleep(nanoseconds: UInt64(max(0, maximumWait) * 1_000_000_000))
+                let waiter: CheckedContinuation<Void, Never>? = self.lock.withLock { self.waiters.removeValue(forKey: id) }
+                waiter?.resume()
+            }
+            await group.next()
+            group.cancelAll()
+        }
+        let leftover: CheckedContinuation<Void, Never>? = lock.withLock { waiters.removeValue(forKey: id) }
+        leftover?.resume()
     }
 
     /// Suspends until the check-in has an outcome (or the wait limit), then throws
     /// `Refused` if team access may not proceed.
-    public func awaitTeamAccess(domainAndPort: String, maximumWait: TimeInterval = maximumWaitSeconds) async throws {
-        if state == .pending {
-            let id = UUID()
-            await withTaskGroup(of: Void.self) { group in
-                group.addTask {
-                    await withCheckedContinuation { continuation in
-                        let resumeNow: Bool = self.lock.withLock {
-                            if self.current != .pending { return true }
-                            self.waiters[id] = continuation
-                            return false
-                        }
-                        if resumeNow { continuation.resume() }
-                    }
-                }
-                group.addTask {
-                    try? await Task.sleep(nanoseconds: UInt64(max(0, maximumWait) * 1_000_000_000))
-                    let waiter: CheckedContinuation<Void, Never>? = self.lock.withLock { self.waiters.removeValue(forKey: id) }
-                    waiter?.resume()
-                }
-                await group.next()
-                group.cancelAll()
-            }
-            let leftover: CheckedContinuation<Void, Never>? = lock.withLock { waiters.removeValue(forKey: id) }
-            leftover?.resume()
-        }
-        if let reason = teamAccessBlockReason(domainAndPort: domainAndPort) { throw Refused(message: reason) }
+    public func awaitTeamAccess(maximumWait: TimeInterval = maximumWaitSeconds) async throws {
+        await waitForDecision(maximumWait: maximumWait)
+        if let reason = teamAccessBlockReason { throw Refused(message: reason) }
     }
 
     /// Tests only.

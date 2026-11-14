@@ -19,18 +19,16 @@ class TrackerStartupCheckInTest {
 
     @Test fun teamAccessWaitsWhileTheStartupCheckInIsPending() {
         TrackerStartupGate.beginStartupCheckIn()
-        assertEquals(TrackerStartupGate.WAITING_MESSAGE, TrackerStartupGate.teamAccessBlockReason("caltopo.com"))
-        assertFalse(TrackerStartupGate.teamAccessRefused("caltopo.com"))
-        // Pending also holds a CalTopo Desktop server until the check-in has an outcome.
-        assertNotNull(TrackerStartupGate.teamAccessBlockReason("192.168.1.20:8080"))
+        assertEquals(TrackerStartupGate.WAITING_MESSAGE, TrackerStartupGate.teamAccessBlockReason())
+        assertFalse(TrackerStartupGate.teamAccessRefused())
     }
 
-    @Test fun workerWaitReleasesWhenTheCheckInSucceeds() {
+    @Test fun workerWaitReleasesWhenTheTrackerAuthorizesTheDevice() {
         TrackerStartupGate.beginStartupCheckIn()
         val result = AtomicReference<String?>("unset")
         val done = CountDownLatch(1)
         Thread {
-            result.set(TrackerStartupGate.awaitTeamAccess("caltopo.com", 5_000L))
+            result.set(TrackerStartupGate.awaitTeamAccess(5_000L))
             done.countDown()
         }.start()
         assertFalse(done.await(200, TimeUnit.MILLISECONDS))
@@ -39,22 +37,61 @@ class TrackerStartupCheckInTest {
         assertNull(result.get())
     }
 
-    @Test fun unreachableTrackerRefusesTeamCaltopoButNotDesktop() {
-        TrackerStartupGate.set(TrackerStartupGate.State.UNREACHABLE)
-        assertEquals(TrackerStartupGate.UNREACHABLE_MESSAGE, TrackerStartupGate.awaitTeamAccess("caltopo.com", 10L))
-        assertTrue(TrackerStartupGate.teamAccessRefused("caltopo.com"))
-        assertTrue(TrackerStartupGate.teamAccessRefused(""))
-        assertNull(TrackerStartupGate.awaitTeamAccess("10.0.0.5:8080", 10L))
+    @Test fun pendingWaitIsBoundedAndThenRefusesTeamAccess() {
+        TrackerStartupGate.beginStartupCheckIn()
+        assertEquals(TrackerStartupGate.WAITING_MESSAGE, TrackerStartupGate.awaitTeamAccess(20L))
     }
 
-    @Test fun rejectedDeviceRefusesTeamCaltopo() {
+    @Test fun unreachableTrackerRefusesTeamAccessOnEveryServer() {
+        // No CalTopo Desktop exception: the Tracker regulates org team access everywhere.
+        TrackerStartupGate.set(TrackerStartupGate.State.UNREACHABLE)
+        assertEquals(TrackerStartupGate.UNREACHABLE_MESSAGE, TrackerStartupGate.awaitTeamAccess(10L))
+        assertTrue(TrackerStartupGate.teamAccessRefused())
+        assertTrue(TrackerStartupGate.UNREACHABLE_MESSAGE.contains("personal CalTopo account"))
+    }
+
+    @Test fun rejectedDeviceIsHandledLikeADownTracker() {
         TrackerStartupGate.set(TrackerStartupGate.State.REJECTED)
-        assertEquals(TrackerStartupGate.REJECTED_MESSAGE, TrackerStartupGate.teamAccessBlockReason("caltopo.com"))
+        assertEquals(TrackerStartupGate.REJECTED_MESSAGE, TrackerStartupGate.awaitTeamAccess(10L))
+        assertTrue(TrackerStartupGate.teamAccessRefused())
     }
 
     @Test fun nonOrganizationDevicesAreNeverGated() {
         TrackerStartupGate.set(TrackerStartupGate.State.NOT_REQUIRED)
-        assertNull(TrackerStartupGate.awaitTeamAccess("caltopo.com", 10L))
+        assertNull(TrackerStartupGate.awaitTeamAccess(10L))
+        assertFalse(TrackerStartupGate.teamAccessRefused())
+    }
+
+    @Test fun teamAccessReturnsOnlyAfterASuccessfulAuthorization() {
+        val unreachable = ManagedConfigFetchOutcome.Unreachable("timeout")
+        var state = TrackerStartupSync.nextGateState(TrackerStartupGate.State.PENDING, unreachable)
+        assertEquals(TrackerStartupGate.State.UNREACHABLE, state)
+        state = TrackerStartupSync.nextGateState(state, unreachable)
+        assertEquals(TrackerStartupGate.State.UNREACHABLE, state)
+        state = TrackerStartupSync.nextGateState(state, ManagedConfigFetchOutcome.CheckedIn)
+        assertEquals(TrackerStartupGate.State.CHECKED_IN, state)
+        // The Tracker withdrawing authorization revokes team access mid-session.
+        state = TrackerStartupSync.nextGateState(state, ManagedConfigFetchOutcome.Rejected)
+        assertEquals(TrackerStartupGate.State.REJECTED, state)
+        state = TrackerStartupSync.nextGateState(state, unreachable)
+        assertEquals(TrackerStartupGate.State.UNREACHABLE, state)
+    }
+
+    @Test fun personalAccountRequestsAreNeverGated() {
+        // Only team-signed operations (not naked, no personal authorization) reach the gate.
+        val session = source("data/CaltopoSession.java")
+        val guard = session.indexOf("if (!op.goNaked && op.personalAuthorization == null) {\n            // Team-signed")
+        assertTrue(guard >= 0)
+        assertTrue(session.indexOf("TrackerStartupGate.awaitTeamAccess()") > guard)
+        assertFalse(source("data/TrackerStartupGate.kt").contains("isPublicCaltopo"))
+    }
+
+    @Test fun refusedTeamAccessOpensPersonalCredentialsSignIn() {
+        val viewModel = source("ui/R2CViewModel.kt")
+        val open = viewModel.substring(viewModel.indexOf("fun openPersonalBecauseTeamRefused()"))
+        assertTrue(open.contains("CaltopoPersonalLoginMode.CREDENTIALS"))
+        assertTrue(open.contains("loadStoredPersonalCatalog()"))
+        assertTrue(viewModel.contains("gate.teamAccessRefused() -> openPersonalBecauseTeamRefused()"))
     }
 
     @Test fun deferredWorkRunsOnceWhenTheCheckInIsDecided() {
@@ -135,7 +172,7 @@ class TrackerStartupCheckInTest {
 
     @Test fun teamSignedCaltopoRequestsAndMapInitPassThroughTheGate() {
         assertTrue(source("data/CaltopoSession.java").contains("TrackerStartupGate.awaitTeamAccess("))
-        assertTrue(source("data/CaltopoMap.java").contains("TrackerStartupGate.teamAccessBlockReason(DomainAndPort)"))
+        assertTrue(source("data/CaltopoMap.java").contains("TrackerStartupGate.teamAccessBlockReason()"))
         val application = source("app/R2CApplication.kt")
         assertTrue(application.indexOf("TrackerStartupGate.beginStartupCheckIn()") <
             application.indexOf("SettingsStartup.start"))

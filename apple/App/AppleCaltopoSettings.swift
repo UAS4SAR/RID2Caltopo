@@ -365,8 +365,7 @@ final class AppleCaltopoSettings: ObservableObject {
             return
         }
         isLoadingTeamMaps = true
-        status = TrackerStartupGate.shared.teamAccessBlockReason(domainAndPort: value.domainAndPort)
-            ?? "Loading CalTopo team maps…"
+        status = TrackerStartupGate.shared.teamAccessBlockReason ?? "Loading CalTopo team maps…"
         AppleLog.info(
             "CalTopo",
             "Loading team maps domain='\(value.domainAndPort)' teamPresent=\(!value.teamID.isEmpty) credentialPresent=\(!value.credentialID.isEmpty) secretPresent=\(!value.credentialSecret.isEmpty)"
@@ -510,6 +509,28 @@ final class AppleCaltopoSettings: ObservableObject {
         }
         status = "Logged out of the CalTopo account credential."
         Task { await CaltopoPersonalSessions.shared.clear() }
+    }
+
+    /// Team access refused by the Tracker check-in: CalTopo access is the personal account
+    /// using Personal Login Support: Credentials (the CalTopo Desktop activation). A stored
+    /// credential connects now; otherwise the CalTopo activation prompt opens. Matches Android
+    /// `R2CViewModel.openPersonalBecauseTeamRefused`.
+    func openPersonalBecauseTeamRefused(_ reason: String) async {
+        AppleLog.info("CalTopo", "Team CalTopo access refused by the Tracker check-in; opening personal account sign-in")
+        status = reason
+        if personalLoginMode != .credentials {
+            setPersonalLoginMode(.credentials)
+            AppleLog.info("CalTopo", "Personal Login Support switched to Credentials for personal CalTopo access")
+        }
+        let available = await Task.detached(priority: .userInitiated) {
+            CaltopoPersonalAccountConnection.shared.reconnect(host: "caltopo.com") != nil
+        }.value
+        if available {
+            await signInWithPersonalCredential()
+        } else {
+            personalMapsStatus = reason
+            showSyncAccountPrompt = true
+        }
     }
 
     func fallBackFromMissingPersonalCredential(activeTeamProfileID: String) {

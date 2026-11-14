@@ -205,7 +205,7 @@ public actor CaltopoTeamMapClient {
     }
 
     public func fetch(now: Date = Date()) async throws -> [CaltopoTeamMapNode] {
-        try await TrackerStartupGate.shared.awaitTeamAccess(domainAndPort: configuration.domainAndPort)
+        try await TrackerStartupGate.shared.awaitTeamAccess()
         let (data, response) = try await session.data(for: makeRequest(now: now))
         guard let http = response as? HTTPURLResponse else { throw CaltopoLiveClientError.httpStatus(-1, "No HTTP response") }
         guard (200 ... 299).contains(http.statusCode) else {

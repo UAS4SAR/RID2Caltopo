@@ -61,8 +61,9 @@ object TrackerStartupSync {
     }
 
     /**
-     * Only the first check-in of a process decides team access. A later refresh that cannot
-     * reach the Tracker leaves an earlier successful check-in in place mid-session.
+     * Team access follows the Tracker's answer. A rejection revokes it. A later refresh that
+     * only fails to reach the Tracker is not a refusal, so an authorization already given in
+     * this process stays in place; unreachable before any authorization refuses team access.
      */
     @JvmStatic
     fun nextGateState(
@@ -145,7 +146,7 @@ object TrackerStartupSync {
         if (retryTask?.isDone == false) return
         val delay = nextRetryMs
         nextRetryMs = minOf(nextRetryMs * 2, BACKGROUND_RETRY_MAX_MS)
-        CaltopoClient.CTInfo(TAG, "Tracker unreachable; team CalTopo access uses the personal account. Retrying in ${delay / 1000}s.")
+        CaltopoClient.CTInfo(TAG, "Tracker unreachable; team CalTopo access refused (personal account only). Retrying in ${delay / 1000}s.")
         retryTask = worker.schedule({
             retryTask = null
             if (!CaltopoClient.IsExitRequested()) runCheckIn(context, reason = "background retry")

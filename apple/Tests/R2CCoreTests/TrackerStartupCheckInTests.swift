@@ -4,57 +4,88 @@ import Testing
 
 // Separate gate instances: the shared gate stays `.notRequired` for every other test.
 
-@Test func trackerGateHoldsTeamAccessUntilTheCheckInDecides() async throws {
+@Test func trackerGateHoldsTeamAccessUntilTheTrackerAuthorizesTheDevice() async throws {
     let gate = TrackerStartupGate()
     gate.beginStartupCheckIn()
-    #expect(gate.teamAccessBlockReason(domainAndPort: "caltopo.com") == TrackerStartupGate.waitingMessage)
-    #expect(!gate.teamAccessRefused(domainAndPort: "caltopo.com"))
-    let waiter = Task { try await gate.awaitTeamAccess(domainAndPort: "caltopo.com", maximumWait: 30) }
+    #expect(gate.teamAccessBlockReason == TrackerStartupGate.waitingMessage)
+    #expect(!gate.teamAccessRefused)
+    let waiter = Task { try await gate.awaitTeamAccess(maximumWait: 30) }
     try await Task.sleep(nanoseconds: 50_000_000)
     gate.set(.checkedIn)
     try await waiter.value
-    #expect(gate.teamAccessBlockReason(domainAndPort: "caltopo.com") == nil)
+    #expect(gate.teamAccessBlockReason == nil)
 }
 
-@Test func unreachableTrackerRefusesTeamCaltopoAndPointsToPersonal() async {
+@Test func unreachableTrackerRefusesTeamAccessOnEveryServer() async {
+    // No CalTopo Desktop exception: the Tracker regulates org team access everywhere.
     let gate = TrackerStartupGate()
     gate.beginStartupCheckIn()
-    let waiter = Task { try await gate.awaitTeamAccess(domainAndPort: "caltopo.com", maximumWait: 30) }
+    let waiter = Task { try await gate.awaitTeamAccess(maximumWait: 30) }
     try? await Task.sleep(nanoseconds: 50_000_000)
     gate.set(.unreachable)
     await #expect(throws: TrackerStartupGate.Refused(message: TrackerStartupGate.unreachableMessage)) { try await waiter.value }
-    #expect(gate.teamAccessRefused(domainAndPort: "https://caltopo.com"))
+    #expect(gate.teamAccessRefused)
     #expect(TrackerStartupGate.unreachableMessage.contains("personal CalTopo account"))
 }
 
-@Test func rejectedDeviceRefusesTeamCaltopo() async {
+@Test func rejectedDeviceIsHandledLikeADownTracker() async {
     let gate = TrackerStartupGate()
     gate.set(.rejected)
-    await #expect(throws: TrackerStartupGate.Refused.self) { try await gate.awaitTeamAccess(domainAndPort: "caltopo.com") }
-}
-
-@Test func caltopoDesktopKeepsTeamAccessAfterTheCheckInFails() async throws {
-    let gate = TrackerStartupGate()
-    gate.set(.unreachable)
-    try await gate.awaitTeamAccess(domainAndPort: "192.168.1.20:8080")
-    #expect(!gate.teamAccessRefused(domainAndPort: "192.168.1.20:8080"))
-    #expect(TrackerStartupGate.isPublicCaltopo(""))
-    #expect(TrackerStartupGate.isPublicCaltopo("sartopo.caltopo.com"))
-    #expect(!TrackerStartupGate.isPublicCaltopo("caltopo.example.org"))
+    await #expect(throws: TrackerStartupGate.Refused(message: TrackerStartupGate.rejectedMessage)) {
+        try await gate.awaitTeamAccess()
+    }
+    #expect(gate.teamAccessRefused)
 }
 
 @Test func nonOrganizationDevicesAreNeverGated() async throws {
     let gate = TrackerStartupGate()
-    try await gate.awaitTeamAccess(domainAndPort: "caltopo.com", maximumWait: 0)
+    try await gate.awaitTeamAccess(maximumWait: 0)
     #expect(gate.state == .notRequired)
+    #expect(!gate.teamAccessRefused)
 }
 
-@Test func gateWaitHasAnUpperBound() async {
+@Test func gateWaitHasAnUpperBoundAndThenRefusesTeamAccess() async {
     let gate = TrackerStartupGate()
     gate.beginStartupCheckIn()
     await #expect(throws: TrackerStartupGate.Refused(message: TrackerStartupGate.waitingMessage)) {
-        try await gate.awaitTeamAccess(domainAndPort: "caltopo.com", maximumWait: 0.05)
+        try await gate.awaitTeamAccess(maximumWait: 0.05)
     }
+}
+
+@Test func waitForDecisionReturnsOnceTheCheckInDecides() async throws {
+    let gate = TrackerStartupGate()
+    gate.beginStartupCheckIn()
+    let waiter = Task { await gate.waitForDecision(maximumWait: 30) }
+    try await Task.sleep(nanoseconds: 50_000_000)
+    gate.set(.unreachable)
+    await waiter.value
+    #expect(gate.teamAccessBlockReason == TrackerStartupGate.unreachableMessage)
+}
+
+@Test func personalAccountRequestsAreNeverGated() {
+    // Only the team credential kind reaches the gate; personal and session logins do not.
+    let personal = CaltopoLiveConfiguration(mapID: "M", credentialID: "id", credentialSecretBase64: "c2VjcmV0",
+                                            personalAccountID: "U", personalSignedAccount: true)
+    let session = CaltopoLiveConfiguration(mapID: "M", credentialID: "", credentialSecretBase64: "",
+                                           personalSessionID: UUID(), personalAccountID: "U")
+    let team = CaltopoLiveConfiguration(mapID: "M", credentialID: "id", credentialSecretBase64: "c2VjcmV0")
+    #expect(personal.credentialKind == "personal")
+    #expect(session.credentialKind == "session")
+    #expect(team.credentialKind == "team")
+}
+
+@Test func teamAccessReturnsOnlyAfterASuccessfulAuthorization() {
+    var state = TrackerStartupCheckIn.nextGateState(previous: .pending, outcome: .unreachable("timeout"))
+    #expect(state == .unreachable)
+    state = TrackerStartupCheckIn.nextGateState(previous: state, outcome: .unreachable("timeout"))
+    #expect(state == .unreachable)
+    state = TrackerStartupCheckIn.nextGateState(previous: state, outcome: .checkedIn)
+    #expect(state == .checkedIn)
+    // The Tracker withdrawing authorization revokes team access mid-session.
+    state = TrackerStartupCheckIn.nextGateState(previous: state, outcome: .rejected)
+    #expect(state == .rejected)
+    state = TrackerStartupCheckIn.nextGateState(previous: state, outcome: .unreachable("x"))
+    #expect(state == .unreachable)
 }
 
 @Test func coldTrackerIsRetriedWithBackoffBeforeFallingBack() async {

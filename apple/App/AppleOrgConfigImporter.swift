@@ -1068,6 +1068,23 @@ final class AppleOrgConfigImporter: ObservableObject {
         state = .idle
     }
 
+    /// Asks r2c-tracker whether this device is authorized, without applying the organization
+    /// configuration (another profile is active, or an import is running).
+    func authorizeWithTracker(orgSettings: AppleOrgConfigSettings) async -> TrackerCheckInOutcome {
+        do {
+            _ = try await AppleTrackerEnrollmentClient.fetchManagedOrganizationConfig(
+                trackerBaseURL: orgSettings.trackerURLPrefix, deviceToken: orgSettings.trackerAPIKey)
+            AppleLog.info("OrgConfig", "Tracker authorized this device (configuration not applied: profile or import active)")
+            return .checkedIn
+        } catch AppleTrackerEnrollmentClient.EnrollmentError.reauthenticationRequired {
+            return .rejected
+        } catch let AppleTrackerEnrollmentClient.EnrollmentError.httpStatus(status) where status == 401 || status == 403 {
+            return .rejected
+        } catch {
+            return .unreachable(error.localizedDescription)
+        }
+    }
+
     /// Retry after browser sign-in and on reopening, even before selecting a map.
     /// Returns nil when this device has no Tracker check-in to make (not enrolled,
     /// another profile active, or an import in progress).

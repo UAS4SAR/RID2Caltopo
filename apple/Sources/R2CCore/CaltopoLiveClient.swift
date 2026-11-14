@@ -1576,7 +1576,7 @@ public actor CaltopoLiveClient {
         let networkLane = lane ?? startLane
         if credential == "team", !path.hasPrefix("/api/v1/position/report/") {
             // Team-signed requests wait for this launch's Tracker check-in.
-            try await TrackerStartupGate.shared.awaitTeamAccess(domainAndPort: configuration.domainAndPort)
+            try await TrackerStartupGate.shared.awaitTeamAccess()
         }
         do {
             if let personalID = configuration.personalSessionID, let cookieURL = personalCookieURL {
