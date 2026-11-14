@@ -3260,7 +3260,7 @@ struct ContentView: View {
     /// Binds the process-wide alert coordinator (iOS counterpart of Android's
     /// AlertSpeechCoordinator). Idempotent; later calls only refresh the hooks.
     private func feedBtrxBearingPosition(_ tracks: [RidAircraftTrack]) {
-        guard deskPod.bearingOn, let stream = deskPod.steeringStreamID else { return }
+        guard deskPod.bearingOn, let stream = deskPod.bearingSteeringStreamID else { return }
         let aircraftID = AppleStreamRegistry.shared.boundAircraftID(for: stream)
         guard let track = tracks.first(where: {
             $0.aircraftID == aircraftID || $0.aircraftID.caseInsensitiveCompare(stream) == .orderedSame

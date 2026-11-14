@@ -47,6 +47,7 @@ fun BtrxBearingSection() {
     val settings by BtrxManager.bearingSettings.collectAsState()
     val trace by BtrxManager.bearingLagTrace.collectAsState()
     val snap by BtrxManager.bearing.snapshot.collectAsState()
+    val status by BtrxManager.bearing.status.collectAsState()
     Row(verticalAlignment = Alignment.CenterVertically) {
         Text(BtrxBearingText.LAYER_SWITCH, Modifier.weight(1f))
         Switch(checked = on, onCheckedChange = { BtrxManager.setBearingOn(it) })
@@ -76,7 +77,13 @@ fun BtrxBearingSection() {
         Text(BtrxBearingText.LAG_TRACE, Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
         Switch(checked = trace, onCheckedChange = { BtrxManager.setBearingLagTrace(it) })
     }
+    if (on) status?.line?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
     val s = snap
+    // Counters also before the first snapshot (no drone pose yet), from the status copy.
+    if (on && s == null) status?.stats?.let { st ->
+        Text(BtrxBearingText.countsLine(st), style = MaterialTheme.typography.bodySmall)
+        Text(BtrxBearingText.clockLine(st), style = MaterialTheme.typography.bodySmall)
+    }
     if (on && s != null) {
         Text(BtrxBearingText.countsLine(s.stats), style = MaterialTheme.typography.bodySmall)
         Text(BtrxBearingText.clockLine(s.stats), style = MaterialTheme.typography.bodySmall)
@@ -96,10 +103,19 @@ fun BtrxBearingSection() {
 fun BtrxBearingStatusLines() {
     val on by BtrxManager.bearingOn.collectAsState()
     val snap by BtrxManager.bearing.snapshot.collectAsState()
-    val s = snap
-    if (on && s != null) {
-        Text(BtrxBearingText.lostLine(s.stats))
-        Text(BtrxBearingText.lagLine(s.stats), style = MaterialTheme.typography.bodySmall)
+    val status by BtrxManager.bearing.status.collectAsState()
+    val st = snap?.stats ?: status?.stats
+    if (on && st != null) {
+        Text(BtrxBearingText.lostLine(st))
+        Text(BtrxBearingText.lagLine(st), style = MaterialTheme.typography.bodySmall)
+    }
+}
+
+/** Map status (field test, Nov 13): why the bearing layer draws nothing. Not tappable. */
+@Composable
+fun BtrxBearingStatusChip(line: String, modifier: Modifier = Modifier) {
+    Surface(modifier.widthIn(max = 560.dp), shape = RoundedCornerShape(8.dp), color = Color(0xE6202020), contentColor = Color.White) {
+        Text(line, Modifier.padding(horizontal = 10.dp, vertical = 6.dp), style = MaterialTheme.typography.bodySmall)
     }
 }
 

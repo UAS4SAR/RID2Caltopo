@@ -1589,6 +1589,25 @@ Platform boundary (section 7), same on Android and iPad:
 - The layer switch is not saved (off at every launch); fade settings and lag
   trace are saved (Android prefs `bearing_*`, iPad `btrx.bearing.*`).
 
+Field test fixes (November 13, 2026, evening):
+- Pose stream: with exactly one live stream, that stream carries the Drone Pod
+  (`BtrxSteeringTarget.effective`); the "Drone Pod is on this drone" pick is
+  needed only when several streams are live. Before this, one live stream left
+  the layer with no designator, so every yaw and position was rejected.
+- `btrx_bearing_stats_copy()`: the counters are copied out at least once per
+  publish interval even when no snapshot is published (no pose yet), so the
+  apps can say why nothing is drawn.
+- Map status chip (top centre, main map only, not tappable) while the layer is
+  on and draws nothing: first reason of no reports / no drone video / pick the
+  stream / no SEI heading / no RID position / all hidden / nothing placed /
+  too faint, plus the report counts. Same text on both apps.
+- Double tap on the main map opens the Desk Pod view while the Desk Pod link is
+  ready and a frame arrived in the last 10 s; otherwise the double tap zooms as
+  before. Other tap rules unchanged.
+- Android logs the bearing layer at debug (info lines are dropped at the
+  default log level).
+- A drone on the ground (AGL 0) is placed: the library clamps AGL to 1 m.
+
 Bench checks still open (need builds 0x0103 / 0x0104 flashed): 34-byte HEALTH
 lost count, TIME_PONG offset, STEER extras, hover-yaw ridge on real data, tap
 routing, mute/unmute, fade sliders, lag trace through `lag_report.py`.

@@ -473,6 +473,12 @@ struct BtrxBearingSection: View {
             }
             Toggle(BtrxBearingText.lagTrace, isOn: Binding(get: { center.bearingLagTrace }, set: { center.setBearingLagTrace($0) }))
                 .font(.footnote)
+            if center.bearingOn, let line = center.bearingStatus?.line { Text(line).font(.footnote).foregroundStyle(.red) }
+            // Counters also before the first snapshot (no drone pose yet), from the status copy.
+            if center.bearingOn, center.bearingSnapshot == nil, let st = center.bearingStatus?.stats {
+                Text(BtrxBearingText.countsLine(st)).font(.footnote)
+                Text(BtrxBearingText.clockLine(st)).font(.footnote)
+            }
             if center.bearingOn, let snap = center.bearingSnapshot {
                 Text(BtrxBearingText.countsLine(snap.stats)).font(.footnote)
                 Text(BtrxBearingText.clockLine(snap.stats)).font(.footnote)
@@ -495,9 +501,9 @@ struct BtrxBearingStatusLines: View {
     @ObservedObject var center: BtrxDeskPodCenter
 
     var body: some View {
-        if center.bearingOn, let snap = center.bearingSnapshot {
-            Text(BtrxBearingText.lostLine(snap.stats))
-            Text(BtrxBearingText.lagLine(snap.stats)).font(.footnote)
+        if center.bearingOn, let st = center.bearingSnapshot?.stats ?? center.bearingStatus?.stats {
+            Text(BtrxBearingText.lostLine(st))
+            Text(BtrxBearingText.lagLine(st)).font(.footnote)
         }
     }
 }

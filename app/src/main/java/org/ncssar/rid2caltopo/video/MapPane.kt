@@ -975,6 +975,13 @@ internal fun SplitMapPane(
             onSourcesTapped = { keys, x, y -> btrxPanel = keys to androidx.compose.ui.unit.IntOffset(x.toInt(), y.toInt()) },
         )
     }
+    val btrxDoubleTapOverlay = remember {
+        object : Overlay() {
+            override fun onDoubleTap(e: MotionEvent?, mapView: MapView?): Boolean =
+                org.ncssar.rid2caltopo.btrx.BtrxManager.openDeskPodScreenFromMap()
+        }
+    }
+    val btrxBearingStatus by org.ncssar.rid2caltopo.btrx.BtrxManager.bearing.status.collectAsState()
     LaunchedEffect(btrxBearingOn) {
         if (!btrxBearingOn) {
             btrxOverlay.show(null, null)
@@ -3540,7 +3547,10 @@ internal fun SplitMapPane(
                             override fun onDown(event: MotionEvent): Boolean = true
 
                             override fun onDoubleTap(event: MotionEvent): Boolean {
-                                operatorMapGestureHandler(OperatorMapGesture.Zoom)
+                                // A double tap that opens the Desk Pod screen does not zoom.
+                                if (isInsetMode || !org.ncssar.rid2caltopo.btrx.BtrxManager.deskPodTalking()) {
+                                    operatorMapGestureHandler(OperatorMapGesture.Zoom)
+                                }
                                 return false
                             }
                         }
@@ -3802,6 +3812,12 @@ internal fun SplitMapPane(
                 )
                 mapView.overlays.add(tapOverlay)
                 managedOverlays.add(tapOverlay)
+                // Double tap opens the Desk Pod screen while the Desk Pod is talking; otherwise
+                // it falls through to osmdroid's zoom. Single taps are untouched.
+                if (!isInsetMode) {
+                    mapView.overlays.add(btrxDoubleTapOverlay)
+                    managedOverlays.add(btrxDoubleTapOverlay)
+                }
 
                 if (contourOverlayEnabled) {
                     val contourOverlay = TilesOverlay(contourTileMapProvider, context).apply {
@@ -4938,6 +4954,14 @@ internal fun SplitMapPane(
                 mapView.invalidate()
             }
         )
+
+        // Why the bearing layer draws nothing (no drone pose, no reports, ...); hidden while it draws.
+        if (btrxBearingOn && !isInsetMode) btrxBearingStatus?.line?.let { line ->
+            org.ncssar.rid2caltopo.ui.BtrxBearingStatusChip(
+                line = line,
+                modifier = Modifier.align(Alignment.TopCenter).padding(top = 8.dp, start = 56.dp, end = 56.dp),
+            )
+        }
 
         btrxPanel?.let { (keys, at) ->
             org.ncssar.rid2caltopo.ui.BtrxBearingPanel(

@@ -547,12 +547,34 @@ btrx_bearing_status_t btrx_bearing_tick(btrx_bearing_t *h, int64_t now, bool *pu
     bool any_data = false;
     for (int32_t i = 0; i < h->cfg.max_sources && !any_data; i++) if (h->sources[i].used) any_data = true;
     bool due = now - h->last_publish_us >= (int64_t)h->cfg.publish_interval_ms * 1000 || h->snap_seq == 0;
+    bool did_publish = false;
     if (h->have_view && (h->force_publish || (due && (h->dirty || any_data)))) {
         bb_publish(h, now);
+        did_publish = true;
         if (published) *published = true;
+    }
+    /* Stats for the platform's status line, also while no view exists yet (no
+     * drone position), when nothing can be published (field test, Nov 13). */
+    if (did_publish || !h->stats_pub_valid
+            || now - h->last_stats_us >= (int64_t)h->cfg.publish_interval_ms * 1000) {
+        if (!did_publish) bb_fill_stats(h, now);
+        pthread_mutex_lock(&h->snap_mu);
+        h->stats_pub = h->stats;
+        h->stats_pub_valid = true;
+        pthread_mutex_unlock(&h->snap_mu);
+        h->last_stats_us = now;
     }
     pthread_mutex_unlock(&h->work_mu);
     return BTRX_BEARING_OK;
+}
+
+btrx_bearing_status_t btrx_bearing_stats_copy(btrx_bearing_t *h, btrx_bearing_stats_t *out) {
+    if (!h || !out) return BTRX_BEARING_E_INVALID;
+    pthread_mutex_lock(&h->snap_mu);
+    bool ok = h->stats_pub_valid;
+    if (ok) *out = h->stats_pub;
+    pthread_mutex_unlock(&h->snap_mu);
+    return ok ? BTRX_BEARING_OK : BTRX_BEARING_E_NO_SNAPSHOT;
 }
 
 /* ---------- own worker ---------- */

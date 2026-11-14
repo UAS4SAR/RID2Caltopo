@@ -26,6 +26,12 @@ interface BtrxBearingEngine {
     fun tick(handle: Long, nowUs: Long): Int
     /** Source count, or a negative status (-6 before the first publish). Layout: [BtrxBearingNative] META_*. */
     fun copySnapshot(handle: Long, rgba: ByteBuffer, keys: LongArray, shortIds: ByteArray, meta: DoubleArray): Int
+    /**
+     * The latest stats into [out] (size [BtrxBearingNative.STATS_SIZE], the layout of meta at
+     * META_STATS), refreshed by tick about once a second even before the first snapshot.
+     * 0, or -6 before the first tick.
+     */
+    fun copyStats(handle: Long, out: DoubleArray): Int
     /** Indexes into the last copied snapshot's sources, by contribution; returns the count. */
     fun sourcesAt(handle: Long, lat: Double, lon: Double, radiusM: Float, out: IntArray): Int
     fun halfStrengthS(totalS: Float, shapeP: Float): Float
@@ -39,6 +45,7 @@ object BtrxBearingNative : BtrxBearingEngine {
     const val META_SOURCES = 116
     const val META_PER_SOURCE = 40
     const val META_SIZE = META_SOURCES + META_PER_SOURCE * MAX_SOURCES
+    const val STATS_SIZE = META_SOURCES - META_STATS
     const val STAGE_COUNT = 10
 
     const val POSE_POSITION = 1
@@ -76,6 +83,7 @@ object BtrxBearingNative : BtrxBearingEngine {
     override fun tick(handle: Long, nowUs: Long) = nativeTick(handle, nowUs)
     override fun copySnapshot(handle: Long, rgba: ByteBuffer, keys: LongArray, shortIds: ByteArray, meta: DoubleArray) =
         nativeCopySnapshot(handle, rgba, keys, shortIds, meta)
+    override fun copyStats(handle: Long, out: DoubleArray) = nativeCopyStats(handle, out)
     override fun sourcesAt(handle: Long, lat: Double, lon: Double, radiusM: Float, out: IntArray) = nativeSourcesAt(handle, lat, lon, radiusM, out)
     override fun halfStrengthS(totalS: Float, shapeP: Float): Float =
         if (available) nativeHalfStrengthS(totalS, shapeP) else BtrxBearingSettings.halfStrengthFallbackS(totalS, shapeP)
@@ -96,6 +104,7 @@ object BtrxBearingNative : BtrxBearingEngine {
     private external fun nativeReset(handle: Long, what: Int, key: Long): Int
     private external fun nativeTick(handle: Long, nowUs: Long): Int
     private external fun nativeCopySnapshot(handle: Long, rgba: ByteBuffer, keys: LongArray, shortIds: ByteArray, meta: DoubleArray): Int
+    private external fun nativeCopyStats(handle: Long, out: DoubleArray): Int
     private external fun nativeSourcesAt(handle: Long, lat: Double, lon: Double, radiusM: Float, out: IntArray): Int
     private external fun nativeHalfStrengthS(totalS: Float, shapeP: Float): Float
     private external fun nativeDrainLog(handle: Long): String?

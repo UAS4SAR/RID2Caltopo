@@ -59,9 +59,15 @@ class BtrxBearingLayerTest {
                 meta[o + 1] = 1.0; meta[o + 2] = 230.0; meta[o + 3] = 159.0; meta[o + 4] = 0.0
                 meta[o + 5] = if (i == 1) BtrxBearingNative.SRC_MUTED.toDouble() else 0.0
                 meta[o + 10] = 23.0
+                if (i == 0) meta[o + 12] = 0.5
                 if (i == 0) { meta[o + 13] = 1.0; meta[o + 15] = 37.005; meta[o + 16] = -121.995; meta[o + 17] = 9f.toDouble() }
             }
             return 2
+        }
+        var stats: DoubleArray? = null
+        override fun copyStats(handle: Long, out: DoubleArray): Int {
+            val st = stats ?: return BtrxBearingNative.E_NO_SNAPSHOT
+            st.copyInto(out); return 0
         }
         override fun sourcesAt(handle: Long, lat: Double, lon: Double, radiusM: Float, out: IntArray): Int {
             sourcesAtResult.copyInto(out); return sourcesAtResult.size
@@ -240,5 +246,63 @@ class BtrxBearingLayerTest {
         assertEquals("Accelerating", BtrxBearingSettings.shapeLabel(4f))
         assertEquals("half strength at 5:00", BtrxBearingText.halfStrength(300f))
         assertEquals("12 s ago", BtrxBearingText.lastHeard(13_000_000L, 1_000_000L))
+    }
+
+    // ---- field test Nov 13: status line, pose stream ----
+
+    private fun statsArray(reportsIn: Int, used: Int, noHeading: Int, noPosition: Int) =
+        DoubleArray(BtrxBearingNative.STATS_SIZE).also { it[0] = reportsIn.toDouble(); it[2] = used.toDouble(); it[4] = noHeading.toDouble(); it[5] = noPosition.toDouble(); it[24] = 1.0 }
+
+    @Test fun statusExplainsMissingPoseBeforeAnySnapshot() {
+        val e = FakeEngine()
+        val l = layer(e)
+        l.start(BtrxBearingSettings(), false, true)
+        e.stats = statsArray(12, 0, 7, 5)
+        l.steeringDesignator = null
+        l.liveStreamCount = 1
+        l.onFrame(frame(P.STEER, ByteArray(28)), meta(), fromPairedPod = true, fromDeskPod = false)
+        tickAt(l, now + 200_000L)
+        val st = l.status.value!!
+        assertEquals(12, st.stats!!.reportsIn)
+        assertTrue(st.line!!, st.line!!.startsWith("Bearing layer: on the stream of the drone carrying the Drone Pod"))
+        assertTrue(st.line!!.endsWith("Reports 12: placed 0, no heading 7, no position 5, late 0, gated 0"))
+        // A stream is now the pose stream, but no SEI yaw has come in.
+        l.steeringDesignator = "1sar7djmtrc4td"
+        tickAt(l, now + 1_100_000L)
+        assertTrue(l.status.value!!.line!!.startsWith("Bearing layer: no heading from 1sar7djmtrc4td video (DJI SEI)"))
+        // Yaw arrives (case-insensitive designator), then position: the next reason is "no report placed yet".
+        l.onYaw("1SAR7DjMtrc4td", 90.0, wall)
+        tickAt(l, now + 1_100_000L)
+        assertTrue(l.status.value!!.line!!.startsWith("Bearing layer: no Remote ID position for 1sar7djmtrc4td"))
+        l.onPosition("1sar7DjMtrc4td", 39.153047, -121.132901, wall)
+        tickAt(l, now + 1_100_000L)
+        assertTrue(l.status.value!!.line!!.startsWith("Bearing layer: no report placed yet"))
+        // Shading on screen: no status line.
+        e.publish = true
+        tickAt(l, now + 1_100_000L)
+        assertNull(l.status.value!!.line)
+        l.stop()
+        assertNull(l.status.value)
+    }
+
+    @Test fun statusReasonsInOrder() {
+        fun line(steer: Float? = 1f, d: String? = "A", live: Int = 1, yaw: Float? = 0.1f, pos: Float? = 0.5f, drawing: Boolean = false, hidden: Boolean = false) =
+            BtrxBearingText.statusLine(BtrxBearingStatusInput(null, d, live, steer, yaw, pos, drawing, hidden))
+        assertNull(line(drawing = true))
+        assertEquals("Bearing layer: no reports from the paired Drone Pod", line(steer = null))
+        assertEquals("Bearing layer: no reports from the paired Drone Pod", line(steer = 11f))
+        assertTrue(line(d = null, live = 0)!!.startsWith("Bearing layer: no drone video."))
+        assertEquals("Bearing layer: no heading from A video (DJI SEI)", line(yaw = 3.5f))
+        assertEquals("Bearing layer: no Remote ID position for A", line(pos = null))
+        assertEquals("Bearing layer: every source with shading is hidden", line(hidden = true))
+        assertEquals("Bearing layer: no report placed yet", line())
+    }
+
+    @Test fun effectivePoseStream() {
+        assertEquals("A", BtrxSteeringTarget.effective(null, setOf("A")))
+        assertNull(BtrxSteeringTarget.effective(null, setOf("A", "B")))
+        assertEquals("B", BtrxSteeringTarget.effective("B", setOf("A", "B")))
+        assertEquals("A", BtrxSteeringTarget.effective("C", setOf("A")))
+        assertNull(BtrxSteeringTarget.effective("C", emptySet()))
     }
 }

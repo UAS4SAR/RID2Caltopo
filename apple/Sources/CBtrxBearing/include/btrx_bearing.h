@@ -311,6 +311,11 @@ typedef struct {
     btrx_bearing_stats_t stats;
 } btrx_bearing_snapshot_t;
 
+/* Copy of the latest stats, refreshed by tick at the publish interval even
+ * before the first snapshot (no drone position yet), so a platform can say why
+ * nothing is drawn. Any thread. E_NO_SNAPSHOT before the first tick. */
+btrx_bearing_status_t btrx_bearing_stats_copy(btrx_bearing_t *h, btrx_bearing_stats_t *out);
+
 /* Valid until release; acquire again only after release. NULL before the first publish. */
 const btrx_bearing_snapshot_t *btrx_bearing_snapshot_acquire(btrx_bearing_t *h);
 void btrx_bearing_snapshot_release(btrx_bearing_t *h, const btrx_bearing_snapshot_t *s);

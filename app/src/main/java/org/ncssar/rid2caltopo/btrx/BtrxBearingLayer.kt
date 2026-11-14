@@ -107,6 +107,27 @@ class BtrxBearingSnapshot(
 )
 
 /**
+ * Why the layer draws nothing (field test, Nov 13): [line] is the short map status, null
+ * while shading is on screen; [stats] are the library counters (also before the first
+ * snapshot, when no drone pose exists yet).
+ */
+data class BtrxBearingStatus(val line: String?, val stats: BtrxBearingStats?)
+
+/** Inputs of [BtrxBearingText.statusLine], the same on the iPad. Ages in seconds, null = never. */
+data class BtrxBearingStatusInput(
+    val stats: BtrxBearingStats?,
+    val designator: String?,
+    val liveStreams: Int,
+    val steerAgeS: Float?,
+    val yawAgeS: Float?,
+    val positionAgeS: Float?,
+    /** Unmuted shading is on screen. */
+    val drawing: Boolean,
+    /** Shading exists but every source with it is hidden (muted or ignored). */
+    val allHidden: Boolean,
+)
+
+/**
  * Android boundary of the BTRX bearing layer (spec sections 3 and 7): owns the native
  * handle, stamps and pushes inputs, drives `tick` from the BTRX worker every 200 ms,
  * schedules TIME_PING, and publishes snapshots for the map overlay. Same surface as the
@@ -137,6 +158,18 @@ class BtrxBearingLayer(
     val snapshot: StateFlow<BtrxBearingSnapshot?> = _snapshot.asStateFlow()
     @Volatile var lastError: String? = null
         private set
+    private val _status = MutableStateFlow<BtrxBearingStatus?>(null)
+    /** Map status line and counters, refreshed about once a second while the layer is on. */
+    val status: StateFlow<BtrxBearingStatus?> = _status.asStateFlow()
+    /** Live (non-playback) stream count, for the status line (worker, each tick). */
+    @Volatile var liveStreamCount = 0
+
+    // Host times (us) of the last STEER from the paired pod, yaw and position accepted; 0 = never.
+    @Volatile private var lastSteerUs = 0L
+    @Volatile private var lastYawUs = 0L
+    @Volatile private var lastPositionUs = 0L
+    private var nextStatusUs = 0L
+    private val statsBuf = DoubleArray(BtrxBearingNative.STATS_SIZE)
 
     private val aglByDesignator = ConcurrentHashMap<String, Pair<Float, Long>>()
 
@@ -182,6 +215,7 @@ class BtrxBearingLayer(
         lastPodSession = -1L
         lastRenderedSeq = -1L
         pingT1Ms.fill(-1L)
+        lastSteerUs = 0L; lastYawUs = 0L; lastPositionUs = 0L; nextStatusUs = 0L
         val now = monoUs()
         if (linkUp) engine.noteConnected(h, now)
         startBurst(now)
@@ -198,6 +232,7 @@ class BtrxBearingLayer(
         handleLock.write { handle = 0L }
         engine.destroy(h)
         synchronized(snapLock) { _snapshot.value = null }
+        _status.value = null
         _running.value = false
         burstLeft = 0
         nextPingUs = Long.MAX_VALUE
@@ -233,6 +268,7 @@ class BtrxBearingLayer(
         val arrivalUs = hostUsOfWall(meta.arrivalMs, now, MAX_ARRIVAL_BACK_MS)
         when (frame.type) {
             P.STEER -> if (fromPairedPod) withHandle(Unit) { h ->
+                if (!meta.backlog) lastSteerUs = now
                 val st = engine.pushSteer(h, frame.payload, arrivalUs, now, meta.backlog, lagTrace)
                 if (st < 0 && st != E_LATE) log("bearing: STEER not used (status $st)")
             }
@@ -276,6 +312,7 @@ class BtrxBearingLayer(
         val now = monoUs()
         val t = hostUsOfWall(decodedAtWallMs, now, MAX_YAW_BACK_MS)
         withHandle(Unit) { h -> engine.pushPose(h, t, now, BtrxBearingNative.POSE_YAW, 0.0, 0.0, 0f, yawTrueDeg.toFloat()) }
+        lastYawUs = now
         if (lagTrace) traceLog("BBv1 P $t ${BtrxBearingNative.POSE_YAW} 0 0 0 ${"%.3f".format(Locale.US, yawTrueDeg)} 0 0")
     }
 
@@ -295,6 +332,7 @@ class BtrxBearingLayer(
         val agl = aglByDesignator[designator.trim().uppercase()]?.takeIf { now - it.second <= AGL_MAX_AGE_US }?.first
         if (agl != null) mask = mask or BtrxBearingNative.POSE_AGL
         withHandle(Unit) { h -> engine.pushPose(h, t, now, mask, lat, lon, agl ?: 0f, 0f) }
+        lastPositionUs = now
         if (lagTrace) traceLog("BBv1 P $t $mask ${"%.7f".format(Locale.US, lat)} ${"%.7f".format(Locale.US, lon)} ${agl ?: 0f} 0 0 0")
     }
 
@@ -315,6 +353,10 @@ class BtrxBearingLayer(
         val now = monoUs()
         val r = withHandle(0) { h -> engine.tick(h, now) }
         if (r == 1) copySnapshot()
+        if (now >= nextStatusUs) {
+            nextStatusUs = now + STATUS_INTERVAL_US
+            updateStatus(now)
+        }
         withHandle(null) { h -> engine.drainLog(h) }?.let { lines -> lines.split('\n').forEach(traceLog) }
         if (now >= nextPingUs) {
             val seq = pingSeq
@@ -328,6 +370,25 @@ class BtrxBearingLayer(
             burstLeft = (burstLeft - 1).coerceAtLeast(0)
             nextPingUs = now + if (burstLeft > 0) PING_BURST_SPACING_US else PING_INTERVAL_US
         }
+    }
+
+    private fun ageS(t: Long, now: Long): Float? = if (t == 0L) null else (now - t).coerceAtLeast(0L) / 1e6f
+
+    /** Worker, about once a second: the map status line from the stats and the pose feeds. */
+    private fun updateStatus(now: Long) {
+        val stats = if (withHandle(-1) { h -> engine.copyStats(h, statsBuf) } == 0) decodeStats(statsBuf, 0) else _snapshot.value?.stats
+        val snap = _snapshot.value
+        val shaded = snap?.sources?.filter { it.peakAlpha > 0f }.orEmpty()
+        val drawing = shaded.any { !it.muted && !it.ignored }
+        val input = BtrxBearingStatusInput(
+            stats = stats, designator = steeringDesignator, liveStreams = liveStreamCount,
+            steerAgeS = ageS(lastSteerUs, now), yawAgeS = ageS(lastYawUs, now), positionAgeS = ageS(lastPositionUs, now),
+            drawing = drawing, allHidden = shaded.isNotEmpty() && !drawing,
+        )
+        val next = BtrxBearingStatus(BtrxBearingText.statusLine(input), stats)
+        val prev = _status.value
+        if (prev?.line != next.line) log("bearing: status ${next.line?.replace('\n', ' ') ?: "drawing"}")
+        _status.value = next
     }
 
     private fun copySnapshot() {
@@ -345,21 +406,13 @@ class BtrxBearingLayer(
         }
     }
 
-    private fun decode(buf: ByteBuffer, count: Int): BtrxBearingSnapshot {
-        val m = meta
-        val w = m[2].toInt()
-        val ht = m[3].toInt()
-        val rgba = ByteArray(w * ht * 4)
-        buf.position(0)
-        buf.get(rgba, 0, minOf(rgba.size, buf.capacity()))
-        buf.position(0)
-        val q = BtrxBearingNative.META_STATS
+    private fun decodeStats(m: DoubleArray, q: Int): BtrxBearingStats {
         fun st(i: Int) = m[q + i]
         val lag = (0 until BtrxBearingNative.STAGE_COUNT).map { k ->
             val o = 27 + 6 * k
             BtrxBearingLag(st(o).toInt(), st(o + 1).toInt(), st(o + 2).toInt(), st(o + 3).toInt(), st(o + 4).toInt(), st(o + 5).toInt())
         }
-        val stats = BtrxBearingStats(
+        return BtrxBearingStats(
             reportsIn = st(0).toInt(), entriesIn = st(1).toInt(), used = st(2).toInt(), gated = st(3).toInt(),
             noHeading = st(4).toInt(), noPosition = st(5).toInt(), lateDropped = st(6).toInt(), ringDropped = st(7).toInt(),
             bucketsExpiredEarly = st(8).toInt(), ignored = st(9).toInt(), backlogHistory = st(10).toInt(),
@@ -369,6 +422,17 @@ class BtrxBearingLayer(
             podOffsetMs = st(22).toInt(), podOffsetErrMs = st(23).toInt(), offsetSource = st(24).toInt(), podSession = st(25).toLong(),
             displayLagMs = st(26).toInt(), lag = lag,
         )
+    }
+
+    private fun decode(buf: ByteBuffer, count: Int): BtrxBearingSnapshot {
+        val m = meta
+        val w = m[2].toInt()
+        val ht = m[3].toInt()
+        val rgba = ByteArray(w * ht * 4)
+        buf.position(0)
+        buf.get(rgba, 0, minOf(rgba.size, buf.capacity()))
+        buf.position(0)
+        val stats = decodeStats(m, BtrxBearingNative.META_STATS)
         val sources = (0 until count.coerceAtMost(BtrxBearingNative.MAX_SOURCES)).map { i ->
             val o = BtrxBearingNative.META_SOURCES + BtrxBearingNative.META_PER_SOURCE * i
             fun v(j: Int) = m[o + j]
@@ -448,6 +512,7 @@ class BtrxBearingLayer(
         const val PING_BURST_SPACING_US = 1_000_000L
         const val PING_INTERVAL_US = 30_000_000L
         const val MAX_PONG_RTT_US = 10_000_000L
+        const val STATUS_INTERVAL_US = 1_000_000L
         private const val MAX_ARRIVAL_BACK_MS = 2_000L
         private const val MAX_YAW_BACK_MS = 2_000L
         private const val MAX_POS_BACK_MS = 3_000L
@@ -530,6 +595,35 @@ object BtrxBearingText {
 
     fun countsLine(st: BtrxBearingStats): String =
         "Reports ${st.reportsIn}: used ${st.used}, gated ${st.gated}, no heading ${st.noHeading}, no position ${st.noPosition}"
+
+    /** Older than this, the input counts as missing in the status line. */
+    const val STATUS_STEER_STALE_S = 10f
+    const val STATUS_YAW_STALE_S = 3f
+    const val STATUS_POSITION_STALE_S = 5f
+
+    /**
+     * Map status while the layer is on and draws nothing (field test, Nov 13): the first
+     * missing input, then the report counts; null while shading is on screen.
+     */
+    fun statusLine(i: BtrxBearingStatusInput): String? {
+        if (i.drawing) return null
+        fun stale(age: Float?, limit: Float) = age == null || age > limit
+        val reason = when {
+            stale(i.steerAgeS, STATUS_STEER_STALE_S) -> "Bearing layer: no reports from the paired Drone Pod"
+            i.designator == null && i.liveStreams == 0 ->
+                "Bearing layer: no drone video. The heading comes from the live stream of the drone carrying the Drone Pod"
+            i.designator == null -> "Bearing layer: on the stream of the drone carrying the Drone Pod, tap \"Drone Pod is on this drone\""
+            stale(i.yawAgeS, STATUS_YAW_STALE_S) -> "Bearing layer: no heading from ${i.designator} video (DJI SEI)"
+            stale(i.positionAgeS, STATUS_POSITION_STALE_S) -> "Bearing layer: no Remote ID position for ${i.designator}"
+            i.allHidden -> "Bearing layer: every source with shading is hidden"
+            (i.stats?.used ?: 0) == 0 -> "Bearing layer: no report placed yet"
+            else -> "Bearing layer: shading still too faint to show"
+        }
+        val st = i.stats ?: return reason
+        if (st.reportsIn == 0) return reason
+        return reason + "\nReports ${st.reportsIn}: placed ${st.used}, no heading ${st.noHeading}, " +
+            "no position ${st.noPosition}, late ${st.lateDropped}, gated ${st.gated}"
+    }
 
     fun clockLine(st: BtrxBearingStats): String = when (st.offsetSource) {
         2 -> "Pod clock: TIME_PONG, ±${st.podOffsetErrMs} ms"

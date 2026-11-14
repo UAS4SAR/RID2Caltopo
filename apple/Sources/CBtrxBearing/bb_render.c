@@ -23,6 +23,20 @@ void bb_view_update(btrx_bearing_t *h, double e, double n) {
     h->have_view = true;
 }
 
+/* Derived stats fields and lag percentiles (worker, under work_mu). */
+void bb_fill_stats(btrx_bearing_t *h, int64_t now_us) {
+    h->stats.tiles_in_use = (uint32_t)h->tiles_in_use;
+    h->stats.tiles_total = (uint32_t)h->cfg.tile_pool_tiles;
+    h->stats.fade_total_s = h->fade_total_s;
+    h->stats.fade_shape_p = h->fade_shape_p;
+    h->stats.pod_offset_ms = h->clock.have ? (int32_t)(h->clock.off_us / 1000) : 0;
+    h->stats.pod_offset_err_ms = h->clock.err_ms;
+    h->stats.offset_source = h->clock.source;
+    h->stats.pod_session = h->clock.session;
+    h->stats.display_lag_ms = h->newest_used_t_us ? (int32_t)((now_us - h->newest_used_t_us) / 1000) : -1;
+    bb_lag_stats(h, &h->stats);
+}
+
 void bb_publish(btrx_bearing_t *h, int64_t now_us) {
     int32_t W = h->cfg.grid_cells;
     size_t N = (size_t)W * (size_t)W;
@@ -112,19 +126,9 @@ void bb_publish(btrx_bearing_t *h, int64_t now_us) {
     }
 
     /* stats */
-    h->stats.tiles_in_use = (uint32_t)h->tiles_in_use;
-    h->stats.tiles_total = (uint32_t)h->cfg.tile_pool_tiles;
-    h->stats.fade_total_s = h->fade_total_s;
-    h->stats.fade_shape_p = h->fade_shape_p;
-    h->stats.pod_offset_ms = h->clock.have ? (int32_t)(h->clock.off_us / 1000) : 0;
-    h->stats.pod_offset_err_ms = h->clock.err_ms;
-    h->stats.offset_source = h->clock.source;
-    h->stats.pod_session = h->clock.session;
-    h->stats.display_lag_ms = h->newest_used_t_us ? (int32_t)((now_us - h->newest_used_t_us) / 1000) : -1;
-    h->stats.ring_dropped += 0;
     h->snap_seq = pub->seq;
     bb_lag_published(h, pub->seq, now_us);
-    bb_lag_stats(h, &h->stats);
+    bb_fill_stats(h, now_us);
     pub->stats = h->stats;
 
     pthread_mutex_lock(&h->snap_mu);

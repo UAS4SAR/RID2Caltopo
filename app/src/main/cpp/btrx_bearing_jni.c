@@ -232,13 +232,9 @@ JNIEXPORT jint JNICALL JFN(nativeTick)(JNIEnv *env, jobject self, jlong handle, 
     return published ? 1 : 0;
 }
 
-static void bbn_meta(const btrx_bearing_snapshot_t *s, double *m) {
-    memset(m, 0, sizeof(double) * BBN_META_SIZE);
-    m[0] = (double)s->seq; m[1] = (double)s->t_us; m[2] = s->width; m[3] = s->height;
-    m[4] = s->north_deg; m[5] = s->south_deg; m[6] = s->east_deg; m[7] = s->west_deg;
-    m[8] = s->source_count;
-    const btrx_bearing_stats_t *t = &s->stats;
-    double *q = m + BBN_META_STATS;
+/* Stats as doubles (BBN_STATS_COUNT); the same layout at meta[BBN_META_STATS] and in copyStats. */
+#define BBN_STATS_COUNT (BBN_META_SOURCES - BBN_META_STATS)
+static void bbn_stats(const btrx_bearing_stats_t *t, double *q) {
     int i = 0;
     q[i++] = t->reports_in; q[i++] = t->entries_in; q[i++] = t->used; q[i++] = t->gated;
     q[i++] = t->no_heading; q[i++] = t->no_position; q[i++] = t->late_dropped; q[i++] = t->ring_dropped;
@@ -252,6 +248,14 @@ static void bbn_meta(const btrx_bearing_snapshot_t *s, double *m) {
         q[i++] = t->lag[k].count; q[i++] = t->lag[k].p50_ms; q[i++] = t->lag[k].p90_ms;
         q[i++] = t->lag[k].p99_ms; q[i++] = t->lag[k].max_ms; q[i++] = t->lag[k].late_drops;
     }
+}
+
+static void bbn_meta(const btrx_bearing_snapshot_t *s, double *m) {
+    memset(m, 0, sizeof(double) * BBN_META_SIZE);
+    m[0] = (double)s->seq; m[1] = (double)s->t_us; m[2] = s->width; m[3] = s->height;
+    m[4] = s->north_deg; m[5] = s->south_deg; m[6] = s->east_deg; m[7] = s->west_deg;
+    m[8] = s->source_count;
+    bbn_stats(&s->stats, m + BBN_META_STATS);
     for (int k = 0; k < s->source_count && k < BTRX_BEARING_MAX_SOURCES; k++) {
         const btrx_bearing_source_t *src = &s->sources[k];
         double *o = m + BBN_META_SOURCES + BBN_META_PER_SOURCE * k;
@@ -315,6 +319,25 @@ JNIEXPORT jint JNICALL JFN(nativeCopySnapshot)(JNIEnv *env, jobject self, jlong 
     bbn_meta(c, m);
     (*env)->SetDoubleArrayRegion(env, meta, 0, BBN_META_SIZE, m);
     return c->source_count;
+}
+
+/*
+ * Any thread: the latest stats (refreshed by tick about once a second, also before the
+ * first snapshot) into out (DoubleArray >= BBN_STATS_COUNT, same layout as meta[16..]).
+ * 0, or -6 before the first tick.
+ */
+JNIEXPORT jint JNICALL JFN(nativeCopyStats)(JNIEnv *env, jobject self, jlong handle, jdoubleArray out) {
+    (void)self;
+    bbn_t *w = bbn(handle);
+    if (!w || !out || (*env)->GetArrayLength(env, out) < BBN_STATS_COUNT) return BTRX_BEARING_E_INVALID;
+    btrx_bearing_stats_t t;
+    btrx_bearing_status_t st = btrx_bearing_stats_copy(w->h, &t);
+    if (st != BTRX_BEARING_OK) return st;
+    double q[BBN_STATS_COUNT];
+    memset(q, 0, sizeof q);
+    bbn_stats(&t, q);
+    (*env)->SetDoubleArrayRegion(env, out, 0, BBN_STATS_COUNT, q);
+    return BTRX_BEARING_OK;
 }
 
 /* UI thread: source indexes (into the last copied snapshot) by contribution; returns the count. */

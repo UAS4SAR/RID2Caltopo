@@ -470,4 +470,12 @@ public enum BtrxSteeringTarget {
     public static func retained(_ chosen: String?, live: Set<String>) -> String? {
         chosen.flatMap { live.contains($0) ? $0 : nil }
     }
+
+    /// The stream carrying the Drone Pod, as the overlay uses it: the operator's choice
+    /// while it is live, else the only live stream (no pick is offered then). The bearing
+    /// layer takes its yaw and position from this stream (field test, Nov 13: with one
+    /// stream the choice stayed nil and every report was dropped for lack of a pose).
+    public static func effective(_ chosen: String?, live: Set<String>) -> String? {
+        retained(chosen, live: live) ?? (live.count == 1 ? live.first : nil)
+    }
 }

@@ -235,6 +235,11 @@ struct btrx_bearing {
     uint32_t desk_connect_base; bool desk_connect_base_set;
 
     btrx_bearing_stats_t stats;
+    /* Stats copy for btrx_bearing_stats_copy (under snap_mu), refreshed every
+     * publish interval even while no snapshot can be published (no view yet). */
+    btrx_bearing_stats_t stats_pub;
+    bool stats_pub_valid;
+    int64_t last_stats_us;
 };
 
 /* helpers */
@@ -312,6 +317,7 @@ void bb_lag_late(btrx_bearing_t *h, int stage);
 void bb_lag_published(btrx_bearing_t *h, uint64_t seq, int64_t now_us);
 void bb_lag_rendered(btrx_bearing_t *h, uint64_t seq, int64_t us);
 void bb_lag_stats(btrx_bearing_t *h, btrx_bearing_stats_t *st);
+void bb_fill_stats(btrx_bearing_t *h, int64_t now_us);
 void bb_log(btrx_bearing_t *h, int level, const char *fmt, ...);
 
 #endif

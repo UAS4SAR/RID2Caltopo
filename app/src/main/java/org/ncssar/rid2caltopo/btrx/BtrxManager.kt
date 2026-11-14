@@ -49,6 +49,8 @@ object BtrxManager {
     private const val KEY_PAIRED = "paired_pod"
     private const val KEY_USB_DEBUG = "usb_debug"
     private const val KEY_OVERLAY_SHOWN = "steer_overlay_shown"
+    /** "Talking": a Desk Pod frame within this long (STEER arrives about once a second). */
+    private const val TALKING_MS = 10_000L
     private const val KEY_BEARING_FADE_S = "bearing_fade_total_s"
     private const val KEY_BEARING_FADE_P = "bearing_fade_shape_p"
     private const val KEY_BEARING_LAG_TRACE = "bearing_lag_trace"
@@ -96,8 +98,10 @@ object BtrxManager {
     val bearing = BtrxBearingLayer(
         engine = BtrxBearingNative,
         monoUs = { android.os.SystemClock.elapsedRealtimeNanos() / 1000L },
-        log = { logger.info(it) },
-        traceLog = { logger.info(it) },
+        // Debug level: the session log drops INFO lines at the default level, so the
+        // Nov 13 field test left no trace of the layer at all.
+        log = { logger.debug(it) },
+        traceLog = { logger.debug(it) },
     )
     private val _bearingOn = MutableStateFlow(false)
     /** "Show bearing layer on map" (Developer Tools > BTRX); never on at launch. */
@@ -119,7 +123,7 @@ object BtrxManager {
 
     private fun applyBearingOn(on: Boolean) {
         if (on) {
-            bearing.steeringDesignator = _steeringStream.value
+            updateBearingSteering()
             val linkUp = _snapshot.value.link.phase == LinkPhase.READY
             if (!bearing.start(_bearingSettings.value, _bearingLagTrace.value, linkUp)) {
                 _bearingOn.value = false
@@ -130,7 +134,7 @@ object BtrxManager {
             if (bearingTick == null) {
                 bearingTick = worker.scheduleWithFixedDelay({
                     try {
-                        bearing.steeringDesignator = _steeringStream.value
+                        updateBearingSteering()
                         bearing.tick { pingSeq, t1Ms -> model.sendTimePing(pingSeq, t1Ms) }
                     } catch (e: Exception) {
                         logger.warn("bearing: tick failed: ${e.message}")
@@ -144,6 +148,37 @@ object BtrxManager {
             org.ncssar.rid2caltopo.data.CaltopoLiveTrack.RemoveLocalTrackListener(bearingTrackListener)
             bearing.stop()
         }
+    }
+
+    /**
+     * The bearing layer's pose stream: the "Drone Pod is on this drone" choice, else the
+     * only live stream (the overlay's own rule, [BtrxSteeringTarget.effective]).
+     */
+    private fun updateBearingSteering() {
+        val live = liveSteeringStreams()
+        bearing.liveStreamCount = live.size
+        val effective = BtrxSteeringTarget.effective(_steeringStream.value, live)
+        if (bearing.steeringDesignator != effective) logger.debug("bearing: pose stream ${effective ?: "none"}")
+        bearing.steeringDesignator = effective
+    }
+
+    // ---- map double tap opens the Desk Pod screen (Ken, Nov 13) ----
+
+    @Volatile private var lastDeskPodFrameMs = 0L
+    private val _deskPodScreenRequests = MutableStateFlow(0)
+    /** Increments when the map asks for the Desk Pod screen (double tap while it is talking). */
+    val deskPodScreenRequests: StateFlow<Int> = _deskPodScreenRequests.asStateFlow()
+
+    /** The Desk Pod link is up and a frame arrived in the last [TALKING_MS]. */
+    fun deskPodTalking(nowMs: Long = android.os.SystemClock.elapsedRealtime()): Boolean =
+        _snapshot.value.link.phase == LinkPhase.READY && lastDeskPodFrameMs != 0L && nowMs - lastDeskPodFrameMs <= TALKING_MS
+
+    /** Map double tap: opens the Desk Pod screen and returns true only while it is talking. */
+    fun openDeskPodScreenFromMap(): Boolean {
+        if (!deskPodTalking()) return false
+        logger.debug("map double tap: Desk Pod screen")
+        _deskPodScreenRequests.value = _deskPodScreenRequests.value + 1
+        return true
     }
 
     /** Fade time and shape sliders: applied at once (next tick) and saved. */
@@ -172,6 +207,7 @@ object BtrxManager {
         }
         override fun onLocalRoleReport(report: BtrxProtocol.RoleReport) = model.onLocalRoleReport(report)
         override fun onFrame(frame: BtrxProtocol.Frame, meta: BtrxClient.RadioMeta) {
+            lastDeskPodFrameMs = android.os.SystemClock.elapsedRealtime()
             model.onFrame(frame, meta)
             // The overlay follows each STEER (about every second), not only the 1 s tick.
             if (frame.type == BtrxProtocol.STEER && !meta.backlog) worker.execute { publish() }
@@ -331,7 +367,7 @@ object BtrxManager {
     fun chooseSteeringStream(designator: String?) {
         if (_steeringStream.value != designator) logger.info("steering: overlay drone ${designator ?: "cleared"}")
         _steeringStream.value = designator
-        bearing.steeringDesignator = designator
+        bearing.steeringDesignator = BtrxSteeringTarget.effective(designator, liveSteeringStreams())
     }
 
     /** Live, non-playback stream designators (the tiles that can carry the overlay). */

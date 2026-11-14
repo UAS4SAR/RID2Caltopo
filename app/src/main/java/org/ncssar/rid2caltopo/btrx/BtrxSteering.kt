@@ -493,4 +493,12 @@ object BtrxSteeringTarget {
 
     /** The choice still standing, or null once its stream is no longer live. */
     fun retained(chosen: String?, live: Set<String>): String? = chosen?.takeIf { it in live }
+
+    /**
+     * The stream carrying the Drone Pod, as the overlay uses it: the operator's choice
+     * while it is live, else the only live stream (no pick is offered then). The bearing
+     * layer takes its yaw and position from this stream (field test, Nov 13: with one
+     * stream the choice stayed null and every report was dropped for lack of a pose).
+     */
+    fun effective(chosen: String?, live: Set<String>): String? = retained(chosen, live) ?: live.singleOrNull()
 }

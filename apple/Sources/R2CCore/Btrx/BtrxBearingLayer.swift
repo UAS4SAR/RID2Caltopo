@@ -98,6 +98,33 @@ public struct BtrxBearingSnapshot: Sendable, Equatable {
     public let stats: BtrxBearingStats
 }
 
+/// Why the layer draws nothing (field test, Nov 13): `line` is the short map status, nil
+/// while shading is on screen; `stats` are the library counters (also before the first
+/// snapshot, when no drone pose exists yet). Same as Android.
+public struct BtrxBearingStatus: Sendable, Equatable {
+    public let line: String?
+    public let stats: BtrxBearingStats?
+}
+
+/// Inputs of `BtrxBearingText.statusLine`, the same on Android. Ages in seconds, nil = never.
+public struct BtrxBearingStatusInput: Sendable, Equatable {
+    public var stats: BtrxBearingStats?
+    public var designator: String?
+    public var liveStreams: Int
+    public var steerAgeS: Float?
+    public var yawAgeS: Float?
+    public var positionAgeS: Float?
+    /// Unmuted shading is on screen.
+    public var drawing: Bool
+    /// Shading exists but every source with it is hidden (muted or ignored).
+    public var allHidden: Bool
+    public init(stats: BtrxBearingStats?, designator: String?, liveStreams: Int, steerAgeS: Float?, yawAgeS: Float?,
+                positionAgeS: Float?, drawing: Bool, allHidden: Bool) {
+        self.stats = stats; self.designator = designator; self.liveStreams = liveStreams; self.steerAgeS = steerAgeS
+        self.yawAgeS = yawAgeS; self.positionAgeS = positionAgeS; self.drawing = drawing; self.allHidden = allHidden
+    }
+}
+
 /// Where the video and RID code hand yaw, position and AGL to a running bearing layer
 /// without depending on the Desk Pod center: nil while the layer is off. Same as Android.
 public enum BtrxBearingFeed {
@@ -147,6 +174,19 @@ public final class BtrxBearingLayer: @unchecked Sendable {
 
     /// Called on the BTRX queue with each new snapshot (nil when the layer stops).
     public var onSnapshot: ((BtrxBearingSnapshot?) -> Void)?
+    /// Called on the BTRX queue about once a second with the map status (nil when the layer stops).
+    public var onStatus: ((BtrxBearingStatus?) -> Void)?
+    public static let statusIntervalUs: Int64 = 1_000_000
+    /// Live (non-playback) stream count, for the status line.
+    public var liveStreamCount: Int {
+        get { stateLock.lock(); defer { stateLock.unlock() }; return _liveStreamCount }
+        set { stateLock.lock(); _liveStreamCount = newValue; stateLock.unlock() }
+    }
+    private var _liveStreamCount = 0
+    // Host times (us) of the last STEER from the paired pod, yaw and position accepted; 0 = never.
+    private var lastSteerUs: Int64 = 0, lastYawUs: Int64 = 0, lastPositionUs: Int64 = 0
+    private var nextStatusUs: Int64 = 0
+    public private(set) var lastStatus: BtrxBearingStatus?
     public private(set) var lastError: String?
 
     // Snapshot copy (the BTRX queue is the library's one reader) and the copy the UI queries.
@@ -239,6 +279,9 @@ public final class BtrxBearingLayer: @unchecked Sendable {
         lastPodSession = -1
         lastRenderedSeq = .max
         pingT1Ms = [Int64](repeating: -1, count: 256)
+        stateLock.lock(); lastSteerUs = 0; lastYawUs = 0; lastPositionUs = 0; stateLock.unlock()
+        nextStatusUs = 0
+        lastStatus = nil
         let now = monoUs()
         if linkUp { btrx_bearing_note_connected(h, now) }
         startBurst(now)
@@ -257,6 +300,8 @@ public final class BtrxBearingLayer: @unchecked Sendable {
         btrx_bearing_destroy(h)
         snapLock.lock(); haveSnap = false; current = nil; snapLock.unlock()
         onSnapshot?(nil)
+        lastStatus = nil
+        onStatus?(nil)
         burstLeft = 0
         nextPingUs = .max
         log("bearing: layer off")
@@ -281,6 +326,7 @@ public final class BtrxBearingLayer: @unchecked Sendable {
         let arrival = hostUs(ofWall: meta.arrivalMs, now: now, maxBackMs: Self.maxArrivalBackMs)
         switch frame.type {
         case BtrxProtocol.STEER where fromPairedPod:
+            if !meta.backlog { stateLock.lock(); lastSteerUs = now; stateLock.unlock() }
             withHandle(()) { h in
                 var r = btrx_bearing_report_t()
                 let st = frame.payload.withUnsafeBufferPointer {
@@ -353,6 +399,7 @@ public final class BtrxBearingLayer: @unchecked Sendable {
         var p = btrx_bearing_pose_t()
         p.t_us = t; p.push_us = now; p.mask = UInt32(BTRX_BEARING_POSE_YAW); p.yaw_true_deg = Float(yawTrueDeg)
         withHandle(()) { h in _ = btrx_bearing_push_pose(h, &p) }
+        stateLock.lock(); lastYawUs = now; stateLock.unlock()
         if lagTrace { traceLog("BBv1 P \(t) \(p.mask) 0 0 0 \(String(format: "%.3f", yawTrueDeg)) 0 0") }
     }
 
@@ -377,6 +424,7 @@ public final class BtrxBearingLayer: @unchecked Sendable {
         p.mask = UInt32(BTRX_BEARING_POSE_POSITION)
         if let agl { p.mask |= UInt32(BTRX_BEARING_POSE_AGL); p.agl_m = agl }
         withHandle(()) { h in _ = btrx_bearing_push_pose(h, &p) }
+        stateLock.lock(); lastPositionUs = now; stateLock.unlock()
         if lagTrace { traceLog("BBv1 P \(t) \(p.mask) \(String(format: "%.7f", lat)) \(String(format: "%.7f", lon)) \(agl ?? 0) 0 0 0") }
     }
 
@@ -393,6 +441,10 @@ public final class BtrxBearingLayer: @unchecked Sendable {
             return st.rawValue >= 0 && pub
         }
         if published { copySnapshot() }
+        if now >= nextStatusUs {
+            nextStatusUs = now + Self.statusIntervalUs
+            updateStatus(now)
+        }
         logSink.lock.lock(); let lines = logSink.lines; logSink.lines.removeAll(keepingCapacity: true); logSink.lock.unlock()
         lines.forEach(traceLog)
         if now >= nextPingUs {
@@ -411,6 +463,29 @@ public final class BtrxBearingLayer: @unchecked Sendable {
 
     /// Test hook: the next TIME_PING time (host us), Int64.max when none is scheduled.
     var nextPingAtUs: Int64 { nextPingUs }
+
+    private static func ageS(_ t: Int64, _ now: Int64) -> Float? { t == 0 ? nil : Float(max(0, now - t)) / 1e6 }
+
+    /// BTRX queue, about once a second: the map status line from the stats and the pose feeds.
+    private func updateStatus(_ now: Int64) {
+        let fresh: BtrxBearingStats? = withHandle(nil) { h in
+            var t = btrx_bearing_stats_t()
+            return btrx_bearing_stats_copy(h, &t) == BTRX_BEARING_OK ? Self.decodeStats(t) : nil
+        }
+        snapLock.lock(); let snap = current; snapLock.unlock()
+        let stats = fresh ?? snap?.stats
+        let shaded = snap?.sources.filter { $0.peakAlpha > 0 } ?? []
+        let drawing = shaded.contains { !$0.muted && !$0.ignored }
+        stateLock.lock()
+        let input = BtrxBearingStatusInput(stats: stats, designator: _steeringDesignator, liveStreams: _liveStreamCount,
+            steerAgeS: Self.ageS(lastSteerUs, now), yawAgeS: Self.ageS(lastYawUs, now), positionAgeS: Self.ageS(lastPositionUs, now),
+            drawing: drawing, allHidden: !shaded.isEmpty && !drawing)
+        stateLock.unlock()
+        let next = BtrxBearingStatus(line: BtrxBearingText.statusLine(input), stats: stats)
+        if lastStatus?.line != next.line { log("bearing: status \(next.line?.replacingOccurrences(of: "\n", with: " ") ?? "drawing")") }
+        lastStatus = next
+        onStatus?(next)
+    }
 
     private func copySnapshot() {
         guard let rgbaBuf, let alphaBuf else { return }
@@ -435,17 +510,14 @@ public final class BtrxBearingLayer: @unchecked Sendable {
         onSnapshot?(snap)
     }
 
-    static func decode(_ s: btrx_bearing_snapshot_t) -> BtrxBearingSnapshot {
-        let n = Int(s.width) * Int(s.height)
-        let rgba = s.rgba.map { Data(bytes: $0, count: n * 4) } ?? Data()
-        let t = s.stats
+    static func decodeStats(_ t: btrx_bearing_stats_t) -> BtrxBearingStats {
         let lag: [BtrxBearingLag] = withUnsafeBytes(of: t.lag) { raw in
             raw.bindMemory(to: btrx_bearing_lag_t.self).map {
                 BtrxBearingLag(count: Int($0.count), p50Ms: Int($0.p50_ms), p90Ms: Int($0.p90_ms), p99Ms: Int($0.p99_ms),
                                maxMs: Int($0.max_ms), lateDrops: Int($0.late_drops))
             }
         }
-        let stats = BtrxBearingStats(
+        return BtrxBearingStats(
             reportsIn: Int(t.reports_in), entriesIn: Int(t.entries_in), used: Int(t.used), gated: Int(t.gated),
             noHeading: Int(t.no_heading), noPosition: Int(t.no_position), lateDropped: Int(t.late_dropped),
             ringDropped: Int(t.ring_dropped), bucketsExpiredEarly: Int(t.buckets_expired_early), ignored: Int(t.ignored),
@@ -456,6 +528,12 @@ public final class BtrxBearingLayer: @unchecked Sendable {
             fadeTotalS: t.fade_total_s, fadeShapeP: t.fade_shape_p, podOffsetMs: Int(t.pod_offset_ms),
             podOffsetErrMs: Int(t.pod_offset_err_ms), offsetSource: Int(t.offset_source), podSession: t.pod_session,
             displayLagMs: Int(t.display_lag_ms), lag: lag)
+    }
+
+    static func decode(_ s: btrx_bearing_snapshot_t) -> BtrxBearingSnapshot {
+        let n = Int(s.width) * Int(s.height)
+        let rgba = s.rgba.map { Data(bytes: $0, count: n * 4) } ?? Data()
+        let stats = decodeStats(s.stats)
         let sources: [BtrxBearingSource] = withUnsafeBytes(of: s.sources) { raw in
             let all = raw.bindMemory(to: btrx_bearing_source_t.self)
             return (0..<min(Int(s.source_count), Int(BTRX_BEARING_MAX_SOURCES))).map { i in
@@ -601,6 +679,37 @@ public enum BtrxBearingText {
 
     public static func countsLine(_ st: BtrxBearingStats) -> String {
         "Reports \(st.reportsIn): used \(st.used), gated \(st.gated), no heading \(st.noHeading), no position \(st.noPosition)"
+    }
+
+    /// Older than this, the input counts as missing in the status line.
+    public static let statusSteerStaleS: Float = 10, statusYawStaleS: Float = 3, statusPositionStaleS: Float = 5
+
+    /// Map status while the layer is on and draws nothing (field test, Nov 13): the first
+    /// missing input, then the report counts; nil while shading is on screen. Same as Android.
+    public static func statusLine(_ i: BtrxBearingStatusInput) -> String? {
+        if i.drawing { return nil }
+        func stale(_ age: Float?, _ limit: Float) -> Bool { age.map { $0 > limit } ?? true }
+        let reason: String
+        if stale(i.steerAgeS, statusSteerStaleS) {
+            reason = "Bearing layer: no reports from the paired Drone Pod"
+        } else if i.designator == nil && i.liveStreams == 0 {
+            reason = "Bearing layer: no drone video. The heading comes from the live stream of the drone carrying the Drone Pod"
+        } else if i.designator == nil {
+            reason = "Bearing layer: on the stream of the drone carrying the Drone Pod, tap \"Drone Pod is on this drone\""
+        } else if stale(i.yawAgeS, statusYawStaleS) {
+            reason = "Bearing layer: no heading from \(i.designator!) video (DJI SEI)"
+        } else if stale(i.positionAgeS, statusPositionStaleS) {
+            reason = "Bearing layer: no Remote ID position for \(i.designator!)"
+        } else if i.allHidden {
+            reason = "Bearing layer: every source with shading is hidden"
+        } else if (i.stats?.used ?? 0) == 0 {
+            reason = "Bearing layer: no report placed yet"
+        } else {
+            reason = "Bearing layer: shading still too faint to show"
+        }
+        guard let st = i.stats, st.reportsIn > 0 else { return reason }
+        return reason + "\nReports \(st.reportsIn): placed \(st.used), no heading \(st.noHeading), " +
+            "no position \(st.noPosition), late \(st.lateDropped), gated \(st.gated)"
     }
 
     public static func clockLine(_ st: BtrxBearingStats) -> String {

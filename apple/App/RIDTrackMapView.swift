@@ -686,6 +686,7 @@ struct RIDTrackMapView: View {
     /// BTRX bearing layer (not observed here: the map follows its snapshot directly).
     @Environment(\.btrxDeskPod) private var btrxCenter
     @State private var btrxPanel: BtrxBearingPanelRequest?
+    @State private var showDeskPodFromMap = false
     let onReturnToMain: () -> Void
     let onConfirmPairedDrone: (RidAircraftIdentity) -> Void
     @State private var mapSettingsOpen = false
@@ -1586,8 +1587,17 @@ struct RIDTrackMapView: View {
                     }
                 },
                 btrx: btrxCenter,
-                onSelectBtrx: inset ? nil : { point, keys in btrxPanel = BtrxBearingPanelRequest(point: point, keys: keys) }
+                onSelectBtrx: inset ? nil : { point, keys in btrxPanel = BtrxBearingPanelRequest(point: point, keys: keys) },
+                onDeskPodDoubleTap: inset ? nil : { showDeskPodFromMap = true }
             )
+            // Why the bearing layer draws nothing (main map only).
+            .overlay(alignment: .top) {
+                if !inset, let btrxCenter { BtrxBearingStatusChip(center: btrxCenter) }
+            }
+            // Double tap while the Desk Pod is talking opens its view (Ken, Nov 13).
+            .sheet(isPresented: $showDeskPodFromMap) {
+                if let btrxCenter { DeskPodView(center: btrxCenter, onDismiss: { showDeskPodFromMap = false }) }
+            }
             // "BTRX sources here" at the tap point (main map only).
             .overlay(alignment: .topLeading) {
                 if !inset, let request = btrxPanel, let btrxCenter {
@@ -4769,6 +4779,7 @@ private struct OperationalMKMapView: UIViewRepresentable {
     /// BTRX bearing layer (Developer Tools); nil without a Desk Pod center.
     var btrx: BtrxDeskPodCenter? = nil
     var onSelectBtrx: ((CGPoint, [UInt64]) -> Void)? = nil
+    var onDeskPodDoubleTap: (() -> Void)? = nil
 
     func makeCoordinator() -> Coordinator {
         Coordinator(
@@ -4821,6 +4832,7 @@ private struct OperationalMKMapView: UIViewRepresentable {
         }
         context.coordinator.installLongPress(on: map)
         context.coordinator.installArtifactTap(on: map)
+        context.coordinator.btrxMap.onDeskPodDoubleTap = onDeskPodDoubleTap
         context.coordinator.btrxMap.attach(btrx, map: map, inset: inset)
         map.onBoundsLayout = { [weak coordinator = context.coordinator] map in
             coordinator?.restoreViewportBoundsIfNeeded(on: map)
@@ -4844,6 +4856,7 @@ private struct OperationalMKMapView: UIViewRepresentable {
         context.coordinator.onAttributionViewportChanged = onAttributionViewportChanged
         defer {
             context.coordinator.btrxMap.onSelect = onSelectBtrx
+            context.coordinator.btrxMap.onDeskPodDoubleTap = onDeskPodDoubleTap
             context.coordinator.btrxMap.attach(btrx, map: map, inset: inset)
         }
         context.coordinator.updateMappingLayers(on:map,layers:mappingLayers)
@@ -7609,6 +7622,10 @@ final class BtrxBearingMapController: NSObject, UIGestureRecognizerDelegate {
     private var fadeTimer: Timer?
     var onSelect: ((CGPoint, [UInt64]) -> Void)?
     var annotationHit: ((CGPoint, MKMapView) -> Bool)?
+    /// Map double tap while the Desk Pod is talking (Ken, Nov 13); nil on inset maps.
+    var onDeskPodDoubleTap: (() -> Void)?
+    private var deskPodDouble: UITapGestureRecognizer?
+    private var mapDoubleTapsWaiting = Set<ObjectIdentifier>()
 
     func attach(_ center: BtrxDeskPodCenter?, map: MKMapView, inset: Bool) {
         self.inset = inset
@@ -7622,6 +7639,7 @@ final class BtrxBearingMapController: NSObject, UIGestureRecognizerDelegate {
             if center == nil { show(nil) }
         }
         ensureOnTop()
+        makeMapDoubleTapsWait(on: map)
     }
 
     func renderer(for overlay: MKOverlay) -> MKOverlayRenderer? {
@@ -7686,9 +7704,53 @@ final class BtrxBearingMapController: NSObject, UIGestureRecognizerDelegate {
         single.require(toFail: double)
         map.addGestureRecognizer(double)
         map.addGestureRecognizer(single)
+        // Double tap opens the Desk Pod view while it is talking; otherwise it fails at once
+        // (gestureRecognizerShouldBegin) and MapKit's own double tap zooms as before.
+        let deskPod = UITapGestureRecognizer(target: self, action: #selector(handleDeskPodDoubleTap(_:)))
+        deskPod.numberOfTapsRequired = 2
+        deskPod.cancelsTouchesInView = false
+        deskPod.delaysTouchesEnded = false
+        deskPod.delegate = self
+        map.addGestureRecognizer(deskPod)
+        deskPodDouble = deskPod
+        makeMapDoubleTapsWait(on: map)
+    }
+
+    /// MapKit's double-tap zoom waits for the Desk Pod double tap to fail (idempotent;
+    /// MapKit may add its recognizers late, so attach calls this again).
+    private func makeMapDoubleTapsWait(on map: MKMapView) {
+        guard let deskPod = deskPodDouble else { return }
+        func visit(_ view: UIView) {
+            for g in view.gestureRecognizers ?? [] {
+                guard g !== deskPod, let tap = g as? UITapGestureRecognizer, tap.numberOfTapsRequired == 2,
+                      tap.delegate !== self, !mapDoubleTapsWaiting.contains(ObjectIdentifier(tap)) else { continue }
+                tap.require(toFail: deskPod)
+                mapDoubleTapsWaiting.insert(ObjectIdentifier(tap))
+            }
+            view.subviews.forEach(visit)
+        }
+        visit(map)
     }
 
     @objc private func ignoreDoubleTap(_ gesture: UITapGestureRecognizer) {}
+
+    @objc private func handleDeskPodDoubleTap(_ gesture: UITapGestureRecognizer) {
+        guard gesture.state == .ended else { return }
+        onDeskPodDoubleTap?()
+    }
+
+    func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        guard gestureRecognizer === deskPodDouble else { return true }
+        guard !inset, onDeskPodDoubleTap != nil, let center else { return false }
+        return center.openDeskPodScreenFromMap()
+    }
+
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                           shouldBeRequiredToFailBy otherGestureRecognizer: UIGestureRecognizer) -> Bool {
+        // Any other double tap on the map (MapKit's zoom) waits for this one to fail.
+        guard gestureRecognizer === deskPodDouble, let tap = otherGestureRecognizer as? UITapGestureRecognizer else { return false }
+        return tap.numberOfTapsRequired == 2 && tap.delegate !== self
+    }
 
     @objc private func handleTap(_ gesture: UITapGestureRecognizer) {
         guard gesture.state == .ended, let map = gesture.view as? MKMapView else { return }
@@ -7711,7 +7773,29 @@ final class BtrxBearingMapController: NSObject, UIGestureRecognizerDelegate {
     }
 
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
-                           shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool { true }
+                           shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
+        // The Desk Pod double tap replaces the zoom; everything else stays passive.
+        if gestureRecognizer === deskPodDouble, let tap = otherGestureRecognizer as? UITapGestureRecognizer,
+           tap.numberOfTapsRequired == 2 { return false }
+        return true
+    }
+}
+
+/// Map status (field test, Nov 13): why the bearing layer draws nothing. Not tappable. Same as Android.
+struct BtrxBearingStatusChip: View {
+    @ObservedObject var center: BtrxDeskPodCenter
+    var body: some View {
+        if center.bearingOn, let line = center.bearingStatus?.line {
+            Text(line)
+                .font(.footnote)
+                .foregroundStyle(.white)
+                .padding(.horizontal, 10).padding(.vertical, 6)
+                .background(Color(white: 0.125).opacity(0.9), in: RoundedRectangle(cornerRadius: 8))
+                .frame(maxWidth: 560)
+                .padding(.top, 8).padding(.horizontal, 56)
+                .allowsHitTesting(false)
+        }
+    }
 }
 
 struct BtrxBearingPanelRequest: Identifiable, Equatable {

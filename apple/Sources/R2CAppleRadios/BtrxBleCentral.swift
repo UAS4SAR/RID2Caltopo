@@ -111,12 +111,16 @@ final class BtrxBleCentral: NSObject, @unchecked Sendable {
     // MARK: bearing map layer (docs/btrx/BEARING-LAYER-spec.md section 7)
 
     /// Turns the layer on or off on ``queue``; `done(false)` when it could not start.
-    func setBearing(_ on: Bool, settings: BtrxBearingSettings, trace: Bool, steering: String?,
-                    onSnapshot: @escaping @Sendable (BtrxBearingSnapshot?) -> Void, done: @escaping @Sendable (Bool, String?) -> Void) {
+    func setBearing(_ on: Bool, settings: BtrxBearingSettings, trace: Bool, steering: String?, liveStreams: Int,
+                    onSnapshot: @escaping @Sendable (BtrxBearingSnapshot?) -> Void,
+                    onStatus: @escaping @Sendable (BtrxBearingStatus?) -> Void,
+                    done: @escaping @Sendable (Bool, String?) -> Void) {
         queue.async { [self] in
             if on {
                 bearing.steeringDesignator = steering
+                bearing.liveStreamCount = liveStreams
                 bearing.onSnapshot = onSnapshot
+                bearing.onStatus = onStatus
                 guard bearing.start(settings: settings, trace: trace, linkUp: model.snapshot().link.phase == .ready) else {
                     done(false, bearing.lastError); return
                 }
@@ -144,7 +148,21 @@ final class BtrxBleCentral: NSObject, @unchecked Sendable {
     }
 
     func setBearingFade(_ settings: BtrxBearingSettings) { queue.async { [self] in bearing.setFade(settings) } }
-    func setBearingSteering(_ id: String?) { bearing.steeringDesignator = id }
+    func setBearingSteering(_ id: String?, liveStreams: Int) {
+        if bearing.steeringDesignator != id { log.debug("bearing: pose stream \(id ?? "none")") }
+        bearing.steeringDesignator = id
+        bearing.liveStreamCount = liveStreams
+    }
+
+    // Map double tap opens the Desk Pod view while it is talking (Ken, Nov 13).
+    private let frameClockLock = NSLock()
+    private var lastFrameUptimeNs: UInt64 = 0
+    /// Seconds since the last Desk Pod frame (any thread); nil = none yet.
+    func secondsSinceLastFrame() -> Double? {
+        frameClockLock.lock(); defer { frameClockLock.unlock() }
+        guard lastFrameUptimeNs != 0 else { return nil }
+        return Double(DispatchTime.now().uptimeNanoseconds &- lastFrameUptimeNs) / 1e9
+    }
 
     // MARK: actions (any thread)
 
@@ -616,6 +634,7 @@ extension BtrxBleCentral: BtrxClientListener {
     }
 
     func onFrame(_ frame: BtrxProtocol.Frame, meta: BtrxRadioMeta) {
+        frameClockLock.lock(); lastFrameUptimeNs = DispatchTime.now().uptimeNanoseconds; frameClockLock.unlock()
         model.onFrame(frame, meta: meta)
         // The overlay follows each STEER (about every second), not only the 1 s tick.
         if frame.type == BtrxProtocol.STEER && !meta.backlog { publish() }
@@ -729,7 +748,31 @@ public final class BtrxDeskPodCenter: ObservableObject {
     public func chooseSteeringStream(_ id: String?) {
         if steeringStreamID != id { OperationalBridgePacketLog.write?("INFO", "Btrx", "steering: overlay drone \(id ?? "cleared")") }
         steeringStreamID = id
-        central.setBearingSteering(id)
+        central.setBearingSteering(bearingSteeringStreamID, liveStreams: liveSteeringStreams.count)
+    }
+
+    /// The bearing layer's pose stream: the "Drone Pod is on this drone" choice, else the
+    /// only live stream (the overlay's own rule, `BtrxSteeringTarget.effective`).
+    public var bearingSteeringStreamID: String? { BtrxSteeringTarget.effective(steeringStreamID, live: liveSteeringStreams) }
+
+    /// "Talking": a Desk Pod frame within this long (STEER arrives about once a second).
+    public static let talkingSeconds: Double = 10
+    /// Increments when the map asks for the Desk Pod view (double tap while it is talking).
+    @Published public private(set) var deskPodScreenRequest = 0
+
+    /// The Desk Pod link is up and a frame arrived in the last `talkingSeconds`.
+    public func deskPodTalking() -> Bool {
+        guard snapshot.link.phase == .ready, let age = central.secondsSinceLastFrame() else { return false }
+        return age <= Self.talkingSeconds
+    }
+
+    /// Map double tap: opens the Desk Pod view and returns true only while it is talking.
+    @discardableResult
+    public func openDeskPodScreenFromMap() -> Bool {
+        guard deskPodTalking() else { return false }
+        OperationalBridgePacketLog.write?("DEBUG", "Btrx", "map double tap: Desk Pod view")
+        deskPodScreenRequest += 1
+        return true
     }
 
     // MARK: bearing map layer (Developer Tools > BTRX; docs/btrx/BEARING-LAYER-spec.md)
@@ -743,18 +786,24 @@ public final class BtrxDeskPodCenter: ObservableObject {
     @Published public private(set) var bearingLagTrace = false
     @Published public private(set) var bearingSnapshot: BtrxBearingSnapshot?
     @Published public private(set) var bearingError: String?
+    /// Why the layer draws nothing, about once a second while it is on (nil while off).
+    @Published public private(set) var bearingStatus: BtrxBearingStatus?
     /// The layer itself, for the map's tap query, mute and render notes (main-thread calls).
     public var bearing: BtrxBearingLayer { central.bearing }
 
     public func setBearingOn(_ on: Bool) {
         bearingOn = on
-        central.setBearing(on, settings: bearingSettings, trace: bearingLagTrace, steering: steeringStreamID,
+        central.setBearing(on, settings: bearingSettings, trace: bearingLagTrace, steering: bearingSteeringStreamID,
+            liveStreams: liveSteeringStreams.count,
             onSnapshot: { [weak self] snap in Task { @MainActor in self?.bearingSnapshot = snap } },
+            onStatus: { [weak self] status in Task { @MainActor in
+                if self?.bearingStatus != status { self?.bearingStatus = status }
+            } },
             done: { [weak self] running, error in Task { @MainActor in
                 guard let self else { return }
                 if on && !running { self.bearingOn = false }
                 self.bearingError = error
-                if !running { self.bearingSnapshot = nil }
+                if !running { self.bearingSnapshot = nil; self.bearingStatus = nil }
             } })
     }
 
@@ -777,7 +826,7 @@ public final class BtrxDeskPodCenter: ObservableObject {
 
     /// RID track point of the "Drone Pod is on this drone" aircraft (ContentView), with its AGL.
     public func bearingRIDPoint(pointID: UUID, latitude: Double, longitude: Double, aglFeet: Double?, fixTime: Date) {
-        guard bearingOn, let stream = steeringStreamID, pointID != lastBearingPointID else { return }
+        guard bearingOn, let stream = bearingSteeringStreamID, pointID != lastBearingPointID else { return }
         lastBearingPointID = pointID
         let layer = central.bearing!
         layer.noteAgl(designator: stream, aglM: aglFeet.map { $0 * 0.3048 })
@@ -791,6 +840,7 @@ public final class BtrxDeskPodCenter: ObservableObject {
             OperationalBridgePacketLog.write?("INFO", "Btrx", "steering: stream \(chosen) ended; overlay drone choice cleared")
             steeringStreamID = nil
         }
+        central.setBearingSteering(bearingSteeringStreamID, liveStreams: live.count)
     }
 
     private func remember(_ id: UUID, _ name: String?) {

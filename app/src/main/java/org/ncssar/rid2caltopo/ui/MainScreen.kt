@@ -1731,6 +1731,11 @@ fun MainScreen(
 
     var showWorkspaceStats by remember { mutableStateOf(false) }
     var showDeskPod by remember { mutableStateOf(false) }
+    // Map double tap while the Desk Pod is talking opens this screen (Ken, Nov 13).
+    val deskPodScreenRequests by org.ncssar.rid2caltopo.btrx.BtrxManager.deskPodScreenRequests.collectAsState()
+    LaunchedEffect(deskPodScreenRequests) {
+        if (deskPodScreenRequests > 0) showDeskPod = true
+    }
     val aircraftReceptionAutoOpen by localViewModel.aircraftReceptionAutoOpenGeneration.collectAsState()
     val aircraftReceptionFocusRemoteId by localViewModel.aircraftReceptionFocusRemoteId.collectAsState()
     LaunchedEffect(showWorkspaceStats) {

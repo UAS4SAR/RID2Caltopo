@@ -200,6 +200,78 @@ final class BtrxBearingLayerTests: XCTestCase {
         layer.stop()
     }
 
+    // MARK: field test Nov 13: status without a pose, then a drone on the table
+
+    func testStatusWithoutPoseThenGroundedDrone() throws {
+        let clock = Clock()
+        let layer = makeLayer(clock)
+        var statuses: [BtrxBearingStatus] = []
+        var snaps: [BtrxBearingSnapshot] = []
+        layer.onStatus = { if let s = $0 { statuses.append(s) } }
+        layer.onSnapshot = { if let s = $0 { snaps.append(s) } }
+        layer.steeringDesignator = nil
+        layer.liveStreamCount = 1
+        XCTAssertTrue(layer.start(settings: BtrxBearingSettings(), trace: false, linkUp: true))
+        var seq = 0
+        func steer() {
+            let s = P.Steer(steerSeq: seq & 0xFF, flags: P.STEER_F_TARGET | P.STEER_F_IMU_OK,
+                            windowEndMs: UInt32(truncatingIfNeeded: clock.us / 1000 - Self.podOffsetMs), ageMs: 0, srcId: 0x0202,
+                            rssiPort: -60, rssiStbd: -68, peakRssi: -58, hitsPort: 5, hitsStbd: 5,
+                            companyId: 0, devClass: 1, addrType: 0, macLsbFirst: [6, 5, 4, 3, 2, 1], rollX2: 0, pitchX2: 0)
+            seq += 1
+            layer.onFrame(frame(P.STEER, P.steerPayload(s)), meta: meta(clock), fromPairedPod: true, fromDeskPod: false)
+        }
+        // 10 s of reports, no pose at all: nothing published, the status says why.
+        for step in 0..<50 {
+            if step % 5 == 0 { steer() }
+            layer.tick { _, _ in false }
+            clock.us += 200_000
+        }
+        XCTAssertTrue(snaps.isEmpty, "no pose: no snapshot")
+        let s1 = try XCTUnwrap(statuses.last)
+        XCTAssertTrue(s1.line?.hasPrefix("Bearing layer: on the stream of the drone carrying the Drone Pod") == true, s1.line ?? "nil")
+        XCTAssertGreaterThan(try XCTUnwrap(s1.stats).reportsIn, 5)
+        XCTAssertEqual(s1.stats?.used, 0)
+        // The drone sits on the table (AGL 0) streaming SEI yaw and RID position.
+        layer.steeringDesignator = "1sar7djmtrc4td"
+        for step in 0..<150 {
+            let wall = Self.wallBaseMs + clock.us / 1000
+            layer.onYaw(designator: "1sar7DjMtrc4td", yawTrueDeg: 90, decodedAtWallMs: wall)
+            if step % 5 == 0 {
+                layer.noteAgl(designator: "1sar7DjMtrc4td", aglM: 0)
+                layer.onPosition(designator: "1sar7DjMtrc4td", lat: 39.153047, lon: -121.132901, fixWallMs: wall)
+                steer()
+            }
+            layer.tick { _, _ in false }
+            clock.us += 200_000
+        }
+        let last = try XCTUnwrap(snaps.last, "grounded drone: snapshot")
+        XCTAssertGreaterThan(last.stats.used, 10, BtrxBearingText.countsLine(last.stats))
+        XCTAssertGreaterThan(try XCTUnwrap(last.sources.first).peakAlpha, 0)
+        XCTAssertNil(try XCTUnwrap(statuses.last).line, "shading on screen: no status line")
+        layer.stop()
+    }
+
+    func testStatusReasonsInOrderAndEffectiveStream() {
+        func line(steer: Float? = 1, d: String? = "A", live: Int = 1, yaw: Float? = 0.1, pos: Float? = 0.5, drawing: Bool = false, hidden: Bool = false) -> String? {
+            BtrxBearingText.statusLine(BtrxBearingStatusInput(stats: nil, designator: d, liveStreams: live, steerAgeS: steer,
+                                                               yawAgeS: yaw, positionAgeS: pos, drawing: drawing, allHidden: hidden))
+        }
+        XCTAssertNil(line(drawing: true))
+        XCTAssertEqual(line(steer: nil), "Bearing layer: no reports from the paired Drone Pod")
+        XCTAssertEqual(line(steer: 11), "Bearing layer: no reports from the paired Drone Pod")
+        XCTAssertTrue(line(d: nil, live: 0)?.hasPrefix("Bearing layer: no drone video.") == true)
+        XCTAssertEqual(line(yaw: 3.5), "Bearing layer: no heading from A video (DJI SEI)")
+        XCTAssertEqual(line(pos: nil), "Bearing layer: no Remote ID position for A")
+        XCTAssertEqual(line(hidden: true), "Bearing layer: every source with shading is hidden")
+        XCTAssertEqual(line(), "Bearing layer: no report placed yet")
+        XCTAssertEqual(BtrxSteeringTarget.effective(nil, live: ["A"]), "A")
+        XCTAssertNil(BtrxSteeringTarget.effective(nil, live: ["A", "B"]))
+        XCTAssertEqual(BtrxSteeringTarget.effective("B", live: ["A", "B"]), "B")
+        XCTAssertEqual(BtrxSteeringTarget.effective("C", live: ["A"]), "A")
+        XCTAssertNil(BtrxSteeringTarget.effective("C", live: []))
+    }
+
     // MARK: protocol extensions (same vectors as Android BtrxProtocolTest and btrx_bearing)
 
     private func steer40(_ count: Int, format: Int = 1, len: Int = 40, target: Bool = true) -> [UInt8] {

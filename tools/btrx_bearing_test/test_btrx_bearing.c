@@ -1196,6 +1196,55 @@ static void bench(void) {
     bench_run(3, "3 entries");
 }
 
+
+/* ================= stats without a view (field test, Nov 13) ================= */
+/* Bench: Drone Pod reports arrive but the tablet has no drone pose. No snapshot can be
+ * published, yet stats_copy must say why nothing is drawn; a drone sitting on the
+ * table (AGL 0) must still be placed once yaw and position arrive. */
+static void push_report_only(btrx_bearing_t *h, int64_t t_end, uint8_t seq, const btrx_bearing_report_source_t *e) {
+    btrx_bearing_report_t r; memset(&r, 0, sizeof r);
+    r.arrival_us = t_end; r.push_us = t_end + 1000;
+    r.window_end_ms = (uint32_t)(t_end / 1000);
+    r.steer_seq = seq; r.flags = 0x51;
+    r.src[0] = *e; r.source_count = 1;
+    btrx_bearing_push_report(h, &r);
+}
+
+static void test_stats_without_view(void) {
+    printf("stats without a view\n");
+    btrx_bearing_t *h = mk(NULL);
+    btrx_bearing_stats_t st;
+    CHECK(btrx_bearing_stats_copy(h, &st) == BTRX_BEARING_E_NO_SNAPSHOT, "no stats before the first tick");
+    CHECK(btrx_bearing_stats_copy(NULL, &st) == BTRX_BEARING_E_INVALID && btrx_bearing_stats_copy(h, NULL) == BTRX_BEARING_E_INVALID, "null args");
+    btrx_bearing_report_source_t e1 = entry(0x2222, 2, -60, -66, 5);
+    uint8_t seq = 0;
+    int64_t t = 10000000;
+    for (int i = 0; i < 6; i++, t += 1000000) {
+        push_report_only(h, t, seq++, &e1);
+        btrx_bearing_tick(h, t + 100000, NULL);
+    }
+    btrx_bearing_tick(h, t + 4000000, NULL);
+    CHECK(btrx_bearing_snapshot_acquire(h) == NULL, "no pose: no snapshot");
+    CHECK(btrx_bearing_stats_copy(h, &st) == BTRX_BEARING_OK, "stats without a snapshot");
+    CHECK(st.reports_in == 6, "reports_in 6 (%u)", st.reports_in);
+    CHECK(st.used == 0, "none used");
+    CHECK(st.no_heading + st.no_position == 6, "all dropped for pose (%u heading, %u position)", st.no_heading, st.no_position);
+    CHECK(st.offset_source == 1, "arrival-minimum clock (%u)", st.offset_source);
+    btrx_bearing_destroy(h);
+
+    /* drone on the table: AGL 0, yaw steady, RID position at 1 Hz */
+    h = mk(NULL);
+    inj_t s = { 0, 0, 0 };
+    for (int i = 0; i < 8; i++) inject(h, &s, 20000000 + (int64_t)i * 1000000, 0, 0, 90, 0, &e1, 1, true);
+    btrx_bearing_tick(h, 30000000, NULL);
+    CHECK(btrx_bearing_stats_copy(h, &st) == BTRX_BEARING_OK, "stats");
+    CHECK(st.used >= 7, "grounded drone: reports placed (%u of %u)", st.used, st.reports_in);
+    const btrx_bearing_snapshot_t *sn = btrx_bearing_snapshot_acquire(h);
+    CHECK(sn && sn->source_count == 1 && sn->sources[0].peak_alpha > 0, "grounded drone: shading");
+    if (sn) btrx_bearing_snapshot_release(h, sn);
+    btrx_bearing_destroy(h);
+}
+
 int main(int argc, char **argv) {
     setvbuf(stdout, NULL, _IONBF, 0);
     g_grid = malloc(sizeof(float) * 192 * 192);
@@ -1213,6 +1262,7 @@ int main(int argc, char **argv) {
     test_multi();
     test_resolution();
     test_backlog_health();
+    test_stats_without_view();
     test_threads();
     test_worker_and_abi();
     scenarios();
