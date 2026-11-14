@@ -33,17 +33,17 @@ internal class ForegroundLocationGate {
     @Volatile var session = Session(0, false)
         private set
     private var enabled = false
-    private var visibleActivities = 0
+    private var focusedActivities = 0
 
     fun enable(): Session? { enabled = true; return reconcile() }
     fun disable(): Session? { enabled = false; return reconcile() }
-    fun activityStarted(): Session? { visibleActivities++; return reconcile() }
-    fun activityStopped(): Session? {
-        visibleActivities = (visibleActivities - 1).coerceAtLeast(0)
+    fun activityResumed(): Session? { focusedActivities++; return reconcile() }
+    fun activityPaused(): Session? {
+        focusedActivities = (focusedActivities - 1).coerceAtLeast(0)
         return reconcile()
     }
     private fun reconcile(): Session? {
-        val active = enabled && visibleActivities > 0
+        val active = enabled && focusedActivities > 0
         if (active == session.active) return null
         return Session(session.generation + 1, active).also { session = it }
     }
@@ -63,7 +63,11 @@ internal object DeviceLocationText {
     }
 }
 
-/** Device location is precise (when granted) and active only while an app activity is visible. */
+/**
+ * Device location is precise (when granted) and active only while an app activity is resumed
+ * (Ken, Nov 13: no position updates while the app does not have focus). Paused = a system
+ * dialog, another app in front, or the screen locked; the last fix stays for the map.
+ */
 object DeviceLocationMonitor {
     private const val TAG = "DeviceLocationMonitor"
     private val worker = Executors.newSingleThreadExecutor { task ->
@@ -91,15 +95,15 @@ object DeviceLocationMonitor {
     fun install(application: Application) {
         appContext = application.applicationContext
         application.registerActivityLifecycleCallbacks(object : Application.ActivityLifecycleCallbacks {
-            override fun onActivityStarted(activity: Activity) {
-                reconcile(gate.activityStarted())
+            override fun onActivityResumed(activity: Activity) {
+                reconcile(gate.activityResumed())
             }
-            override fun onActivityStopped(activity: Activity) {
-                reconcile(gate.activityStopped())
+            override fun onActivityPaused(activity: Activity) {
+                reconcile(gate.activityPaused())
             }
             override fun onActivityCreated(activity: Activity, state: Bundle?) = Unit
-            override fun onActivityResumed(activity: Activity) = Unit
-            override fun onActivityPaused(activity: Activity) = Unit
+            override fun onActivityStarted(activity: Activity) = Unit
+            override fun onActivityStopped(activity: Activity) = Unit
             override fun onActivitySaveInstanceState(activity: Activity, state: Bundle) = Unit
             override fun onActivityDestroyed(activity: Activity) = Unit
         })

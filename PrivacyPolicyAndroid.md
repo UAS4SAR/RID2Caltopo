@@ -20,8 +20,8 @@ provides the fuller account of data use, recipients, retention, and deletion.
 
 - Bluetooth and compatible external-network Remote ID observations are decoded
   to display nearby aircraft and create local track archives.
-- Precise device location, when the operator allows it, is used only while an
-  app screen is visible, to mark this tablet's position on the map relative to
+- Precise device location, when the operator allows it, is used only while the
+  app is in use (on screen and in focus), to mark this tablet's position on the map relative to
   aircraft. If only approximate location is allowed, the app keeps working with
   the approximate position and shows its accuracy. Device location is not
   collected in the background. Android also requires precise location

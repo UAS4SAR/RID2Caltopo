@@ -7,24 +7,24 @@ class ForegroundLocationGateTest {
     @Test fun locationRequiresBothSessionAndVisibleActivity() {
         val gate = ForegroundLocationGate()
         assertNull(gate.enable())
-        val first = gate.activityStarted()!!
+        val first = gate.activityResumed()!!
         assertTrue(gate.accepts(first))
-        assertNull(gate.activityStarted()) // another app screen overlaps
-        assertNull(gate.activityStopped())
+        assertNull(gate.activityResumed()) // another app screen overlaps
+        assertNull(gate.activityPaused())
         assertTrue(gate.accepts(first))
-        gate.activityStopped()
+        gate.activityPaused()
         assertFalse(gate.accepts(first))
-        val reopened = gate.activityStarted()!!
+        val reopened = gate.activityResumed()!!
         assertTrue(gate.accepts(reopened))
         assertFalse(gate.accepts(first)) // an old asynchronous fix must not be published
         gate.disable()
         assertFalse(gate.accepts(reopened))
-        assertNull(gate.activityStopped())
+        assertNull(gate.activityPaused())
     }
 
     @Test fun activityBeforeConsentDoesNotStartLocation() {
         val gate = ForegroundLocationGate()
-        assertNull(gate.activityStarted())
+        assertNull(gate.activityResumed())
         assertFalse(gate.session.active)
         assertTrue(gate.accepts(gate.enable()!!))
     }
