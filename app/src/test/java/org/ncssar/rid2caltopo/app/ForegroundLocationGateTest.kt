@@ -28,4 +28,14 @@ class ForegroundLocationGateTest {
         assertFalse(gate.session.active)
         assertTrue(gate.accepts(gate.enable()!!))
     }
+
+    @Test fun accuracyLineIsHonestAboutPrecision() {
+        assertEquals("Tablet location: precise ±5 m", DeviceLocationText.accuracyLine(4.6f, true))
+        assertEquals(
+            "Tablet location: approximate ±2000 m (precise location is off for this app in Android settings)",
+            DeviceLocationText.accuracyLine(2000f, false)
+        )
+        assertEquals("Tablet location: precise", DeviceLocationText.accuracyLine(null, true))
+        assertEquals("Tablet location: precise", DeviceLocationText.accuracyLine(Float.NaN, true))
+    }
 }

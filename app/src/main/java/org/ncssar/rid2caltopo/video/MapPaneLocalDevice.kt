@@ -24,5 +24,6 @@ internal fun localDeviceStatusLines(): List<String> {
     return buildList {
         add(coordinator.coordinationStatusText)
         addAll(coordinator.coordinationDiagnosticLines)
+        org.ncssar.rid2caltopo.app.DeviceLocationMonitor.accuracyLine()?.let { add(it) }
     }
 }

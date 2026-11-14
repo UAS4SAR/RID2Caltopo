@@ -78,6 +78,11 @@
     <string>RID2Caltopo exchanges mapping missions and imagery, drone telemetry, video streams, and shared MA map packages over the local network.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>RID2Caltopo uses location to show your position relative to aircraft and share it with configured incident coordination. During active monitoring, location updates can continue while the display is locked, with the location indicator visible.</string>
+	<key>NSLocationTemporaryUsageDescriptionDictionary</key>
+	<dict>
+		<key>TabletPositionOnMap</key>
+		<string>RID2Caltopo needs your precise location to mark this device's position on the map relative to nearby aircraft. An approximate location can be off by hundreds of meters.</string>
+	</dict>
 	<key>NSFaceIDUsageDescription</key>
 	<string>Use Face ID to protect organization CalTopo maps and settings.</string>
 	<key>NSMicrophoneUsageDescription</key>

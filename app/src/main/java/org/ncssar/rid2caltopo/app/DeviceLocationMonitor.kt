@@ -50,7 +50,20 @@ internal class ForegroundLocationGate {
     fun accepts(candidate: Session): Boolean = candidate.active && session == candidate
 }
 
-/** Device location is approximate and active only while an app activity is visible. */
+/**
+ * Tablet location for the map marker (field test Nov 13, 2026: a coarse fix put the tablet
+ * hundreds of metres off). Precise when the user granted precise location, approximate
+ * otherwise; the marker's info states which, with the reported accuracy.
+ */
+internal object DeviceLocationText {
+    fun accuracyLine(accuracyM: Float?, precise: Boolean): String {
+        val acc = accuracyM?.takeIf { it.isFinite() && it > 0f }?.let { " ±${Math.round(it)} m" } ?: ""
+        return if (precise) "Tablet location: precise$acc"
+        else "Tablet location: approximate$acc (precise location is off for this app in Android settings)"
+    }
+}
+
+/** Device location is precise (when granted) and active only while an app activity is visible. */
 object DeviceLocationMonitor {
     private const val TAG = "DeviceLocationMonitor"
     private val worker = Executors.newSingleThreadExecutor { task ->
@@ -64,6 +77,16 @@ object DeviceLocationMonitor {
     private var callback: LocationCallback? = null // worker only
     private var firstFixDelivered = false // worker only
     @Volatile private var locationListener: ((Location) -> Unit)? = null
+    /** Whether the running request has precise (fine) permission; read by the map marker. */
+    @Volatile var preciseGranted: Boolean = false
+        private set
+
+    /** Info-window line for the tablet marker: precision and accuracy of the last fix. */
+    @JvmStatic
+    fun accuracyLine(): String? {
+        val fix = CaltopoMap.GetDeviceLocation() ?: return null
+        return DeviceLocationText.accuracyLine(if (fix.hasAccuracy()) fix.accuracy else null, preciseGranted)
+    }
 
     fun install(application: Application) {
         appContext = application.applicationContext
@@ -114,6 +137,12 @@ object DeviceLocationMonitor {
             CaltopoClient.CTDebug(TAG, "Location permission not granted; updates not started.")
             return
         }
+        // Precise when the user granted it; approximate-only permission keeps working with
+        // coarse fixes (GRANULARITY_PERMISSION_LEVEL never throws for a missing fine grant).
+        val precise = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) ==
+            PackageManager.PERMISSION_GRANTED
+        preciseGranted = precise
+        CaltopoClient.CTDebug(TAG, "Location updates starting (foreground only) precise=$precise")
         val locationClient = LocationServices.getFusedLocationProviderClient(context)
         val locationCallback = object : LocationCallback() {
             override fun onLocationResult(result: LocationResult) {
@@ -123,11 +152,11 @@ object DeviceLocationMonitor {
                 }
             }
         }
-        val request = LocationRequest.Builder(10_000L)
-            .setPriority(Priority.PRIORITY_BALANCED_POWER_ACCURACY)
-            .setGranularity(Granularity.GRANULARITY_COARSE)
-            .setMinUpdateIntervalMillis(5_000L)
-            .setMinUpdateDistanceMeters(5.0f)
+        val request = LocationRequest.Builder(5_000L)
+            .setPriority(if (precise) Priority.PRIORITY_HIGH_ACCURACY else Priority.PRIORITY_BALANCED_POWER_ACCURACY)
+            .setGranularity(Granularity.GRANULARITY_PERMISSION_LEVEL)
+            .setMinUpdateIntervalMillis(2_000L)
+            .setMinUpdateDistanceMeters(2.0f)
             .build()
         try {
             client = locationClient

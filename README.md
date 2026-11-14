@@ -148,7 +148,7 @@ When RID2Caltopo connects to a map, it creates a marker at the device's current 
 
 If `tracker_api_key` and `tracker_url_prefix` are configured, RID2Caltopo will prefer
 tracker-backed peer coordination. Each R2C zone opens an outbound connection to the
-organization's `r2c-tracker` service, reports its presence and approximate location, and
+organization's `r2c-tracker` service, reports its presence and location, and
 submits first-sighting and waypoint candidate updates for each observed Remote ID. The
 tracker service acts as the rendezvous point and ownership arbiter: it assigns one zone as
 the owner for each drone stream and relays candidate sightings to that owner. The owner is

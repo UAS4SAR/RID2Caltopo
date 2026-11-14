@@ -78,6 +78,11 @@ final class AppleLocationProvider: NSObject, ObservableObject, @preconcurrency C
     private var physicalLocation: CLLocation?
     private var physicalLocationIsProvisional = false
     private var started = false
+    /// The user picked "Approximate" for this app: fixes are deliberately blurred by iOS.
+    @Published private(set) var reducedAccuracy = false
+    private var fullAccuracyRequested = false // once per session
+    /// Info.plist NSLocationTemporaryUsageDescriptionDictionary key.
+    static let fullAccuracyPurposeKey = "TabletPositionOnMap"
     private var startGeneration = 0
     private var startTask: Task<Void, Never>?
     private let availability = LocationServiceAvailability()
@@ -152,6 +157,7 @@ final class AppleLocationProvider: NSObject, ObservableObject, @preconcurrency C
         manager?.stopUpdatingLocation()
         manager?.stopUpdatingHeading()
         started = false
+        fullAccuracyRequested = false
         clearLocationUse(removePersistedFix: false)
         backgroundOperationEnabled = false
         if let manager { applyBackgroundMonitoringConfiguration(to: manager) }
@@ -207,8 +213,9 @@ final class AppleLocationProvider: NSObject, ObservableObject, @preconcurrency C
         case .restricted: return "Restricted"
         case .denied: return "Denied"
         case .authorizedAlways, .authorizedWhenInUse:
-            guard let lastLocation else { return "Locating…" }
-            return "±\(Int(lastLocation.horizontalAccuracy.rounded())) m"
+            guard let lastLocation else { return reducedAccuracy ? "Approximate location; locating…" : "Locating…" }
+            let accuracy = "±\(Int(lastLocation.horizontalAccuracy.rounded())) m"
+            return reducedAccuracy ? "Approximate \(accuracy) (Precise Location is off in Settings)" : accuracy
         @unknown default: return "Unknown"
         }
     }
@@ -255,6 +262,7 @@ final class AppleLocationProvider: NSObject, ObservableObject, @preconcurrency C
             if started { manager?.requestWhenInUseAuthorization() }
         case .authorizedAlways, .authorizedWhenInUse:
             errorMessage = nil
+            if let manager { applyAccuracyAuthorization(manager) }
             if started {
                 publishProvisionalLocationIfUsable(manager?.location, source: "Core Location cache")
                 publishProvisionalLocationIfUsable(persistedPhysicalLocation(), source: "persisted device fix")
@@ -272,6 +280,21 @@ final class AppleLocationProvider: NSObject, ObservableObject, @preconcurrency C
         @unknown default:
             manager?.stopUpdatingLocation()
             errorMessage = "Unknown location authorization state"
+        }
+    }
+
+    /// Field test Nov 13, 2026: the tablet marker must be precise. With "Approximate" chosen,
+    /// ask once per session for full accuracy while in use, and say so in the status.
+    private func applyAccuracyAuthorization(_ manager: CLLocationManager) {
+        let reduced = manager.accuracyAuthorization == .reducedAccuracy
+        if reduced != reducedAccuracy {
+            reducedAccuracy = reduced
+            AppleLog.info("Location", "Accuracy: \(reduced ? "approximate" : "precise")")
+        }
+        guard reduced, started, !fullAccuracyRequested else { return }
+        fullAccuracyRequested = true
+        manager.requestTemporaryFullAccuracyAuthorization(withPurposeKey: Self.fullAccuracyPurposeKey) { error in
+            if let error { AppleLog.error("Location", "Full accuracy request failed: \(error.localizedDescription)") }
         }
     }
 

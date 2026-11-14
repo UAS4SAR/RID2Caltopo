@@ -20,11 +20,16 @@ provides the fuller account of data use, recipients, retention, and deletion.
 
 - Bluetooth and compatible external-network Remote ID observations are decoded
   to display nearby aircraft and create local track archives.
-- Approximate device location, updated while an app screen is visible, places the
-  operator relative to aircraft on the map and supports configured tracker
-  coordination. Android also requires precise location permission for Wi-Fi
-  beacon scanning, even though the app requests approximate device location.
-  Operating-system settings control
+- Precise device location, when the operator allows it, is used only while an
+  app screen is visible, to mark this tablet's position on the map relative to
+  aircraft. If only approximate location is allowed, the app keeps working with
+  the approximate position and shows its accuracy. Device location is not
+  collected in the background. Android also requires precise location
+  permission for Wi-Fi beacon Remote ID scanning. The tablet's position leaves
+  the device only through features the operator configures: a marker on the
+  selected CalTopo map, the operator position sent to configured tracker
+  coordination, and search areas around it for nearby advisories and
+  protected-land checks. Operating-system settings control
   access to this device's location. Withdrawing location permission stops the
   app's use of the device's current and cached operator location. It does not
   delete information already shared with a service.
@@ -75,8 +80,9 @@ provides the fuller account of data use, recipients, retention, and deletion.
 ### CalTopo and tracker coordination
 
 CalTopo publishing is disabled until it is configured and enabled by the
-operator. When enabled, aircraft positions, track information, and associated
-telemetry are sent to the operator-selected CalTopo map. Operator-requested photo
+operator. When enabled, aircraft positions, track information, associated
+telemetry, and a marker at this device's position are sent to the
+operator-selected CalTopo map. Operator-requested photo
 clues can include the selected image, annotation, time, and coordinates. Track
 camera links can refer to tracker-hosted preview thumbnails. CalTopo map owners and users with permission to administer a map control its
 sharing and membership settings. RID2Caltopo publishes to the operator-selected

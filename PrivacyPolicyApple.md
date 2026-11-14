@@ -21,7 +21,10 @@ provides the fuller account of data use, recipients, retention, and deletion.
 - Bluetooth and compatible external-network Remote ID observations are decoded
   to display nearby aircraft and create local track archives.
 - Location permission places the operator relative to aircraft on the map and
-  supports configured tracker coordination. Operating-system settings control
+  supports configured tracker coordination. The app asks for precise location
+  while in use, to mark this device's position on the map; if only approximate
+  location is allowed, it keeps working with the approximate position and says
+  so. Operating-system settings control
   access to this device's location. Withdrawing location permission stops the
   app's use of the device's current and cached operator location. It does not
   delete information already shared with a service.
@@ -72,8 +75,9 @@ provides the fuller account of data use, recipients, retention, and deletion.
 ### CalTopo and tracker coordination
 
 CalTopo publishing is disabled until it is configured and enabled by the
-operator. When enabled, aircraft positions, track information, and associated
-telemetry are sent to the operator-selected CalTopo map. Operator-requested photo
+operator. When enabled, aircraft positions, track information, associated
+telemetry, and a marker at this device's position are sent to the
+operator-selected CalTopo map. Operator-requested photo
 clues can include the selected image, annotation, time, and coordinates. Track
 camera links can refer to tracker-hosted preview thumbnails. CalTopo map owners and users with permission to administer a map control its
 sharing and membership settings. RID2Caltopo publishes to the operator-selected

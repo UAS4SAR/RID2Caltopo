@@ -2,7 +2,9 @@ import Foundation
 import CoreLocation
 
 @main struct LocationConsentRegression {
-    @MainActor static func main() {
+    @MainActor static func main() async {
+        // start() checks Location Services off the main actor first (LocationServiceAvailability).
+        func settle() async { for _ in 0..<50 { await Task.yield() } }
         let suite = "org.ncssar.location-consent-regression.\(UUID())"
         let defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
@@ -18,6 +20,7 @@ import CoreLocation
         CLLocationManager.cachedLocation = fix
         let denied = AppleLocationProvider(defaults: defaults)
         denied.start()
+        await settle()
         precondition(denied.lastLocation == nil)
         precondition(defaults.object(forKey: "location.lastPhysical.timestamp") == nil)
         precondition(denied.consent.currentGeneration == nil)
@@ -29,6 +32,7 @@ import CoreLocation
         var invalidations = 0
         provider.locationUnavailableHandler = { invalidations += 1 }
         provider.start()
+        await settle()
         let manager = CLLocationManager.latest!
         provider.locationManager(manager, didUpdateLocations: [fix])
         precondition(provider.lastLocation != nil && manager.locationUpdates)
@@ -61,8 +65,32 @@ import CoreLocation
         CLLocationManager.initialStatus = .notDetermined
         let pending = AppleLocationProvider(defaults: defaults)
         pending.start()
+        await settle()
         precondition(pending.lastLocation == nil)
         precondition(CLLocationManager.latest!.permissionRequests == 1)
         print("PASS undetermined permission does not use a cache")
+        pending.stop()
+
+        CLLocationManager.initialStatus = .authorizedWhenInUse
+        CLLocationManager.initialAccuracy = .reducedAccuracy
+        let approximate = AppleLocationProvider(defaults: defaults)
+        approximate.start()
+        await settle()
+        let reducedManager = CLLocationManager.latest!
+        precondition(approximate.reducedAccuracy)
+        precondition(reducedManager.fullAccuracyRequests == [AppleLocationProvider.fullAccuracyPurposeKey])
+        approximate.locationManager(reducedManager, didUpdateLocations: [CLLocation(
+            coordinate: .init(latitude: 39.1, longitude: -104.2), altitude: 0, horizontalAccuracy: 2000,
+            verticalAccuracy: -1, timestamp: Date())])
+        precondition(approximate.lastLocation != nil, "approximate fixes keep working")
+        precondition(approximate.statusText.hasPrefix("Approximate ±2000 m"), approximate.statusText)
+        approximate.locationManagerDidChangeAuthorization(reducedManager)
+        precondition(reducedManager.fullAccuracyRequests.count == 1, "asked once per session")
+        reducedManager.accuracyAuthorization = .fullAccuracy
+        approximate.locationManagerDidChangeAuthorization(reducedManager)
+        precondition(!approximate.reducedAccuracy && approximate.statusText == "±2000 m")
+        approximate.stop()
+        CLLocationManager.initialAccuracy = .fullAccuracy
+        print("PASS approximate permission keeps working, asks once for precise, and says so")
     }
 }
