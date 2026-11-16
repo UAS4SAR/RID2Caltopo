@@ -42,6 +42,7 @@ class BtrxBearingLayerTest {
         override fun noteRendered(handle: Long, seq: Long, hostUs: Long): Int { calls += "rendered $seq"; return 0 }
         override fun setSourceFlags(handle: Long, keys: LongArray, mask: Int, value: Int): Int { flags += Triple(keys.toList(), mask, value); return 0 }
         override fun setFade(handle: Long, totalS: Float, shapeP: Float): Int { calls += "fade $totalS $shapeP"; return 0 }
+        override fun setStableSrcIds(handle: Long, stable: Boolean): Int { calls += "stable $stable"; return 0 }
         override fun reset(handle: Long, what: Int, key: Long): Int = 0
         override fun tick(handle: Long, nowUs: Long): Int = if (publish) 1.also { publish = false } else 0
         override fun copySnapshot(handle: Long, rgba: ByteBuffer, keys: LongArray, shortIds: ByteArray, meta: DoubleArray): Int {
@@ -60,6 +61,8 @@ class BtrxBearingLayerTest {
                 meta[o + 5] = if (i == 1) BtrxBearingNative.SRC_MUTED.toDouble() else 0.0
                 meta[o + 10] = 23.0
                 if (i == 0) meta[o + 12] = 0.5
+                meta[o + 31] = if (i == 0) 0xF1A3.toDouble() else 7.0
+                meta[o + 32] = if (i == 1) 1.0 else 0.0
                 if (i == 0) { meta[o + 13] = 1.0; meta[o + 15] = 37.005; meta[o + 16] = -121.995; meta[o + 17] = 9f.toDouble() }
             }
             return 2
@@ -164,6 +167,27 @@ class BtrxBearingLayerTest {
         assertEquals(1, e.steers.size)
         l.onFrame(frame(P.HEALTH, ByteArray(34)), meta(), fromPairedPod = false, fromDeskPod = true)
         assertTrue("health 34" in e.calls)
+        assertFalse(e.calls.any { it.startsWith("stable") })
+    }
+
+    /** The paired Drone Pod's HEALTH build (offset 4) switches the layer to stable src ids at 0x0106. */
+    @Test fun stableSrcIdsFollowThePairedPodBuild() {
+        val e = FakeEngine()
+        val l = layer(e)
+        l.start(BtrxBearingSettings(), false, true)
+        fun health(build: Int, size: Int = 44) = ByteArray(size).also { it[4] = build.toByte(); it[5] = (build ushr 8).toByte() }
+        l.onFrame(frame(P.HEALTH, health(0x0105, 34)), meta(), fromPairedPod = true, fromDeskPod = false)
+        assertFalse(l.stableSrcIds)
+        assertFalse(e.calls.any { it.startsWith("stable") })
+        l.onFrame(frame(P.HEALTH, health(0x0106, 44)), meta(), fromPairedPod = false, fromDeskPod = true)
+        assertFalse("the Desk Pod's build does not decide", l.stableSrcIds)
+        l.onFrame(frame(P.HEALTH, health(0x0106, 44)), meta(), fromPairedPod = true, fromDeskPod = false)
+        assertTrue(l.stableSrcIds)
+        l.onFrame(frame(P.HEALTH, health(0x0107, 44)), meta(), fromPairedPod = true, fromDeskPod = false)
+        assertEquals(listOf("stable true"), e.calls.filter { it.startsWith("stable") })
+        l.onFrame(frame(P.HEALTH, health(0x0105, 34)), meta(), fromPairedPod = true, fromDeskPod = false)
+        assertFalse("an older pod paired later goes back", l.stableSrcIds)
+        assertEquals(listOf("stable true", "stable false"), e.calls.filter { it.startsWith("stable") })
     }
 
     @Test fun poseOnlyFromTheDronePodStream() {
@@ -202,6 +226,10 @@ class BtrxBearingLayerTest {
         assertEquals(0xE69F00, s.sources[0].rgb)
         assertFalse(s.sources[0].muted)
         assertTrue(s.sources[1].muted)
+        assertEquals(0xF1A3, s.sources[0].srcId)
+        assertFalse(s.sources[0].srcKeyed)
+        assertEquals(7, s.sources[1].srcId)
+        assertTrue(s.sources[1].srcKeyed)
         assertEquals(18f, s.sources[0].estimate!!.plusMinus2sM, 1e-3f)
         assertNull(s.sources[1].estimate)
         assertEquals("phone · ID0000 · 23 rpt · ±18 m", BtrxBearingText.label(s.sources[0]))

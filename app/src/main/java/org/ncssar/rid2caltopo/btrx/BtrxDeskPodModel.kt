@@ -41,6 +41,15 @@ import org.ncssar.rid2caltopo.btrx.BtrxProtocol as P
  * arriving. [muteSteeringSource] / [clearSteeringMutes] send STEER_MUTE to that pod.
  * Nothing here ever makes a clue.
  *
+ * Re-pair (firmware 0x0106): a paired pod ignores nods (motor vibration read as nods at
+ * takeoff). [repairDronePod] sends PAIR_OPEN to the paired pod and DESK_PAIR to the Desk Pod
+ * (its phone-link bench-test path opens the Desk Pod window), then runs steps 2-4 above with
+ * only the paired node accepted. No confirm leaves the pod paired as it was.
+ *
+ * Own aircraft (saved) (firmware 0x0106): STEER_MUTE op 3 / 4 by src_id puts the address on
+ * (takes it off) the pod's saved ignore list; FILTER_ACK answers. [savedIgnores] is this
+ * app's record of what the pod took (per paired pod, persisted by the caller).
+ *
  * IMU calibration (design doc section 29.3, firmware 0x0102): [BtrxImuCal] runs the flow;
  * IMU_CAL goes to the paired pod's node like STEER_MUTE, and only that pod's live
  * IMU_CAL_ACK (same filter as other pod traffic) answers it. STEER bit 6 feeds "Calibrated".
@@ -49,6 +58,8 @@ class BtrxDeskPodModel(
     private val log: BtrxClient.Logger,
     private val clock: () -> Long = System::currentTimeMillis,
     private val onPaired: (PairedPod) -> Unit = {},
+    /** The saved-ignore src ids changed (persist them with the paired pod). */
+    private val onSavedIgnores: (List<Int>) -> Unit = {},
 ) {
     enum class LinkKind { NONE, BLUETOOTH, USB }
 
@@ -98,7 +109,14 @@ class BtrxDeskPodModel(
         val confirmTries: Int = 0,
         /** The pod stopped repeating PAIR_REQ: its own window has probably closed. Nod again. */
         val podStale: Boolean = false,
+        /** "Re-pair Drone Pod": only the paired node may answer; a failure leaves it paired as it was. */
+        val repair: Boolean = false,
+        /** Re-pair of a pod older than 0x0106 (no PAIR_OPEN): it opens its window on a nod. */
+        val repairByNod: Boolean = false,
     )
+
+    /** A STEER_MUTE op 3 / 4 waiting for its FILTER_ACK. */
+    data class PendingFilter(val op: Int, val srcId: Int, val sentMs: Long)
 
     data class HealthReading(val node: Long, val arrivalMs: Long, val rxRssi: Int, val rxSnr: Float, val health: P.Health)
 
@@ -141,6 +159,16 @@ class BtrxDeskPodModel(
         val droppedEncrypted: Int = 0,
         /** This session: packets dropped before btrx decoding, another port (not 256). */
         val droppedOtherPort: Int = 0,
+        /** The Desk Pod's own HEALTH fields from build 0x0106 (reset reason etc.), or null. */
+        val deskHealthExt: P.HealthExt? = null,
+        /** Paired pod build 0x0106+: "Own aircraft (saved)" is offered; else the local toggle only. */
+        val savedIgnoreSupported: Boolean = false,
+        /** src ids the paired pod confirmed on its saved ignore list (FILTER_ACK ok=1). */
+        val savedIgnores: List<Int> = emptyList(),
+        /** An op 3 / 4 waiting for FILTER_ACK. */
+        val filterPending: PendingFilter? = null,
+        /** The latest saved-ignore result, for the BTRX pane. */
+        val filterMessage: String? = null,
     ) {
         val roleSupported: Boolean get() = role != null && P.buildSupported(role.buildHash)
     }
@@ -156,6 +184,10 @@ class BtrxDeskPodModel(
     private var pairedPod: PairedPod? = null
     private var lastHealth: HealthReading? = null
     private var deskPhoneLost: Long? = null
+    private var deskHealthExt: P.HealthExt? = null
+    private val savedIgnores = sortedSetOf<Int>()
+    private var pendingFilter: PendingFilter? = null
+    private var filterMessage: String? = null
     /** The Desk Pod's own latest live HEALTH this session: uptime_s and arrival (logged when the link drops). */
     private var deskUptimeS: Long? = null
     private var deskHealthAtMs = 0L
@@ -191,6 +223,7 @@ class BtrxDeskPodModel(
         localNode = null
         role = null
         deskPhoneLost = null
+        deskHealthExt = null
         deskUptimeS = null; deskHealthAtMs = 0L
         droppedEncrypted = 0; droppedOtherPort = 0
         liveCounts.clear(); backlogCounts.clear()
@@ -205,6 +238,8 @@ class BtrxDeskPodModel(
             this.sender = null
             log.debug(linkDropLine(reason, clock()))
             if (pairing.step in ACTIVE_STEPS) fail(pairing.step, "The link to the Desk Pod was lost ($reason).")
+            pendingFilter?.let { filterMessage = "No answer from the Drone Pod: the link to the Desk Pod was lost." }
+            pendingFilter = null
             imuCal.linkLost(reason)
         }
     }
@@ -222,9 +257,12 @@ class BtrxDeskPodModel(
     }
 
     @Synchronized
-    fun restorePairedPod(pod: PairedPod?) {
+    fun restorePairedPod(pod: PairedPod?, savedIgnoreIds: Collection<Int> = emptyList()) {
         if (pod != pairedPod) imuCal.reset() // another pod: its calibration state is not known
         pairedPod = pod
+        savedIgnores.clear()
+        if (pod != null) savedIgnores += savedIgnoreIds.filter { it in 1..0xFFFF }
+        pendingFilter = null; filterMessage = null
         quietWatchSinceMs = clock()
     }
 
@@ -250,6 +288,12 @@ class BtrxDeskPodModel(
 
     @Synchronized
     fun forgetPairedPod() {
+        if (savedIgnores.isNotEmpty()) {
+            // The old pod keeps its list in flash; this app no longer knows it is paired to it.
+            log.debug("own aircraft (saved): forgetting ${savedIgnores.size} saved id(s) with the unpaired pod")
+            savedIgnores.clear(); onSavedIgnores(emptyList())
+        }
+        pendingFilter = null; filterMessage = null
         pairedPod = null; lastHealth = null; otherPods.clear()
         podIdMismatches = 0; lastMismatchPodId = null
         steering.reset()
@@ -291,6 +335,7 @@ class BtrxDeskPodModel(
                     if (!meta.backlog) {
                         val h = P.parseHealth(frame.payload)
                         h.phoneLost?.let { deskPhoneLost = it }
+                        h.ext?.let { deskHealthExt = it }
                         deskUptimeS = h.uptimeS
                         deskHealthAtMs = meta.arrivalMs
                     }
@@ -338,6 +383,7 @@ class BtrxDeskPodModel(
                 }
                 imuCal.onSteer(st.imuOk, st.imuCal)
             }
+            P.FILTER_ACK -> if (pairedPod != null) onFilterAck(P.parseFilterAck(frame.payload), frame.flags)
             // Only from the paired pod: an answer before pairing is not ours.
             P.IMU_CAL_ACK -> if (pairedPod != null) {
                 val ack = P.parseImuCalAck(frame.payload)
@@ -383,6 +429,11 @@ class BtrxDeskPodModel(
         val nonce = P.hex(req.nonce)
         val open = window.isOpen(now)
         fun newCandidate(): Boolean {
+            val paired = pairedPod
+            if (pairing.repair && paired != null && meta.fromNode != paired.node) {
+                log.debug("pairing: PAIR_REQ from ${BtrxClient.nodeName(meta.fromNode)} ignored: re-pairing ${BtrxClient.nodeName(paired.node)} only")
+                return false
+            }
             if (!open) {
                 log.debug("pairing: PAIR_REQ from ${BtrxClient.nodeName(meta.fromNode)} ignored: no Desk Pod window open")
                 return false
@@ -431,12 +482,19 @@ class BtrxDeskPodModel(
         if (meta.fromNode != c.node) return
         if (ack.aOk == 1) {
             val pod = PairedPod(c.node, c.assignedPodId, c.devA, c.devB)
-            if (pairedPod?.node != pod.node) steering.reset()
+            if (pairedPod?.node != pod.node) {
+                steering.reset()
+                if (savedIgnores.isNotEmpty()) { savedIgnores.clear(); onSavedIgnores(emptyList()) }
+            }
             if (pairedPod != pod) imuCal.reset()
             pairedPod = pod
             podIdMismatches = 0; lastMismatchPodId = null
             quietWatchSinceMs = meta.arrivalMs
-            val msg = if (ack.bOk == 1) "Drone Pod paired." else "Paired, but the port board did not answer. Check the cable between the boards."
+            val msg = when {
+                ack.bOk != 1 -> "Paired, but the port board did not answer. Check the cable between the boards."
+                pairing.repair -> "Drone Pod re-paired."
+                else -> "Drone Pod paired."
+            }
             pairing = pairing.copy(step = PairStep.PAIRED, aOk = ack.aOk, bOk = ack.bOk, ackFlags = ack.flags, message = msg, failedAt = null)
             log.debug("pairing: PAIR_ACK a_ok=${ack.aOk} b_ok=${ack.bOk}; paired ${BtrxClient.nodeName(c.node)} pod_id=%08x".format(c.assignedPodId))
             onPaired(pod)
@@ -468,6 +526,54 @@ class BtrxDeskPodModel(
             stepDeadlineMs = now + BUTTON_WAIT_MS
             if (window.isOpen(now)) enterWaitNod(now)
         }
+    }
+
+    /**
+     * "Re-pair Drone Pod" (after the operator confirmed): a paired pod ignores nods from build
+     * 0x0106, so PAIR_OPEN (0x16) to it opens its pairing window, and DESK_PAIR to the Desk Pod
+     * opens the Desk Pod's (its phone-link bench-test path, answered by DESK_PAIR open=1). Then
+     * the normal flow, only the paired node accepted. A paired pod on an older build (HEALTH
+     * says so) gets no PAIR_OPEN: it still opens its window on a nod. Nothing is unpaired: if
+     * no confirm happens the pod stays paired as it was, here and on the pod.
+     */
+    fun repairDronePod(seconds: Int? = null) {
+        val sends = synchronized(this) {
+            val now = clock()
+            val pod = pairedPod
+            val s = sender
+            val local = localNode
+            when {
+                pairing.step in ACTIVE_STEPS -> {
+                    log.debug("pairing: re-pair not started: pairing already in progress at ${pairing.step}")
+                    return
+                }
+                pod == null -> {
+                    pairing = Pairing(step = PairStep.FAILED, failedAt = PairStep.WAIT_BUTTON, repair = true, message = REPAIR_NOT_PAIRED)
+                    return
+                }
+                s == null || !s.isReady || local == null -> {
+                    pairing = Pairing(step = PairStep.FAILED, failedAt = PairStep.WAIT_BUTTON, repair = true,
+                        message = "The Desk Pod is not connected. $REPAIR_KEPT")
+                    return
+                }
+            }
+            pod!!; local!!
+            val build = lastHealth?.takeIf { it.node == pod.node }?.health?.buildHash
+            val pairOpen = build == null || build >= P.BUILD_STABLE_IDS
+            if (pairOpen) {
+                log.info("pairing: re-pair: PAIR_OPEN seconds=${seconds ?: "default"} to ${BtrxClient.nodeName(pod.node)} pod_id=%08x, DESK_PAIR to the Desk Pod".format(pod.podId))
+                outbox += pod.node to { seq -> P.pairOpenFrame(seq, pod.podId, seconds) }
+            } else {
+                log.info("pairing: re-pair: Drone Pod build 0x%04x has no PAIR_OPEN (nod it); DESK_PAIR to the Desk Pod".format(build))
+            }
+            outbox += local to { seq -> P.deskPairOpenFrame(seq) }
+            pairing = Pairing(step = PairStep.WAIT_BUTTON, repair = true, repairByNod = !pairOpen,
+                message = if (pairOpen) REPAIR_OPENING else REPAIR_OPENING_NOD)
+            stepDeadlineMs = now + REPAIR_WINDOW_WAIT_MS
+            if (window.isOpen(now)) enterWaitNod(now)
+            takeOutbox()
+        }
+        deliver(sends)
     }
 
     /** The operator confirmed the pod shown. */
@@ -519,7 +625,9 @@ class BtrxDeskPodModel(
         trimDetects(now)
         val open = window.isOpen(now)
         when (pairing.step) {
-            PairStep.WAIT_BUTTON -> if (now >= stepDeadlineMs) fail(PairStep.WAIT_BUTTON, "The Desk Pod button was not tapped. Tap it, then start again.")
+            PairStep.WAIT_BUTTON -> if (now >= stepDeadlineMs) fail(PairStep.WAIT_BUTTON,
+                if (pairing.repair) "The Desk Pod did not open its pairing window. Tap the Desk Pod button, then try Re-pair again."
+                else "The Desk Pod button was not tapped. Tap it, then start again.")
             PairStep.WAIT_NOD -> if (!open) fail(PairStep.WAIT_NOD, windowEndedMessage("No Drone Pod asked to pair. Nod the drone pod twice within the window."))
             PairStep.POD_FOUND -> pairing.candidate?.let { c ->
                 if (!pairing.podStale && now - c.lastRequestMs > POD_REQUEST_STALE_MS) markStale(c)
@@ -531,6 +639,13 @@ class BtrxDeskPodModel(
             else -> Unit
         }
         if (pairing.step in ACTIVE_STEPS) pairing = pairing.copy(windowSecondsLeft = window.secondsLeft(now))
+        pendingFilter?.let {
+            if (now - it.sentMs > FILTER_ACK_TIMEOUT_MS) {
+                log.warn("own aircraft (saved): no FILTER_ACK for ${P.muteOpName(it.op)} src=0x%04x within %d s".format(it.srcId, FILTER_ACK_TIMEOUT_MS / 1000))
+                filterMessage = "No answer from the Drone Pod. Try again."
+                pendingFilter = null
+            }
+        }
     }
 
     @Synchronized
@@ -553,7 +668,75 @@ class BtrxDeskPodModel(
             lastSteer = steering.lastView(now),
             steeringRollCorrection = steering.rollCorrection,
             imuCal = imuCal.view(now),
+            deskHealthExt = deskHealthExt,
+            savedIgnoreSupported = savedIgnoreSupportedLocked(),
+            savedIgnores = savedIgnores.toList(),
+            filterPending = pendingFilter,
+            filterMessage = filterMessage,
         )
+    }
+
+    private fun savedIgnoreSupportedLocked(): Boolean {
+        val pod = pairedPod ?: return false
+        return P.savedIgnoreSupported(lastHealth?.takeIf { it.node == pod.node }?.health?.buildHash)
+    }
+
+    // ---- own aircraft (saved): STEER_MUTE op 3 / 4, FILTER_ACK (firmware 0x0106) ----
+
+    /** "Own aircraft (saved)": the pod puts the address behind [srcId] on its saved ignore list. */
+    fun ignoreSourceSaved(srcId: Int) = filterAction(P.MUTE_IGNORE, srcId)
+
+    /** "Remove": the pod takes the address behind [srcId] off its saved ignore list. */
+    fun unignoreSourceSaved(srcId: Int) = filterAction(P.MUTE_UNIGNORE, srcId)
+
+    private fun filterAction(op: Int, srcId: Int) {
+        val sends = synchronized(this) {
+            val now = clock()
+            val pod = pairedPod
+            val busy = pendingFilter?.takeIf { now - it.sentMs <= FILTER_ACK_TIMEOUT_MS }
+            val blocked = when {
+                pod == null -> "No Drone Pod is paired."
+                !savedIgnoreSupportedLocked() -> "The Drone Pod's firmware does not save ignored sources (needs build 0x0106). Use Own aircraft on this device."
+                sender?.isReady != true -> "The Desk Pod is not connected."
+                srcId !in 1..0xFFFF -> "That source has no Drone Pod id yet."
+                busy != null -> "Waiting for the Drone Pod to answer the last change."
+                else -> null
+            }
+            if (blocked != null) {
+                log.warn("own aircraft (saved): ${P.muteOpName(op)} src=0x%04x not sent: %s".format(srcId, blocked))
+                filterMessage = blocked
+            } else {
+                pod!!
+                log.info("own aircraft (saved): STEER_MUTE ${P.muteOpName(op)} src=0x%04x to %s".format(srcId, BtrxClient.nodeName(pod.node)))
+                outbox += pod.node to { seq -> P.steerMuteFrame(seq, pod.podId, op, srcId) }
+                pendingFilter = PendingFilter(op, srcId, now)
+                filterMessage = if (op == P.MUTE_IGNORE) "Saving on the Drone Pod…" else "Removing from the Drone Pod…"
+            }
+            takeOutbox()
+        }
+        deliver(sends)
+    }
+
+    private fun onFilterAck(ack: P.FilterAck, frameFlags: Int) {
+        val pend = pendingFilter
+        val wantOp = when (pend?.op) { P.MUTE_IGNORE -> P.FILTER_OP_ADD; P.MUTE_UNIGNORE -> P.FILTER_OP_REMOVE; else -> null }
+        if (pend == null || ack.op != wantOp) {
+            log.debug("own aircraft (saved): FILTER_ACK op=${ack.op} ok=${ack.ok} stored=${ack.stored} matches no request out; ignored")
+            return
+        }
+        pendingFilter = null
+        val id = "0x%04x".format(pend.srcId)
+        log.info("own aircraft (saved): FILTER_ACK op=${ack.op} ok=${ack.ok} list_crc=0x%04x stored=${ack.stored} flags=0x%02x for src=$id".format(ack.listCrc, frameFlags))
+        if (ack.ok == 1) {
+            val changed = if (pend.op == P.MUTE_IGNORE) savedIgnores.add(pend.srcId) else savedIgnores.remove(pend.srcId)
+            if (changed) onSavedIgnores(savedIgnores.toList())
+            filterMessage = if (pend.op == P.MUTE_IGNORE) "Saved on the Drone Pod (${ack.stored} of $FILTER_LIST_MAX saved)."
+                else "Removed from the Drone Pod (${ack.stored} of $FILTER_LIST_MAX saved)."
+        } else {
+            filterMessage = if (pend.op == P.MUTE_IGNORE)
+                "The Drone Pod did not save it: it saves only a source heard in the last 60 s, and holds $FILTER_LIST_MAX."
+            else "The Drone Pod did not remove it: it removes only a source it heard in the last 60 s."
+        }
     }
 
     private fun steeringLinkUp(): Boolean = pairedPod != null && link.phase == LinkPhase.READY && sender != null
@@ -680,7 +863,8 @@ class BtrxDeskPodModel(
     // ---- internals ----
 
     private fun enterWaitNod(now: Long) {
-        pairing = pairing.copy(step = PairStep.WAIT_NOD, windowSecondsLeft = window.secondsLeft(now), message = "Nod the drone pod twice.")
+        val msg = if (pairing.repair && !pairing.repairByNod) "Waiting for the Drone Pod to ask to pair." else "Nod the drone pod twice."
+        pairing = pairing.copy(step = PairStep.WAIT_NOD, windowSecondsLeft = window.secondsLeft(now), message = msg)
         log.debug("pairing: Desk Pod window open, ${window.secondsLeft(now)} s left; waiting for PAIR_REQ")
     }
 
@@ -695,8 +879,9 @@ class BtrxDeskPodModel(
     }
 
     private fun fail(at: PairStep, message: String) {
-        log.warn("pairing failed at $at: $message")
-        pairing = pairing.copy(step = PairStep.FAILED, failedAt = at, message = message, windowSecondsLeft = 0)
+        val m = if (pairing.repair && pairedPod != null && !message.contains(REPAIR_KEPT)) "$message $REPAIR_KEPT" else message
+        log.warn("pairing failed at $at: $m")
+        pairing = pairing.copy(step = PairStep.FAILED, failedAt = at, message = m, windowSecondsLeft = 0)
     }
 
     private fun queueConfirm(c: Candidate) {
@@ -764,6 +949,15 @@ class BtrxDeskPodModel(
         /** No HEALTH (about every 60 s) from the paired pod for this long: hint to re-pair. */
         const val PAIRED_QUIET_MS = 120_000L
         const val MISMATCH_LOG_EVERY = 50
+        /** Re-pair: the Desk Pod answers DESK_PAIR at once; a manual tap also counts until then. */
+        const val REPAIR_WINDOW_WAIT_MS = 30_000L
+        const val FILTER_ACK_TIMEOUT_MS = 10_000L
+        /** The pod's saved ignore list holds 32 addresses (PROTOCOL.md STEER_MUTE). */
+        const val FILTER_LIST_MAX = 32
+        const val REPAIR_KEPT = "The Drone Pod stays paired as it was."
+        const val REPAIR_NOT_PAIRED = "No Drone Pod is paired. Use Pair drone pod."
+        const val REPAIR_OPENING = "Opening the pairing windows on the Desk Pod and the Drone Pod…"
+        const val REPAIR_OPENING_NOD = "Opening the Desk Pod's pairing window… Then nod the drone pod twice (its firmware is older than 0x0106)."
         const val STALE_ENDED_MESSAGE = "The Drone Pod stopped asking to pair and its pairing window is over. Tap the Desk Pod button and nod the drone pod twice again."
         const val STALE_MESSAGE = "The Drone Pod stopped asking to pair; its own pairing window has probably closed. Nod the drone pod twice again, then confirm."
         val ACTIVE_STEPS = setOf(PairStep.WAIT_BUTTON, PairStep.WAIT_NOD, PairStep.POD_FOUND, PairStep.CONFIRMING)

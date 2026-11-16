@@ -47,6 +47,8 @@ object BtrxManager {
     private const val KEY_ADDRESS = "ble_address"
     private const val KEY_NAME = "ble_name"
     private const val KEY_PAIRED = "paired_pod"
+    /** src ids the paired Drone Pod saved on its ignore list (build 0x0106), hex, comma separated. */
+    private const val KEY_SAVED_IGNORES = "paired_pod_saved_ignores"
     private const val KEY_USB_DEBUG = "usb_debug"
     private const val KEY_OVERLAY_SHOWN = "steer_overlay_shown"
     /** "Talking": a Desk Pod frame within this long (STEER arrives about once a second). */
@@ -74,7 +76,11 @@ object BtrxManager {
         override fun debug(message: String) = CaltopoClient.CTDebug(TAG, message)
     }
 
-    val model = BtrxDeskPodModel(logger, onPaired = { pod -> worker.execute { savePairedPod(pod) } })
+    val model = BtrxDeskPodModel(
+        logger,
+        onPaired = { pod -> worker.execute { savePairedPod(pod) } },
+        onSavedIgnores = { ids -> worker.execute { saveSavedIgnores(ids) } },
+    )
 
     private val _snapshot = MutableStateFlow(model.snapshot())
     /** Desk Pod screen state, refreshed about once a second while a link or Bluetooth is on. */
@@ -283,7 +289,7 @@ object BtrxManager {
         }
         worker.execute {
             val p = prefs()
-            model.restorePairedPod(loadPairedPod())
+            model.restorePairedPod(loadPairedPod(), loadSavedIgnores())
             val enabled = p.getBoolean(KEY_BLE_ENABLED, false)
             _bluetoothEnabled.value = enabled
             val usbDebug = p.getBoolean(KEY_USB_DEBUG, false)
@@ -373,7 +379,7 @@ object BtrxManager {
     }
 
     fun forgetPairedPod() = worker.execute {
-        prefs().edit().remove(KEY_PAIRED).apply()
+        prefs().edit().remove(KEY_PAIRED).remove(KEY_SAVED_IGNORES).apply()
         model.forgetPairedPod()
         publish()
     }
@@ -381,10 +387,15 @@ object BtrxManager {
     fun startPairing() = worker.execute { model.startPairing(); publish() }
     /** "Replace Drone Pod" after its confirmation: unpair the current pod here, then pair. */
     fun replacePairedPod() = worker.execute {
-        prefs().edit().remove(KEY_PAIRED).apply()
+        prefs().edit().remove(KEY_PAIRED).remove(KEY_SAVED_IGNORES).apply()
         model.replacePairedPod()
         publish()
     }
+    /** "Re-pair Drone Pod" after its confirmation: PAIR_OPEN plus the Desk Pod window (build 0x0106). */
+    fun repairDronePod() = worker.execute { model.repairDronePod(); publish() }
+    /** "Own aircraft (saved)" / "Remove" on a source (STEER_MUTE op 3 / 4, build 0x0106). */
+    fun ignoreSourceSaved(srcId: Int) = worker.execute { model.ignoreSourceSaved(srcId); publish() }
+    fun unignoreSourceSaved(srcId: Int) = worker.execute { model.unignoreSourceSaved(srcId); publish() }
     fun confirmPod() = worker.execute { model.confirmPod(); publish() }
     fun cancelPairing() = worker.execute { model.cancelPairing(); publish() }
     fun clearPairingResult() = worker.execute { model.clearPairingResult(); publish() }
@@ -568,6 +579,15 @@ object BtrxManager {
     private fun savePairedPod(pod: BtrxDeskPodModel.PairedPod) {
         prefs().edit().putString(KEY_PAIRED, "%08x,%08x,%08x,%08x".format(pod.node, pod.podId, pod.devA, pod.devB)).apply()
     }
+
+    private fun saveSavedIgnores(ids: List<Int>) {
+        val e = prefs().edit()
+        if (ids.isEmpty()) e.remove(KEY_SAVED_IGNORES) else e.putString(KEY_SAVED_IGNORES, ids.joinToString(",") { "%04x".format(it) })
+        e.apply()
+    }
+
+    private fun loadSavedIgnores(): List<Int> =
+        prefs().getString(KEY_SAVED_IGNORES, null)?.split(",")?.mapNotNull { it.toIntOrNull(16) }?.filter { it in 1..0xFFFF } ?: emptyList()
 
     private fun loadPairedPod(): BtrxDeskPodModel.PairedPod? {
         val parts = prefs().getString(KEY_PAIRED, null)?.split(",") ?: return null

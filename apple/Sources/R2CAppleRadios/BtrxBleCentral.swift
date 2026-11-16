@@ -26,6 +26,8 @@ final class BtrxBleCentral: NSObject, @unchecked Sendable {
         var snapshot: @Sendable (Model.Snapshot) -> Void
         var rememberPeripheral: @Sendable (UUID, String?) -> Void
         var paired: @Sendable (Model.PairedPod) -> Void
+        /// The saved-ignore src ids changed (build 0x0106; persisted with the paired pod).
+        var savedIgnores: @Sendable ([Int]) -> Void = { _ in }
     }
 
     private enum Op {
@@ -99,12 +101,12 @@ final class BtrxBleCentral: NSObject, @unchecked Sendable {
     private(set) var bearing: BtrxBearingLayer!
     private var bearingTimer: DispatchSourceTimer?
 
-    init(events: Events, paired: Model.PairedPod?) {
+    init(events: Events, paired: Model.PairedPod?, savedIgnores: [Int] = []) {
         self.events = events
         super.init()
         queue.sync {
-            model = Model(log: log, onPaired: { pod in events.paired(pod) })
-            model.restorePairedPod(paired)
+            model = Model(log: log, onPaired: { pod in events.paired(pod) }, onSavedIgnores: { ids in events.savedIgnores(ids) })
+            model.restorePairedPod(paired, savedIgnoreIds: savedIgnores)
             model.setLink(Model.LinkStatus(kind: .none, phase: .off, detail: "Bluetooth link is off."))
         }
         let log = self.log
@@ -215,6 +217,9 @@ final class BtrxBleCentral: NSObject, @unchecked Sendable {
     func replacePairedPod() { queue.async { [self] in model.replacePairedPod(); publish() } }
     func startPairing() { queue.async { [self] in model.startPairing(); publish() } }
     func confirmPod() { queue.async { [self] in model.confirmPod(); publish() } }
+    func repairDronePod() { queue.async { [self] in model.repairDronePod(); publish() } }
+    func ignoreSourceSaved(_ srcId: Int) { queue.async { [self] in model.ignoreSourceSaved(srcId); publish() } }
+    func unignoreSourceSaved(_ srcId: Int) { queue.async { [self] in model.unignoreSourceSaved(srcId); publish() } }
     func cancelPairing() { queue.async { [self] in model.cancelPairing(); publish() } }
     func clearPairingResult() { queue.async { [self] in model.clearPairingResult(); publish() } }
     func muteSteeringSource() { queue.async { [self] in model.muteSteeringSource(); publish() } }
@@ -742,6 +747,8 @@ public final class BtrxDeskPodCenter: ObservableObject {
     private static let keyPeripheral = "btrx.desk_pod.peripheral"
     private static let keyName = "btrx.desk_pod.name"
     private static let keyPaired = "btrx.desk_pod.paired_pod"
+    /// src ids the paired Drone Pod saved on its ignore list (build 0x0106). Same as Android.
+    private static let keySavedIgnores = "btrx.desk_pod.paired_pod_saved_ignores"
 
     private let defaults: UserDefaults
     private var central: BtrxBleCentral!
@@ -756,9 +763,11 @@ public final class BtrxDeskPodCenter: ObservableObject {
         let events = BtrxBleCentral.Events(
             snapshot: { [weak self] s in Task { @MainActor in self?.apply(s) } },
             rememberPeripheral: { [weak self] id, name in Task { @MainActor in self?.remember(id, name) } },
-            paired: { [weak self] pod in Task { @MainActor in self?.savePaired(pod) } }
+            paired: { [weak self] pod in Task { @MainActor in self?.savePaired(pod) } },
+            savedIgnores: { [weak self] ids in Task { @MainActor in self?.saveSavedIgnores(ids) } }
         )
-        central = BtrxBleCentral(events: events, paired: paired)
+        let savedIgnores = (defaults.array(forKey: Self.keySavedIgnores) as? [Int]) ?? []
+        central = BtrxBleCentral(events: events, paired: paired, savedIgnores: savedIgnores)
     }
 
     /// "BTRX: Active" / "BTRX: Inactive - <reason>" for the chip at the top of the map;
@@ -816,17 +825,24 @@ public final class BtrxDeskPodCenter: ObservableObject {
 
     public func forgetPairedPod() {
         defaults.removeObject(forKey: Self.keyPaired)
+        defaults.removeObject(forKey: Self.keySavedIgnores)
         central.forgetPairedPod()
     }
 
     /// "Replace Drone Pod" after its confirmation: unpair the current pod here, then pair.
     public func replacePairedPod() {
         defaults.removeObject(forKey: Self.keyPaired)
+        defaults.removeObject(forKey: Self.keySavedIgnores)
         central.replacePairedPod()
     }
 
     public func startPairing() { central.startPairing() }
     public func confirmPod() { central.confirmPod() }
+    /// "Re-pair Drone Pod" after its confirmation: PAIR_OPEN plus the Desk Pod window (build 0x0106).
+    public func repairDronePod() { central.repairDronePod() }
+    /// "Own aircraft (saved)" / "Remove" on a source (STEER_MUTE op 3 / 4, build 0x0106).
+    public func ignoreSourceSaved(_ srcId: Int) { central.ignoreSourceSaved(srcId) }
+    public func unignoreSourceSaved(_ srcId: Int) { central.unignoreSourceSaved(srcId) }
     public func cancelPairing() { central.cancelPairing() }
     public func clearPairingResult() { central.clearPairingResult() }
     /// "Mute" on the stream-view steering overlay.
@@ -949,5 +965,9 @@ public final class BtrxDeskPodCenter: ObservableObject {
 
     private func savePaired(_ pod: Model.PairedPod) {
         if let data = try? JSONEncoder().encode(pod) { defaults.set(data, forKey: Self.keyPaired) }
+    }
+
+    private func saveSavedIgnores(_ ids: [Int]) {
+        if ids.isEmpty { defaults.removeObject(forKey: Self.keySavedIgnores) } else { defaults.set(ids, forKey: Self.keySavedIgnores) }
     }
 }

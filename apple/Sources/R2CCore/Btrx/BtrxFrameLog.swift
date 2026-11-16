@@ -19,6 +19,8 @@ public enum BtrxFrameLog {
             let d = try P.parseDeskPair(p)
             let src = d.source == 1 ? "button" : d.source == 2 ? "test" : String(d.source)
             return "open=\(d.open) source=\(src) seconds=\(d.secondsLeft)"
+        case P.PAIR_OPEN:
+            return p.isEmpty ? "seconds=default" : "seconds=\(p[0])"
         case P.PAIR_REQ:
             let r = try P.parsePairReq(p)
             return String(format: "pod_id=%08x dev_a=%08x dev_b=%08x build_a=0x%04x build_b=0x%04x imu_ok=%d role_a=%@ role_b=%@ nonce=%@",
@@ -37,6 +39,12 @@ public enum BtrxFrameLog {
         case P.HEALTH:
             let h = try P.parseHealth(p)
             return "uptime_s=\(h.uptimeS) build_hash=\(String(format: "0x%04x", h.buildHash)) role=\(P.roleName(h.role)) source=\(h.source) confirmed=\(h.confirmed) flags=\(P.statusFlagNames(h.flags)) b_link_age_s=\(h.bLinkAgeS == 0xFFFF ? "never" : String(h.bLinkAgeS)) imu_ok=\(h.imuOk) die_temp_c=\(h.dieTempC) adv_port=\(h.advPerSPort) adv_stbd=\(h.advPerSStbd) lora_rssi=\(h.loraRssi) lora_snr=\(h.loraSnr) clock_offset_ms=\(h.clockOffsetMs) cfg_v=\(h.cfgVersion) filter_v=\(h.filterVersion) tx=\(P.txName(h.txPolicy)) error_flags=\(String(format: "0x%02x", h.errorFlags)) scanning=\(h.scanning)"
+                + (h.phoneLost.map { " phone_lost=\($0)" } ?? "")
+                + (h.ext.map { e in
+                    String(format: " reset_reason=0x%x(%@) pair_source=%@ nods_ignored=%d excluded_per_s=%d exclude_flags=%@",
+                           e.resetReason, P.resetReasonNames(e.resetReason), P.pairSourceName(e.pairSource), e.nodsIgnored,
+                           e.excludedPerS, P.excludeFlagNames(e.excludeFlags))
+                } ?? "")
         case P.DETECT:
             let d = try P.parseDetect(p)
             let head = "window_end_ms=\(d.windowEndMs) roll=\(Double(d.rollX2) / 2) pitch=\(Double(d.pitchX2) / 2) roll_rate=\(d.rollRateDps) attitude=\(String(format: "0x%02x", d.attitudeFlags)) n=\(d.records.count)"
@@ -53,6 +61,9 @@ public enum BtrxFrameLog {
                 P.devClassName(st.devClass), st.companyId, st.rssiPort, st.rssiStbd, st.peakRssi, st.hitsPort, st.hitsStbd, st.ageMs,
                 st.addressTail, st.addrType)
             return "\(head)\(target) window_end_ms=\(st.windowEndMs) roll_x2=\(st.rollX2) pitch_x2=\(st.pitchX2)"
+        case P.FILTER_ACK:
+            let f = try P.parseFilterAck(p)
+            return String(format: "version=%d op=%d ok=%d list_crc=0x%04x stored=%d", f.version, f.op, f.ok, f.listCrc, f.stored)
         case P.STEER_MUTE:
             let m = try P.parseSteerMute(p)
             return "op=\(P.muteOpName(m.op)) src=\(m.srcId)"

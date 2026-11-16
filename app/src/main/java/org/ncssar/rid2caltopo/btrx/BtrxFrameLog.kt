@@ -51,8 +51,15 @@ object BtrxFrameLog {
                 it.uptimeS, it.buildHash, P.roleName(it.role), it.source, it.confirmed, P.statusFlagNames(it.flags),
                 if (it.bLinkAgeS == 0xFFFF) "never" else it.bLinkAgeS.toString(), it.imuOk, it.dieTempC,
                 it.advPerSPort, it.advPerSStbd, it.loraRssi, it.loraSnr, it.clockOffsetMs, it.cfgVersion,
-                it.filterVersion, P.txName(it.txPolicy), it.errorFlags, it.scanning)
+                it.filterVersion, P.txName(it.txPolicy), it.errorFlags, it.scanning) +
+                (it.phoneLost?.let { l -> " phone_lost=$l" } ?: "") +
+                (it.ext?.let { e ->
+                    " reset_reason=0x%x(%s) pair_source=%s nods_ignored=%d excluded_per_s=%d exclude_flags=%s".format(
+                        e.resetReason, P.resetReasonNames(e.resetReason), P.pairSourceName(e.pairSource), e.nodsIgnored,
+                        e.excludedPerS, P.excludeFlagNames(e.excludeFlags))
+                } ?: "")
         }
+        P.PAIR_OPEN -> if (p.isEmpty()) "seconds=default" else "seconds=${p[0].toInt() and 0xFF}"
         P.DETECT -> P.parseDetect(p).let { d ->
             val head = "window_end_ms=${d.windowEndMs} roll=${d.rollX2 / 2.0} pitch=${d.pitchX2 / 2.0} roll_rate=${d.rollRateDps} " +
                 "attitude=0x%02x n=${d.records.size}".format(d.attitudeFlags)

@@ -1,5 +1,6 @@
 package org.ncssar.rid2caltopo.btrx
 
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -18,7 +19,8 @@ class BtrxDeskPodModelTest {
         override fun warn(message: String) { logs += "W $message" }
     }
     private val paired = mutableListOf<BtrxDeskPodModel.PairedPod>()
-    private val model = BtrxDeskPodModel(logger, clock = { now }, onPaired = { paired += it })
+    private val savedLists = mutableListOf<List<Int>>()
+    private val model = BtrxDeskPodModel(logger, clock = { now }, onPaired = { paired += it }, onSavedIgnores = { savedLists += it })
 
     private class FakeSender : BtrxFrameSender {
         override var isReady = true
@@ -896,5 +898,174 @@ class BtrxDeskPodModelTest {
         assertTrue(entry > tools)
         assertTrue(src.substring(tools, entry).contains("showDeskPod = true"))
         assertTrue(src.contains("DeskPodScreen(onDismiss = { showDeskPod = false })"))
+    }
+
+    // ---- firmware 0x0106: re-pair, own aircraft (saved), HEALTH 44 ----
+
+    private val pod0106 = BtrxDeskPodModel.PairedPod(pod, 0x45D35AF0L, 0x4C8C125BL, 0x351C2971L)
+
+    private fun podHealth(build: Int, size: Int = 44, ext: ((ByteArray) -> Unit)? = null) {
+        val p = ByteArray(size).also { P.putU32(it, 0, 500); it[4] = build.toByte(); it[5] = (build shr 8).toByte(); it[6] = P.ROLE_STARBOARD.toByte(); it[8] = 1 }
+        ext?.invoke(p)
+        model.onFrame(P.decodeFrame(P.encodeFrame(P.HEALTH, seq = ++podSeq, podId = pod0106.podId, payload = p)), meta(pod))
+    }
+
+    private fun filterAck(op: Int, ok: Int, stored: Int, from: Long = pod) =
+        model.onFrame(P.decodeFrame(P.encodeFrame(P.FILTER_ACK, seq = ++podSeq, podId = pod0106.podId,
+            flags = if (ok == 0) P.F_ERROR else 0, payload = byteArrayOf(1, op.toByte(), ok.toByte(), 0x34, 0x12, stored.toByte()))), meta(from))
+
+    @Test
+    fun repairSendsPairOpenAndDeskPairThenPairsTheSamePodAgain() {
+        model.restorePairedPod(pod0106)
+        podHealth(0x0106)
+        sender.sent.clear()
+        model.repairDronePod()
+        assertEquals(2, sender.sent.size)
+        val (to1, f1) = sender.sent[0]; val (to2, f2) = sender.sent[1]
+        assertEquals(pod, to1)
+        P.decodeFrame(f1).let { assertEquals(P.PAIR_OPEN, it.type); assertEquals(pod0106.podId, it.podId); assertEquals(0, it.payload.size) }
+        assertEquals(desk, to2)
+        assertEquals(P.DESK_PAIR, P.decodeFrame(f2).type)
+        val p0 = model.snapshot().pairing
+        assertEquals(PairStep.WAIT_BUTTON, p0.step); assertTrue(p0.repair)
+        assertEquals("Desk Pod opens its pairing window", BtrxDeskPodText.steps(p0)[0].title)
+        assertEquals(pod0106, model.snapshot().pairedPod)   // still paired while re-pairing
+        deskPair(1)                                       // the Desk Pod answers (source 2 in the field)
+        assertEquals(PairStep.WAIT_NOD, step)
+        assertEquals("Drone Pod asks to pair", BtrxDeskPodText.steps(model.snapshot().pairing)[1].title)
+        pairReq(from = 0x0BADBEEFL)                       // another pod: not while re-pairing ours
+        assertEquals(PairStep.WAIT_NOD, step)
+        pairReq()
+        assertEquals(PairStep.POD_FOUND, step)
+        model.confirmPod()
+        assertEquals(PairStep.CONFIRMING, step)
+        pairAck()
+        assertEquals(PairStep.PAIRED, step)
+        assertEquals("Drone Pod re-paired.", model.snapshot().pairing.message)
+        assertEquals(pod, model.snapshot().pairedPod!!.node)
+    }
+
+    @Test
+    fun repairFailureKeepsThePodPaired() {
+        model.restorePairedPod(pod0106)
+        model.repairDronePod()
+        advance(BtrxDeskPodModel.REPAIR_WINDOW_WAIT_MS + 1000)
+        val p = model.snapshot().pairing
+        assertEquals(PairStep.FAILED, p.step)
+        assertTrue(p.message, p.message.endsWith(BtrxDeskPodModel.REPAIR_KEPT))
+        assertEquals(pod0106, model.snapshot().pairedPod)
+        // Cancel also leaves it paired.
+        model.repairDronePod()
+        deskPair(1)
+        model.cancelPairing()
+        assertEquals(pod0106, model.snapshot().pairedPod)
+    }
+
+    @Test
+    fun repairNeedsAPairedPodAndALink() {
+        sender.sent.clear()
+        model.repairDronePod()
+        assertEquals(PairStep.FAILED, step)
+        assertEquals(BtrxDeskPodModel.REPAIR_NOT_PAIRED, model.snapshot().pairing.message)
+        model.clearPairingResult()
+        model.restorePairedPod(pod0106)
+        sender.isReady = false
+        model.repairDronePod()
+        assertEquals(PairStep.FAILED, step)
+        assertTrue(sender.sent.isEmpty())
+        // startPairing still refuses with a pod paired (Replace or Re-pair instead)
+        sender.isReady = true
+        model.clearPairingResult()
+        model.startPairing()
+        assertEquals(PairStep.IDLE, step)
+    }
+
+    @Test
+    fun repairOfAnOlderPodSendsOnlyTheDeskWindowAndAsksForANod() {
+        model.restorePairedPod(pod0106)
+        podHealth(0x0105, size = 34)
+        sender.sent.clear()
+        model.repairDronePod()
+        assertEquals(listOf(P.DESK_PAIR), sender.sent.map { P.decodeFrame(it.second).type })
+        deskPair(1)
+        assertEquals("Nod the drone pod twice", BtrxDeskPodText.steps(model.snapshot().pairing)[1].title)
+    }
+
+    @Test
+    fun ownAircraftSavedOnBuild0106() {
+        model.restorePairedPod(pod0106)
+        model.setLink(BtrxDeskPodModel.LinkStatus(BtrxDeskPodModel.LinkKind.USB, BtrxDeskPodModel.LinkPhase.READY))
+        assertFalse(model.snapshot().savedIgnoreSupported)
+        sender.sent.clear()
+        model.ignoreSourceSaved(0x148C)
+        assertTrue("older or unknown build: nothing sent", sender.sent.isEmpty())
+        assertTrue(model.snapshot().filterMessage!!.contains("0x0106"))
+        podHealth(0x0105, size = 34)
+        assertFalse(model.snapshot().savedIgnoreSupported)
+        podHealth(0x0106)
+        assertTrue(model.snapshot().savedIgnoreSupported)
+        model.ignoreSourceSaved(0xF1A3)
+        val f = P.decodeFrame(sender.sent.single().second)
+        assertEquals(pod, sender.sent.single().first)
+        assertEquals(P.STEER_MUTE, f.type)
+        assertArrayEquals(byteArrayOf(3, 0xA3.toByte(), 0xF1.toByte()), f.payload)
+        assertEquals(0xF1A3, model.snapshot().filterPending!!.srcId)
+        model.ignoreSourceSaved(0x0002)                  // one at a time
+        assertEquals(1, sender.sent.size)
+        filterAck(P.FILTER_OP_REMOVE, 1, 1)              // not the op we asked for
+        assertTrue(model.snapshot().savedIgnores.isEmpty())
+        filterAck(P.FILTER_OP_ADD, 1, 1, from = 0x0BADBEEFL) // another pod's answer is not ours
+        assertTrue(model.snapshot().savedIgnores.isEmpty())
+        filterAck(P.FILTER_OP_ADD, 1, 1)
+        assertEquals(listOf(0xF1A3), model.snapshot().savedIgnores)
+        assertNull(model.snapshot().filterPending)
+        assertEquals(listOf(listOf(0xF1A3)), savedLists)
+        assertTrue(model.snapshot().filterMessage!!.startsWith("Saved on the Drone Pod"))
+        // not saved: ok=0
+        model.ignoreSourceSaved(0x0002)
+        filterAck(P.FILTER_OP_ADD, 0, 1)
+        assertEquals(listOf(0xF1A3), model.snapshot().savedIgnores)
+        assertTrue(model.snapshot().filterMessage!!.contains("did not save"))
+        // remove
+        model.unignoreSourceSaved(0xF1A3)
+        assertArrayEquals(byteArrayOf(4, 0xA3.toByte(), 0xF1.toByte()), P.decodeFrame(sender.sent.last().second).payload)
+        filterAck(P.FILTER_OP_REMOVE, 1, 0)
+        assertTrue(model.snapshot().savedIgnores.isEmpty())
+        assertEquals(emptyList<Int>(), savedLists.last())
+        // no answer
+        model.ignoreSourceSaved(0x0003)
+        advance(BtrxDeskPodModel.FILTER_ACK_TIMEOUT_MS + 1000)
+        assertNull(model.snapshot().filterPending)
+        assertEquals("No answer from the Drone Pod. Try again.", model.snapshot().filterMessage)
+    }
+
+    @Test
+    fun savedIgnoresRestoreWithThePodAndClearWhenItIsReplaced() {
+        model.restorePairedPod(pod0106, listOf(0x148C, 0, 0x10000, 7))
+        assertEquals(listOf(7, 0x148C), model.snapshot().savedIgnores)
+        model.forgetPairedPod()
+        assertTrue(model.snapshot().savedIgnores.isEmpty())
+        assertEquals(emptyList<Int>(), savedLists.last())
+        model.restorePairedPod(null, listOf(5))
+        assertTrue(model.snapshot().savedIgnores.isEmpty())
+    }
+
+    @Test
+    fun health44LinesForBothPods() {
+        model.restorePairedPod(pod0106)
+        podHealth(0x0106) { p ->
+            P.putU32(p, 34, 0); p[38] = P.PAIR_SRC_NOD.toByte(); p[39] = 38; p[41] = 12
+            p[43] = (P.EXCL_OWN or P.EXCL_OTHER_BOARD or P.EXCL_DJI).toByte()
+        }
+        val desk44 = ByteArray(44).also { it[4] = 0x06; it[5] = 0x01; it[6] = P.ROLE_DESK_POD.toByte(); P.putU32(it, 34, 2) }
+        model.onFrame(P.decodeFrame(P.encodeFrame(P.HEALTH, payload = desk44)), meta(desk))
+        val lines = BtrxDeskPodText.healthLines(model.snapshot())
+        assertTrue(lines.toString(), "Drone Pod last reset: power on or brown-out" in lines)
+        assertTrue(lines.toString(), "Drone Pod pairing window last opened by: a nod (not paired yet); nods ignored while paired: 38" in lines)
+        assertTrue(lines.toString(), "Drone Pod leaves out: its own board, the other board, DJI (not yet: the Desk Pod); 12 ad(s) left out per second" in lines)
+        assertTrue(lines.toString(), "Desk Pod last reset: watchdog (0x2)" in lines)
+        assertEquals(2L, model.snapshot().deskHealthExt!!.resetReason)
+        assertEquals("nothing yet (its own board, the other board, the Desk Pod, DJI not known)", BtrxDeskPodText.excludeText(0))
+        assertEquals("software reset, wake from pin (0x10004)", BtrxDeskPodText.resetReasonText(0x10004))
     }
 }

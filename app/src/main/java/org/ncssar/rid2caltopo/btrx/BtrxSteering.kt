@@ -16,8 +16,10 @@ import org.ncssar.rid2caltopo.btrx.BtrxProtocol as P
  * means nothing was heard in that window (common for a weak or slow source): fade,
  * keep the last hint. The pod sends a no-target report once when the target goes,
  * then at most every 5 s. window_end_ms is pod A's clock (ms since power-up), the same
- * clock as DETECT. src_id restarts at 1 after a pod reboot, so window_end_ms going
- * back means the pod restarted: everything here is reset, colors included. Mutes live
+ * clock as DETECT. src_id is an opaque 16-bit key (1..65535; never an index): before
+ * build 0x0106 ids count from 1 per pod session, from 0x0106 they are a hash of the
+ * address and survive a restart. window_end_ms going back means the pod restarted:
+ * everything here is reset, colors included. Mutes live
  * only in the pod's RAM (max 8; cleared at power-up; a muted source unheard for 60 s
  * is forgotten and comes back unmuted under a new src_id); STEER bit 5 says at least
  * one is held, there is no count.

@@ -760,6 +760,98 @@ static void test_multi(void) {
     btrx_bearing_destroy(ha); btrx_bearing_destroy(hb);
 }
 
+/* Pod 0x0106+: src_id is a hash of the address, stable across pod restarts (btrx 74ed238). */
+static void test_stable_ids(void) {
+    printf("stable src ids\n");
+    btrx_bearing_t *h = mk(NULL);
+    inj_t s = { 0, 0, 0 };
+    CHECK(btrx_bearing_set_stable_src_ids(NULL, true) == BTRX_BEARING_E_INVALID, "null handle");
+    CHECK(btrx_bearing_set_stable_src_ids(h, true) == BTRX_BEARING_OK, "set stable");
+    btrx_bearing_tick(h, 9000000, NULL);
+    CHECK(h->stable_src_ids, "applied at the tick");
+    const uint64_t K = 0x5151;
+    const uint16_t W = 0xF1A3;                    /* large, not sequential */
+    btrx_bearing_report_source_t prim = entry(0x7000, 0x9C41, -50, -55, 9);
+    btrx_bearing_report_source_t ex = entry(0, W, -70, -64, 9); ex.rank = 1;
+    btrx_bearing_report_source_t ex1 = entry(0, 1, -72, -66, 9); ex1.rank = 2;
+    btrx_bearing_report_source_t e[3] = { prim, ex, ex1 };
+    inject(h, &s, 10000000, 0, 0, 0, 30, e, 3, true);
+    btrx_bearing_tick(h, 11300000, NULL);
+    const btrx_bearing_snapshot_t *sn = btrx_bearing_snapshot_acquire(h);
+    int keyed = 0, prov = 0; bool saw_w = false, saw_1 = false;
+    for (int i = 0; sn && i < sn->source_count; i++) {
+        keyed += sn->sources[i].src_keyed; prov += sn->sources[i].provisional;
+        if (sn->sources[i].src_id == W) saw_w = true;
+        if (sn->sources[i].src_id == 1) saw_1 = true;
+    }
+    CHECK(sn && sn->source_count == 3 && keyed == 2 && prov == 0, "extras are real sources keyed by src_id (%d keyed, %d provisional)", keyed, prov);
+    CHECK(saw_w && saw_1, "src ids 0xF1A3 and 1 reported in the snapshot");
+    if (sn) btrx_bearing_snapshot_release(h, sn);
+    int32_t slot_w = BB_NONE;
+    for (int i = 0; i < 8; i++) if (h->sources[i].used && h->sources[i].src_id == W) slot_w = i;
+    CHECK(slot_w != BB_NONE, "slot for 0xF1A3");
+    uint64_t key_w = slot_w != BB_NONE ? h->sources[slot_w].key : 0;
+    /* pod restart: the id table is cleared, the src_id key still finds the same source */
+    int before = 0; for (int i = 0; i < 8; i++) before += h->sources[i].used;
+    uint32_t sess = h->clock.session;
+    s.pod_off += 17000000;
+    inject(h, &s, 12000000, 50, 0, 20, 30, e, 3, true);
+    CHECK(h->clock.session == sess + 1, "restart detected");
+    int after = 0; for (int i = 0; i < 8; i++) after += h->sources[i].used;
+    CHECK(after == before, "same sources after a pod restart (%d -> %d)", before, after);
+    CHECK(slot_w != BB_NONE && h->sources[slot_w].reports_in == 2 && h->sources[slot_w].key == key_w, "0xF1A3 kept its source (%u reports)",
+          slot_w != BB_NONE ? h->sources[slot_w].reports_in : 0);
+    /* the same src_id with an address: the src-keyed source takes the address key, no new source */
+    uint32_t merges = h->stats.provisional_merges;
+    btrx_bearing_report_source_t pw = entry(K, W, -58, -61, 9);
+    inject(h, &s, 13000000, 100, 0, 40, 30, &pw, 1, true);
+    CHECK(src_of(h, K) == &h->sources[slot_w] && !h->sources[slot_w].src_keyed && h->stats.provisional_merges == merges + 1,
+          "src-keyed source takes the address key");
+    int after2 = 0; for (int i = 0; i < 8; i++) after2 += h->sources[i].used;
+    CHECK(after2 == after, "no new source for the address");
+    /* another restart, then 0xF1A3 as an extra again: found by its src_id alias */
+    s.pod_off += 17000000;
+    btrx_bearing_report_source_t e2[2] = { prim, ex };
+    inject(h, &s, 14000000, 150, 0, 60, 30, e2, 2, true);
+    CHECK(src_of(h, K) == &h->sources[slot_w] && h->sources[slot_w].reports_in == 4, "extra finds the address source by src_id after a restart (%u)",
+          h->sources[slot_w].reports_in);
+    int after3 = 0; for (int i = 0; i < 8; i++) after3 += h->sources[i].used;
+    CHECK(after3 == after2, "still no new source");
+    btrx_bearing_destroy(h);
+
+    /* older firmware (default): the same extra after a pod restart is a new provisional source */
+    h = mk(NULL);
+    inj_t s2 = { 0, 0, 0 };
+    inject(h, &s2, 10000000, 0, 0, 0, 30, e, 3, true);
+    int b0 = 0; for (int i = 0; i < 8; i++) b0 += h->sources[i].used;
+    s2.pod_off += 17000000;
+    inject(h, &s2, 12000000, 50, 0, 20, 30, e, 3, true);
+    int b1 = 0; for (int i = 0; i < 8; i++) b1 += h->sources[i].used;
+    CHECK(b1 == b0 + 2, "older firmware: extras are per pod session (%d -> %d)", b0, b1);
+    btrx_bearing_destroy(h);
+
+    /* more distinct ids than the id table holds (64): every extra still resolves */
+    h = mk(NULL);
+    inj_t s3 = { 0, 0, 0 };
+    btrx_bearing_set_stable_src_ids(h, true);
+    btrx_bearing_tick(h, 9000000, NULL);
+    for (int i = 0; i < 80; i++) {
+        btrx_bearing_report_source_t a = entry(0x7000, 0x9C41, -50, -55, 9);
+        btrx_bearing_report_source_t b = entry(0, (uint16_t)(65535 - i * 811), -70, -66, 9); b.rank = 1;
+        btrx_bearing_report_source_t ab[2] = { a, b };
+        inject(h, &s3, 10000000 + (int64_t)i * 1000000, 0, 0, (float)(i % 36) * 10, 30, ab, 2, true);
+    }
+    CHECK(h->srcid_n <= 64, "id table bounded (%d)", h->srcid_n);
+    int used = 0; for (int i = 0; i < 8; i++) used += h->sources[i].used;
+    CHECK(used == 8, "eviction keeps 8 sources (%d)", used);
+    btrx_bearing_destroy(h);
+
+    uint8_t hp[44]; memset(hp, 0, sizeof hp);
+    hp[0] = 9; hp[6] = 2; hp[30] = 5; hp[34] = 0x04; hp[38] = 2; hp[39] = 3; hp[43] = 0x0F;
+    btrx_bearing_health_t he;
+    CHECK(btrx_bearing_parse_health(hp, 44, &he) == 0 && he.uptime_s == 9 && he.role == 2 && he.lost_known && he.phone_lost == 5, "health 44");
+}
+
 static void test_resolution(void) {
     printf("source resolution\n");
     /* A: extra (src 31) first, then primary with address K and src 31: merge.
@@ -1261,6 +1353,7 @@ int main(int argc, char **argv) {
     test_lag();
     test_multi();
     test_resolution();
+    test_stable_ids();
     test_backlog_health();
     test_stats_without_view();
     test_threads();

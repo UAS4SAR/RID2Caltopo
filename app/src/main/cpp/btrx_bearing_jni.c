@@ -215,6 +215,12 @@ JNIEXPORT jint JNICALL JFN(nativeSetFade)(JNIEnv *env, jobject self, jlong handl
     return w ? btrx_bearing_set_fade(w->h, total_s, shape_p) : BTRX_BEARING_E_INVALID;
 }
 
+JNIEXPORT jint JNICALL JFN(nativeSetStableSrcIds)(JNIEnv *env, jobject self, jlong handle, jboolean stable) {
+    (void)env; (void)self;
+    bbn_t *w = bbn(handle);
+    return w ? btrx_bearing_set_stable_src_ids(w->h, stable == JNI_TRUE) : BTRX_BEARING_E_INVALID;
+}
+
 JNIEXPORT jint JNICALL JFN(nativeReset)(JNIEnv *env, jobject self, jlong handle, jint what, jlong key) {
     (void)env; (void)self;
     bbn_t *w = bbn(handle);
@@ -273,6 +279,7 @@ static void bbn_meta(const btrx_bearing_snapshot_t *s, double *m) {
         o[j++] = r->valid ? 1 : 0; o[j++] = r->apex_lat_deg; o[j++] = r->apex_lon_deg;
         o[j++] = r->centre_true_deg; o[j++] = r->half_width_deg; o[j++] = r->length_m;
         o[j++] = r->mirror_true_deg; o[j++] = (double)r->t_us;
+        o[j++] = src->src_id; o[j++] = src->src_keyed ? 1 : 0;   /* 31, 32 */
     }
 }
 

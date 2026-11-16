@@ -90,11 +90,54 @@ object BtrxDeskPodText {
             add("Last HEALTH: ${ago(s.nowMs - h.arrivalMs)} (pod uptime ${hh.uptimeS} s, flags ${P.statusFlagNames(hh.flags)})")
             add("Desk Pod hears Drone Pod: RSSI ${h.rxRssi} dBm, SNR ${"%.1f".format(Locale.US, h.rxSnr)} dB")
             add("Drone Pod hears Desk Pod: RSSI ${hh.loraRssi} dBm, SNR ${hh.loraSnr} dB")
+            hh.ext?.let { addAll(dronePodExtLines(it)) }
         }
         val last = s.lastDetectMs?.let { ", last ${ago(s.nowMs - it)}" } ?: ""
         add("Detections: ${s.detectsLastMinute} in the last minute$last")
         if (s.otherPodNodes > 0) add("Other Drone Pods heard on the channel: ${s.otherPodNodes}")
         s.deskPhoneLost?.let { add(deskPhoneLostLine(it)) }
+        s.deskHealthExt?.let { add("Desk Pod last reset: ${resetReasonText(it.resetReason)}") }
+    }
+
+    /** Drone Pod HEALTH fields from build 0x0106 (offsets 34-43). */
+    fun dronePodExtLines(e: P.HealthExt): List<String> = listOf(
+        "Drone Pod last reset: ${resetReasonText(e.resetReason)}",
+        "Drone Pod pairing window last opened by: ${pairSourceText(e.pairSource)}; nods ignored while paired: ${e.nodsIgnored}",
+        "Drone Pod leaves out: ${excludeText(e.excludeFlags)}; ${e.excludedPerS} ad(s) left out per second",
+    )
+
+    /** reset_reason (nRF52 RESETREAS) in words; the hex value too unless it is 0. */
+    fun resetReasonText(v: Long): String {
+        if (v == 0L) return "power on or brown-out"
+        val words = mapOf(
+            "reset-pin" to "reset pin", "watchdog" to "watchdog", "soft-reset" to "software reset", "lockup" to "CPU lockup",
+            "wake-pin" to "wake from pin", "wake-lpcomp" to "wake from LPCOMP", "wake-debug" to "debug interface",
+            "wake-nfc" to "wake from NFC", "wake-usb" to "wake from USB",
+        )
+        val names = P.resetReasonNames(v).split(",").joinToString(", ") { words[it] ?: it }
+        return "$names (0x%x)".format(Locale.US, v)
+    }
+
+    fun pairSourceText(src: Int): String = when (src) {
+        P.PAIR_SRC_NONE -> "nothing since it started"
+        P.PAIR_SRC_NOD -> "a nod (not paired yet)"
+        P.PAIR_SRC_APP -> "this app (Re-pair)"
+        else -> "unknown ($src)"
+    }
+
+    /** exclude_flags: which of its own boards, the Desk Pod and DJI the pod leaves out of STEER and DETECT. */
+    fun excludeText(flags: Int): String {
+        val items = listOf(
+            P.EXCL_OWN to "its own board", P.EXCL_OTHER_BOARD to "the other board",
+            P.EXCL_DESK_POD to "the Desk Pod", P.EXCL_DJI to "DJI",
+        )
+        val on = items.filter { flags and it.first != 0 }.map { it.second }
+        val off = items.filter { flags and it.first == 0 }.map { it.second }
+        return when {
+            on.isEmpty() -> "nothing yet (${off.joinToString(", ")} not known)"
+            off.isEmpty() -> on.joinToString(", ")
+            else -> on.joinToString(", ") + " (not yet: " + off.joinToString(", ") + ")"
+        }
     }
 
     /** Desk Pod HEALTH phone_lost (build 0x0104): messages dropped from its full queue to this app. */
@@ -137,6 +180,25 @@ object BtrxDeskPodText {
     const val REPLACE_DESK_TITLE = "Replace Desk Pod?"
     const val REPLACE_DESK_OK = "Forget and scan"
     const val REPLACE_KEEP = "Keep current"
+    // Re-pair (firmware 0x0106: a paired pod ignores nods; PAIR_OPEN opens its window).
+    const val REPAIR_POD = "Re-pair Drone Pod"
+    const val REPAIR_POD_TITLE = "Re-pair Drone Pod?"
+    const val REPAIR_POD_OK = "Open pairing"
+
+    /** Body of the "Re-pair Drone Pod?" confirmation. */
+    fun repairPodMessage(s: BtrxDeskPodModel.Snapshot): String {
+        val pod = s.pairedPod?.let { "Drone Pod ${BtrxClient.nodeName(it.node)}" } ?: "The Drone Pod"
+        return "This opens the pairing window on the Desk Pod and on $pod for 60 s, then asks you to confirm the pod. " +
+            "Do it on the ground, not in flight. Steering keeps working meanwhile; if you do not confirm, the pod stays paired as it was."
+    }
+
+    // Own aircraft (saved): STEER_MUTE op 3 / 4 (firmware 0x0106); the local toggle stays for older builds.
+    const val OWN_SAVED = "Own aircraft (saved)"
+    const val OWN_SAVED_DONE = "Saved"
+    const val OWN_SAVED_REMOVE = "Remove"
+    const val OWN_SAVED_HINT = "Saved on the Drone Pod: it leaves the address out of STEER and DETECT, also after a restart. Pick a source heard in the last 60 s."
+    fun ownSavedTitle(count: Int): String = "Own aircraft saved on the Drone Pod: $count"
+    fun srcIdText(id: Int): String = "source %04X".format(Locale.US, id)
 
     /** Body of the "Replace Drone Pod?" confirmation. */
     fun replacePodMessage(s: BtrxDeskPodModel.Snapshot): String {
@@ -206,8 +268,13 @@ object BtrxDeskPodText {
                 else -> StepStatus.PENDING
             }
             when (step) {
-                PairStep.WAIT_BUTTON -> Step("Tap the Desk Pod button", status, if (status == StepStatus.ACTIVE) "Waiting for the tap." else "")
-                PairStep.WAIT_NOD -> Step("Nod the drone pod twice", status, when (status) {
+                PairStep.WAIT_BUTTON -> if (p.repair) Step("Desk Pod opens its pairing window", status,
+                    if (status == StepStatus.ACTIVE) "Asked over the link. If it does not open, tap the Desk Pod button." else "")
+                    else Step("Tap the Desk Pod button", status, if (status == StepStatus.ACTIVE) "Waiting for the tap." else "")
+                PairStep.WAIT_NOD -> if (p.repair && !p.repairByNod) Step("Drone Pod asks to pair", status, when (status) {
+                    StepStatus.ACTIVE -> "${p.windowSecondsLeft} s left in the pairing window. PAIR_OPEN sent; the paired pod answers with PAIR_REQ (no nod)."
+                    else -> ""
+                }) else Step("Nod the drone pod twice", status, when (status) {
                     StepStatus.ACTIVE -> "${p.windowSecondsLeft} s left in the pairing window. Hold the pod still for 3 s, then tip it at least 25° and back, twice."
                     else -> ""
                 })

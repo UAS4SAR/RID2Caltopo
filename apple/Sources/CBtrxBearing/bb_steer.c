@@ -185,6 +185,8 @@ static int32_t new_source(btrx_bearing_t *h, uint64_t key, bool provisional, int
     s->used = true;
     s->key = key;
     s->provisional = provisional;
+    s->src_keyed = false;
+    s->src_id = 0;
     s->first_us = s->last_us = t_us;
     /* colour: first palette entry not in use, starting after the last one handed out */
     for (int k = 0; k < 8; k++) {
@@ -219,23 +221,41 @@ static void merge_into(btrx_bearing_t *h, int32_t dst, int32_t src) {
     h->dirty = true;
 }
 
+/* Stable ids (pod 0x0106+): the key of a source seen by its src_id alone. 'S' keeps it apart
+ * from address keys ('A', 8 bytes) and provisional keys ('P', 7 bytes). No pod session: the
+ * id is the same after a pod restart. */
+static uint64_t src_key(const btrx_bearing_t *h, uint16_t id) {
+    uint8_t buf[3] = { 'S', (uint8_t)(id & 0xFF), (uint8_t)(id >> 8) };
+    uint64_t k = bb_siphash24(h->key, buf, sizeof buf);
+    return k ? k : 1;
+}
+
+/* Seen only as an extra so far (provisional, or keyed by src_id): takes the address. */
+static bool unresolved(const bb_source_t *s) { return s->provisional || s->src_keyed; }
+
 int32_t bb_resolve_entry(btrx_bearing_t *h, const btrx_bearing_report_source_t *rs, int64_t t_us) {
     int32_t slot;
+    const bool stable = h->stable_src_ids && rs->src_id != 0;
+    const uint64_t sk = stable ? src_key(h, rs->src_id) : 0;
     if (rs->addr_key) {
         int32_t sa = bb_find_source(h, rs->addr_key);
         int32_t si = rs->src_id ? srcid_lookup(h, rs->src_id) : BB_NONE;
         if (si != BB_NONE && !h->sources[si].used) si = BB_NONE;
+        /* Stable ids: the src_id mapping may have been dropped; the src_id key still finds it. */
+        if (si == BB_NONE && sk) si = bb_find_source(h, sk);
         if (sa != BB_NONE && si != BB_NONE && sa != si) {
-            if (h->sources[si].provisional) merge_into(h, sa, si);
+            if (unresolved(&h->sources[si])) merge_into(h, sa, si);
             else if (rs->linked) add_alias(&h->sources[sa], h->sources[si].key);
             slot = sa;
         } else if (sa != BB_NONE) {
             slot = sa;
         } else if (si != BB_NONE) {
             bb_source_t *s = &h->sources[si];
-            if (s->provisional) {
+            if (unresolved(s)) {
+                if (s->src_keyed) add_alias(s, s->key);   /* extras keep finding it by src_id */
                 s->key = rs->addr_key;
                 s->provisional = false;
+                s->src_keyed = false;
                 apply_pending_flags(h, s);
                 h->stats.provisional_merges++;
                 slot = si;
@@ -250,10 +270,21 @@ int32_t bb_resolve_entry(btrx_bearing_t *h, const btrx_bearing_report_source_t *
             slot = new_source(h, rs->addr_key, false, t_us);
         }
         srcid_set(h, rs->src_id, slot);
+        /* Stable ids: an extra with this src_id later finds this source by key too. */
+        if (sk && h->sources[slot].key != sk) add_alias(&h->sources[slot], sk);
     } else {
         slot = rs->src_id ? srcid_lookup(h, rs->src_id) : BB_NONE;
         if (slot != BB_NONE && !h->sources[slot].used) slot = BB_NONE;
-        if (slot == BB_NONE) {
+        if (slot == BB_NONE && sk) {
+            /* Stable ids: the src_id names one device; a real source, not provisional. */
+            slot = bb_find_source(h, sk);
+            if (slot == BB_NONE) {
+                slot = new_source(h, sk, false, t_us);
+                h->sources[slot].src_keyed = true;
+                h->stats.extras_unresolved++;
+            }
+            srcid_set(h, rs->src_id, slot);
+        } else if (slot == BB_NONE) {
             uint8_t buf[7] = { 'P' };
             uint32_t ses = h->clock.session;
             for (int i = 0; i < 4; i++) buf[1 + i] = (uint8_t)(ses >> (8 * i));
@@ -267,6 +298,7 @@ int32_t bb_resolve_entry(btrx_bearing_t *h, const btrx_bearing_report_source_t *
             h->stats.extras_unresolved++;
         }
     }
+    if (rs->src_id) h->sources[slot].src_id = rs->src_id;
     merge_class(&h->sources[slot], bb_class_from_pod(rs->pod_dev_class));
     return slot;
 }

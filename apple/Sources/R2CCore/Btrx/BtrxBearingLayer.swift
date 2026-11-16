@@ -69,6 +69,10 @@ public struct BtrxBearingSource: Sendable, Equatable, Identifiable {
     public let peakAlpha: Float
     public let estimate: BtrxBearingEstimate?
     public let latestRay: BtrxBearingRay?
+    /// The Drone Pod's src_id in the latest report of this source (0 = none). Opaque 16-bit key.
+    public var srcId: Int = 0
+    /// Build 0x0106+: seen only as an extra so far, keyed by its stable src_id.
+    public var srcKeyed: Bool = false
     public var muted: Bool { flags & UInt32(BTRX_BEARING_SRC_MUTED) != 0 }
     public var ignored: Bool { flags & UInt32(BTRX_BEARING_SRC_IGNORED) != 0 }
     public var className: String { BtrxBearingText.className(devClass) }
@@ -277,6 +281,7 @@ public final class BtrxBearingLayer: @unchecked Sendable {
         pthread_rwlock_wrlock(&rw); handle = h; pthread_rwlock_unlock(&rw)
         snapLock.lock(); haveSnap = false; current = nil; snapLock.unlock()
         lastPodSession = -1
+        stableSrcIds = false
         lastRenderedSeq = .max
         pingT1Ms = [Int64](repeating: -1, count: 256)
         stateLock.lock(); lastSteerUs = 0; lastYawUs = 0; lastPositionUs = 0; stateLock.unlock()
@@ -342,6 +347,9 @@ public final class BtrxBearingLayer: @unchecked Sendable {
             onPong(frame.payload, t4Us: arrival)
         case BtrxProtocol.HEALTH where fromPairedPod || fromDeskPod:
             withHandle(()) { h in
+                if fromPairedPod && frame.payload.count >= 6 {
+                    applyStableIds(h, BtrxProtocol.savedIgnoreSupported(Int(frame.payload[4]) | Int(frame.payload[5]) << 8))
+                }
                 var hl = btrx_bearing_health_t()
                 let st = frame.payload.withUnsafeBufferPointer { btrx_bearing_parse_health($0.baseAddress, $0.count, &hl) }
                 guard st == BTRX_BEARING_OK else { return }
@@ -553,7 +561,8 @@ public final class BtrxBearingLayer: @unchecked Sendable {
                 return BtrxBearingSource(index: i, key: src.key, shortID: id, provisional: src.provisional,
                     devClass: Int(src.dev_class.rawValue), rgb: rgb, flags: src.flags, firstHeardUs: src.first_heard_us,
                     lastHeardUs: src.last_heard_us, reportsIn: Int(src.reports_in), reportsUsed: Int(src.reports_used),
-                    reportsInWindow: Int(src.reports_in_window), peakAlpha: src.peak_alpha, estimate: est, latestRay: ray)
+                    reportsInWindow: Int(src.reports_in_window), peakAlpha: src.peak_alpha, estimate: est, latestRay: ray,
+                    srcId: Int(src.src_id), srcKeyed: src.src_keyed)
             }
         }
         return BtrxBearingSnapshot(seq: s.seq, tUs: s.t_us, width: Int(s.width), height: Int(s.height),
@@ -592,6 +601,17 @@ public final class BtrxBearingLayer: @unchecked Sendable {
         let mask = UInt32(BTRX_BEARING_SRC_IGNORED)
         var k = key
         withHandle(()) { h in _ = btrx_bearing_set_source_flags(h, &k, 1, mask, ignored ? mask : 0) }
+    }
+
+    /// The paired Drone Pod's build decides how extras are keyed (stable src_id from 0x0106). Same as Android.
+    public private(set) var stableSrcIds = false
+
+    private func applyStableIds(_ h: OpaquePointer, _ stable: Bool) {
+        guard stable != stableSrcIds else { return }
+        if btrx_bearing_set_stable_src_ids(h, stable) == BTRX_BEARING_OK {
+            stableSrcIds = stable
+            log("bearing: src_id " + (stable ? "stable (build 0x0106+): extras keyed by src_id" : "per pod session (older build)"))
+        }
     }
 
     public func setFade(_ settings: BtrxBearingSettings) {

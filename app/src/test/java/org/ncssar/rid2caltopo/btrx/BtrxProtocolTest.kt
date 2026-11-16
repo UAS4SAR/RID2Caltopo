@@ -3,6 +3,7 @@ package org.ncssar.rid2caltopo.btrx
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Test
@@ -229,6 +230,58 @@ class BtrxProtocolTest {
         assertEquals(-4, hl.dieTempC)
         assertEquals(-20, hl.clockOffsetMs)
         assertEquals(1, hl.scanning)
+    }
+
+    /** Build 0x0106 HEALTH (PROTOCOL.md): 44 bytes, new fields at 34-43; 30 and 34 still read, longer tolerated. */
+    @Test
+    fun health44FromBuild0106() {
+        val p = ByteArray(44)
+        P.putU32(p, 0, 120); p[4] = 0x06; p[5] = 0x01; p[6] = P.ROLE_STARBOARD.toByte()
+        P.putU32(p, 30, 3)
+        P.putU32(p, 34, 0x00010004L)            // soft-reset + wake-pin
+        p[38] = P.PAIR_SRC_APP.toByte()
+        p[39] = 0x2C; p[40] = 0x01              // nods_ignored 300
+        p[41] = 0x10; p[42] = 0x00              // excluded_per_s 16
+        p[43] = (P.EXCL_OWN or P.EXCL_OTHER_BOARD or P.EXCL_DJI).toByte()
+        val h = P.parseHealth(p)
+        assertEquals(0x0106, h.buildHash)
+        assertEquals(3L, h.phoneLost)
+        assertEquals(P.HealthExt(0x00010004L, P.PAIR_SRC_APP, 300, 16, 0x0B), h.ext)
+        assertEquals("soft-reset,wake-pin", P.resetReasonNames(h.ext!!.resetReason))
+        assertEquals("power-on", P.resetReasonNames(0))
+        assertEquals("watchdog,0x40000000", P.resetReasonNames(0x40000002L))
+        listOf("own-board", "other-board", "dji").forEach { assertTrue(P.excludeFlagNames(0x0B).contains(it)) }
+        assertFalse(P.excludeFlagNames(0x0B).contains("desk-pod"))
+        assertEquals("app (PAIR_OPEN)", P.pairSourceName(h.ext!!.pairSource))
+        assertEquals(h.ext, P.parseHealth(p + ByteArray(6)).ext)   // trailing bytes tolerated
+        assertNull(P.parseHealth(p.copyOf(34)).ext)
+        assertEquals(3L, P.parseHealth(p.copyOf(34)).phoneLost)
+        assertNull(P.parseHealth(p.copyOf(43)).ext)
+        assertNull(P.parseHealth(p.copyOf(30)).phoneLost)
+        val line = BtrxFrameLog.describe(P.HEALTH, p)
+        assertTrue(line, line.contains(" phone_lost=3 reset_reason=0x10004(soft-reset,wake-pin) pair_source=app (PAIR_OPEN) nods_ignored=300 excluded_per_s=16 exclude_flags=" +
+            P.excludeFlagNames(0x0B)))
+        assertEquals("seconds=90", BtrxFrameLog.describe(P.PAIR_OPEN, byteArrayOf(90)))
+        assertEquals("seconds=default", BtrxFrameLog.describe(P.PAIR_OPEN, ByteArray(0)))
+    }
+
+    @Test
+    fun pairOpenAndSavedIgnoreFrames() {
+        assertEquals(0x16, P.PAIR_OPEN)
+        assertEquals("PAIR_OPEN", P.typeName(P.PAIR_OPEN))
+        assertArrayEquals(ByteArray(0), P.pairOpenPayload(null))
+        assertArrayEquals(byteArrayOf(30), P.pairOpenPayload(30))
+        val f = P.decodeFrame(P.pairOpenFrame(7, 0x45D35AF0L, 90))
+        assertEquals(P.PAIR_OPEN, f.type); assertEquals(0x45D35AF0L, f.podId); assertArrayEquals(byteArrayOf(90), f.payload)
+        assertEquals(0, P.decodeFrame(P.pairOpenFrame(8, 1L, null)).payload.size)
+        val d = P.decodeFrame(P.deskPairOpenFrame(9))
+        assertEquals(P.DESK_PAIR, d.type); assertEquals(0L, d.podId); assertEquals(0, d.payload.size)
+        // STEER_MUTE op 3 with a large hashed src_id (little-endian), and FILTER_ACK
+        val m = P.decodeFrame(P.steerMuteFrame(10, 1L, P.MUTE_IGNORE, 0xF1A3))
+        assertArrayEquals(byteArrayOf(3, 0xA3.toByte(), 0xF1.toByte()), m.payload)
+        assertEquals("ignore", P.muteOpName(P.MUTE_IGNORE)); assertEquals("unignore", P.muteOpName(P.MUTE_UNIGNORE))
+        assertEquals(P.FilterAck(1, P.FILTER_OP_ADD, 1, 0xBEEF, 3), P.parseFilterAck(h("010101efbe03")))
+        assertFalse(P.savedIgnoreSupported(null)); assertFalse(P.savedIgnoreSupported(0x0105)); assertTrue(P.savedIgnoreSupported(0x0106))
     }
 
     @Test

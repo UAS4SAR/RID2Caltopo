@@ -56,6 +56,8 @@ typedef struct {
     uint64_t aliases[BTRX_BEARING_MAX_ALIASES];
     int32_t alias_count;
     bool provisional;
+    bool src_keyed;                  /* stable ids: keyed by src_id (seen only as an extra so far) */
+    uint16_t src_id;                 /* latest src_id reported for this source */
     uint8_t cls;
     uint8_t colour;
     uint32_t flags;
@@ -70,7 +72,7 @@ typedef struct {
 /* ---------- inputs ---------- */
 typedef struct { int64_t t1, t4; uint32_t t2, t3; } bb_sync_in_t;
 typedef struct { int64_t host_us; uint8_t role; uint32_t uptime_s; bool known; uint32_t lost; } bb_health_in_t;
-enum { BB_CMD_FLAGS = 1, BB_CMD_CLASS, BB_CMD_FADE, BB_CMD_RESET, BB_CMD_RENDERED, BB_CMD_CONNECTED };
+enum { BB_CMD_FLAGS = 1, BB_CMD_CLASS, BB_CMD_FADE, BB_CMD_RESET, BB_CMD_RENDERED, BB_CMD_CONNECTED, BB_CMD_STABLE_IDS };
 typedef struct { int type; uint64_t key; uint32_t a, b; float f1, f2; uint64_t seq; int64_t us; } bb_cmd_t;
 
 #define BB_RING(T, N) struct { T item[N]; int32_t head, count; }
@@ -211,6 +213,7 @@ struct btrx_bearing {
     uint8_t next_colour;
     struct { uint16_t src_id; int32_t slot; } srcid[BB_SRCID_TABLE];
     int32_t srcid_n;
+    bool stable_src_ids;             /* pod build 0x0106+: src_id = hash of the address */
     struct { uint64_t key; uint32_t mask, value; } pend_flags[BB_MAX_PENDING_FLAGS];
     int32_t pend_flags_n;
 

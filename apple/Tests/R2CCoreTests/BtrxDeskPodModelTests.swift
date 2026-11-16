@@ -850,5 +850,179 @@ final class BtrxDeskPodModelTests: XCTestCase {
         XCTAssertTrue(entry.lowerBound < title.lowerBound)
         XCTAssertTrue(body.contains("DeskPodView(center: deskPod, onDismiss: { showDeskPod = false })"))
     }
+
+    // MARK: firmware 0x0106: re-pair, own aircraft (saved), HEALTH 44 (same as Android)
+
+    var savedLists: [[Int]] = []
+    let pod0106 = BtrxDeskPodModel.PairedPod(node: 0x0189_68BE, podId: 0x45D3_5AF0, devA: 0x4C8C_125B, devB: 0x351C_2971)
+
+    private func useSavedListModel() {
+        model = Model(log: log, clock: { [unowned self] in self.now }, onPaired: { [unowned self] in self.paired.append($0) },
+                      onSavedIgnores: { [unowned self] in self.savedLists.append($0) })
+        model.attach(sender)
+        model.onConfigured(localNode: desk)
+    }
+
+    private func podHealth(_ build: Int, size: Int = 44, _ ext: ((inout [UInt8]) -> Void)? = nil) {
+        var p = [UInt8](repeating: 0, count: size)
+        P.putU32(&p, 0, 500); p[4] = UInt8(build & 0xFF); p[5] = UInt8(build >> 8); p[6] = UInt8(P.roleStarboard); p[8] = 1
+        ext?(&p)
+        podSeq += 1
+        model.onFrame(try! P.decodeFrame(P.encodeFrame(P.HEALTH, seq: podSeq, podId: pod0106.podId, payload: p)), meta: meta(pod))
+    }
+
+    private func filterAck(op: Int, ok: Int, stored: Int, from: UInt32? = nil) {
+        podSeq += 1
+        let f = P.encodeFrame(P.FILTER_ACK, seq: podSeq, podId: pod0106.podId, flags: ok == 0 ? P.F_ERROR : 0,
+                              payload: [1, UInt8(op), UInt8(ok), 0x34, 0x12, UInt8(stored)])
+        model.onFrame(try! P.decodeFrame(f), meta: meta(from ?? pod))
+    }
+
+    func testRepairSendsPairOpenAndDeskPairThenPairsTheSamePodAgain() throws {
+        model.restorePairedPod(pod0106)
+        podHealth(0x0106)
+        sender.sent.removeAll()
+        model.repairDronePod()
+        XCTAssertEqual(sender.sent.count, 2)
+        XCTAssertEqual(sender.sent[0].0, pod)
+        let f1 = try P.decodeFrame(sender.sent[0].1)
+        XCTAssertEqual(f1.type, P.PAIR_OPEN); XCTAssertEqual(f1.podId, pod0106.podId); XCTAssertTrue(f1.payload.isEmpty)
+        XCTAssertEqual(sender.sent[1].0, desk)
+        XCTAssertEqual(try P.decodeFrame(sender.sent[1].1).type, P.DESK_PAIR)
+        let p0 = model.snapshot().pairing
+        XCTAssertEqual(p0.step, .waitButton); XCTAssertTrue(p0.repair)
+        XCTAssertEqual(BtrxDeskPodText.steps(p0)[0].title, "Desk Pod opens its pairing window")
+        XCTAssertEqual(model.snapshot().pairedPod, pod0106)
+        deskPair(1)
+        XCTAssertEqual(step, .waitNod)
+        XCTAssertEqual(BtrxDeskPodText.steps(model.snapshot().pairing)[1].title, "Drone Pod asks to pair")
+        pairReq(from: 0x0BAD_BEEF)
+        XCTAssertEqual(step, .waitNod)
+        pairReq()
+        XCTAssertEqual(step, .podFound)
+        model.confirmPod()
+        XCTAssertEqual(step, .confirming)
+        pairAck()
+        XCTAssertEqual(step, .paired)
+        XCTAssertEqual(model.snapshot().pairing.message, "Drone Pod re-paired.")
+        XCTAssertEqual(model.snapshot().pairedPod?.node, pod)
+    }
+
+    func testRepairFailureKeepsThePodPaired() {
+        model.restorePairedPod(pod0106)
+        model.repairDronePod()
+        advance(Model.repairWindowWaitMs + 1000)
+        let p = model.snapshot().pairing
+        XCTAssertEqual(p.step, .failed)
+        XCTAssertTrue(p.message.hasSuffix(Model.repairKept), p.message)
+        XCTAssertEqual(model.snapshot().pairedPod, pod0106)
+        model.repairDronePod()
+        deskPair(1)
+        model.cancelPairing()
+        XCTAssertEqual(model.snapshot().pairedPod, pod0106)
+    }
+
+    func testRepairNeedsAPairedPodAndALink() {
+        sender.sent.removeAll()
+        model.repairDronePod()
+        XCTAssertEqual(step, .failed)
+        XCTAssertEqual(model.snapshot().pairing.message, Model.repairNotPaired)
+        model.clearPairingResult()
+        model.restorePairedPod(pod0106)
+        sender.isReady = false
+        model.repairDronePod()
+        XCTAssertEqual(step, .failed)
+        XCTAssertTrue(sender.sent.isEmpty)
+        sender.isReady = true
+        model.clearPairingResult()
+        model.startPairing()
+        XCTAssertEqual(step, .idle)
+    }
+
+    func testRepairOfAnOlderPodSendsOnlyTheDeskWindowAndAsksForANod() throws {
+        model.restorePairedPod(pod0106)
+        podHealth(0x0105, size: 34)
+        sender.sent.removeAll()
+        model.repairDronePod()
+        XCTAssertEqual(try sender.sent.map { try P.decodeFrame($0.1).type }, [P.DESK_PAIR])
+        deskPair(1)
+        XCTAssertEqual(BtrxDeskPodText.steps(model.snapshot().pairing)[1].title, "Nod the drone pod twice")
+    }
+
+    func testOwnAircraftSavedOnBuild0106() throws {
+        useSavedListModel()
+        model.restorePairedPod(pod0106)
+        model.setLink(Model.LinkStatus(kind: .usb, phase: .ready))
+        XCTAssertFalse(model.snapshot().savedIgnoreSupported)
+        sender.sent.removeAll()
+        model.ignoreSourceSaved(0x148C)
+        XCTAssertTrue(sender.sent.isEmpty, "older or unknown build: nothing sent")
+        XCTAssertTrue(model.snapshot().filterMessage!.contains("0x0106"))
+        podHealth(0x0105, size: 34)
+        XCTAssertFalse(model.snapshot().savedIgnoreSupported)
+        podHealth(0x0106)
+        XCTAssertTrue(model.snapshot().savedIgnoreSupported)
+        model.ignoreSourceSaved(0xF1A3)
+        XCTAssertEqual(sender.sent.count, 1)
+        XCTAssertEqual(sender.sent[0].0, pod)
+        let f = try P.decodeFrame(sender.sent[0].1)
+        XCTAssertEqual(f.type, P.STEER_MUTE)
+        XCTAssertEqual(f.payload, [3, 0xA3, 0xF1])
+        XCTAssertEqual(model.snapshot().filterPending?.srcId, 0xF1A3)
+        model.ignoreSourceSaved(0x0002)
+        XCTAssertEqual(sender.sent.count, 1, "one at a time")
+        filterAck(op: P.FILTER_OP_REMOVE, ok: 1, stored: 1)
+        XCTAssertTrue(model.snapshot().savedIgnores.isEmpty)
+        filterAck(op: P.FILTER_OP_ADD, ok: 1, stored: 1, from: 0x0BAD_BEEF)
+        XCTAssertTrue(model.snapshot().savedIgnores.isEmpty)
+        filterAck(op: P.FILTER_OP_ADD, ok: 1, stored: 1)
+        XCTAssertEqual(model.snapshot().savedIgnores, [0xF1A3])
+        XCTAssertNil(model.snapshot().filterPending)
+        XCTAssertEqual(savedLists, [[0xF1A3]])
+        XCTAssertTrue(model.snapshot().filterMessage!.hasPrefix("Saved on the Drone Pod"))
+        model.ignoreSourceSaved(0x0002)
+        filterAck(op: P.FILTER_OP_ADD, ok: 0, stored: 1)
+        XCTAssertEqual(model.snapshot().savedIgnores, [0xF1A3])
+        XCTAssertTrue(model.snapshot().filterMessage!.contains("did not save"))
+        model.unignoreSourceSaved(0xF1A3)
+        XCTAssertEqual(try P.decodeFrame(sender.sent.last!.1).payload, [4, 0xA3, 0xF1])
+        filterAck(op: P.FILTER_OP_REMOVE, ok: 1, stored: 0)
+        XCTAssertTrue(model.snapshot().savedIgnores.isEmpty)
+        XCTAssertEqual(savedLists.last, [])
+        model.ignoreSourceSaved(0x0003)
+        advance(Model.filterAckTimeoutMs + 1000)
+        XCTAssertNil(model.snapshot().filterPending)
+        XCTAssertEqual(model.snapshot().filterMessage, "No answer from the Drone Pod. Try again.")
+    }
+
+    func testSavedIgnoresRestoreWithThePodAndClearWhenItIsReplaced() {
+        useSavedListModel()
+        model.restorePairedPod(pod0106, savedIgnoreIds: [0x148C, 0, 0x10000, 7])
+        XCTAssertEqual(model.snapshot().savedIgnores, [7, 0x148C])
+        model.forgetPairedPod()
+        XCTAssertTrue(model.snapshot().savedIgnores.isEmpty)
+        XCTAssertEqual(savedLists.last, [])
+        model.restorePairedPod(nil, savedIgnoreIds: [5])
+        XCTAssertTrue(model.snapshot().savedIgnores.isEmpty)
+    }
+
+    func testHealth44LinesForBothPods() {
+        model.restorePairedPod(pod0106)
+        podHealth(0x0106) { p in
+            P.putU32(&p, 34, 0); p[38] = UInt8(P.pairSrcNod); p[39] = 38; p[41] = 12
+            p[43] = UInt8(P.EXCL_OWN | P.EXCL_OTHER_BOARD | P.EXCL_DJI)
+        }
+        var desk44 = [UInt8](repeating: 0, count: 44)
+        desk44[4] = 0x06; desk44[5] = 0x01; desk44[6] = UInt8(P.roleDeskPod); P.putU32(&desk44, 34, 2)
+        model.onFrame(try! P.decodeFrame(P.encodeFrame(P.HEALTH, payload: desk44)), meta: meta(desk))
+        let lines = BtrxDeskPodText.healthLines(model.snapshot())
+        XCTAssertTrue(lines.contains("Drone Pod last reset: power on or brown-out"), "\(lines)")
+        XCTAssertTrue(lines.contains("Drone Pod pairing window last opened by: a nod (not paired yet); nods ignored while paired: 38"), "\(lines)")
+        XCTAssertTrue(lines.contains("Drone Pod leaves out: its own board, the other board, DJI (not yet: the Desk Pod); 12 ad(s) left out per second"), "\(lines)")
+        XCTAssertTrue(lines.contains("Desk Pod last reset: watchdog (0x2)"), "\(lines)")
+        XCTAssertEqual(model.snapshot().deskHealthExt?.resetReason, 2)
+        XCTAssertEqual(BtrxDeskPodText.excludeText(0), "nothing yet (its own board, the other board, the Desk Pod, DJI not known)")
+        XCTAssertEqual(BtrxDeskPodText.resetReasonText(0x10004), "software reset, wake from pin (0x10004)")
+    }
 }
 

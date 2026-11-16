@@ -363,4 +363,52 @@ final class BtrxProtocolTests: XCTestCase {
         XCTAssertEqual("STEER", P.typeName(0x73))
         XCTAssertEqual("STEER_MUTE", P.typeName(0x74))
     }
+
+    // MARK: build 0x0106 (same as Android's BtrxProtocolTest)
+
+    func testHealth44FromBuild0106() throws {
+        var p = [UInt8](repeating: 0, count: 44)
+        P.putU32(&p, 0, 120); p[4] = 0x06; p[5] = 0x01; p[6] = UInt8(P.roleStarboard)
+        P.putU32(&p, 30, 3)
+        P.putU32(&p, 34, 0x0001_0004)
+        p[38] = UInt8(P.pairSrcApp)
+        p[39] = 0x2C; p[40] = 0x01
+        p[41] = 0x10; p[42] = 0x00
+        p[43] = UInt8(P.EXCL_OWN | P.EXCL_OTHER_BOARD | P.EXCL_DJI)
+        let h = try P.parseHealth(p)
+        XCTAssertEqual(h.buildHash, 0x0106)
+        XCTAssertEqual(h.phoneLost, 3)
+        XCTAssertEqual(h.ext, P.HealthExt(resetReason: 0x0001_0004, pairSource: P.pairSrcApp, nodsIgnored: 300, excludedPerS: 16, excludeFlags: 0x0B))
+        XCTAssertEqual(P.resetReasonNames(0x0001_0004), "soft-reset,wake-pin")
+        XCTAssertEqual(P.resetReasonNames(0), "power-on")
+        XCTAssertEqual(P.resetReasonNames(0x4000_0002), "watchdog,0x40000000")
+        XCTAssertEqual(P.excludeFlagNames(0x0B), "own-board,other-board,dji")
+        XCTAssertEqual(P.pairSourceName(P.pairSrcApp), "app (PAIR_OPEN)")
+        XCTAssertEqual(try P.parseHealth(p + [UInt8](repeating: 0, count: 6)).ext, h.ext)
+        XCTAssertNil(try P.parseHealth(Array(p[0..<34])).ext)
+        XCTAssertEqual(try P.parseHealth(Array(p[0..<34])).phoneLost, 3)
+        XCTAssertNil(try P.parseHealth(Array(p[0..<43])).ext)
+        let line = try BtrxFrameLog.describe(P.HEALTH, p)
+        XCTAssertTrue(line.contains(" phone_lost=3 reset_reason=0x10004(soft-reset,wake-pin) pair_source=app (PAIR_OPEN) nods_ignored=300 excluded_per_s=16 exclude_flags=own-board,other-board,dji"), line)
+        XCTAssertEqual(try BtrxFrameLog.describe(P.PAIR_OPEN, [90]), "seconds=90")
+        XCTAssertEqual(try BtrxFrameLog.describe(P.PAIR_OPEN, []), "seconds=default")
+    }
+
+    func testPairOpenAndSavedIgnoreFrames() throws {
+        XCTAssertEqual(P.PAIR_OPEN, 0x16)
+        XCTAssertEqual(P.typeName(P.PAIR_OPEN), "PAIR_OPEN")
+        XCTAssertEqual(P.pairOpenPayload(seconds: nil), [])
+        XCTAssertEqual(P.pairOpenPayload(seconds: 30), [30])
+        let f = try P.decodeFrame(P.pairOpenFrame(seq: 7, podId: 0x45D3_5AF0, seconds: 90))
+        XCTAssertEqual(f.type, P.PAIR_OPEN); XCTAssertEqual(f.podId, 0x45D3_5AF0); XCTAssertEqual(f.payload, [90])
+        XCTAssertEqual(try P.decodeFrame(P.pairOpenFrame(seq: 8, podId: 1)).payload.count, 0)
+        let d = try P.decodeFrame(P.deskPairOpenFrame(seq: 9))
+        XCTAssertEqual(d.type, P.DESK_PAIR); XCTAssertEqual(d.podId, 0); XCTAssertTrue(d.payload.isEmpty)
+        let m = try P.decodeFrame(P.steerMuteFrame(seq: 10, podId: 1, op: P.MUTE_IGNORE, srcId: 0xF1A3))
+        XCTAssertEqual(m.payload, [3, 0xA3, 0xF1])
+        XCTAssertEqual(P.muteOpName(P.MUTE_IGNORE), "ignore"); XCTAssertEqual(P.muteOpName(P.MUTE_UNIGNORE), "unignore")
+        XCTAssertEqual(try P.parseFilterAck(P.fromHex("010101efbe03")), P.FilterAck(version: 1, op: P.FILTER_OP_ADD, ok: 1, listCrc: 0xBEEF, stored: 3))
+        XCTAssertEqual(try BtrxFrameLog.describe(P.FILTER_ACK, P.fromHex("010101efbe03")), "version=1 op=1 ok=1 list_crc=0xbeef stored=3")
+        XCTAssertFalse(P.savedIgnoreSupported(nil)); XCTAssertFalse(P.savedIgnoreSupported(0x0105)); XCTAssertTrue(P.savedIgnoreSupported(0x0106))
+    }
 }

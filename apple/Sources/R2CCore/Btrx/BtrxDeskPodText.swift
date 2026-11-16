@@ -27,6 +27,25 @@ public enum BtrxDeskPodText {
     public static let replaceDeskTitle = "Replace Desk Pod?"
     public static let replaceDeskOK = "Forget and scan"
     public static let replaceKeep = "Keep current"
+    // Re-pair (firmware 0x0106: a paired pod ignores nods; PAIR_OPEN opens its window).
+    public static let repairPod = "Re-pair Drone Pod"
+    public static let repairPodTitle = "Re-pair Drone Pod?"
+    public static let repairPodOK = "Open pairing"
+
+    /// Body of the "Re-pair Drone Pod?" confirmation.
+    public static func repairPodMessage(_ s: Model.Snapshot) -> String {
+        let pod = s.pairedPod.map { "Drone Pod \(BtrxClient.nodeName($0.node))" } ?? "The Drone Pod"
+        return "This opens the pairing window on the Desk Pod and on \(pod) for 60 s, then asks you to confirm the pod. "
+            + "Do it on the ground, not in flight. Steering keeps working meanwhile; if you do not confirm, the pod stays paired as it was."
+    }
+
+    // Own aircraft (saved): STEER_MUTE op 3 / 4 (firmware 0x0106); the local toggle stays for older builds.
+    public static let ownSaved = "Own aircraft (saved)"
+    public static let ownSavedDone = "Saved"
+    public static let ownSavedRemove = "Remove"
+    public static let ownSavedHint = "Saved on the Drone Pod: it leaves the address out of STEER and DETECT, also after a restart. Pick a source heard in the last 60 s."
+    public static func ownSavedTitle(_ count: Int) -> String { "Own aircraft saved on the Drone Pod: \(count)" }
+    public static func srcIdText(_ id: Int) -> String { String(format: "source %04X", id) }
 
     /// Body of the "Replace Drone Pod?" confirmation.
     public static func replacePodMessage(_ s: Model.Snapshot) -> String {
@@ -143,6 +162,7 @@ public enum BtrxDeskPodText {
             out.append("Last HEALTH: \(ago(s.nowMs - h.arrivalMs)) (pod uptime \(hh.uptimeS) s, flags \(BtrxProtocol.statusFlagNames(hh.flags)))")
             out.append("Desk Pod hears Drone Pod: RSSI \(h.rxRssi) dBm, SNR \(String(format: "%.1f", h.rxSnr)) dB")
             out.append("Drone Pod hears Desk Pod: RSSI \(hh.loraRssi) dBm, SNR \(hh.loraSnr) dB")
+            if let e = hh.ext { out.append(contentsOf: dronePodExtLines(e)) }
         } else {
             out.append("Drone Pod: no HEALTH report yet (one arrives about every 60 s)")
         }
@@ -150,7 +170,45 @@ public enum BtrxDeskPodText {
         out.append("Detections: \(s.detectsLastMinute) in the last minute\(last)")
         if s.otherPodNodes > 0 { out.append("Other Drone Pods heard on the channel: \(s.otherPodNodes)") }
         if let lost = s.deskPhoneLost { out.append(deskPhoneLostLine(lost)) }
+        if let e = s.deskHealthExt { out.append("Desk Pod last reset: \(resetReasonText(e.resetReason))") }
         return out
+    }
+
+    /// Drone Pod HEALTH fields from build 0x0106 (offsets 34-43).
+    public static func dronePodExtLines(_ e: BtrxProtocol.HealthExt) -> [String] {
+        ["Drone Pod last reset: \(resetReasonText(e.resetReason))",
+         "Drone Pod pairing window last opened by: \(pairSourceText(e.pairSource)); nods ignored while paired: \(e.nodsIgnored)",
+         "Drone Pod leaves out: \(excludeText(e.excludeFlags)); \(e.excludedPerS) ad(s) left out per second"]
+    }
+
+    /// reset_reason (nRF52 RESETREAS) in words; the hex value too unless it is 0.
+    public static func resetReasonText(_ v: UInt32) -> String {
+        if v == 0 { return "power on or brown-out" }
+        let words = ["reset-pin": "reset pin", "watchdog": "watchdog", "soft-reset": "software reset", "lockup": "CPU lockup",
+                     "wake-pin": "wake from pin", "wake-lpcomp": "wake from LPCOMP", "wake-debug": "debug interface",
+                     "wake-nfc": "wake from NFC", "wake-usb": "wake from USB"]
+        let names = BtrxProtocol.resetReasonNames(v).split(separator: ",").map { words[String($0)] ?? String($0) }.joined(separator: ", ")
+        return "\(names) (\(String(format: "0x%x", v)))"
+    }
+
+    public static func pairSourceText(_ src: Int) -> String {
+        switch src {
+        case BtrxProtocol.pairSrcNone: return "nothing since it started"
+        case BtrxProtocol.pairSrcNod: return "a nod (not paired yet)"
+        case BtrxProtocol.pairSrcApp: return "this app (Re-pair)"
+        default: return "unknown (\(src))"
+        }
+    }
+
+    /// exclude_flags: which of its own boards, the Desk Pod and DJI the pod leaves out of STEER and DETECT.
+    public static func excludeText(_ flags: Int) -> String {
+        let items: [(Int, String)] = [(BtrxProtocol.EXCL_OWN, "its own board"), (BtrxProtocol.EXCL_OTHER_BOARD, "the other board"),
+                                      (BtrxProtocol.EXCL_DESK_POD, "the Desk Pod"), (BtrxProtocol.EXCL_DJI, "DJI")]
+        let on = items.filter { flags & $0.0 != 0 }.map { $0.1 }
+        let off = items.filter { flags & $0.0 == 0 }.map { $0.1 }
+        if on.isEmpty { return "nothing yet (\(off.joined(separator: ", ")) not known)" }
+        if off.isEmpty { return on.joined(separator: ", ") }
+        return on.joined(separator: ", ") + " (not yet: " + off.joined(separator: ", ") + ")"
     }
 
     /// Desk Pod HEALTH phone_lost (build 0x0104): messages dropped from its full queue to this app.
@@ -202,8 +260,17 @@ public enum BtrxDeskPodText {
             else if i == currentIndex { status = p.step == .failed ? .failed : .active }
             else { status = .pending }
             switch step {
-            case .waitButton: return Step(title: "Tap the Desk Pod button", status: status, detail: status == .active ? "Waiting for the tap." : "")
+            case .waitButton:
+                if p.repair {
+                    return Step(title: "Desk Pod opens its pairing window", status: status,
+                                detail: status == .active ? "Asked over the link. If it does not open, tap the Desk Pod button." : "")
+                }
+                return Step(title: "Tap the Desk Pod button", status: status, detail: status == .active ? "Waiting for the tap." : "")
             case .waitNod:
+                if p.repair && !p.repairByNod {
+                    return Step(title: "Drone Pod asks to pair", status: status,
+                                detail: status == .active ? "\(p.windowSecondsLeft) s left in the pairing window. PAIR_OPEN sent; the paired pod answers with PAIR_REQ (no nod)." : "")
+                }
                 return Step(title: "Nod the drone pod twice", status: status,
                             detail: status == .active ? "\(p.windowSecondsLeft) s left in the pairing window. Hold the pod still for 3 s, then tip it at least 25° and back, twice." : "")
             case .podFound:

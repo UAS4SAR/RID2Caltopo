@@ -327,4 +327,25 @@ final class BtrxBearingLayerTests: XCTestCase {
         XCTAssertEqual(f.podId, 0x1122_3344)
         XCTAssertEqual(try P.parseTime(f.payload).t1, 1000)
     }
+
+    /// The paired Drone Pod's HEALTH build (offset 4) switches the C layer to stable src ids at 0x0106. Same as Android.
+    func testStableSrcIdsFollowThePairedPodBuild() {
+        let clock = Clock()
+        var lines: [String] = []
+        let layer = withUnsafeMutablePointer(to: &lines) { makeLayer(clock, lines: $0) }
+        _ = layer.start(settings: BtrxBearingSettings(), trace: false, linkUp: true)
+        func h(_ build: Int, _ size: Int = 44) -> [UInt8] {
+            var p = [UInt8](repeating: 0, count: size); P.putU32(&p, 0, 500); p[4] = UInt8(build & 0xFF); p[5] = UInt8(build >> 8); p[6] = 2
+            return p
+        }
+        layer.onFrame(frame(P.HEALTH, h(0x0105, 34)), meta: meta(clock), fromPairedPod: true, fromDeskPod: false)
+        XCTAssertFalse(layer.stableSrcIds)
+        layer.onFrame(frame(P.HEALTH, h(0x0106)), meta: meta(clock), fromPairedPod: false, fromDeskPod: true)
+        XCTAssertFalse(layer.stableSrcIds, "the Desk Pod's build does not decide")
+        layer.onFrame(frame(P.HEALTH, h(0x0106)), meta: meta(clock), fromPairedPod: true, fromDeskPod: false)
+        XCTAssertTrue(layer.stableSrcIds)
+        layer.onFrame(frame(P.HEALTH, h(0x0105, 34)), meta: meta(clock), fromPairedPod: true, fromDeskPod: false)
+        XCTAssertFalse(layer.stableSrcIds, "an older pod paired later goes back")
+        layer.stop()
+    }
 }

@@ -14,7 +14,7 @@ struct DeskPodView: View {
     let onDismiss: () -> Void
     @State private var replacing: Replacing?
 
-    private enum Replacing: Identifiable { case deskPod, dronePod; var id: Self { self } }
+    private enum Replacing: Identifiable { case deskPod, dronePod, repairDronePod; var id: Self { self } }
 
     private typealias Text_ = BtrxDeskPodText
     private static let green = Color(red: 0x2E / 255, green: 0x7D / 255, blue: 0x32 / 255)
@@ -105,15 +105,21 @@ struct DeskPodView: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Dismiss", action: onDismiss) }
             }
-            .alert(replacing == .dronePod ? Text_.replacePodTitle : Text_.replaceDeskTitle,
+            .alert(alertTitle(replacing),
                    isPresented: Binding(get: { replacing != nil }, set: { if !$0 { replacing = nil } }),
                    presenting: replacing) { r in
-                Button(r == .dronePod ? Text_.replacePodOK : Text_.replaceDeskOK, role: .destructive) {
-                    if r == .dronePod { center.replacePairedPod() } else { center.forgetDeskPod() }
+                switch r {
+                case .dronePod: Button(Text_.replacePodOK, role: .destructive) { center.replacePairedPod() }
+                case .repairDronePod: Button(Text_.repairPodOK) { center.repairDronePod() }
+                case .deskPod: Button(Text_.replaceDeskOK, role: .destructive) { center.forgetDeskPod() }
                 }
                 Button(Text_.replaceKeep, role: .cancel) {}
             } message: { r in
-                Text(r == .dronePod ? Text_.replacePodMessage(s) : Text_.replaceDeskMessage(s))
+                switch r {
+                case .dronePod: Text(Text_.replacePodMessage(s))
+                case .repairDronePod: Text(Text_.repairPodMessage(s))
+                case .deskPod: Text(Text_.replaceDeskMessage(s))
+                }
             }
         }
     }
@@ -169,7 +175,7 @@ struct DeskPodView: View {
     private func pairing(_ p: BtrxDeskPodModel.Pairing) -> some View {
         let active = BtrxDeskPodModel.activeSteps.contains(p.step)
         if p.step == .idle {
-            pairOrReplaceButton(retry: false)
+            HStack { pairOrReplaceButton(retry: false) }
         } else {
             ForEach(Array(Text_.steps(p).enumerated()), id: \.offset) { i, step in
                 HStack(alignment: .top, spacing: 8) {
@@ -197,10 +203,20 @@ struct DeskPodView: View {
         }
     }
 
-    /// "Pair drone pod" with none paired; "Replace Drone Pod" (asks first) once one is paired.
+    private func alertTitle(_ r: Replacing?) -> String {
+        switch r {
+        case .dronePod: return Text_.replacePodTitle
+        case .repairDronePod: return Text_.repairPodTitle
+        default: return Text_.replaceDeskTitle
+        }
+    }
+
+    /// "Pair drone pod" with none paired; "Re-pair Drone Pod" and "Replace Drone Pod" (both ask
+    /// first) once one is paired. Same as Android.
     @ViewBuilder
     private func pairOrReplaceButton(retry: Bool) -> some View {
         if center.snapshot.pairedPod != nil {
+            Button(Text_.repairPod) { replacing = .repairDronePod }.buttonStyle(.bordered)
             Button(Text_.replacePod) { replacing = .dronePod }.buttonStyle(.borderedProminent)
         } else {
             Button(retry ? "Try again" : Text_.pairPod) { center.startPairing() }.buttonStyle(.borderedProminent)
@@ -486,13 +502,52 @@ struct BtrxBearingSection: View {
                 if snap.sources.isEmpty { Text(BtrxBearingText.noSources).font(.footnote) }
                 ForEach(snap.sources) { src in
                     BtrxBearingSourceRow(source: src, nowUs: snap.tUs) { shown in center.bearing.setMuted([src.key], muted: !shown) }
-                    Button(src.ignored ? BtrxBearingText.unignore : BtrxBearingText.ignore) {
-                        center.bearing.setIgnored(src.key, ignored: !src.ignored)
-                    }
-                    .font(.footnote)
+                    ownAircraftControl(src)
                 }
             }
+            if pod.savedIgnoreSupported || !pod.savedIgnores.isEmpty { savedOwnAircraft }
         }
+    }
+
+    private var pod: BtrxDeskPodModel.Snapshot { center.snapshot }
+
+    /// Drone Pod 0x0106+: "Own aircraft (saved)" by src_id (STEER_MUTE op 3 / 4); older firmware:
+    /// the local "Own aircraft" on this device only. Same as Android.
+    @ViewBuilder
+    private func ownAircraftControl(_ src: BtrxBearingSource) -> some View {
+        if pod.savedIgnoreSupported && src.srcId != 0 {
+            if pod.savedIgnores.contains(src.srcId) {
+                HStack {
+                    Text("\(BtrxDeskPodText.ownSaved): \(BtrxDeskPodText.ownSavedDone)").font(.footnote)
+                    Button(BtrxDeskPodText.ownSavedRemove) { center.unignoreSourceSaved(src.srcId) }
+                        .font(.footnote).disabled(pod.filterPending != nil)
+                }
+            } else {
+                Button(BtrxDeskPodText.ownSaved) { center.ignoreSourceSaved(src.srcId) }
+                    .font(.footnote).disabled(pod.filterPending != nil)
+            }
+        } else {
+            Button(src.ignored ? BtrxBearingText.unignore : BtrxBearingText.ignore) {
+                center.bearing.setIgnored(src.key, ignored: !src.ignored)
+            }
+            .font(.footnote)
+        }
+    }
+
+    /// The paired Drone Pod's saved own aircraft (build 0x0106), each with Remove, and the latest result.
+    @ViewBuilder
+    private var savedOwnAircraft: some View {
+        Text(BtrxDeskPodText.ownSavedTitle(pod.savedIgnores.count)).fontWeight(.semibold)
+        Text(BtrxDeskPodText.ownSavedHint).font(.footnote).foregroundStyle(.secondary)
+        ForEach(pod.savedIgnores, id: \.self) { id in
+            HStack {
+                Text(BtrxDeskPodText.srcIdText(id)).font(.footnote)
+                Spacer()
+                Button(BtrxDeskPodText.ownSavedRemove) { center.unignoreSourceSaved(id) }
+                    .font(.footnote).disabled(pod.filterPending != nil || !pod.savedIgnoreSupported)
+            }
+        }
+        if let m = pod.filterMessage { Text(m).font(.footnote) }
     }
 }
 

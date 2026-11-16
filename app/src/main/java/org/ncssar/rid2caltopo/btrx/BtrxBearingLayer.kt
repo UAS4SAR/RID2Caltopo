@@ -78,6 +78,10 @@ data class BtrxBearingSource(
     val peakAlpha: Float,
     val estimate: BtrxBearingEstimate?,
     val latestRay: BtrxBearingRay?,
+    /** The Drone Pod's src_id in the latest report of this source (0 = none). Opaque 16-bit key. */
+    val srcId: Int = 0,
+    /** Build 0x0106+: seen only as an extra so far, keyed by its stable src_id. */
+    val srcKeyed: Boolean = false,
 ) {
     val muted: Boolean get() = flags and BtrxBearingNative.SRC_MUTED != 0
     val ignored: Boolean get() = flags and BtrxBearingNative.SRC_IGNORED != 0
@@ -210,6 +214,7 @@ class BtrxBearingLayer(
         }
         lastError = null
         lagTrace = trace
+        stableSrcIds = false
         handleLock.write { handle = h }
         rgbaBuffer = null
         lastPodSession = -1L
@@ -274,12 +279,25 @@ class BtrxBearingLayer(
             }
             P.TIME_PONG -> if (fromPairedPod) onPong(frame.payload, arrivalUs)
             P.HEALTH -> if (fromPairedPod || fromDeskPod) withHandle(Unit) { h ->
+                if (fromPairedPod && frame.payload.size >= 6) applyStableIds(h, P.savedIgnoreSupported(P.u16(frame.payload, 4)))
                 val st = engine.pushHealth(h, arrivalUs, frame.payload, healthOut)
                 if (st >= 0 && lagTrace) {
                     val lost = if (healthOut[2] != 0L) healthOut[3].toString() else "unknown"
                     traceLog("BBv1 H $arrivalUs ${healthOut[0]} ${healthOut[1]} $lost")
                 }
             }
+        }
+    }
+
+    /** The paired Drone Pod's build decides how extras are keyed (stable src_id from 0x0106). */
+    @Volatile var stableSrcIds = false
+        private set
+
+    private fun applyStableIds(h: Long, stable: Boolean) {
+        if (stable == stableSrcIds) return
+        if (engine.setStableSrcIds(h, stable) >= 0) {
+            stableSrcIds = stable
+            log("bearing: src_id " + if (stable) "stable (build 0x0106+): extras keyed by src_id" else "per pod session (older build)")
         }
     }
 
@@ -448,6 +466,7 @@ class BtrxBearingLayer(
                 rgb = (v(2).toInt() shl 16) or (v(3).toInt() shl 8) or v(4).toInt(), flags = v(5).toInt(),
                 firstHeardUs = v(6).toLong(), lastHeardUs = v(7).toLong(), reportsIn = v(8).toInt(), reportsUsed = v(9).toInt(),
                 reportsInWindow = v(10).toInt(), peakAlpha = v(12).toFloat(), estimate = est, latestRay = ray,
+                srcId = v(31).toInt(), srcKeyed = v(32) != 0.0,
             )
         }
         return BtrxBearingSnapshot(m[0].toLong(), m[1].toLong(), w, ht, m[4], m[5], m[6], m[7], rgba, sources, stats)

@@ -21,6 +21,8 @@ interface BtrxBearingEngine {
     fun noteRendered(handle: Long, seq: Long, hostUs: Long): Int
     fun setSourceFlags(handle: Long, keys: LongArray, mask: Int, value: Int): Int
     fun setFade(handle: Long, totalS: Float, shapeP: Float): Int
+    /** Pod build 0x0106+: src_id is a stable hash of the address (btrx_bearing_set_stable_src_ids). */
+    fun setStableSrcIds(handle: Long, stable: Boolean): Int
     fun reset(handle: Long, what: Int, key: Long): Int
     /** 1 = a snapshot was published, 0 = not, negative = error. */
     fun tick(handle: Long, nowUs: Long): Int
@@ -79,6 +81,7 @@ object BtrxBearingNative : BtrxBearingEngine {
     override fun noteRendered(handle: Long, seq: Long, hostUs: Long) = nativeNoteRendered(handle, seq, hostUs)
     override fun setSourceFlags(handle: Long, keys: LongArray, mask: Int, value: Int) = nativeSetSourceFlags(handle, keys, mask, value)
     override fun setFade(handle: Long, totalS: Float, shapeP: Float) = nativeSetFade(handle, totalS, shapeP)
+    override fun setStableSrcIds(handle: Long, stable: Boolean) = nativeSetStableSrcIds(handle, stable)
     override fun reset(handle: Long, what: Int, key: Long) = nativeReset(handle, what, key)
     override fun tick(handle: Long, nowUs: Long) = nativeTick(handle, nowUs)
     override fun copySnapshot(handle: Long, rgba: ByteBuffer, keys: LongArray, shortIds: ByteArray, meta: DoubleArray) =
@@ -101,6 +104,7 @@ object BtrxBearingNative : BtrxBearingEngine {
     private external fun nativeNoteRendered(handle: Long, seq: Long, hostUs: Long): Int
     private external fun nativeSetSourceFlags(handle: Long, keys: LongArray, mask: Int, value: Int): Int
     private external fun nativeSetFade(handle: Long, totalS: Float, shapeP: Float): Int
+    private external fun nativeSetStableSrcIds(handle: Long, stable: Boolean): Int
     private external fun nativeReset(handle: Long, what: Int, key: Long): Int
     private external fun nativeTick(handle: Long, nowUs: Long): Int
     private external fun nativeCopySnapshot(handle: Long, rgba: ByteBuffer, keys: LongArray, shortIds: ByteArray, meta: DoubleArray): Int

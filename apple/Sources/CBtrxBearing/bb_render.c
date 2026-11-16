@@ -82,6 +82,8 @@ void bb_publish(btrx_bearing_t *h, int64_t now_us) {
             if (s->buckets[i].used && bb_fade_weight(h, &s->buckets[i], now_us) > 0) in_window += (uint32_t)s->buckets[i].n;
         o->key = s->key;
         o->provisional = s->provisional;
+        o->src_keyed = s->src_keyed;
+        o->src_id = s->src_id;
         btrx_bearing_short_id(s->key, o->short_id);
         o->dev_class = (btrx_bearing_class_t)s->cls;
         memcpy(o->rgb, k_palette[s->colour], 3);

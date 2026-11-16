@@ -28,6 +28,15 @@ import Foundation
 /// arriving. ``muteSteeringSource()`` / ``clearSteeringMutes()`` send STEER_MUTE to that pod.
 /// Nothing here ever makes a clue.
 ///
+/// Re-pair (firmware 0x0106): a paired pod ignores nods (motor vibration read as nods at
+/// takeoff). ``repairDronePod(seconds:)`` sends PAIR_OPEN to the paired pod and DESK_PAIR to the
+/// Desk Pod (its phone-link bench-test path opens the Desk Pod window), then runs the normal
+/// flow with only the paired node accepted. No confirm leaves the pod paired as it was.
+///
+/// Own aircraft (saved) (firmware 0x0106): STEER_MUTE op 3 / 4 by src_id puts the address on
+/// (takes it off) the pod's saved ignore list; FILTER_ACK answers. `savedIgnores` is this app's
+/// record of what the pod took (per paired pod, persisted by the caller). Same as Android.
+///
 /// IMU calibration (design doc section 29.3, firmware 0x0102): ``BtrxImuCal`` runs the flow;
 /// IMU_CAL goes to the paired pod's node like STEER_MUTE, and only that pod's live
 /// IMU_CAL_ACK (same filter as other pod traffic) answers it. STEER bit 6 feeds "Calibrated".
@@ -88,7 +97,16 @@ public final class BtrxDeskPodModel {
         public var confirmTries = 0
         /// The pod stopped repeating PAIR_REQ: its own window has probably closed. Nod again.
         public var podStale = false
+        /// "Re-pair Drone Pod": only the paired node may answer; a failure leaves it paired as it was.
+        public var repair = false
+        /// Re-pair of a pod older than 0x0106 (no PAIR_OPEN): it opens its window on a nod.
+        public var repairByNod = false
         public init() {}
+    }
+
+    /// A STEER_MUTE op 3 / 4 waiting for its FILTER_ACK.
+    public struct PendingFilter: Sendable, Equatable {
+        public let op: Int, srcId: Int, sentMs: Int64
     }
 
     public struct HealthReading: Sendable, Equatable {
@@ -133,6 +151,16 @@ public final class BtrxDeskPodModel {
         public var droppedEncrypted = 0
         /// This session: packets dropped before btrx decoding, another port (not 256).
         public var droppedOtherPort = 0
+        /// The Desk Pod's own HEALTH fields from build 0x0106 (reset reason etc.), or nil.
+        public var deskHealthExt: BtrxProtocol.HealthExt?
+        /// Paired pod build 0x0106+: "Own aircraft (saved)" is offered; else the local toggle only.
+        public var savedIgnoreSupported = false
+        /// src ids the paired pod confirmed on its saved ignore list (FILTER_ACK ok=1).
+        public var savedIgnores: [Int] = []
+        /// An op 3 / 4 waiting for FILTER_ACK.
+        public var filterPending: PendingFilter?
+        /// The latest saved-ignore result, for the BTRX pane.
+        public var filterMessage: String?
         public init() {}
         public var roleSupported: Bool { role.map { BtrxProtocol.buildSupported($0.buildHash) } ?? false }
     }
@@ -148,12 +176,22 @@ public final class BtrxDeskPodModel {
     /// No HEALTH (about every 60 s) from the paired pod for this long: hint to re-pair.
     public static let pairedQuietMs: Int64 = 120_000
     public static let mismatchLogEvery = 50
+    /// Re-pair: the Desk Pod answers DESK_PAIR at once; a manual tap also counts until then.
+    public static let repairWindowWaitMs: Int64 = 30_000
+    public static let filterAckTimeoutMs: Int64 = 10_000
+    /// The pod's saved ignore list holds 32 addresses (PROTOCOL.md STEER_MUTE).
+    public static let filterListMax = 32
+    public static let repairKept = "The Drone Pod stays paired as it was."
+    public static let repairNotPaired = "No Drone Pod is paired. Use Pair drone pod."
+    public static let repairOpening = "Opening the pairing windows on the Desk Pod and the Drone Pod…"
+    public static let repairOpeningNod = "Opening the Desk Pod's pairing window… Then nod the drone pod twice (its firmware is older than 0x0106)."
     public static let staleEndedMessage = "The Drone Pod stopped asking to pair and its pairing window is over. Tap the Desk Pod button and nod the drone pod twice again."
     public static let staleMessage = "The Drone Pod stopped asking to pair; its own pairing window has probably closed. Nod the drone pod twice again, then confirm."
 
     private let log: BtrxLogger
     private let clock: () -> Int64
     private let onPaired: (PairedPod) -> Void
+    private let onSavedIgnores: ([Int]) -> Void
     private weak var sender: BtrxFrameSender?
     private var link = LinkStatus()
     private var pausedForUSB = false
@@ -165,6 +203,10 @@ public final class BtrxDeskPodModel {
     private var pairedPod: PairedPod?
     private var lastHealth: HealthReading?
     private var deskPhoneLost: UInt32?
+    private var deskHealthExt: BtrxProtocol.HealthExt?
+    private var savedIgnores = Set<Int>()
+    private var pendingFilter: PendingFilter?
+    private var filterMessage: String?
     /// The Desk Pod's own latest live HEALTH this session: uptime_s and arrival (logged when the link drops).
     private var deskUptimeS: UInt32?
     private var deskHealthAtMs: Int64 = 0
@@ -184,10 +226,12 @@ public final class BtrxDeskPodModel {
     private let steering = BtrxSteering()
     private let imuCal = BtrxImuCal()
 
-    public init(log: BtrxLogger, clock: @escaping () -> Int64 = { Int64(Date().timeIntervalSince1970 * 1000) }, onPaired: @escaping (PairedPod) -> Void = { _ in }) {
+    public init(log: BtrxLogger, clock: @escaping () -> Int64 = { Int64(Date().timeIntervalSince1970 * 1000) }, onPaired: @escaping (PairedPod) -> Void = { _ in },
+                onSavedIgnores: @escaping ([Int]) -> Void = { _ in }) {
         self.log = log
         self.clock = clock
         self.onPaired = onPaired
+        self.onSavedIgnores = onSavedIgnores
     }
 
     // MARK: link
@@ -203,6 +247,7 @@ public final class BtrxDeskPodModel {
         localNode = nil
         role = nil
         deskPhoneLost = nil
+        deskHealthExt = nil
         deskUptimeS = nil; deskHealthAtMs = 0
         droppedEncrypted = 0; droppedOtherPort = 0
         liveCounts = [:]; backlogCounts = [:]
@@ -215,6 +260,8 @@ public final class BtrxDeskPodModel {
         self.sender = nil
         log.debug(linkDropLine(reason: reason, nowMs: clock()))
         if Self.activeSteps.contains(pairing.step) { fail(pairing.step, "The link to the Desk Pod was lost (\(reason)).") }
+        if pendingFilter != nil { filterMessage = "No answer from the Drone Pod: the link to the Desk Pod was lost." }
+        pendingFilter = nil
         imuCal.linkLost(reason: reason)
     }
 
@@ -228,9 +275,11 @@ public final class BtrxDeskPodModel {
         return "link drop (\(reason)): \(desk); \(pod)"
     }
 
-    public func restorePairedPod(_ pod: PairedPod?) {
+    public func restorePairedPod(_ pod: PairedPod?, savedIgnoreIds: [Int] = []) {
         if pod != pairedPod { imuCal.reset() } // another pod: its calibration state is not known
         pairedPod = pod
+        savedIgnores = pod == nil ? [] : Set(savedIgnoreIds.filter { (1...0xFFFF).contains($0) })
+        pendingFilter = nil; filterMessage = nil
         quietWatchSinceMs = clock()
     }
 
@@ -251,6 +300,12 @@ public final class BtrxDeskPodModel {
     }
 
     public func forgetPairedPod() {
+        if !savedIgnores.isEmpty {
+            // The old pod keeps its list in flash; this app no longer knows it is paired to it.
+            log.debug("own aircraft (saved): forgetting \(savedIgnores.count) saved id(s) with the unpaired pod")
+            savedIgnores.removeAll(); onSavedIgnores([])
+        }
+        pendingFilter = nil; filterMessage = nil
         pairedPod = nil; lastHealth = nil; otherPods.removeAll()
         podIdMismatches = 0; lastMismatchPodId = nil
         steering.reset()
@@ -278,6 +333,7 @@ public final class BtrxDeskPodModel {
                 if !meta.backlog {
                     let h = try BtrxProtocol.parseHealth(frame.payload)
                     if let lost = h.phoneLost { deskPhoneLost = lost }
+                    if let e = h.ext { deskHealthExt = e }
                     deskUptimeS = h.uptimeS
                     deskHealthAtMs = meta.arrivalMs
                 }
@@ -326,6 +382,8 @@ public final class BtrxDeskPodModel {
                 }
                 imuCal.onSteer(imuOk: st.imuOk, imuCal: st.imuCal)
             }
+        case BtrxProtocol.FILTER_ACK:
+            if pairedPod != nil { onFilterAck(try BtrxProtocol.parseFilterAck(frame.payload), frameFlags: frame.flags) }
         // Only from the paired pod: an answer before pairing is not ours.
         case BtrxProtocol.IMU_CAL_ACK:
             if pairedPod != nil {
@@ -374,6 +432,10 @@ public final class BtrxDeskPodModel {
         let nonce = BtrxProtocol.hex(req.nonce)
         let open = window.isOpen(nowMs: now)
         func newCandidate() {
+            if pairing.repair, let paired = pairedPod, meta.fromNode != paired.node {
+                log.debug("pairing: PAIR_REQ from \(BtrxClient.nodeName(meta.fromNode)) ignored: re-pairing \(BtrxClient.nodeName(paired.node)) only")
+                return
+            }
             guard open else {
                 log.debug("pairing: PAIR_REQ from \(BtrxClient.nodeName(meta.fromNode)) ignored: no Desk Pod window open")
                 return
@@ -424,14 +486,18 @@ public final class BtrxDeskPodModel {
         pairing.aOk = ack.aOk; pairing.bOk = ack.bOk; pairing.ackFlags = ack.flags
         if ack.aOk == 1 {
             let pod = PairedPod(node: c.node, podId: c.assignedPodId, devA: c.devA, devB: c.devB)
-            if pairedPod?.node != pod.node { steering.reset() }
+            if pairedPod?.node != pod.node {
+                steering.reset()
+                if !savedIgnores.isEmpty { savedIgnores.removeAll(); onSavedIgnores([]) }
+            }
             if pairedPod != pod { imuCal.reset() }
             pairedPod = pod
             podIdMismatches = 0; lastMismatchPodId = nil
             quietWatchSinceMs = meta.arrivalMs
             pairing.step = .paired
             pairing.failedAt = nil
-            pairing.message = ack.bOk == 1 ? "Drone Pod paired." : "Paired, but the port board did not answer. Check the cable between the boards."
+            pairing.message = ack.bOk != 1 ? "Paired, but the port board did not answer. Check the cable between the boards."
+                : pairing.repair ? "Drone Pod re-paired." : "Drone Pod paired."
             log.debug(String(format: "pairing: PAIR_ACK a_ok=%d b_ok=%d; paired %@ pod_id=%08x", ack.aOk, ack.bOk, BtrxClient.nodeName(c.node), c.assignedPodId))
             onPaired(pod)
         } else {
@@ -458,6 +524,47 @@ public final class BtrxDeskPodModel {
         pairing.step = .waitButton
         pairing.message = "Tap the Desk Pod button."
         stepDeadlineMs = now + Self.buttonWaitMs
+        if window.isOpen(nowMs: now) { enterWaitNod(now) }
+    }
+
+    /// "Re-pair Drone Pod" (after the operator confirmed): a paired pod ignores nods from build
+    /// 0x0106, so PAIR_OPEN (0x16) to it opens its pairing window, and DESK_PAIR to the Desk Pod
+    /// opens the Desk Pod's (its phone-link bench-test path, answered by DESK_PAIR open=1). Then
+    /// the normal flow, only the paired node accepted. A paired pod on an older build (HEALTH
+    /// says so) gets no PAIR_OPEN: it still opens its window on a nod. Nothing is unpaired: if
+    /// no confirm happens the pod stays paired as it was, here and on the pod. Same as Android.
+    public func repairDronePod(seconds: Int? = nil) {
+        let now = clock()
+        if Self.activeSteps.contains(pairing.step) {
+            log.debug("pairing: re-pair not started: pairing already in progress at \(pairing.step)")
+            return
+        }
+        guard let pod = pairedPod else {
+            pairing = Pairing(); pairing.repair = true
+            pairing.step = .failed; pairing.failedAt = .waitButton; pairing.message = Self.repairNotPaired
+            return
+        }
+        guard let s = sender, s.isReady, let local = localNode else {
+            pairing = Pairing(); pairing.repair = true
+            pairing.step = .failed; pairing.failedAt = .waitButton; pairing.message = "The Desk Pod is not connected. \(Self.repairKept)"
+            return
+        }
+        let build = lastHealth.flatMap { $0.node == pod.node ? $0.health.buildHash : nil }
+        let pairOpen = build == nil || build! >= BtrxProtocol.buildStableIds
+        if pairOpen {
+            log.info(String(format: "pairing: re-pair: PAIR_OPEN seconds=%@ to %@ pod_id=%08x, DESK_PAIR to the Desk Pod",
+                            seconds.map { String($0) } ?? "default", BtrxClient.nodeName(pod.node), pod.podId))
+            s.sendFrame(to: pod.node, frame: BtrxProtocol.pairOpenFrame(seq: s.nextSeq(), podId: pod.podId, seconds: seconds))
+        } else {
+            log.info(String(format: "pairing: re-pair: Drone Pod build 0x%04x has no PAIR_OPEN (nod it); DESK_PAIR to the Desk Pod", build ?? 0))
+        }
+        s.sendFrame(to: local, frame: BtrxProtocol.deskPairOpenFrame(seq: s.nextSeq()))
+        pairing = Pairing()
+        pairing.step = .waitButton
+        pairing.repair = true
+        pairing.repairByNod = !pairOpen
+        pairing.message = pairOpen ? Self.repairOpening : Self.repairOpeningNod
+        stepDeadlineMs = now + Self.repairWindowWaitMs
         if window.isOpen(nowMs: now) { enterWaitNod(now) }
     }
 
@@ -495,7 +602,11 @@ public final class BtrxDeskPodModel {
         trimDetects(now)
         let open = window.isOpen(nowMs: now)
         switch pairing.step {
-        case .waitButton: if now >= stepDeadlineMs { fail(.waitButton, "The Desk Pod button was not tapped. Tap it, then start again.") }
+        case .waitButton:
+            if now >= stepDeadlineMs {
+                fail(.waitButton, pairing.repair ? "The Desk Pod did not open its pairing window. Tap the Desk Pod button, then try Re-pair again."
+                                                 : "The Desk Pod button was not tapped. Tap it, then start again.")
+            }
         case .waitNod: if !open { fail(.waitNod, windowEndedMessage("No Drone Pod asked to pair. Nod the drone pod twice within the window.")) }
         case .podFound:
             if let c = pairing.candidate {
@@ -506,6 +617,11 @@ public final class BtrxDeskPodModel {
         default: break
         }
         if Self.activeSteps.contains(pairing.step) { pairing.windowSecondsLeft = window.secondsLeft(nowMs: now) }
+        if let pf = pendingFilter, now - pf.sentMs > Self.filterAckTimeoutMs {
+            log.warn(String(format: "own aircraft (saved): no FILTER_ACK for %@ src=0x%04x within %d s", BtrxProtocol.muteOpName(pf.op), pf.srcId, Int(Self.filterAckTimeoutMs / 1000)))
+            filterMessage = "No answer from the Drone Pod. Try again."
+            pendingFilter = nil
+        }
         if let r = imuCal.tick(nowMs: now) { sendImuCal(r) }
     }
 
@@ -529,7 +645,70 @@ public final class BtrxDeskPodModel {
         s.lastSteer = steering.lastView(nowMs: now)
         s.steeringRollCorrection = steering.rollCorrection
         s.imuCal = imuCal.view(nowMs: now)
+        s.deskHealthExt = deskHealthExt
+        s.savedIgnoreSupported = savedIgnoreSupportedNow
+        s.savedIgnores = savedIgnores.sorted()
+        s.filterPending = pendingFilter
+        s.filterMessage = filterMessage
         return s
+    }
+
+    private var savedIgnoreSupportedNow: Bool {
+        guard let pod = pairedPod else { return false }
+        return BtrxProtocol.savedIgnoreSupported(lastHealth.flatMap { $0.node == pod.node ? $0.health.buildHash : nil })
+    }
+
+    // MARK: own aircraft (saved): STEER_MUTE op 3 / 4, FILTER_ACK (firmware 0x0106)
+
+    /// "Own aircraft (saved)": the pod puts the address behind `srcId` on its saved ignore list.
+    public func ignoreSourceSaved(_ srcId: Int) { filterAction(op: BtrxProtocol.MUTE_IGNORE, srcId: srcId) }
+
+    /// "Remove": the pod takes the address behind `srcId` off its saved ignore list.
+    public func unignoreSourceSaved(_ srcId: Int) { filterAction(op: BtrxProtocol.MUTE_UNIGNORE, srcId: srcId) }
+
+    private func filterAction(op: Int, srcId: Int) {
+        let now = clock()
+        let busy = pendingFilter.map { now - $0.sentMs <= Self.filterAckTimeoutMs } ?? false
+        var blocked: String?
+        if pairedPod == nil { blocked = "No Drone Pod is paired." }
+        else if !savedIgnoreSupportedNow { blocked = "The Drone Pod's firmware does not save ignored sources (needs build 0x0106). Use Own aircraft on this device." }
+        else if !(sender?.isReady ?? false) { blocked = "The Desk Pod is not connected." }
+        else if !(1...0xFFFF).contains(srcId) { blocked = "That source has no Drone Pod id yet." }
+        else if busy { blocked = "Waiting for the Drone Pod to answer the last change." }
+        if let blocked {
+            log.warn(String(format: "own aircraft (saved): %@ src=0x%04x not sent: %@", BtrxProtocol.muteOpName(op), srcId, blocked))
+            filterMessage = blocked
+            return
+        }
+        guard let pod = pairedPod, let s = sender else { return }
+        log.info(String(format: "own aircraft (saved): STEER_MUTE %@ src=0x%04x to %@", BtrxProtocol.muteOpName(op), srcId, BtrxClient.nodeName(pod.node)))
+        s.sendFrame(to: pod.node, frame: BtrxProtocol.steerMuteFrame(seq: s.nextSeq(), podId: pod.podId, op: op, srcId: srcId))
+        pendingFilter = PendingFilter(op: op, srcId: srcId, sentMs: now)
+        filterMessage = op == BtrxProtocol.MUTE_IGNORE ? "Saving on the Drone Pod…" : "Removing from the Drone Pod…"
+    }
+
+    private func onFilterAck(_ ack: BtrxProtocol.FilterAck, frameFlags: Int) {
+        let wantOp: Int? = pendingFilter.flatMap { p in
+            p.op == BtrxProtocol.MUTE_IGNORE ? BtrxProtocol.FILTER_OP_ADD : p.op == BtrxProtocol.MUTE_UNIGNORE ? BtrxProtocol.FILTER_OP_REMOVE : nil
+        }
+        guard let pend = pendingFilter, ack.op == wantOp else {
+            log.debug("own aircraft (saved): FILTER_ACK op=\(ack.op) ok=\(ack.ok) stored=\(ack.stored) matches no request out; ignored")
+            return
+        }
+        pendingFilter = nil
+        let id = String(format: "0x%04x", pend.srcId)
+        log.info(String(format: "own aircraft (saved): FILTER_ACK op=%d ok=%d list_crc=0x%04x stored=%d flags=0x%02x for src=%@",
+                        ack.op, ack.ok, ack.listCrc, ack.stored, frameFlags, id))
+        if ack.ok == 1 {
+            let changed = pend.op == BtrxProtocol.MUTE_IGNORE ? savedIgnores.insert(pend.srcId).inserted : savedIgnores.remove(pend.srcId) != nil
+            if changed { onSavedIgnores(savedIgnores.sorted()) }
+            filterMessage = pend.op == BtrxProtocol.MUTE_IGNORE ? "Saved on the Drone Pod (\(ack.stored) of \(Self.filterListMax) saved)."
+                : "Removed from the Drone Pod (\(ack.stored) of \(Self.filterListMax) saved)."
+        } else {
+            filterMessage = pend.op == BtrxProtocol.MUTE_IGNORE
+                ? "The Drone Pod did not save it: it saves only a source heard in the last 60 s, and holds \(Self.filterListMax)."
+                : "The Drone Pod did not remove it: it removes only a source it heard in the last 60 s."
+        }
     }
 
     private var steeringLinkUp: Bool { pairedPod != nil && link.phase == .ready && sender != nil }
@@ -648,7 +827,7 @@ public final class BtrxDeskPodModel {
     private func enterWaitNod(_ now: Int64) {
         pairing.step = .waitNod
         pairing.windowSecondsLeft = window.secondsLeft(nowMs: now)
-        pairing.message = "Nod the drone pod twice."
+        pairing.message = pairing.repair && !pairing.repairByNod ? "Waiting for the Drone Pod to ask to pair." : "Nod the drone pod twice."
         log.debug("pairing: Desk Pod window open, \(window.secondsLeft(nowMs: now)) s left; waiting for PAIR_REQ")
     }
 
@@ -663,10 +842,11 @@ public final class BtrxDeskPodModel {
     }
 
     private func fail(_ at: PairStep, _ message: String) {
-        log.warn("pairing failed at \(at): \(message)")
+        let m = pairing.repair && pairedPod != nil && !message.contains(Self.repairKept) ? "\(message) \(Self.repairKept)" : message
+        log.warn("pairing failed at \(at): \(m)")
         pairing.step = .failed
         pairing.failedAt = at
-        pairing.message = message
+        pairing.message = m
         pairing.windowSecondsLeft = 0
     }
 

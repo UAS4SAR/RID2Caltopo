@@ -32,9 +32,14 @@ public enum BtrxProtocol {
     public static let buildSteer = 0x0101
     /// Firmware that answers IMU_CAL (btrx PR #18, af2549e).
     public static let buildImuCal = 0x0102
+    /// Build 0x0106 (btrx 74ed238): 44-byte HEALTH, PAIR_OPEN, STEER_MUTE ops 3 / 4 (saved ignore
+    /// list, answered with FILTER_ACK), src_id = 16-bit hash of the address (stable across
+    /// restarts), and a paired pod ignores nods. Same as Android.
+    public static let buildStableIds = 0x0106
+    public static func savedIgnoreSupported(_ buildHash: Int?) -> Bool { (buildHash ?? 0) >= buildStableIds }
 
     public static let HELLO = 0x01, HELLO_ACK = 0x02, PAIR_REQ = 0x10, PAIR_CONFIRM = 0x11, PAIR_ACK = 0x12
-    public static let B_CFG = 0x13, GESTURE = 0x14, DESK_PAIR = 0x15, ROLE_GET = 0x20, ROLE_REPORT = 0x21
+    public static let B_CFG = 0x13, GESTURE = 0x14, DESK_PAIR = 0x15, PAIR_OPEN = 0x16, ROLE_GET = 0x20, ROLE_REPORT = 0x21
     public static let ROLE_SET = 0x22, TIME_PING = 0x30, TIME_PONG = 0x31, START = 0x40, STOP = 0x41
     public static let CTRL_ACK = 0x42, SCAN_CFG = 0x50, SCAN_CFG_ACK = 0x51, FILTER_LIST = 0x60
     public static let FILTER_ACK = 0x61, DETECT = 0x70, IMU_SAMPLE = 0x71, ADV_SAMPLE = 0x72, HEALTH = 0x80
@@ -44,7 +49,7 @@ public enum BtrxProtocol {
 
     private static let msgNames: [Int: String] = [
         HELLO: "HELLO", HELLO_ACK: "HELLO_ACK", PAIR_REQ: "PAIR_REQ", PAIR_CONFIRM: "PAIR_CONFIRM",
-        PAIR_ACK: "PAIR_ACK", B_CFG: "B_CFG", GESTURE: "GESTURE", DESK_PAIR: "DESK_PAIR", ROLE_GET: "ROLE_GET",
+        PAIR_ACK: "PAIR_ACK", B_CFG: "B_CFG", GESTURE: "GESTURE", DESK_PAIR: "DESK_PAIR", PAIR_OPEN: "PAIR_OPEN", ROLE_GET: "ROLE_GET",
         ROLE_REPORT: "ROLE_REPORT", ROLE_SET: "ROLE_SET", TIME_PING: "TIME_PING", TIME_PONG: "TIME_PONG",
         START: "START", STOP: "STOP", CTRL_ACK: "CTRL_ACK", SCAN_CFG: "SCAN_CFG", SCAN_CFG_ACK: "SCAN_CFG_ACK",
         FILTER_LIST: "FILTER_LIST", FILTER_ACK: "FILTER_ACK", DETECT: "DETECT", IMU_SAMPLE: "IMU_SAMPLE",
@@ -107,6 +112,11 @@ public enum BtrxProtocol {
 
     // STEER_MUTE ops (BTRX_MUTE_*).
     public static let MUTE_CLEAR = 0, MUTE_ADD = 1, MUTE_REMOVE = 2
+    /// Build 0x0106: put the address behind src_id on (3) / take it off (4) the pod's saved ignore
+    /// list; answered with FILTER_ACK op 1 / 2.
+    public static let MUTE_IGNORE = 3, MUTE_UNIGNORE = 4
+    // FILTER_ACK op (FILTER_LIST ops; STEER_MUTE 3 answers 1, 4 answers 2).
+    public static let FILTER_OP_ADD = 1, FILTER_OP_REMOVE = 2
 
     // STEER device kind (BTRX_DEV_*).
     public static let DEV_UNKNOWN = 0, DEV_PHONE = 1, DEV_WEARABLE = 2, DEV_TRACKER = 3, DEV_AUDIO = 4, DEV_COMPUTER = 5
@@ -290,10 +300,57 @@ public enum BtrxProtocol {
         /// full app queue since it started (saturates at 0xFFFFFFFF). Nil for 30-byte HEALTH
         /// from older firmware: unknown, never 0. Same as Android.
         public var phoneLost: UInt32? = nil
+        /// Offsets 34-43 (build 0x0106); nil for shorter HEALTH.
+        public var ext: HealthExt? = nil
+    }
+
+    /// HEALTH fields from build 0x0106 (PROTOCOL.md HEALTH offsets 34-43).
+    public struct HealthExt: Sendable, Equatable {
+        /// nRF52 RESETREAS at boot; 0 = power-on or brown-out.
+        public let resetReason: UInt32
+        /// What opened the last pairing window since boot: 0 none, 1 nod, 2 PAIR_OPEN.
+        public let pairSource: Int
+        public let nodsIgnored: Int
+        public let excludedPerS: Int
+        /// Bit 0 own address known, 1 other board, 2 Desk Pod, 3 DJI left out (starboard only).
+        public let excludeFlags: Int
+        public init(resetReason: UInt32, pairSource: Int, nodsIgnored: Int, excludedPerS: Int, excludeFlags: Int) {
+            self.resetReason = resetReason; self.pairSource = pairSource; self.nodsIgnored = nodsIgnored
+            self.excludedPerS = excludedPerS; self.excludeFlags = excludeFlags
+        }
     }
 
     public static let healthLen = 30
     public static let healthLostLen = 34
+    public static let healthExtLen = 44
+
+    public static let pairSrcNone = 0, pairSrcNod = 1, pairSrcApp = 2
+    public static func pairSourceName(_ src: Int) -> String {
+        switch src {
+        case pairSrcNone: return "none"
+        case pairSrcNod: return "nod"
+        case pairSrcApp: return "app (PAIR_OPEN)"
+        default: return String(src)
+        }
+    }
+
+    // HEALTH exclude_flags (build 0x0106; starboard board only, 0 on the Desk Pod).
+    public static let EXCL_OWN = 0x01, EXCL_OTHER_BOARD = 0x02, EXCL_DESK_POD = 0x04, EXCL_DJI = 0x08
+    private static let excludeFlags: [(Int, String)] = [(EXCL_OWN, "own-board"), (EXCL_OTHER_BOARD, "other-board"), (EXCL_DESK_POD, "desk-pod"), (EXCL_DJI, "dji")]
+    public static func excludeFlagNames(_ v: Int) -> String { flagNames(v, excludeFlags) }
+
+    // HEALTH reset_reason: nRF52 RESETREAS bits; 0 = power-on or brown-out.
+    private static let resetReasons: [(UInt32, String)] = [
+        (0x1, "reset-pin"), (0x2, "watchdog"), (0x4, "soft-reset"), (0x8, "lockup"),
+        (0x10000, "wake-pin"), (0x20000, "wake-lpcomp"), (0x40000, "wake-debug"), (0x80000, "wake-nfc"), (0x100000, "wake-usb"),
+    ]
+    public static func resetReasonNames(_ v: UInt32) -> String {
+        if v == 0 { return "power-on" }
+        var names = resetReasons.filter { v & $0.0 != 0 }.map { $0.1 }
+        let rest = v & ~resetReasons.reduce(UInt32(0)) { $0 | $1.0 }
+        if rest != 0 { names.append(String(format: "0x%x", rest)) }
+        return names.joined(separator: ",")
+    }
 
     public static func parseHealth(_ p: [UInt8]) throws -> Health {
         try need(p, healthLen, "HEALTH")
@@ -302,7 +359,9 @@ public enum BtrxProtocol {
                       advPerSPort: u16(p, 15), advPerSStbd: u16(p, 17), loraRssi: i8(p, 19), loraSnr: i8(p, 20),
                       clockOffsetMs: Int32(bitPattern: u32(p, 21)), cfgVersion: Int(p[25]), filterVersion: Int(p[26]),
                       txPolicy: Int(p[27]), errorFlags: Int(p[28]), scanning: Int(p[29]),
-                      phoneLost: p.count >= healthLostLen ? u32(p, 30) : nil)
+                      phoneLost: p.count >= healthLostLen ? u32(p, 30) : nil,
+                      ext: p.count >= healthExtLen ? HealthExt(resetReason: u32(p, 34), pairSource: Int(p[38]), nodsIgnored: u16(p, 39),
+                                                               excludedPerS: u16(p, 41), excludeFlags: Int(p[43])) : nil)
     }
 
     /// TIME_PING payload (protocol.py pack_time): ping_seq, 0, t1, t2 = 0, t3 = 0, u16 0.
@@ -485,6 +544,8 @@ public enum BtrxProtocol {
         case MUTE_CLEAR: return "clear"
         case MUTE_ADD: return "add"
         case MUTE_REMOVE: return "remove"
+        case MUTE_IGNORE: return "ignore"
+        case MUTE_UNIGNORE: return "unignore"
         default: return String(op)
         }
     }
@@ -608,6 +669,23 @@ public enum BtrxProtocol {
     }
 
     public static func roleGetFrame(seq: Int) -> [UInt8] { encodeFrame(ROLE_GET, seq: seq) }
+
+    /// PAIR_OPEN (0x16, build 0x0106) payload: seconds (10...120) or none for the pod's 60 s.
+    public static let pairOpenDefaultS = 60
+    public static func pairOpenPayload(seconds: Int?) -> [UInt8] {
+        guard let s = seconds else { return [] }
+        return [UInt8(clamping: s)]
+    }
+
+    /// PAIR_OPEN to the paired Drone Pod's node: the only way a paired pod (0x0106) opens a
+    /// pairing window. No reply; its PAIR_REQ with a new nonce is the answer.
+    public static func pairOpenFrame(seq: Int, podId: UInt32, seconds: Int? = nil) -> [UInt8] {
+        encodeFrame(PAIR_OPEN, seq: seq, podId: podId, payload: pairOpenPayload(seconds: seconds))
+    }
+
+    /// DESK_PAIR to the Desk Pod's own node from its phone link: the firmware's bench-test path
+    /// opens the Desk Pod window as if its button were tapped (answered by DESK_PAIR open=1 source 2).
+    public static func deskPairOpenFrame(seq: Int) -> [UInt8] { encodeFrame(DESK_PAIR, seq: seq) }
 
     public static let pairConfirmLen = 61
     public static let nameLen = 12

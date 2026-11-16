@@ -33,6 +33,7 @@ import kotlin.math.roundToInt
 import org.ncssar.rid2caltopo.btrx.BtrxBearingSettings
 import org.ncssar.rid2caltopo.btrx.BtrxBearingSource
 import org.ncssar.rid2caltopo.btrx.BtrxBearingText
+import org.ncssar.rid2caltopo.btrx.BtrxDeskPodText
 import org.ncssar.rid2caltopo.btrx.BtrxManager
 
 /**
@@ -48,6 +49,7 @@ fun BtrxBearingSection() {
     val trace by BtrxManager.bearingLagTrace.collectAsState()
     val snap by BtrxManager.bearing.snapshot.collectAsState()
     val status by BtrxManager.bearing.status.collectAsState()
+    val pod by BtrxManager.snapshot.collectAsState()
     Row(verticalAlignment = Alignment.CenterVertically) {
         Text(BtrxBearingText.LAYER_SWITCH, Modifier.weight(1f))
         Switch(checked = on, onCheckedChange = { BtrxManager.setBearingOn(it) })
@@ -91,11 +93,39 @@ fun BtrxBearingSection() {
         if (s.sources.isEmpty()) Text(BtrxBearingText.NO_SOURCES, style = MaterialTheme.typography.bodySmall)
         s.sources.forEach { src ->
             BtrxBearingSourceRow(src, s.tUs, onShownChange = { shown -> BtrxManager.bearing.setMuted(listOf(src.key), !shown) })
-            TextButton(onClick = { BtrxManager.bearing.setIgnored(src.key, !src.ignored) }) {
+            if (pod.savedIgnoreSupported && src.srcId != 0) {
+                // Drone Pod 0x0106+: saved on the pod by src_id (STEER_MUTE op 3 / 4).
+                if (src.srcId in pod.savedIgnores) Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("${BtrxDeskPodText.OWN_SAVED}: ${BtrxDeskPodText.OWN_SAVED_DONE}", style = MaterialTheme.typography.bodySmall)
+                    TextButton(onClick = { BtrxManager.unignoreSourceSaved(src.srcId) }, enabled = pod.filterPending == null) {
+                        Text(BtrxDeskPodText.OWN_SAVED_REMOVE, style = MaterialTheme.typography.bodySmall)
+                    }
+                } else TextButton(onClick = { BtrxManager.ignoreSourceSaved(src.srcId) }, enabled = pod.filterPending == null) {
+                    Text(BtrxDeskPodText.OWN_SAVED, style = MaterialTheme.typography.bodySmall)
+                }
+            } else TextButton(onClick = { BtrxManager.bearing.setIgnored(src.key, !src.ignored) }) {
+                // Older Drone Pod firmware: this device only.
                 Text(if (src.ignored) BtrxBearingText.UNIGNORE else BtrxBearingText.IGNORE, style = MaterialTheme.typography.bodySmall)
             }
         }
     }
+    if (pod.savedIgnoreSupported || pod.savedIgnores.isNotEmpty()) BtrxSavedOwnAircraft(pod)
+}
+
+/** The paired Drone Pod's saved own aircraft (build 0x0106), each with Remove, and the latest result. */
+@Composable
+private fun BtrxSavedOwnAircraft(pod: org.ncssar.rid2caltopo.btrx.BtrxDeskPodModel.Snapshot) {
+    Text(BtrxDeskPodText.ownSavedTitle(pod.savedIgnores.size), fontWeight = FontWeight.SemiBold)
+    Text(BtrxDeskPodText.OWN_SAVED_HINT, style = MaterialTheme.typography.bodySmall)
+    pod.savedIgnores.forEach { id ->
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(BtrxDeskPodText.srcIdText(id), Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
+            TextButton(onClick = { BtrxManager.unignoreSourceSaved(id) }, enabled = pod.filterPending == null && pod.savedIgnoreSupported) {
+                Text(BtrxDeskPodText.OWN_SAVED_REMOVE, style = MaterialTheme.typography.bodySmall)
+            }
+        }
+    }
+    pod.filterMessage?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
 }
 
 /** Status lines for "Link health" (spec 3.4): reports lost while no app, and the lag stats. */

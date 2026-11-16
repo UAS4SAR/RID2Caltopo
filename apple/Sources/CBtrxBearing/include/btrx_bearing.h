@@ -163,7 +163,8 @@ btrx_bearing_status_t btrx_bearing_parse_steer(const btrx_bearing_t *h,
         const uint8_t *payload, size_t len, int64_t arrival_us, bool backlog,
         btrx_bearing_report_t *out);
 
-/* HEALTH (0x80) fields the layer uses: 30 bytes (older firmware, lost unknown) or 34. */
+/* HEALTH (0x80) fields the layer uses: 30 bytes (older firmware, lost unknown), 34, or 44
+ * (build 0x0106: reset_reason etc. at 34..43, read by the app, not the layer). Longer is fine. */
 typedef struct {
     uint32_t uptime_s;
     uint8_t role;                    /* 1 port, 2 starboard (pod A), 3 Desk Pod */
@@ -221,6 +222,14 @@ btrx_bearing_status_t btrx_bearing_set_source_class(btrx_bearing_t *h, uint64_t 
  * total_s in [60, 1800], shape_p in [1, 4]. Shortening drops older buckets. */
 btrx_bearing_status_t btrx_bearing_set_fade(btrx_bearing_t *h, float total_s, float shape_p);
 
+/* Pod firmware 0x0106 and newer: src_id is a 16-bit hash of the address (1..65535, the same
+ * device keeps it across gaps, table eviction and pod restarts). With stable ids on, an extra
+ * source (no address) is keyed by its src_id alone (not by pod session) and is a real source,
+ * not provisional; it takes the address key when the same src_id comes with an address.
+ * Older firmware counts ids from 1 per pod session: leave off (the default). Any thread,
+ * applied at the next tick. */
+btrx_bearing_status_t btrx_bearing_set_stable_src_ids(btrx_bearing_t *h, bool stable);
+
 /* Work */
 btrx_bearing_status_t btrx_bearing_tick(btrx_bearing_t *h, int64_t now_us, bool *published);
 btrx_bearing_status_t btrx_bearing_start_worker(btrx_bearing_t *h);  /* needs cfg.now_us */
@@ -247,8 +256,10 @@ typedef struct {                     /* latest-ray outline, section 5.1 */
 } btrx_bearing_ray_t;
 
 typedef struct {
-    uint64_t key;                    /* address key, or provisional (pod session, src_id) */
-    bool provisional;                /* "unresolved": seen only as an extra so far */
+    uint64_t key;                    /* address key, or provisional (pod session, src_id), or src_id key (stable ids) */
+    bool provisional;                /* "unresolved": seen only as an extra so far (older firmware) */
+    bool src_keyed;                  /* stable ids: seen only as an extra so far, keyed by src_id */
+    uint16_t src_id;                 /* the pod's src_id in the latest report of it; 0 = none */
     char short_id[8];
     btrx_bearing_class_t dev_class;
     uint8_t rgb[3];

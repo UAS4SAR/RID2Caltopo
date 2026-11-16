@@ -247,6 +247,12 @@ btrx_bearing_status_t btrx_bearing_set_fade(btrx_bearing_t *h, float total_s, fl
     return push_cmd(h, &c);
 }
 
+btrx_bearing_status_t btrx_bearing_set_stable_src_ids(btrx_bearing_t *h, bool stable) {
+    if (!h) return BTRX_BEARING_E_INVALID;
+    bb_cmd_t c = { .type = BB_CMD_STABLE_IDS, .a = stable ? 1u : 0u };
+    return push_cmd(h, &c);
+}
+
 btrx_bearing_status_t btrx_bearing_reset(btrx_bearing_t *h, int what, uint64_t key) {
     if (!h || what < BTRX_BEARING_RESET_ALL || what > BTRX_BEARING_RESET_CLOCK) return BTRX_BEARING_E_INVALID;
     bb_cmd_t c = { .type = BB_CMD_RESET, .a = (uint32_t)what, .key = key };
@@ -288,6 +294,9 @@ static void apply_cmd(btrx_bearing_t *h, const bb_cmd_t *c) {
         if (slot != BB_NONE) { h->sources[slot].cls = (uint8_t)c->a; h->force_publish = true; }
         break;
     }
+    case BB_CMD_STABLE_IDS:
+        h->stable_src_ids = c->a != 0;
+        break;
     case BB_CMD_FADE:
         h->fade_total_s = c->f1;
         h->fade_shape_p = c->f2;

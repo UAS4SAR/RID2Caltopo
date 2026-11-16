@@ -61,13 +61,29 @@ fun DeskPodScreen(onDismiss: () -> Unit) {
     replacing?.let { r ->
         AlertDialog(
             onDismissRequest = { replacing = null },
-            title = { Text(if (r == Replacing.DRONE_POD) BtrxDeskPodText.REPLACE_POD_TITLE else BtrxDeskPodText.REPLACE_DESK_TITLE) },
-            text = { Text(if (r == Replacing.DRONE_POD) BtrxDeskPodText.replacePodMessage(s) else BtrxDeskPodText.replaceDeskMessage(s)) },
+            title = { Text(when (r) {
+                Replacing.DRONE_POD -> BtrxDeskPodText.REPLACE_POD_TITLE
+                Replacing.REPAIR_DRONE_POD -> BtrxDeskPodText.REPAIR_POD_TITLE
+                Replacing.DESK_POD -> BtrxDeskPodText.REPLACE_DESK_TITLE
+            }) },
+            text = { Text(when (r) {
+                Replacing.DRONE_POD -> BtrxDeskPodText.replacePodMessage(s)
+                Replacing.REPAIR_DRONE_POD -> BtrxDeskPodText.repairPodMessage(s)
+                Replacing.DESK_POD -> BtrxDeskPodText.replaceDeskMessage(s)
+            }) },
             confirmButton = {
                 Button(onClick = {
                     replacing = null
-                    if (r == Replacing.DRONE_POD) BtrxManager.replacePairedPod() else BtrxManager.forgetDeskPod()
-                }) { Text(if (r == Replacing.DRONE_POD) BtrxDeskPodText.REPLACE_POD_OK else BtrxDeskPodText.REPLACE_DESK_OK) }
+                    when (r) {
+                        Replacing.DRONE_POD -> BtrxManager.replacePairedPod()
+                        Replacing.REPAIR_DRONE_POD -> BtrxManager.repairDronePod()
+                        Replacing.DESK_POD -> BtrxManager.forgetDeskPod()
+                    }
+                }) { Text(when (r) {
+                    Replacing.DRONE_POD -> BtrxDeskPodText.REPLACE_POD_OK
+                    Replacing.REPAIR_DRONE_POD -> BtrxDeskPodText.REPAIR_POD_OK
+                    Replacing.DESK_POD -> BtrxDeskPodText.REPLACE_DESK_OK
+                }) }
             },
             dismissButton = { TextButton(onClick = { replacing = null }) { Text(BtrxDeskPodText.REPLACE_KEEP) } },
         )
@@ -129,7 +145,7 @@ fun DeskPodScreen(onDismiss: () -> Unit) {
                     if (s.windowOpen && s.pairing.step == PairStep.IDLE) {
                         Text("The Desk Pod pairing window is open (${s.windowSecondsLeft} s left).", style = MaterialTheme.typography.bodySmall)
                     }
-                    PairingSection(s, onReplace = { replacing = Replacing.DRONE_POD })
+                    PairingSection(s, onReplace = { replacing = it })
 
                     HorizontalDivider(Modifier.padding(vertical = 6.dp))
                     SectionTitle(BtrxDeskPodText.IMU_CAL_TITLE)
@@ -230,21 +246,26 @@ private fun SectionTitle(text: String) {
     Text(text, style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 4.dp))
 }
 
-private enum class Replacing { DESK_POD, DRONE_POD }
+private enum class Replacing { DESK_POD, DRONE_POD, REPAIR_DRONE_POD }
 
-/** "Pair drone pod" with none paired; "Replace Drone Pod" (asks first) once one is paired. */
+/**
+ * "Pair drone pod" with none paired; "Re-pair Drone Pod" and "Replace Drone Pod" (both ask
+ * first) once one is paired.
+ */
 @Composable
-private fun PairOrReplaceButton(s: org.ncssar.rid2caltopo.btrx.BtrxDeskPodModel.Snapshot, onReplace: () -> Unit, retry: Boolean = false) {
-    if (s.pairedPod != null) Button(onClick = onReplace) { Text(BtrxDeskPodText.REPLACE_POD) }
-    else Button(onClick = { BtrxManager.startPairing() }) { Text(if (retry) "Try again" else BtrxDeskPodText.PAIR_POD) }
+private fun PairOrReplaceButton(s: org.ncssar.rid2caltopo.btrx.BtrxDeskPodModel.Snapshot, onReplace: (Replacing) -> Unit, retry: Boolean = false) {
+    if (s.pairedPod != null) {
+        OutlinedButton(onClick = { onReplace(Replacing.REPAIR_DRONE_POD) }) { Text(BtrxDeskPodText.REPAIR_POD) }
+        Button(onClick = { onReplace(Replacing.DRONE_POD) }) { Text(BtrxDeskPodText.REPLACE_POD) }
+    } else Button(onClick = { BtrxManager.startPairing() }) { Text(if (retry) "Try again" else BtrxDeskPodText.PAIR_POD) }
 }
 
 @Composable
-private fun PairingSection(s: org.ncssar.rid2caltopo.btrx.BtrxDeskPodModel.Snapshot, onReplace: () -> Unit) {
+private fun PairingSection(s: org.ncssar.rid2caltopo.btrx.BtrxDeskPodModel.Snapshot, onReplace: (Replacing) -> Unit) {
     val p = s.pairing
     val active = p.step in org.ncssar.rid2caltopo.btrx.BtrxDeskPodModel.ACTIVE_STEPS
     if (p.step == PairStep.IDLE) {
-        PairOrReplaceButton(s, onReplace)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { PairOrReplaceButton(s, onReplace) }
         return
     }
     BtrxDeskPodText.steps(p).forEachIndexed { i, step ->

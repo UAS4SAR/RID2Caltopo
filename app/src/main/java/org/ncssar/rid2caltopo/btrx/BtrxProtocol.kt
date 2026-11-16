@@ -35,6 +35,13 @@ object BtrxProtocol {
     const val BUILD_STEER = 0x0101
     /** Firmware that answers IMU_CAL (btrx PR #18, af2549e). */
     const val BUILD_IMU_CAL = 0x0102
+    /**
+     * Firmware 0x0106 (btrx 74ed238): 44-byte HEALTH, PAIR_OPEN, STEER_MUTE ops 3/4 (saved
+     * ignore list, answered with FILTER_ACK), src_id = 16-bit hash of the address (stable
+     * across restarts), own boards / Desk Pod / DJI left out.
+     */
+    const val BUILD_STABLE_IDS = 0x0106
+    fun savedIgnoreSupported(buildHash: Int?): Boolean = buildHash != null && buildHash >= BUILD_STABLE_IDS
 
     // Message types (section 5 of the R2C integration brief).
     const val HELLO = 0x01
@@ -45,6 +52,8 @@ object BtrxProtocol {
     const val B_CFG = 0x13
     const val GESTURE = 0x14
     const val DESK_PAIR = 0x15
+    /** App to the paired starboard board (relayed by the Desk Pod): open a pairing window (build 0x0106). */
+    const val PAIR_OPEN = 0x16
     const val ROLE_GET = 0x20
     const val ROLE_REPORT = 0x21
     const val ROLE_SET = 0x22
@@ -71,7 +80,7 @@ object BtrxProtocol {
     private val MSG_NAME = mapOf(
         HELLO to "HELLO", HELLO_ACK to "HELLO_ACK", PAIR_REQ to "PAIR_REQ",
         PAIR_CONFIRM to "PAIR_CONFIRM", PAIR_ACK to "PAIR_ACK", B_CFG to "B_CFG",
-        GESTURE to "GESTURE", DESK_PAIR to "DESK_PAIR", ROLE_GET to "ROLE_GET",
+        GESTURE to "GESTURE", DESK_PAIR to "DESK_PAIR", PAIR_OPEN to "PAIR_OPEN", ROLE_GET to "ROLE_GET",
         ROLE_REPORT to "ROLE_REPORT", ROLE_SET to "ROLE_SET", TIME_PING to "TIME_PING",
         TIME_PONG to "TIME_PONG", START to "START", STOP to "STOP", CTRL_ACK to "CTRL_ACK",
         SCAN_CFG to "SCAN_CFG", SCAN_CFG_ACK to "SCAN_CFG_ACK", FILTER_LIST to "FILTER_LIST",
@@ -165,6 +174,13 @@ object BtrxProtocol {
     const val MUTE_CLEAR = 0
     const val MUTE_ADD = 1
     const val MUTE_REMOVE = 2
+    /** Put the address behind src_id on the pod's saved ignore list (build 0x0106); answered with FILTER_ACK op 1. */
+    const val MUTE_IGNORE = 3
+    /** Take it off the saved ignore list (build 0x0106); answered with FILTER_ACK op 2. */
+    const val MUTE_UNIGNORE = 4
+    // FILTER_ACK op (FILTER_LIST ops; STEER_MUTE 3 answers 1, 4 answers 2).
+    const val FILTER_OP_ADD = 1
+    const val FILTER_OP_REMOVE = 2
 
     // STEER device kind (BTRX_DEV_*).
     const val DEV_UNKNOWN = 0
@@ -347,10 +363,51 @@ object BtrxProtocol {
          * from older firmware: unknown, never 0.
          */
         val phoneLost: Long? = null,
+        /** Offsets 34-43 (build 0x0106); null for 30- and 34-byte HEALTH. */
+        val ext: HealthExt? = null,
     )
+
+    /**
+     * HEALTH offsets 34-43 (build 0x0106, PROTOCOL.md "HEALTH"): reset_reason u32 (nRF52
+     * RESETREAS at boot), pair_source u8, nods_ignored u16, excluded_per_s u16, exclude_flags u8.
+     */
+    data class HealthExt(val resetReason: Long, val pairSource: Int, val nodsIgnored: Int, val excludedPerS: Int, val excludeFlags: Int)
 
     const val HEALTH_LEN = 30
     const val HEALTH_LOST_LEN = 34
+    const val HEALTH_EXT_LEN = 44
+
+    // HEALTH pair_source (build 0x0106).
+    const val PAIR_SRC_NONE = 0
+    const val PAIR_SRC_NOD = 1
+    const val PAIR_SRC_APP = 2
+    fun pairSourceName(src: Int): String = when (src) {
+        PAIR_SRC_NONE -> "none"
+        PAIR_SRC_NOD -> "nod"
+        PAIR_SRC_APP -> "app (PAIR_OPEN)"
+        else -> src.toString()
+    }
+
+    // HEALTH exclude_flags (build 0x0106; starboard board only, 0 on the Desk Pod).
+    const val EXCL_OWN = 0x01
+    const val EXCL_OTHER_BOARD = 0x02
+    const val EXCL_DESK_POD = 0x04
+    const val EXCL_DJI = 0x08
+    private val EXCLUDE_FLAGS = listOf(EXCL_OWN to "own-board", EXCL_OTHER_BOARD to "other-board", EXCL_DESK_POD to "desk-pod", EXCL_DJI to "dji")
+    fun excludeFlagNames(value: Int): String = flagNames(value, EXCLUDE_FLAGS)
+
+    // HEALTH reset_reason: nRF52 RESETREAS bits; 0 = power-on or brown-out.
+    private val RESET_REASONS = listOf(
+        0x1L to "reset-pin", 0x2L to "watchdog", 0x4L to "soft-reset", 0x8L to "lockup",
+        0x10000L to "wake-pin", 0x20000L to "wake-lpcomp", 0x40000L to "wake-debug", 0x80000L to "wake-nfc", 0x100000L to "wake-usb",
+    )
+    fun resetReasonNames(value: Long): String {
+        if (value == 0L) return "power-on"
+        val names = RESET_REASONS.filter { value and it.first != 0L }.map { it.second }.toMutableList()
+        val rest = value and RESET_REASONS.fold(0L) { a, b -> a or b.first }.inv()
+        if (rest != 0L) names += "0x%x".format(rest)
+        return names.joinToString(",")
+    }
 
     fun parseHealth(p: ByteArray): Health {
         need(p, HEALTH_LEN, "HEALTH")
@@ -359,6 +416,7 @@ object BtrxProtocol {
             u16(p, 15), u16(p, 17), i8(p, 19), i8(p, 20), i32(p, 21), u8(p, 25), u8(p, 26), u8(p, 27),
             u8(p, 28), u8(p, 29),
             phoneLost = if (p.size >= HEALTH_LOST_LEN) u32(p, 30) else null,
+            ext = if (p.size >= HEALTH_EXT_LEN) HealthExt(u32(p, 34), u8(p, 38), u16(p, 39), u16(p, 41), u8(p, 43)) else null,
         )
     }
 
@@ -544,6 +602,8 @@ object BtrxProtocol {
         MUTE_CLEAR -> "clear"
         MUTE_ADD -> "add"
         MUTE_REMOVE -> "remove"
+        MUTE_IGNORE -> "ignore"
+        MUTE_UNIGNORE -> "unignore"
         else -> op.toString()
     }
 
@@ -658,6 +718,22 @@ object BtrxProtocol {
         encodeFrame(STEER_MUTE, seq = seq, podId = podId, payload = steerMutePayload(op, srcId))
 
     fun roleGetFrame(seq: Int): ByteArray = encodeFrame(ROLE_GET, seq = seq)
+
+    /** PAIR_OPEN seconds outside 10..120 (or none) mean 60 on the pod. */
+    const val PAIR_OPEN_DEFAULT_S = 60
+
+    /** PAIR_OPEN (0x16) payload: 0 bytes, or seconds u8 (10..120; anything else means 60). */
+    fun pairOpenPayload(seconds: Int? = null): ByteArray = seconds?.let { byteArrayOf(it.coerceIn(0, 255).toByte()) } ?: ByteArray(0)
+
+    /** PAIR_OPEN to the paired pod's node (pod A), header pod_id = the paired pod's, like STEER_MUTE. */
+    fun pairOpenFrame(seq: Int, podId: Long, seconds: Int? = null): ByteArray =
+        encodeFrame(PAIR_OPEN, seq = seq, podId = podId, payload = pairOpenPayload(seconds))
+
+    /**
+     * DESK_PAIR to the Desk Pod's own node from its phone link: the firmware's bench-test path
+     * opens the Desk Pod window as if its button were tapped (answered by DESK_PAIR open=1 source 2).
+     */
+    fun deskPairOpenFrame(seq: Int): ByteArray = encodeFrame(DESK_PAIR, seq = seq)
 
     const val PAIR_CONFIRM_LEN = 61
     const val PSK_MAX = 32
