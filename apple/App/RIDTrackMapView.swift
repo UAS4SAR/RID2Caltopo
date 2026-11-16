@@ -7801,7 +7801,7 @@ struct BtrxBearingStatusChip: View {
 }
 
 /// The BTRX status chip in the status row at the top of the map (Ken, Nov 16): "BTRX: Active"
-/// (green) or "BTRX: Inactive - <reason>" (orange). Hidden until BTRX is set up. Tap: the
+/// (green), "BTRX: Active - No Drone Pod reports" (orange) or "BTRX: Inactive - <reason>" (orange). Hidden until BTRX is set up. Tap: the
 /// Desk Pod view. Same as Android.
 struct BtrxMapStatusChip: View {
     @ObservedObject var center: BtrxDeskPodCenter
@@ -7812,7 +7812,7 @@ struct BtrxMapStatusChip: View {
                 center.openDeskPodScreenFromStatus()
                 showDeskPod = true
             } label: {
-                AppleOperationalStatusChipLabel(title: status.text, tone: status.active ? .normal : .caution)
+                AppleOperationalStatusChipLabel(title: status.text, tone: status.active && !status.warning ? .normal : .caution)
             }
             .buttonStyle(.plain)
             .accessibilityLabel(status.text)

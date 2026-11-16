@@ -181,7 +181,9 @@ fun BtrxMapStatusChip(modifier: Modifier = Modifier) {
             )
         },
         colors = androidx.compose.material3.AssistChipDefaults.assistChipColors(
-            containerColor = if (s.active) Color(0xFF2E7D32) else Color(0xFFF57C00),
+            // Green: link READY and the Drone Pod reporting. Orange: READY but no Drone Pod
+            // reports (warning), or Inactive (unchanged).
+            containerColor = if (s.active && !s.warning) Color(0xFF2E7D32) else Color(0xFFF57C00),
             labelColor = Color.White,
         ),
         modifier = modifier,

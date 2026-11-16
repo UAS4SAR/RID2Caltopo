@@ -164,14 +164,14 @@ final class BtrxBleCentral: NSObject, @unchecked Sendable {
         bearing.liveStreamCount = liveStreams
     }
 
-    // Map double tap opens the Desk Pod view while it is talking (Ken, Nov 13).
+    // The map chip's "No Drone Pod reports" (Ken, Nov 16): last live frame from the paired pod.
     private let frameClockLock = NSLock()
-    private var lastFrameUptimeNs: UInt64 = 0
-    /// Seconds since the last Desk Pod frame (any thread); nil = none yet.
-    func secondsSinceLastFrame() -> Double? {
+    private var lastDronePodReportUptimeNs: UInt64 = 0
+    /// Seconds since the last Drone Pod report (`BtrxMapStatus.isDronePodReport`, any thread); nil = none yet.
+    func secondsSinceDronePodReport() -> Double? {
         frameClockLock.lock(); defer { frameClockLock.unlock() }
-        guard lastFrameUptimeNs != 0 else { return nil }
-        return Double(DispatchTime.now().uptimeNanoseconds &- lastFrameUptimeNs) / 1e9
+        guard lastDronePodReportUptimeNs != 0 else { return nil }
+        return Double(DispatchTime.now().uptimeNanoseconds &- lastDronePodReportUptimeNs) / 1e9
     }
 
     // MARK: actions (any thread)
@@ -707,12 +707,14 @@ extension BtrxBleCentral: BtrxClientListener {
     }
 
     func onFrame(_ frame: BtrxProtocol.Frame, meta: BtrxRadioMeta) {
-        frameClockLock.lock(); lastFrameUptimeNs = DispatchTime.now().uptimeNanoseconds; frameClockLock.unlock()
+        let origin = model.bearingOrigin(frame, meta: meta)
+        if BtrxMapStatus.isDronePodReport(frameType: frame.type, backlog: meta.backlog, fromPairedPod: origin == Model.bearingFromPod) {
+            frameClockLock.lock(); lastDronePodReportUptimeNs = DispatchTime.now().uptimeNanoseconds; frameClockLock.unlock()
+        }
         model.onFrame(frame, meta: meta)
         // The overlay follows each STEER (about every second), not only the 1 s tick.
         if frame.type == BtrxProtocol.STEER && !meta.backlog { publish() }
         if bearing.isRunning, frame.type == BtrxProtocol.STEER || frame.type == BtrxProtocol.TIME_PONG || frame.type == BtrxProtocol.HEALTH {
-            let origin = model.bearingOrigin(frame, meta: meta)
             if origin != Model.bearingFromOther {
                 bearing.onFrame(frame, meta: meta, fromPairedPod: origin == Model.bearingFromPod, fromDeskPod: origin == Model.bearingFromDesk)
             }
@@ -771,7 +773,8 @@ public final class BtrxDeskPodCenter: ObservableObject {
     private func updateMapStatus() {
         let setUp = BtrxMapStatus.setUp(bluetoothLinkEnabled: bluetoothEnabled, deskPodRemembered: rememberedPeripheral != nil)
         let next = BtrxMapStatus.status(setUp: setUp, link: snapshot.link, bluetoothOff: setUp && central.bluetoothPoweredOff(),
-                                        pausedForUSB: snapshot.bluetoothPausedForUSB, talking: deskPodTalking())
+                                        pausedForUSB: snapshot.bluetoothPausedForUSB,
+                                        dronePodReporting: BtrxMapStatus.dronePodReporting(secondsSinceReport: central.secondsSinceDronePodReport()))
         guard next != mapStatus else { return }
         mapStatus = next
         OperationalBridgePacketLog.write?("DEBUG", "Btrx", "map status: \(next?.text ?? "hidden")")
@@ -855,16 +858,12 @@ public final class BtrxDeskPodCenter: ObservableObject {
     /// only live stream (the overlay's own rule, `BtrxSteeringTarget.effective`).
     public var bearingSteeringStreamID: String? { BtrxSteeringTarget.effective(steeringStreamID, live: liveSteeringStreams) }
 
-    /// "Talking": a Desk Pod frame within this long (STEER arrives about once a second).
-    public static let talkingSeconds: Double = 10
     /// Increments when the map asks for the Desk Pod view (double tap while it is talking).
     @Published public private(set) var deskPodScreenRequest = 0
 
-    /// The Desk Pod link is up and a frame arrived in the last `talkingSeconds`.
-    public func deskPodTalking() -> Bool {
-        guard snapshot.link.phase == .ready, let age = central.secondsSinceLastFrame() else { return false }
-        return age <= Self.talkingSeconds
-    }
+    /// The Desk Pod link is READY. (Until Nov 16 this also needed a Desk Pod frame within 10 s,
+    /// which flapped with no Drone Pod reporting: the Desk Pod's own HEALTH comes every 30 s.)
+    public func deskPodTalking() -> Bool { snapshot.link.phase == .ready }
 
     /// Map double tap: opens the Desk Pod view and returns true only while it is talking.
     @discardableResult

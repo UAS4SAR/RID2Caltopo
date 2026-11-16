@@ -50,7 +50,6 @@ object BtrxManager {
     private const val KEY_USB_DEBUG = "usb_debug"
     private const val KEY_OVERLAY_SHOWN = "steer_overlay_shown"
     /** "Talking": a Desk Pod frame within this long (STEER arrives about once a second). */
-    private const val TALKING_MS = 10_000L
     private const val KEY_BEARING_FADE_S = "bearing_fade_total_s"
     private const val KEY_BEARING_FADE_P = "bearing_fade_shape_p"
     private const val KEY_BEARING_LAG_TRACE = "bearing_lag_trace"
@@ -164,14 +163,17 @@ object BtrxManager {
 
     // ---- map double tap opens the Desk Pod screen (Ken, Nov 13) ----
 
-    @Volatile private var lastDeskPodFrameMs = 0L
+    /** Last live frame from the paired Drone Pod ([BtrxMapStatus.isDronePodReport]); 0 = none. */
+    @Volatile private var lastDronePodReportMs = 0L
     private val _deskPodScreenRequests = MutableStateFlow(0)
     /** Increments when the map asks for the Desk Pod screen (double tap while it is talking). */
     val deskPodScreenRequests: StateFlow<Int> = _deskPodScreenRequests.asStateFlow()
 
-    /** The Desk Pod link is up and a frame arrived in the last [TALKING_MS]. */
-    fun deskPodTalking(nowMs: Long = android.os.SystemClock.elapsedRealtime()): Boolean =
-        _snapshot.value.link.phase == LinkPhase.READY && lastDeskPodFrameMs != 0L && nowMs - lastDeskPodFrameMs <= TALKING_MS
+    /**
+     * The Desk Pod link is READY. (Until Nov 16 this also needed a Desk Pod frame within 10 s,
+     * which flapped with no Drone Pod reporting: the Desk Pod's own HEALTH comes every 30 s.)
+     */
+    fun deskPodTalking(): Boolean = _snapshot.value.link.phase == LinkPhase.READY
 
     /** Map double tap: opens the Desk Pod screen and returns true only while it is talking. */
     fun openDeskPodScreenFromMap(): Boolean {
@@ -203,7 +205,10 @@ object BtrxManager {
             usbLink = link != null,
             pausedForUsb = snap.bluetoothPausedForUsb,
         )
-        val next = BtrxMapStatus.status(setUp, snap.link, setUp && bluetoothOff(), snap.bluetoothPausedForUsb, deskPodTalking())
+        val next = BtrxMapStatus.status(
+            setUp, snap.link, setUp && bluetoothOff(), snap.bluetoothPausedForUsb,
+            BtrxMapStatus.dronePodReporting(lastDronePodReportMs, android.os.SystemClock.elapsedRealtime()),
+        )
         synchronized(mapStatusLock) {
             if (next == _mapStatus.value) return
             _mapStatus.value = next
@@ -242,12 +247,14 @@ object BtrxManager {
         override fun onLocalRoleReport(report: BtrxProtocol.RoleReport) = model.onLocalRoleReport(report)
         override fun onPacketDropped(encrypted: Boolean) = model.onPacketDropped(encrypted)
         override fun onFrame(frame: BtrxProtocol.Frame, meta: BtrxClient.RadioMeta) {
-            lastDeskPodFrameMs = android.os.SystemClock.elapsedRealtime()
+            val origin = model.bearingOrigin(frame, meta)
+            if (BtrxMapStatus.isDronePodReport(frame.type, meta.backlog, origin == BtrxDeskPodModel.BEARING_FROM_POD)) {
+                lastDronePodReportMs = android.os.SystemClock.elapsedRealtime()
+            }
             model.onFrame(frame, meta)
             // The overlay follows each STEER (about every second), not only the 1 s tick.
             if (frame.type == BtrxProtocol.STEER && !meta.backlog) worker.execute { publish() }
             if (bearing.isRunning && (frame.type == BtrxProtocol.STEER || frame.type == BtrxProtocol.TIME_PONG || frame.type == BtrxProtocol.HEALTH)) {
-                val origin = model.bearingOrigin(frame, meta)
                 if (origin != BtrxDeskPodModel.BEARING_FROM_OTHER) worker.execute {
                     bearing.onFrame(frame, meta, origin == BtrxDeskPodModel.BEARING_FROM_POD, origin == BtrxDeskPodModel.BEARING_FROM_DESK)
                 }
