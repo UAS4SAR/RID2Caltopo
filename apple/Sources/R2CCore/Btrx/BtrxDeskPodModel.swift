@@ -165,6 +165,9 @@ public final class BtrxDeskPodModel {
     private var pairedPod: PairedPod?
     private var lastHealth: HealthReading?
     private var deskPhoneLost: UInt32?
+    /// The Desk Pod's own latest live HEALTH this session: uptime_s and arrival (logged when the link drops).
+    private var deskUptimeS: UInt32?
+    private var deskHealthAtMs: Int64 = 0
     private var droppedEncrypted = 0
     private var droppedOtherPort = 0
     private var otherPods = Set<UInt32>()
@@ -200,6 +203,7 @@ public final class BtrxDeskPodModel {
         localNode = nil
         role = nil
         deskPhoneLost = nil
+        deskUptimeS = nil; deskHealthAtMs = 0
         droppedEncrypted = 0; droppedOtherPort = 0
         liveCounts = [:]; backlogCounts = [:]
         detectTimes.removeAll()
@@ -209,8 +213,19 @@ public final class BtrxDeskPodModel {
     public func detach(_ sender: BtrxFrameSender, reason: String) {
         guard self.sender === sender else { return }
         self.sender = nil
+        log.debug(linkDropLine(reason: reason, nowMs: clock()))
         if Self.activeSteps.contains(pairing.step) { fail(pairing.step, "The link to the Desk Pod was lost (\(reason)).") }
         imuCal.linkLost(reason: reason)
+    }
+
+    /// Logged when a session ends (Nov 16: tell a Desk Pod reboot from a radio drop): the
+    /// Desk Pod's and the Drone Pod's last HEALTH uptime and age. Same text as Android.
+    private func linkDropLine(reason: String, nowMs: Int64) -> String {
+        let desk = deskUptimeS.map { "Desk Pod last HEALTH uptime_s=\($0), \((nowMs - deskHealthAtMs) / 1000) s ago" }
+            ?? "no Desk Pod HEALTH this session"
+        let pod = lastHealth.map { "Drone Pod last HEALTH uptime_s=\($0.health.uptimeS), \((nowMs - $0.arrivalMs) / 1000) s ago" }
+            ?? "no Drone Pod HEALTH"
+        return "link drop (\(reason)): \(desk); \(pod)"
     }
 
     public func restorePairedPod(_ pod: PairedPod?) {
@@ -260,7 +275,12 @@ public final class BtrxDeskPodModel {
             case BtrxProtocol.PAIR_ACK: onPairAck(try BtrxProtocol.parsePairAck(frame.payload), meta)
             // The Desk Pod's own HEALTH (sent to its app from build 0x0104): only phone_lost is shown.
             case BtrxProtocol.HEALTH where localNode != nil && meta.fromNode == localNode:
-                if !meta.backlog, let lost = try BtrxProtocol.parseHealth(frame.payload).phoneLost { deskPhoneLost = lost }
+                if !meta.backlog {
+                    let h = try BtrxProtocol.parseHealth(frame.payload)
+                    if let lost = h.phoneLost { deskPhoneLost = lost }
+                    deskUptimeS = h.uptimeS
+                    deskHealthAtMs = meta.arrivalMs
+                }
             default: if meta.fromNode != localNode && acceptsPodTraffic(frame, meta) { try onPodTraffic(frame, meta) }
             }
         } catch {

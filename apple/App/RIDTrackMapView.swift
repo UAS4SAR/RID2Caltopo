@@ -2436,6 +2436,7 @@ struct RIDTrackMapView: View {
 
     @ViewBuilder
     private var liveViewStatusItems: some View {
+        if let btrxCenter { BtrxMapStatusChip(center: btrxCenter) }
         AppleProximityStatusChip(center: proximityAlerts, onSettings: onProximitySettings)
         operationalStatusChip(conciseAirspaceOrNotamChipLabel, tone: usesAirspaceRestrictionStatus ? airspaceTone : notamTone) {
             if usesAirspaceRestrictionStatus { showAirspace = true } else { showNotams = true }
@@ -7785,7 +7786,8 @@ final class BtrxBearingMapController: NSObject, UIGestureRecognizerDelegate {
 struct BtrxBearingStatusChip: View {
     @ObservedObject var center: BtrxDeskPodCenter
     var body: some View {
-        if center.bearingOn, let line = center.bearingStatus?.line {
+        // While the BTRX status chip says Inactive it already explains the missing reports.
+        if center.bearingOn, center.mapStatus?.active != false, let line = center.bearingStatus?.line {
             Text(line)
                 .font(.footnote)
                 .foregroundStyle(.white)
@@ -7794,6 +7796,29 @@ struct BtrxBearingStatusChip: View {
                 .frame(maxWidth: 560)
                 .padding(.top, 8).padding(.horizontal, 56)
                 .allowsHitTesting(false)
+        }
+    }
+}
+
+/// The BTRX status chip in the status row at the top of the map (Ken, Nov 16): "BTRX: Active"
+/// (green) or "BTRX: Inactive - <reason>" (orange). Hidden until BTRX is set up. Tap: the
+/// Desk Pod view. Same as Android.
+struct BtrxMapStatusChip: View {
+    @ObservedObject var center: BtrxDeskPodCenter
+    @State private var showDeskPod = false
+    var body: some View {
+        if let status = center.mapStatus {
+            Button {
+                center.openDeskPodScreenFromStatus()
+                showDeskPod = true
+            } label: {
+                AppleOperationalStatusChipLabel(title: status.text, tone: status.active ? .normal : .caution)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(status.text)
+            .sheet(isPresented: $showDeskPod) {
+                DeskPodView(center: center, onDismiss: { showDeskPod = false })
+            }
         }
     }
 }

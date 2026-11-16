@@ -39,6 +39,8 @@ final class BtrxBleCentral: NSObject, @unchecked Sendable {
     static let scanRounds = 3
     static let directTries = 2
     static let connectTimeout: TimeInterval = 30
+    /// While a patient connect waits: one Meshtastic-UUID scan this often. Same as Android.
+    static let patientScanSeconds: TimeInterval = 60
     static let opTimeout: TimeInterval = 10
     /// First connection to a Desk Pod: iPadOS shows its PIN sheet when FromNum
     /// notifications are enabled (an encrypted write) and waits for the operator.
@@ -62,6 +64,14 @@ final class BtrxBleCentral: NSObject, @unchecked Sendable {
     private var rejected = Set<UUID>()
     private var backoff = BtrxReconnectBackoff()
     private var directTriesUsed = 0
+    /// A patient connect (no timeout) to the remembered Desk Pod is pending (Nov 16 field test:
+    /// after a drop the Desk Pod stopped advertising for minutes). Same as Android.
+    private var patient = false
+    /// The running scan is a patient-wait scan (no status change, one round).
+    private var patientScanning = false
+    private var patientWork: DispatchWorkItem?
+    private let poweredOffLock = NSLock()
+    private var poweredOff = false
     private var scanRound = 0
     private var scanning = false
     private var found: [UUID: (CBPeripheral, Int)] = [:]
@@ -244,23 +254,37 @@ final class BtrxBleCentral: NSObject, @unchecked Sendable {
             status(.unavailable, "Waiting for Bluetooth.")
             return
         }
-        if let id = remembered, !rejected.contains(id), directTriesUsed < Self.directTries,
+        if let id = remembered, !rejected.contains(id),
            let p = manager.retrievePeripherals(withIdentifiers: [id]).first {
-            directTriesUsed += 1
-            connect(p, name: foundNames[id] ?? p.name)
+            if directTriesUsed < Self.directTries {
+                directTriesUsed += 1
+                connect(p, name: foundNames[id] ?? p.name)
+            } else {
+                // Direct tries used up: one pending connect, no timeout, until it connects or the link stops.
+                log.debug("ble: \(Self.directTries) direct connects failed; patient connect to \(foundNames[id] ?? p.name ?? "the Desk Pod") "
+                    + "pending until it advertises (scan every \(Int(Self.patientScanSeconds)) s)")
+                connect(p, name: foundNames[id] ?? p.name, patientWait: true)
+            }
             return
         }
         directTriesUsed = 0
         scan()
     }
 
-    private func scan() {
+    /// `patientRound`: one scan while a patient connect is pending; it keeps the CONNECTING
+    /// status and the pending connect unless it finds a Desk Pod.
+    private func scan(patientRound: Bool = false) {
         guard let manager else { return }
         found.removeAll()
         scanning = true
-        scanRound += 1
+        patientScanning = patientRound
         manager.scanForPeripherals(withServices: [Self.service], options: nil)
-        status(.scanning, "Looking for the Desk Pod (scan \(scanRound) of \(Self.scanRounds)).", nil)
+        if patientRound {
+            log.debug("ble: scanning for the Desk Pod while the patient connect waits")
+        } else {
+            scanRound += 1
+            status(.scanning, "Looking for the Desk Pod (scan \(scanRound) of \(Self.scanRounds)).", nil)
+        }
         let w = DispatchWorkItem { [weak self] in self?.finishScan() }
         scanWork = w
         queue.asyncAfter(deadline: .now() + Self.scanSeconds, execute: w)
@@ -275,9 +299,23 @@ final class BtrxBleCentral: NSObject, @unchecked Sendable {
 
     private func finishScan() {
         guard scanning else { return }
+        let wasPatient = patientScanning
+        patientScanning = false
         stopScan()
         guard enabled else { return }
         let pick = remembered.flatMap { found[$0]?.0 } ?? found.values.max(by: { $0.1 < $1.1 })?.0
+        if wasPatient {
+            guard patient else { return }
+            guard let pick else {
+                log.debug("ble: Desk Pod not advertising; the patient connect keeps waiting")
+                schedulePatientScan()
+                return
+            }
+            log.debug("ble: \(foundNames[pick.identifier] ?? "Desk Pod") advertising again; connecting directly")
+            closeSession("patient connect replaced by a direct connect")
+            connect(pick, name: foundNames[pick.identifier] ?? pick.name)
+            return
+        }
         guard let pick else {
             if scanRound < Self.scanRounds {
                 let w = DispatchWorkItem { [weak self] in self?.scan() }
@@ -294,14 +332,23 @@ final class BtrxBleCentral: NSObject, @unchecked Sendable {
         connect(pick, name: foundNames[pick.identifier] ?? pick.name)
     }
 
-    private func connect(_ p: CBPeripheral, name: String?) {
+    /// `patientWait`: no timeout (an iOS connect stays pending until the peripheral
+    /// advertises), with a scan every `patientScanSeconds`.
+    private func connect(_ p: CBPeripheral, name: String?, patientWait: Bool = false) {
         guard let manager else { return }
         peripheral = p
         p.delegate = self
         handshakeWritten = false
         sessionSerial += 1
-        status(.connecting, "Connecting to \(name ?? "the Desk Pod").", name)
+        status(.connecting, patientWait
+               ? "Waiting for \(name ?? "the Desk Pod") to come back; it reconnects as soon as the Desk Pod advertises."
+               : "Connecting to \(name ?? "the Desk Pod").", name)
         manager.connect(p, options: nil)
+        if patientWait {
+            patient = true
+            schedulePatientScan()
+            return
+        }
         let serial = sessionSerial
         let w = DispatchWorkItem { [weak self] in
             guard let self, self.sessionSerial == serial else { return }
@@ -309,6 +356,22 @@ final class BtrxBleCentral: NSObject, @unchecked Sendable {
         }
         connectWork = w
         queue.asyncAfter(deadline: .now() + Self.connectTimeout, execute: w)
+    }
+
+    private func schedulePatientScan() {
+        patientWork?.cancel()
+        let w = DispatchWorkItem { [weak self] in
+            guard let self, self.enabled, self.patient, self.client == nil, !self.scanning else { return }
+            self.scan(patientRound: true)
+        }
+        patientWork = w
+        queue.asyncAfter(deadline: .now() + Self.patientScanSeconds, execute: w)
+    }
+
+    /// The device's Bluetooth is turned off (any thread); for the map status chip.
+    func bluetoothPoweredOff() -> Bool {
+        poweredOffLock.lock(); defer { poweredOffLock.unlock() }
+        return poweredOff
     }
 
     /// `failure`: short reason for the Desk Pod screen's "reconnecting" line (default: the detail).
@@ -324,6 +387,9 @@ final class BtrxBleCentral: NSObject, @unchecked Sendable {
 
     private func onConnected(_ p: CBPeripheral) {
         connectWork?.cancel(); connectWork = nil
+        patientWork?.cancel(); patientWork = nil
+        if patient { log.debug("ble: patient connect succeeded") }
+        patient = false
         log.info("ble: connected to \(p.name ?? "Desk Pod")")
         status(.configuring, "Connected; reading the Desk Pod's configuration.")
         let q = BtrxGattQueue<Op>(start: { [unowned self] in self.startOp($0) },
@@ -471,6 +537,9 @@ final class BtrxBleCentral: NSObject, @unchecked Sendable {
     private func closeSession(_ reason: String) {
         opWork?.cancel(); opWork = nil
         connectWork?.cancel(); connectWork = nil
+        patientWork?.cancel(); patientWork = nil
+        patient = false
+        if patientScanning { patientScanning = false; stopScan() }
         sessionTimers.forEach { $0.cancel() }
         sessionTimers.removeAll()
         gattQueue?.clear(); gattQueue = nil
@@ -527,6 +596,7 @@ final class BtrxBleCentral: NSObject, @unchecked Sendable {
 
 extension BtrxBleCentral: CBCentralManagerDelegate {
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
+        poweredOffLock.lock(); poweredOff = central.state == .poweredOff; poweredOffLock.unlock()
         if central.state == .poweredOn {
             attempt()
         } else {
@@ -539,7 +609,8 @@ extension BtrxBleCentral: CBCentralManagerDelegate {
     func centralManager(_ central: CBCentralManager, didDiscover p: CBPeripheral, advertisementData: [String: Any], rssi: NSNumber) {
         guard scanning, !rejected.contains(p.identifier) else { return }
         let name = advertisementData[CBAdvertisementDataLocalNameKey] as? String ?? p.name
-        if found[p.identifier] == nil { log.info("ble: found \(name ?? "unnamed") rssi=\(rssi.intValue)") }
+        // Debug level, as Android: the session log keeps debug lines.
+        if found[p.identifier] == nil { log.debug("ble: found \(name ?? "unnamed") rssi=\(rssi.intValue)") }
         found[p.identifier] = (p, rssi.intValue)
         if let name { foundNames[p.identifier] = name }
         if p.identifier == remembered { finishScan() }
@@ -681,11 +752,35 @@ public final class BtrxDeskPodCenter: ObservableObject {
         bearingLagTrace = defaults.bool(forKey: Self.keyBearingLagTrace)
         let paired = defaults.data(forKey: Self.keyPaired).flatMap { try? JSONDecoder().decode(Model.PairedPod.self, from: $0) }
         let events = BtrxBleCentral.Events(
-            snapshot: { [weak self] s in Task { @MainActor in self?.snapshot = s } },
+            snapshot: { [weak self] s in Task { @MainActor in self?.apply(s) } },
             rememberPeripheral: { [weak self] id, name in Task { @MainActor in self?.remember(id, name) } },
             paired: { [weak self] pod in Task { @MainActor in self?.savePaired(pod) } }
         )
         central = BtrxBleCentral(events: events, paired: paired)
+    }
+
+    /// "BTRX: Active" / "BTRX: Inactive - <reason>" for the chip at the top of the map;
+    /// nil (no chip) until BTRX is set up. Same as Android.
+    @Published public private(set) var mapStatus: BtrxMapStatus.Status?
+
+    private func apply(_ s: Model.Snapshot) {
+        snapshot = s
+        updateMapStatus()
+    }
+
+    private func updateMapStatus() {
+        let setUp = BtrxMapStatus.setUp(bluetoothLinkEnabled: bluetoothEnabled, deskPodRemembered: rememberedPeripheral != nil)
+        let next = BtrxMapStatus.status(setUp: setUp, link: snapshot.link, bluetoothOff: setUp && central.bluetoothPoweredOff(),
+                                        pausedForUSB: snapshot.bluetoothPausedForUSB, talking: deskPodTalking())
+        guard next != mapStatus else { return }
+        mapStatus = next
+        OperationalBridgePacketLog.write?("DEBUG", "Btrx", "map status: \(next?.text ?? "hidden")")
+    }
+
+    /// The BTRX status chip: opens the Desk Pod view whatever the link state.
+    public func openDeskPodScreenFromStatus() {
+        OperationalBridgePacketLog.write?("DEBUG", "Btrx", "map status tap: Desk Pod view")
+        deskPodScreenRequest += 1
     }
 
     /// Call once at launch; connects only when the operator turned Bluetooth on.
@@ -707,6 +802,7 @@ public final class BtrxDeskPodCenter: ObservableObject {
         bluetoothEnabled = on
         defaults.set(on, forKey: Self.keyEnabled)
         central.setEnabled(on, remembered: rememberedPeripheral)
+        updateMapStatus()
     }
 
     public func forgetDeskPod() {

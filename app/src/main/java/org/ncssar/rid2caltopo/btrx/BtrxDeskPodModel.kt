@@ -156,6 +156,9 @@ class BtrxDeskPodModel(
     private var pairedPod: PairedPod? = null
     private var lastHealth: HealthReading? = null
     private var deskPhoneLost: Long? = null
+    /** The Desk Pod's own latest live HEALTH this session: uptime_s and arrival (logged when the link drops). */
+    private var deskUptimeS: Long? = null
+    private var deskHealthAtMs = 0L
     private var droppedEncrypted = 0
     private var droppedOtherPort = 0
     private val otherPods = mutableSetOf<Long>()
@@ -188,6 +191,7 @@ class BtrxDeskPodModel(
         localNode = null
         role = null
         deskPhoneLost = null
+        deskUptimeS = null; deskHealthAtMs = 0L
         droppedEncrypted = 0; droppedOtherPort = 0
         liveCounts.clear(); backlogCounts.clear()
         detectTimes.clear()
@@ -199,9 +203,22 @@ class BtrxDeskPodModel(
         synchronized(this) {
             if (this.sender !== sender) return
             this.sender = null
+            log.debug(linkDropLine(reason, clock()))
             if (pairing.step in ACTIVE_STEPS) fail(pairing.step, "The link to the Desk Pod was lost ($reason).")
             imuCal.linkLost(reason)
         }
+    }
+
+    /**
+     * Logged when a session ends (Nov 16: tell a Desk Pod reboot from a radio drop): the
+     * Desk Pod's and the Drone Pod's last HEALTH uptime and age. Same text on the iPad.
+     */
+    private fun linkDropLine(reason: String, nowMs: Long): String {
+        val desk = deskUptimeS?.let { "Desk Pod last HEALTH uptime_s=$it, ${(nowMs - deskHealthAtMs) / 1000} s ago" }
+            ?: "no Desk Pod HEALTH this session"
+        val pod = lastHealth?.let { "Drone Pod last HEALTH uptime_s=${it.health.uptimeS}, ${(nowMs - it.arrivalMs) / 1000} s ago" }
+            ?: "no Drone Pod HEALTH"
+        return "link drop ($reason): $desk; $pod"
     }
 
     @Synchronized
@@ -271,7 +288,12 @@ class BtrxDeskPodModel(
                 P.PAIR_ACK -> onPairAck(P.parsePairAck(frame.payload), meta)
                 // The Desk Pod's own HEALTH (sent to its app from build 0x0104): only phone_lost is shown.
                 P.HEALTH -> if (localNode != null && meta.fromNode == localNode) {
-                    if (!meta.backlog) P.parseHealth(frame.payload).phoneLost?.let { deskPhoneLost = it }
+                    if (!meta.backlog) {
+                        val h = P.parseHealth(frame.payload)
+                        h.phoneLost?.let { deskPhoneLost = it }
+                        deskUptimeS = h.uptimeS
+                        deskHealthAtMs = meta.arrivalMs
+                    }
                 } else if (acceptsPodTraffic(frame, meta)) onPodTraffic(frame, meta)
                 else -> if (meta.fromNode != localNode && acceptsPodTraffic(frame, meta)) onPodTraffic(frame, meta)
             }

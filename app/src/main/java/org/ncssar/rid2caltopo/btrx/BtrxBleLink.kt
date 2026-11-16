@@ -50,6 +50,16 @@ import org.ncssar.rid2caltopo.btrx.BtrxDeskPodModel.LinkPhase
  * Runs with the screen locked: the RID scanning foreground service keeps the process
  * alive, and the scan uses a service-UUID filter, which Android requires when the
  * screen is off.
+ *
+ * Patient reconnect (Nov 16 field test: after a drop the Desk Pod stopped advertising
+ * for minutes and every 10 s direct connect failed with status 147): after
+ * [DIRECT_TRIES] direct connects to the remembered Desk Pod fail, one background
+ * connectGatt(autoConnect = true) stays pending, with no timeout, until it connects or
+ * the link stops. A Meshtastic-UUID scan every [PATIENT_SCAN_MS] still finds the Desk Pod
+ * (or another one) and connects to it directly.
+ *
+ * The phase and the open GATT go to [BtrxRadioCoordinator], which holds off the Remote
+ * ID scan's periodic restart while the link is busy and guards against adapter resets.
  */
 @SuppressLint("MissingPermission") // every entry point checks hasPermissions() first
 class BtrxBleLink(
@@ -95,6 +105,10 @@ class BtrxBleLink(
     private var scanning = false
     private var scanRound = 0
     private var directTries = 0
+    /** A background (autoConnect) connect to the remembered Desk Pod is pending. */
+    private var patient = false
+    /** The running scan is a patient-wait scan (no status change, one round). */
+    private var patientScanning = false
     private val found = LinkedHashMap<String, Pair<BluetoothDevice, Int>>()
     private val foundNames = HashMap<String, String?>()
     private val rejected = mutableSetOf<String>()
@@ -104,6 +118,7 @@ class BtrxBleLink(
     private val attempt = Runnable { attempt() }
     private val scanDone = Runnable { finishScan() }
     private val nextScan = Runnable { adapter()?.let { if (running && gatt == null && !scanning) scan(it) } }
+    private val patientScan = Runnable { adapter()?.let { if (running && patient && client == null && !scanning) scan(it, patientRound = true) } }
     private val opTimeout = Runnable { sessionLost("a Bluetooth operation timed out") }
     private val connectTimeout = Runnable { sessionLost("connection timed out") }
     private val bondTimeout = Runnable { bondFinished(false, "bonding did not finish within ${BOND_TIMEOUT_MS / 1000} s") }
@@ -177,11 +192,15 @@ class BtrxBleLink(
         if (!hasPermissions()) { retryLater(LinkPhase.NO_PERMISSION, "RID2Caltopo needs the Nearby devices permission."); return }
         if (!adapter.isEnabled) { retryLater(LinkPhase.UNAVAILABLE, "Bluetooth is off."); return }
         val remembered = events.rememberedAddress()
-        if (remembered != null && remembered !in rejected && directTries < DIRECT_TRIES && BluetoothAdapter.checkBluetoothAddress(remembered)) {
+        if (remembered != null && remembered !in rejected && BluetoothAdapter.checkBluetoothAddress(remembered)) {
             val dev = adapter.getRemoteDevice(remembered)
             if (dev.bondState == BluetoothDevice.BOND_BONDED) {
-                directTries++
-                connect(dev, foundNames[remembered] ?: dev.name)
+                if (directTries < DIRECT_TRIES) {
+                    directTries++
+                    connect(dev, foundNames[remembered] ?: dev.name)
+                } else {
+                    startPatient(dev, foundNames[remembered] ?: dev.name)
+                }
                 return
             }
         }
@@ -207,26 +226,40 @@ class BtrxBleLink(
         }
     }
 
-    private fun scan(adapter: BluetoothAdapter) {
-        val scanner = adapter.bluetoothLeScanner ?: run { retryLater(LinkPhase.UNAVAILABLE, "Bluetooth scanning is unavailable."); return }
+    /**
+     * [patientRound]: one scan while a background connect is pending; it keeps the
+     * CONNECTING status and the pending connect unless it finds a Desk Pod.
+     */
+    private fun scan(adapter: BluetoothAdapter, patientRound: Boolean = false) {
+        val scanner = adapter.bluetoothLeScanner ?: run {
+            if (patientRound) { handler.postDelayed(patientScan, PATIENT_SCAN_MS); return }
+            retryLater(LinkPhase.UNAVAILABLE, "Bluetooth scanning is unavailable."); return
+        }
         found.clear()
         val filter = ScanFilter.Builder().setServiceUuid(ParcelUuid.fromString(MeshtasticBle.SERVICE_UUID)).build()
         val settings = ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build()
         try {
             scanner.startScan(listOf(filter), settings, scanCallback)
         } catch (e: Exception) {
+            if (patientRound) { handler.postDelayed(patientScan, PATIENT_SCAN_MS); return }
             retryLater(LinkPhase.RETRY_WAIT, "Bluetooth scan could not start (${e.message}).")
             return
         }
         scanning = true
-        scanRound++
-        status(LinkPhase.SCANNING, "Looking for the Desk Pod (scan $scanRound of $SCAN_ROUNDS).", null)
+        patientScanning = patientRound
+        if (patientRound) {
+            log.debug("ble: scanning for the Desk Pod while the background connect waits")
+        } else {
+            scanRound++
+            status(LinkPhase.SCANNING, "Looking for the Desk Pod (scan $scanRound of $SCAN_ROUNDS).", null)
+        }
         handler.postDelayed(scanDone, SCAN_MS)
     }
 
     private fun onFound(dev: BluetoothDevice, rssi: Int, name: String?) {
         if (!scanning || dev.address in rejected) return
-        if (dev.address !in found) log.info("ble: found ${name ?: "unnamed"} rssi=$rssi")
+        // Debug level: the session log drops INFO lines at the default level.
+        if (dev.address !in found) log.debug("ble: found ${name ?: "unnamed"} ${dev.address.takeLast(5)} rssi=$rssi")
         found[dev.address] = dev to rssi
         foundNames[dev.address] = name
         if (dev.address == events.rememberedAddress()) finishScan()
@@ -241,10 +274,25 @@ class BtrxBleLink(
 
     private fun finishScan() {
         if (!scanning) return
+        val wasPatient = patientScanning
+        patientScanning = false
         stopScan()
         if (!running) return
         val remembered = events.rememberedAddress()
         val pick = found[remembered]?.first ?: found.values.maxByOrNull { it.second }?.first
+        if (wasPatient) {
+            if (!patient || client != null) return
+            if (pick == null) {
+                log.debug("ble: Desk Pod not advertising; the background connect keeps waiting")
+                handler.postDelayed(patientScan, PATIENT_SCAN_MS)
+                return
+            }
+            // A direct connect is quicker than Android's background connect.
+            log.debug("ble: ${foundNames[pick.address] ?: "Desk Pod"} advertising again; connecting directly")
+            closeSession("background connect replaced by a direct connect")
+            connect(pick, foundNames[pick.address] ?: pick.name)
+            return
+        }
         if (pick == null) {
             if (scanRound < SCAN_ROUNDS) {
                 // A single short scan sometimes missed the Desk Pod on the bench. Space the
@@ -321,19 +369,42 @@ class BtrxBleLink(
         }
     }
 
-    private fun openGatt(dev: BluetoothDevice, name: String?) {
-        status(LinkPhase.CONNECTING, "Connecting to ${name ?: "the Desk Pod"}.", name)
+    /**
+     * [DIRECT_TRIES] direct connects failed: one background connect (autoConnect = true,
+     * no timeout) waits for the Desk Pod to advertise again, until it connects or [stop].
+     */
+    private fun startPatient(dev: BluetoothDevice, name: String?) {
+        log.debug("ble: $DIRECT_TRIES direct connects failed; background connect to ${name ?: "the Desk Pod"} " +
+            "pending until it advertises (scan every ${PATIENT_SCAN_MS / 1000} s)")
+        openGatt(dev, name, background = true)
+    }
+
+    private fun openGatt(dev: BluetoothDevice, name: String?, background: Boolean = false) {
+        status(
+            LinkPhase.CONNECTING,
+            if (background) "Waiting for ${name ?: "the Desk Pod"} to come back; it reconnects as soon as the Desk Pod advertises."
+            else "Connecting to ${name ?: "the Desk Pod"}.",
+            name,
+        )
         handshakeWritten = false
         attMtu = 23
         val serial = ++sessionSerial
-        val g = dev.connectGatt(context, false, GattCallback(serial), BluetoothDevice.TRANSPORT_LE)
+        val g = dev.connectGatt(context, background, GattCallback(serial), BluetoothDevice.TRANSPORT_LE)
         if (g == null) { retryLater(LinkPhase.RETRY_WAIT, "Android could not open a Bluetooth connection."); return }
         gatt = g
-        handler.postDelayed(connectTimeout, CONNECT_TIMEOUT_MS)
+        BtrxRadioCoordinator.onGattOpen(true)
+        if (background) {
+            patient = true
+            handler.postDelayed(patientScan, PATIENT_SCAN_MS)
+        } else {
+            handler.postDelayed(connectTimeout, CONNECT_TIMEOUT_MS)
+        }
     }
 
-    private fun status(phase: LinkPhase, detail: String, deviceName: String?) =
+    private fun status(phase: LinkPhase, detail: String, deviceName: String?) {
+        BtrxRadioCoordinator.onLinkPhase(phase)
         events.onStatus(phase, detail, deviceName, backoff.failures, backoff.lastFailure)
+    }
 
     /** [failure]: short reason for the Desk Pod screen's "reconnecting" line. */
     private fun retryLater(phase: LinkPhase, detail: String, failure: String = detail.trimEnd('.')) {
@@ -393,6 +464,9 @@ class BtrxBleLink(
 
     private fun onConnected(g: BluetoothGatt) {
         handler.removeCallbacks(connectTimeout)
+        handler.removeCallbacks(patientScan)
+        if (patient) log.debug("ble: background connect succeeded")
+        patient = false
         log.info("ble: connected to ${device?.name ?: "Desk Pod"}")
         // The config dump and the Desk Pod's queued frames (up to 32) are read one FromRadio
         // per round trip; a short connection interval cuts that from tens of seconds. Back
@@ -546,8 +620,12 @@ class BtrxBleLink(
     private fun closeSession(reason: String) {
         handler.removeCallbacks(opTimeout)
         handler.removeCallbacks(connectTimeout)
+        handler.removeCallbacks(patientScan)
         handler.removeCallbacks(heartbeat)
         handler.removeCallbacks(summary)
+        patient = false
+        if (patientScanning) stopScan()
+        patientScanning = false
         unregisterBondReceiver()
         queue?.clear(); queue = null
         drain?.reset(); drain = null
@@ -560,6 +638,7 @@ class BtrxBleLink(
         client = null
         gatt?.let { g -> runCatching { g.disconnect() }; runCatching { g.close() } }
         gatt = null
+        BtrxRadioCoordinator.onGattOpen(false)
         toRadio = null; fromRadio = null
     }
 
@@ -574,6 +653,8 @@ class BtrxBleLink(
         const val SCAN_ROUNDS = 3
         const val DIRECT_TRIES = 2
         const val CONNECT_TIMEOUT_MS = 30_000L
+        /** While a background connect waits: one Meshtastic-UUID scan this often. */
+        const val PATIENT_SCAN_MS = 60_000L
         const val BOND_TIMEOUT_MS = 90_000L
         const val OP_TIMEOUT_MS = 10_000L
         const val BOND_POLL_MS = 1_000L

@@ -181,6 +181,40 @@ object BtrxManager {
         return true
     }
 
+    /** The BTRX status chip at the top of the map: opens the Desk Pod screen whatever the link state. */
+    fun openDeskPodScreenFromStatus() {
+        logger.debug("map status tap: Desk Pod screen")
+        _deskPodScreenRequests.value = _deskPodScreenRequests.value + 1
+    }
+
+    // ---- BTRX status chip at the top of the map (Ken, Nov 16) ----
+
+    private val _mapStatus = MutableStateFlow<BtrxMapStatus.Status?>(null)
+    /** "BTRX: Active" / "BTRX: Inactive - <reason>"; null (no chip) until BTRX is set up. */
+    val mapStatus: StateFlow<BtrxMapStatus.Status?> = _mapStatus.asStateFlow()
+    private val mapStatusLock = Any()
+
+    private fun updateMapStatus() {
+        if (!installed) return
+        val snap = _snapshot.value
+        val setUp = BtrxMapStatus.setUp(
+            bluetoothLinkEnabled = _bluetoothEnabled.value,
+            deskPodRemembered = prefs().getString(KEY_ADDRESS, null) != null,
+            usbLink = link != null,
+            pausedForUsb = snap.bluetoothPausedForUsb,
+        )
+        val next = BtrxMapStatus.status(setUp, snap.link, setUp && bluetoothOff(), snap.bluetoothPausedForUsb, deskPodTalking())
+        synchronized(mapStatusLock) {
+            if (next == _mapStatus.value) return
+            _mapStatus.value = next
+        }
+        logger.debug("map status: ${next?.text ?: "hidden"}")
+    }
+
+    private fun bluetoothOff(): Boolean = runCatching {
+        (appContext.getSystemService(Context.BLUETOOTH_SERVICE) as? android.bluetooth.BluetoothManager)?.adapter?.isEnabled == false
+    }.getOrDefault(false)
+
     /** Fade time and shape sliders: applied at once (next tick) and saved. */
     fun setBearingSettings(settings: BtrxBearingSettings) {
         val s = settings.clamped()
@@ -389,6 +423,7 @@ object BtrxManager {
 
     private fun publish() {
         _snapshot.value = model.snapshot()
+        updateMapStatus()
     }
 
     private fun applyArbiter(actions: List<BtrxLinkArbiter.Action>) {

@@ -160,3 +160,30 @@ fun BtrxBearingPanel(rows: List<Long>, onDismiss: () -> Unit, modifier: Modifier
         }
     }
 }
+
+/**
+ * The BTRX status chip in the status row at the top of the map (Ken, Nov 16): "BTRX: Active"
+ * (green) or "BTRX: Inactive - <reason>" (orange). Hidden until BTRX is set up. Tap: the
+ * Desk Pod screen. Same as the iPad.
+ */
+@Composable
+fun BtrxMapStatusChip(modifier: Modifier = Modifier) {
+    val status by BtrxManager.mapStatus.collectAsState()
+    val s = status ?: return
+    androidx.compose.material3.AssistChip(
+        onClick = { BtrxManager.openDeskPodScreenFromStatus() },
+        label = {
+            Text(
+                s.text,
+                maxLines = 1,
+                softWrap = false,
+                overflow = androidx.compose.ui.text.style.TextOverflow.Clip,
+            )
+        },
+        colors = androidx.compose.material3.AssistChipDefaults.assistChipColors(
+            containerColor = if (s.active) Color(0xFF2E7D32) else Color(0xFFF57C00),
+            labelColor = Color.White,
+        ),
+        modifier = modifier,
+    )
+}

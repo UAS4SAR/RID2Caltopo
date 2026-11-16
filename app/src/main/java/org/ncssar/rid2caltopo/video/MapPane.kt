@@ -982,6 +982,7 @@ internal fun SplitMapPane(
         }
     }
     val btrxBearingStatus by org.ncssar.rid2caltopo.btrx.BtrxManager.bearing.status.collectAsState()
+    val btrxMapStatus by org.ncssar.rid2caltopo.btrx.BtrxManager.mapStatus.collectAsState()
     LaunchedEffect(btrxBearingOn) {
         if (!btrxBearingOn) {
             btrxOverlay.show(null, null)
@@ -4956,7 +4957,8 @@ internal fun SplitMapPane(
         )
 
         // Why the bearing layer draws nothing (no drone pose, no reports, ...); hidden while it draws.
-        if (btrxBearingOn && !isInsetMode) btrxBearingStatus?.line?.let { line ->
+        // While the BTRX status chip says Inactive it already explains the missing reports.
+        if (btrxBearingOn && !isInsetMode && btrxMapStatus?.active != false) btrxBearingStatus?.line?.let { line ->
             org.ncssar.rid2caltopo.ui.BtrxBearingStatusChip(
                 line = line,
                 modifier = Modifier.align(Alignment.TopCenter).padding(top = 8.dp, start = 56.dp, end = 56.dp),

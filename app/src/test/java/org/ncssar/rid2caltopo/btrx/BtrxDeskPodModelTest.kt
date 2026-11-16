@@ -405,6 +405,23 @@ class BtrxDeskPodModelTest {
         devId = 1, peerId = 0, podId = 0, imuWhoami = 0, txPolicy = 0)
 
     @Test
+    fun linkDropLogsTheLastHealthUptimes() {
+        model.detach(sender, "first")
+        assertTrue(logs.toString(), logs.contains("link drop (first): no Desk Pod HEALTH this session; no Drone Pod HEALTH"))
+        model.attach(sender)
+        model.onConfigured(desk)
+        val h34 = ByteArray(34).also { P.putU32(it, 0, 500); it[6] = 3 }
+        model.onFrame(P.decodeFrame(P.encodeFrame(P.HEALTH, payload = h34)), meta(desk))
+        model.onFrame(P.decodeFrame(P.fromHex(BtrxProtocolTest.EXAMPLES.getValue("HEALTH"))), meta(pod))
+        val podUptime = model.snapshot().dronePodHealth!!.health.uptimeS
+        now += 12_000
+        model.detach(sender, "disconnected (status 8)")
+        val line = "link drop (disconnected (status 8)): Desk Pod last HEALTH uptime_s=500, 12 s ago; " +
+            "Drone Pod last HEALTH uptime_s=$podUptime, 12 s ago"
+        assertTrue(logs.toString(), logs.contains(line))
+    }
+
+    @Test
     fun deskPodOwnHealthShowsPhoneLostAndIsNotDronePodHealth() {
         model.onLocalRoleReport(role(0x0104))
         var s = model.snapshot()

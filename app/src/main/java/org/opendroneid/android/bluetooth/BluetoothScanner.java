@@ -35,6 +35,7 @@ import androidx.core.app.ActivityCompat;
 
 import org.ncssar.rid2caltopo.app.R2CActivity;
 import org.ncssar.rid2caltopo.app.R2CApplication;
+import org.ncssar.rid2caltopo.btrx.BtrxRadioCoordinator;
 import org.ncssar.rid2caltopo.data.CtDroneSpec;
 import org.ncssar.rid2caltopo.data.BluetoothRidTestPrefs;
 
@@ -70,6 +71,21 @@ public class BluetoothScanner {
     private ScheduledFuture<?> reporterFuture, restartFuture, restartPauseFuture;
     private final java.util.concurrent.atomic.AtomicBoolean closed = new java.util.concurrent.atomic.AtomicBoolean();
     private boolean scanning;
+    /** Radio-worker state: when the platform scan last started, and in which ScanSettings mode. */
+    private long platformScanStartedAtMs;
+    private int platformScanMode = ScanSettings.SCAN_MODE_LOW_LATENCY;
+    /**
+     * The Desk Pod link entered or left READY. Restarts the scan only when the mode
+     * changes ({@link BtrxRadioCoordinator#RELAX_RID_SCAN_WHILE_LINKED}); off by default.
+     */
+    private final BtrxRadioCoordinator.Listener deskPodLinkListener = ready -> radioWorker.execute(() -> {
+        if (closed.get() || !scanning) return;
+        int mode = BtrxRadioCoordinator.ridScanMode(ready);
+        if (mode == platformScanMode) return;
+        CTDebug(TAG, "RID scan restart: Desk Pod link " + (ready ? "READY" : "no longer READY")
+                + "; mode " + BtrxRadioCoordinator.scanModeName(platformScanMode) + " -> " + BtrxRadioCoordinator.scanModeName(mode));
+        restartPlatformScan();
+    });
 
     private static final long DIAGNOSTIC_REPORT_INTERVAL_MS = 5_000L;
     private static final long DIAGNOSTIC_RESTART_INTERVAL_MS = 120_000L;
@@ -99,6 +115,11 @@ public class BluetoothScanner {
         this.periodicRestartEnabled = BluetoothRidTestPrefs.isPeriodicRestartEnabled(context);
     }
 
+    /*
+     * Never disable, enable or reset the Bluetooth adapter or stack from here: that drops
+     * the Desk Pod's GATT session. Any future reset must first check
+     * BtrxRadioCoordinator.adapterResetAllowed() and refuse while it returns false.
+     */
     public static BluetoothAdapter getBluetoothAdapter() {
         Context appContext = R2CApplication.getAppCtxt();
         if (appContext == null) return null;
@@ -189,15 +210,30 @@ public class BluetoothScanner {
         @Override
         public void run() {
             if (!scanning || !periodicRestartEnabled) return;
-            CTInfo("BluetoothRIDTest", "Periodic Bluetooth scan restart requested after 120 seconds.");
-            stopPlatformScan();
-            restartPauseFuture = radioWorker.schedule(() -> {
-                if (!scanning) return;
-                startPlatformScan();
-                if (scanning) restartFuture = radioWorker.schedule(diagnosticRestarter, DIAGNOSTIC_RESTART_INTERVAL_MS, TimeUnit.MILLISECONDS);
-            }, DIAGNOSTIC_RESTART_PAUSE_MS, TimeUnit.MILLISECONDS);
+            long runningMs = SystemClock.elapsedRealtime() - platformScanStartedAtMs;
+            // Debug level: the session log drops INFO lines at the default level.
+            if (BtrxRadioCoordinator.deferPeriodicRestart(runningMs)) {
+                CTDebug(TAG, "RID scan restart skipped: Desk Pod link busy (scan running " + runningMs / 1000 + " s)");
+                restartFuture = radioWorker.schedule(diagnosticRestarter, DIAGNOSTIC_RESTART_INTERVAL_MS, TimeUnit.MILLISECONDS);
+                return;
+            }
+            CTDebug(TAG, "RID scan restart (periodic, scan running " + runningMs / 1000 + " s"
+                    + (BtrxRadioCoordinator.deskPodLinkBusy() ? ", Desk Pod link busy past the deferral limit" : "") + ")");
+            restartPlatformScan();
         }
     };
+
+    /** Stop, pause 250 ms, start (with the current mode), and schedule the next periodic restart. */
+    private void restartPlatformScan() {
+        if (restartFuture != null) restartFuture.cancel(false);
+        if (restartPauseFuture != null) restartPauseFuture.cancel(false);
+        stopPlatformScan();
+        restartPauseFuture = radioWorker.schedule(() -> {
+            if (!scanning) return;
+            startPlatformScan();
+            if (scanning && periodicRestartEnabled) restartFuture = radioWorker.schedule(diagnosticRestarter, DIAGNOSTIC_RESTART_INTERVAL_MS, TimeUnit.MILLISECONDS);
+        }, DIAGNOSTIC_RESTART_PAUSE_MS, TimeUnit.MILLISECONDS);
+    }
 
     public void startScan() {
         if (!closed.get()) radioWorker.execute(this::startOnWorker);
@@ -214,6 +250,7 @@ public class BluetoothScanner {
             startPlatformScan();
         }, this::radioUnavailable);
         if (!started || !scanning) return;
+        BtrxRadioCoordinator.addListener(deskPodLinkListener);
         if (testVariant.getDiagnosticsEnabled()) {
             CTInfo("BluetoothRIDTest", String.format(Locale.US,
                     "Enabled variant=%s softwareFilter=%s legacy1M=%s periodicRestart=%s",
@@ -246,8 +283,9 @@ public class BluetoothScanner {
             scanFilters.add(builder.build());
         }
 
+        int scanMode = BtrxRadioCoordinator.ridScanMode();
         ScanSettings.Builder settingsBuilder = new ScanSettings.Builder()
-                .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
+                .setScanMode(scanMode)
                 .setCallbackType(ScanSettings.CALLBACK_TYPE_ALL_MATCHES)
                 .setMatchMode(ScanSettings.MATCH_MODE_AGGRESSIVE)
                 .setNumOfMatches(ScanSettings.MATCH_NUM_MAX_ADVERTISEMENT)
@@ -263,13 +301,17 @@ public class BluetoothScanner {
 
         CTDebug(TAG, "startScan: Calling bluetoothLeScanner.startScan variant=" + testVariant.name()
                 + " legacy1M=" + testVariant.getUsesLegacy1M()
-                + " periodicRestart=" + periodicRestartEnabled);
+                + " periodicRestart=" + periodicRestartEnabled
+                + " mode=" + BtrxRadioCoordinator.scanModeName(scanMode));
         bluetoothLeScanner.startScan(scanFilters, scanSettings, scanCallback);
         scanning = true;
+        platformScanStartedAtMs = SystemClock.elapsedRealtime();
+        platformScanMode = scanMode;
     }
 
     public void stopScan() {
         if (closed.getAndSet(true)) return;
+        BtrxRadioCoordinator.removeListener(deskPodLinkListener);
         radioWorker.execute(() -> {
             scanning = false;
             cancelDiagnostics();

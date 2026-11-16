@@ -384,6 +384,23 @@ final class BtrxDeskPodModelTests: XCTestCase {
                      devId: 1, peerId: 0, podId: 0, imuWhoami: 0, txPolicy: 0)
     }
 
+    func testLinkDropLogsTheLastHealthUptimes() throws {
+        model.detach(sender, reason: "first")
+        XCTAssertTrue(log.debugs.contains("link drop (first): no Desk Pod HEALTH this session; no Drone Pod HEALTH"), "\(log.debugs)")
+        model.attach(sender)
+        model.onConfigured(localNode: desk)
+        var h34 = [UInt8](repeating: 0, count: 34)
+        P.putU32(&h34, 0, 500); h34[6] = 3
+        model.onFrame(try P.decodeFrame(P.encodeFrame(P.HEALTH, payload: h34)), meta: meta(desk))
+        model.onFrame(try P.decodeFrame(BtrxProtocolTests.example("HEALTH")), meta: meta(pod))
+        let podUptime = try XCTUnwrap(model.snapshot().dronePodHealth).health.uptimeS
+        now += 12_000
+        model.detach(sender, reason: "disconnected (status 8)")
+        let line = "link drop (disconnected (status 8)): Desk Pod last HEALTH uptime_s=500, 12 s ago; "
+            + "Drone Pod last HEALTH uptime_s=\(podUptime), 12 s ago"
+        XCTAssertTrue(log.debugs.contains(line), "\(log.debugs)")
+    }
+
     func testDeskPodOwnHealthShowsPhoneLostAndIsNotDronePodHealth() throws {
         model.onLocalRoleReport(role(0x0104))
         var s = model.snapshot()
