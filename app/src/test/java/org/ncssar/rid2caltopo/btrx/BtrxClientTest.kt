@@ -315,6 +315,54 @@ class BtrxClientTest {
 
     private fun isRoleGet(toRadio: ByteArray) = toRadio[0].toInt() == 0x0A && P.hex(toRadio).contains(P.hex(P.roleGetFrame(1)).substring(0, 8))
 
+    /**
+     * Regression (A5, Nov 16, 4fd63ec2): the Bluetooth thread holds the client's lock while it
+     * hands a frame to the model, and the model's 1 s tick (Desk Pod button keepalive) reads
+     * [BtrxClient.isReady] under the model's lock. A synchronized isReady deadlocked the two:
+     * FromRadio stopped draining after a DETECT and the Desk Pod's phone queue filled.
+     */
+    @Test
+    fun modelLockHolderCanReadIsReadyWhileTheClientIsDeliveringAFrame() {
+        val model = BtrxDeskPodModel(logger, clock = { now })
+        val inListener = java.util.concurrent.CountDownLatch(1)
+        val out = mutableListOf<ByteArray>()
+        val c = BtrxClient(
+            send = { out += it }, log = logger, random = Random(3), framing = BtrxClient.Framing.PACKET, clock = { now },
+            listener = object : BtrxClient.Listener {
+                override fun onConfigured(localNode: Long) = model.onConfigured(localNode)
+                override fun onFrame(frame: P.Frame, meta: BtrxClient.RadioMeta) {
+                    inListener.countDown()
+                    model.onFrame(frame, meta) // needs the model's lock, as on the btrx-ble thread
+                }
+            },
+        )
+        packetHandshake(c, out)
+        c.onFromRadio(ByteArray(0))
+        model.attach(c)
+        model.setLink(BtrxDeskPodModel.LinkStatus(BtrxDeskPodModel.LinkKind.BLUETOOTH, BtrxDeskPodModel.LinkPhase.READY, "Connected over Bluetooth."))
+        val frame = P.encodeFrame(P.DESK_PAIR, seq = 7, payload = byteArrayOf(1, 1, 60, 0))
+        val packet = MeshtasticSerialTest.fromRadioPacket(deskNode, deskNode, -60, 7.5f, 256, frame)
+        var readyUnderModelLock: Boolean? = null
+        val tick = Thread {
+            synchronized(model) {
+                inListener.await(5, java.util.concurrent.TimeUnit.SECONDS)
+                Thread.sleep(50) // the radio thread is now waiting for the model's lock
+                readyUnderModelLock = c.isReady
+                model.tick()
+                model.snapshot()
+            }
+        }.apply { isDaemon = true }
+        val radio = Thread { c.onFromRadio(packet) }.apply { isDaemon = true }
+        tick.start()
+        Thread.sleep(20)
+        radio.start()
+        tick.join(5_000); radio.join(5_000)
+        assertFalse("model tick deadlocked on the client's lock", tick.isAlive)
+        assertFalse("radio thread deadlocked on the model's lock", radio.isAlive)
+        assertEquals(true, readyUnderModelLock)
+        assertEquals(1, model.snapshot().liveCounts["DESK_PAIR"])
+    }
+
     @Test
     fun bluetoothFramingSendsBareProtobufsWithoutWakeBytes() {
         val out = mutableListOf<ByteArray>()

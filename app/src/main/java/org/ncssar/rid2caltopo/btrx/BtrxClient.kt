@@ -87,7 +87,13 @@ class BtrxClient(
 
     data class RoleCheck(val action: RoleWait, val delayMs: Long = 0)
 
-    @get:Synchronized
+    /**
+     * Volatile, not synchronized: [BtrxDeskPodModel] reads [isReady] while holding its own
+     * lock, and this client calls the model (listener.onFrame) while holding this one. A
+     * synchronized getter here deadlocked the Bluetooth thread against the model tick
+     * (A5, Nov 16, build 4fd63ec2: FromRadio stopped draining after a DETECT).
+     */
+    @Volatile
     var state = State.IDLE
         private set
 
@@ -279,7 +285,7 @@ class BtrxClient(
         sendToRadio(MeshtasticSerial.toRadioPacket(to, id, P.PRIVATE_APP_PORT, frame))
     }
 
-    @get:Synchronized
+    /** Lock-free on purpose (see [state]): callers may hold the model's lock. */
     override val isReady: Boolean get() = state == State.READY
 
     @Synchronized
