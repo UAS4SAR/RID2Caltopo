@@ -478,7 +478,7 @@ class BtrxClient(
         const val RATE_LOG_INTERVAL_MS = 10_000L
         /** Dropped (non-btrx) packets logged per session; all are counted. */
         const val DROPPED_LOG_LIMIT = 5
-        val ALWAYS_LOGGED = setOf(P.STEER, P.PAIR_REQ, P.PAIR_ACK, P.DESK_PAIR, P.ROLE_REPORT, P.IMU_CAL_ACK)
+        val ALWAYS_LOGGED = setOf(P.STEER, P.PAIR_REQ, P.PAIR_ACK, P.DESK_PAIR, P.ROLE_REPORT, P.IMU_CAL_ACK, P.CONFIRM_REQ)
         /** ROLE_REPORT answer timeout, counted from this session's ROLE_GET. */
         const val ROLE_TIMEOUT_MS = 10_000L
         /** How often the link checks the role wait. */

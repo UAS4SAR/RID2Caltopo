@@ -393,6 +393,10 @@ object BtrxManager {
     }
     /** "Re-pair Drone Pod" after its confirmation: PAIR_OPEN plus the Desk Pod window (build 0x0106). */
     fun repairDronePod() = worker.execute { model.repairDronePod(); publish() }
+    /** Desk Pod button panel (firmware 0x0108): Confirm / Cancel. */
+    fun answerButtonConfirm(confirm: Boolean) = worker.execute { model.answerButtonConfirm(confirm); publish() }
+    /** The button panel host is on screen (app in front): keepalive and "shown" go out only then. */
+    fun setButtonPanelAvailable(available: Boolean) = worker.execute { model.setButtonPanelAvailable(available); publish() }
     /** "Own aircraft (saved)" / "Remove" on a source (STEER_MUTE op 3 / 4, build 0x0106). */
     fun ignoreSourceSaved(srcId: Int) = worker.execute { model.ignoreSourceSaved(srcId); publish() }
     fun unignoreSourceSaved(srcId: Int) = worker.execute { model.unignoreSourceSaved(srcId); publish() }

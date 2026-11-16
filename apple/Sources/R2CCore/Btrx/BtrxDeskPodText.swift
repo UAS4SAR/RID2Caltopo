@@ -16,6 +16,50 @@ public enum BtrxDeskPodText {
     /// iPad: the first Bluetooth connection waits up to 90 s for the PIN to be typed.
     public static let enterPIN = "Enter the PIN printed on the Desk Pod (\(MeshtasticPhoneAPI.defaultPIN) by default) when iPadOS asks."
     public static let pinHint = "Bluetooth PIN: printed on the Desk Pod (\(MeshtasticPhoneAPI.defaultPIN) by default for now)."
+    // MARK: Desk Pod button confirmation (firmware 0x0108). Same as Android.
+
+    public static let confirmPairTitle = "Change Drone Pod pairing?"
+    public static let confirmPairBody = "The Desk Pod button was tapped. Confirm opens the Desk Pod's pairing window so a Drone Pod can pair. Cancel leaves the pairing as it is."
+    public static let confirmResetTitle = "Factory reset the Desk Pod?"
+    public static let confirmResetBody = "The Desk Pod button was held 10 s. A factory reset erases the Desk Pod's saved settings and its pairing, and cannot be undone. The Drone Pod must be paired again afterwards."
+    public static let confirmOk = "Confirm"
+    public static let confirmResetOk = "Factory reset"
+    public static let confirmCancel = "Cancel"
+    public static let confirmWaiting = "Confirmed. Waiting for the Desk Pod…"
+    public static let deskResetWarning = "The Desk Pod was factory reset from its button and is no longer paired. Re-pair the Drone Pod (or Pair drone pod)."
+
+    public static func confirmTitle(_ v: BtrxButtonConfirm.View) -> String {
+        switch v.action {
+        case BtrxProtocol.CFM_ACTION_DESK_PAIR: return confirmPairTitle
+        case BtrxProtocol.CFM_ACTION_FACTORY_RESET: return confirmResetTitle
+        default: return "Desk Pod button action \(v.action)?"
+        }
+    }
+
+    public static func confirmBody(_ v: BtrxButtonConfirm.View) -> String {
+        switch v.action {
+        case BtrxProtocol.CFM_ACTION_DESK_PAIR: return confirmPairBody
+        case BtrxProtocol.CFM_ACTION_FACTORY_RESET: return confirmResetBody
+        default: return "The Desk Pod asks to confirm a button action this app does not know."
+        }
+    }
+
+    public static func confirmCountdown(_ v: BtrxButtonConfirm.View) -> String {
+        v.confirmSent ? confirmWaiting : "Nothing happens unless you confirm (\(v.secondsLeft) s left)."
+    }
+
+    /// Desk Pod pane: whether the Desk Pod asks this app before its button acts.
+    public static func buttonConfirmLine(_ s: Model.Snapshot) -> String {
+        let tail: String
+        switch s.buttonConfirmLink {
+        case .on: tail = "asks this app to confirm pairing or a factory reset"
+        case .noLink: tail = "acts at once (no link to the Desk Pod)"
+        case .oldFirmware: tail = "acts at once (confirmation needs Desk Pod firmware 0x0108)"
+        case .notInFront: tail = "acts at once (this app is not in front)"
+        }
+        return "Desk Pod button: " + tail
+    }
+
     public static let mute = "Mute"
     public static let clearMutes = "Clear mutes"
     // One Desk Pod and one Drone Pod per app: replace, never add another.

@@ -43,9 +43,16 @@ public enum BtrxProtocol {
     /// window on PAIR_OPEN from its app (DESK_PAIR source 3). The app keeps working with 0x0106.
     /// Same as Android.
     public static let buildFilterSrcId = 0x0107
+    /// Build 0x0108 (btrx ec1d105): with a responsive app the Desk Pod button asks it first
+    /// (CONFIRM_REQ / CONFIRM_RSP). Older Desk Pods ignore CONFIRM_RSP but still record the
+    /// frame's RSSI / SNR (0 from the phone link) as their own lora_rssi / lora_snr, so the
+    /// keepalive goes only to a Desk Pod reporting 0x0108 or later. Same as Android.
+    public static let buildButtonConfirm = 0x0108
+    public static func buttonConfirmSupported(_ buildHash: Int?) -> Bool { (buildHash ?? 0) >= buildButtonConfirm }
 
     public static let HELLO = 0x01, HELLO_ACK = 0x02, PAIR_REQ = 0x10, PAIR_CONFIRM = 0x11, PAIR_ACK = 0x12
-    public static let B_CFG = 0x13, GESTURE = 0x14, DESK_PAIR = 0x15, PAIR_OPEN = 0x16, ROLE_GET = 0x20, ROLE_REPORT = 0x21
+    public static let B_CFG = 0x13, GESTURE = 0x14, DESK_PAIR = 0x15, PAIR_OPEN = 0x16,
+        CONFIRM_REQ = 0x17, CONFIRM_RSP = 0x18, ROLE_GET = 0x20, ROLE_REPORT = 0x21
     public static let ROLE_SET = 0x22, TIME_PING = 0x30, TIME_PONG = 0x31, START = 0x40, STOP = 0x41
     public static let CTRL_ACK = 0x42, SCAN_CFG = 0x50, SCAN_CFG_ACK = 0x51, FILTER_LIST = 0x60
     public static let FILTER_ACK = 0x61, DETECT = 0x70, IMU_SAMPLE = 0x71, ADV_SAMPLE = 0x72, HEALTH = 0x80
@@ -55,7 +62,8 @@ public enum BtrxProtocol {
 
     private static let msgNames: [Int: String] = [
         HELLO: "HELLO", HELLO_ACK: "HELLO_ACK", PAIR_REQ: "PAIR_REQ", PAIR_CONFIRM: "PAIR_CONFIRM",
-        PAIR_ACK: "PAIR_ACK", B_CFG: "B_CFG", GESTURE: "GESTURE", DESK_PAIR: "DESK_PAIR", PAIR_OPEN: "PAIR_OPEN", ROLE_GET: "ROLE_GET",
+        PAIR_ACK: "PAIR_ACK", B_CFG: "B_CFG", GESTURE: "GESTURE", DESK_PAIR: "DESK_PAIR", PAIR_OPEN: "PAIR_OPEN",
+        CONFIRM_REQ: "CONFIRM_REQ", CONFIRM_RSP: "CONFIRM_RSP", ROLE_GET: "ROLE_GET",
         ROLE_REPORT: "ROLE_REPORT", ROLE_SET: "ROLE_SET", TIME_PING: "TIME_PING", TIME_PONG: "TIME_PONG",
         START: "START", STOP: "STOP", CTRL_ACK: "CTRL_ACK", SCAN_CFG: "SCAN_CFG", SCAN_CFG_ACK: "SCAN_CFG_ACK",
         FILTER_LIST: "FILTER_LIST", FILTER_ACK: "FILTER_ACK", DETECT: "DETECT", IMU_SAMPLE: "IMU_SAMPLE",
@@ -700,6 +708,63 @@ public enum BtrxProtocol {
     }
 
     public static func roleGetFrame(seq: Int) -> [UInt8] { encodeFrame(ROLE_GET, seq: seq) }
+
+    // MARK: Desk Pod button confirmation (build 0x0108, PROTOCOL.md "Desk Pod button confirmation")
+
+    public static let CONFIRM_VERSION = 1, CONFIRM_REQ_LEN = 6, CONFIRM_RSP_LEN = 4
+    /// CONFIRM_REQ action.
+    public static let CFM_ACTION_DESK_PAIR = 1, CFM_ACTION_FACTORY_RESET = 2
+    /// CONFIRM_REQ state.
+    public static let CFM_ASK = 0, CFM_DONE = 1, CFM_DROPPED = 2, CFM_DONE_NO_APP = 3
+    /// CONFIRM_RSP answer.
+    public static let CFM_CANCEL = 0, CFM_CONFIRM = 1, CFM_SHOWN = 2, CFM_KEEPALIVE = 3
+    /// The keepalive cadence for a responsive app (the Desk Pod waits 10 s).
+    public static let confirmKeepaliveMs: Int64 = 5_000
+    /// The Desk Pod acts without asking when nothing answers a token this soon.
+    public static let confirmShownMs: Int64 = 3_000
+    public static let confirmTimeoutS = 15
+
+    public struct ConfirmReq: Sendable, Equatable {
+        public let version: Int, action: Int, token: Int, timeoutS: Int, state: Int
+        public init(version: Int, action: Int, token: Int, timeoutS: Int, state: Int) {
+            self.version = version; self.action = action; self.token = token; self.timeoutS = timeoutS; self.state = state
+        }
+    }
+
+    /// CONFIRM_REQ (0x17): 6 bytes; a version other than 1 is parsed and left to the caller to drop.
+    public static func parseConfirmReq(_ p: [UInt8]) throws -> ConfirmReq {
+        try need(p, CONFIRM_REQ_LEN, "CONFIRM_REQ")
+        return ConfirmReq(version: Int(p[0]), action: Int(p[1]), token: u16(p, 2), timeoutS: Int(p[4]), state: Int(p[5]))
+    }
+
+    public struct ConfirmRsp: Sendable, Equatable {
+        public let version: Int, token: Int, answer: Int
+        public init(version: Int, token: Int, answer: Int) { self.version = version; self.token = token; self.answer = answer }
+    }
+
+    public static func parseConfirmRsp(_ p: [UInt8]) throws -> ConfirmRsp {
+        try need(p, CONFIRM_RSP_LEN, "CONFIRM_RSP")
+        return ConfirmRsp(version: Int(p[0]), token: u16(p, 1), answer: Int(p[3]))
+    }
+
+    public static func confirmRspPayload(token: Int, answer: Int) -> [UInt8] {
+        [UInt8(CONFIRM_VERSION), UInt8(token & 0xFF), UInt8((token >> 8) & 0xFF), UInt8(answer & 0xFF)]
+    }
+
+    /// CONFIRM_RSP to the Desk Pod's own node (pod_id 0).
+    public static func confirmRspFrame(seq: Int, token: Int, answer: Int) -> [UInt8] {
+        encodeFrame(CONFIRM_RSP, seq: seq, payload: confirmRspPayload(token: token, answer: answer))
+    }
+
+    public static func confirmActionName(_ a: Int) -> String {
+        switch a { case CFM_ACTION_DESK_PAIR: return "desk-pair"; case CFM_ACTION_FACTORY_RESET: return "factory-reset"; default: return String(a) }
+    }
+    public static func confirmStateName(_ s: Int) -> String {
+        switch s { case CFM_ASK: return "ask"; case CFM_DONE: return "done"; case CFM_DROPPED: return "dropped"; case CFM_DONE_NO_APP: return "done-no-app"; default: return String(s) }
+    }
+    public static func confirmAnswerName(_ a: Int) -> String {
+        switch a { case CFM_CANCEL: return "cancel"; case CFM_CONFIRM: return "confirm"; case CFM_SHOWN: return "shown"; case CFM_KEEPALIVE: return "keepalive"; default: return String(a) }
+    }
 
     /// PAIR_OPEN (0x16, build 0x0106) payload: seconds (10...120) or none for the pod's 60 s.
     public static let pairOpenDefaultS = 60

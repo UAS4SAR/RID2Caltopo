@@ -19,6 +19,12 @@ public enum BtrxFrameLog {
             let d = try P.parseDeskPair(p)
             let src = P.deskPairSourceName(d.source)
             return "open=\(d.open) source=\(src) seconds=\(d.secondsLeft)"
+        case P.CONFIRM_REQ:
+            let c = try P.parseConfirmReq(p)
+            return "version=\(c.version) action=\(P.confirmActionName(c.action)) token=\(c.token) timeout_s=\(c.timeoutS) state=\(P.confirmStateName(c.state))"
+        case P.CONFIRM_RSP:
+            let c = try P.parseConfirmRsp(p)
+            return "version=\(c.version) token=\(c.token) answer=\(P.confirmAnswerName(c.answer))"
         case P.PAIR_OPEN:
             return p.isEmpty ? "seconds=default" : "seconds=\(p[0])"
         case P.PAIR_REQ:

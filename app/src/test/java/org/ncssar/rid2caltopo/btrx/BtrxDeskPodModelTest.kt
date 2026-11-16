@@ -1180,4 +1180,173 @@ class BtrxDeskPodModelTest {
         assertEquals("nothing yet (its own board, the other board, the Desk Pod, DJI not known)", BtrxDeskPodText.excludeText(0))
         assertEquals("software reset, wake from pin (0x10004)", BtrxDeskPodText.resetReasonText(0x10004))
     }
+
+    // ---- Desk Pod button confirmation (firmware 0x0108) ----
+
+    private fun confirmReq(action: Int, token: Int, state: Int, timeoutS: Int = if (state == P.CFM_ASK) 15 else 0,
+                           backlog: Boolean = false, version: Int = 1, from: Long = desk) =
+        model.onFrame(P.decodeFrame(P.encodeFrame(P.CONFIRM_REQ, seq = ++deskSeq,
+            payload = byteArrayOf(version.toByte(), action.toByte(), token.toByte(), (token shr 8).toByte(), timeoutS.toByte(), state.toByte()))), meta(from, backlog))
+
+    /** CONFIRM_RSP frames sent to the Desk Pod, as (token, answer). */
+    private fun confirmRsps(): List<Pair<Int, Int>> = sender.sent.filter { it.first == desk }.map { P.decodeFrame(it.second) }
+        .filter { it.type == P.CONFIRM_RSP }.map { P.parseConfirmRsp(it.payload).let { r -> r.token to r.answer } }
+
+    private fun buttonReady(build: Int = 0x0108) {
+        model.setLink(BtrxDeskPodModel.LinkStatus(BtrxDeskPodModel.LinkKind.BLUETOOTH, BtrxDeskPodModel.LinkPhase.READY))
+        model.onLocalRoleReport(role(build))
+        model.setButtonPanelAvailable(true)
+        sender.sent.clear()
+    }
+
+    @Test
+    fun keepaliveEvery5sOnlyWhileReadyIn0108AndInFront() {
+        buttonReady()
+        advance(1_000)
+        assertEquals(listOf(0 to P.CFM_KEEPALIVE), confirmRsps())
+        assertArrayEquals(byteArrayOf(1, 0, 0, 3), P.decodeFrame(sender.sent.single().second).payload)
+        assertEquals(0L, P.decodeFrame(sender.sent.single().second).podId)
+        repeat(4) { advance(1_000) }
+        assertEquals(1, confirmRsps().size)                       // 4 s after: not yet
+        advance(1_000)
+        assertEquals(2, confirmRsps().size)                       // 5 s
+        repeat(10) { advance(1_000) }
+        assertEquals(4, confirmRsps().size)                       // 10 s more: two more
+        assertEquals(BtrxDeskPodModel.ButtonConfirmLink.ON, model.snapshot().buttonConfirmLink)
+        // app in the background: none, and the button acts at once on the Desk Pod
+        model.setButtonPanelAvailable(false)
+        repeat(12) { advance(1_000) }
+        assertEquals(4, confirmRsps().size)
+        assertEquals(BtrxDeskPodModel.ButtonConfirmLink.NOT_IN_FRONT, model.snapshot().buttonConfirmLink)
+        model.setButtonPanelAvailable(true)
+        advance(1_000)
+        assertEquals(5, confirmRsps().size)                       // at once when back in front
+        // link not ready: none
+        model.setLink(BtrxDeskPodModel.LinkStatus(BtrxDeskPodModel.LinkKind.BLUETOOTH, BtrxDeskPodModel.LinkPhase.RETRY_WAIT))
+        repeat(12) { advance(1_000) }
+        assertEquals(5, confirmRsps().size)
+        assertEquals(BtrxDeskPodModel.ButtonConfirmLink.NO_LINK, model.snapshot().buttonConfirmLink)
+    }
+
+    @Test
+    fun noKeepaliveToADeskPodBefore0108() {
+        buttonReady(0x0107)
+        repeat(12) { advance(1_000) }
+        assertTrue(confirmRsps().isEmpty())
+        assertEquals(BtrxDeskPodModel.ButtonConfirmLink.OLD_FIRMWARE, model.snapshot().buttonConfirmLink)
+        assertEquals("Desk Pod button: acts at once (confirmation needs Desk Pod firmware 0x0108)", BtrxDeskPodText.buttonConfirmLine(model.snapshot()))
+        // no ROLE_REPORT yet: the Desk Pod's own HEALTH build counts
+        model.attach(sender); model.onConfigured(desk)
+        assertEquals(BtrxDeskPodModel.ButtonConfirmLink.OLD_FIRMWARE, model.snapshot().buttonConfirmLink)
+        val desk44 = ByteArray(44).also { it[4] = 0x08; it[5] = 0x01; it[6] = P.ROLE_DESK_POD.toByte() }
+        model.onFrame(P.decodeFrame(P.encodeFrame(P.HEALTH, payload = desk44)), meta(desk))
+        advance(1_000)
+        assertEquals(listOf(0 to P.CFM_KEEPALIVE), confirmRsps())
+        // an ask proves the feature even when the reported build is older (e.g. a stale role)
+        model.attach(sender); model.onConfigured(desk); model.onLocalRoleReport(role(0x0107)); sender.sent.clear()
+        confirmReq(P.CFM_ACTION_DESK_PAIR, 9, P.CFM_ASK)
+        advance(1_000)
+        assertEquals(listOf(9 to P.CFM_SHOWN, 0 to P.CFM_KEEPALIVE), confirmRsps())
+    }
+
+    @Test
+    fun askShowsThePanelAndAnswersShownAtOnce() {
+        buttonReady()
+        confirmReq(P.CFM_ACTION_DESK_PAIR, 0x1234, P.CFM_ASK)
+        assertEquals(listOf(0x1234 to P.CFM_SHOWN), confirmRsps())  // before any tick: well inside 3 s
+        assertArrayEquals(byteArrayOf(1, 0x34, 0x12, 2), P.decodeFrame(sender.sent.single().second).payload)
+        val v = model.snapshot().buttonConfirm!!
+        assertEquals(0x1234, v.token); assertFalse(v.factoryReset); assertEquals(15, v.secondsLeft)
+        assertEquals(BtrxDeskPodText.CONFIRM_PAIR_TITLE, BtrxDeskPodText.confirmTitle(v))
+        model.answerButtonConfirm(true)
+        assertEquals(0x1234 to P.CFM_CONFIRM, confirmRsps().last())
+        assertTrue(model.snapshot().buttonConfirm!!.confirmSent)
+        model.answerButtonConfirm(true)                               // once only
+        model.answerButtonConfirm(false)
+        assertEquals(2, confirmRsps().size)
+        confirmReq(P.CFM_ACTION_DESK_PAIR, 0x1234, P.CFM_DONE)
+        assertNull(model.snapshot().buttonConfirm)
+        assertEquals("Desk Pod button: pairing opened (confirmed).", model.snapshot().buttonNotice!!.text)
+        advance(BtrxButtonConfirm.NOTICE_MS)
+        assertNull(model.snapshot().buttonNotice)                     // brief on the map
+        assertNotNull(model.snapshot().buttonLastNotice)              // kept in the pane
+    }
+
+    @Test
+    fun cancelAndDroppedAndDoneWithoutAskingClose() {
+        buttonReady()
+        confirmReq(P.CFM_ACTION_DESK_PAIR, 7, P.CFM_ASK)
+        model.answerButtonConfirm(false)
+        assertEquals(7 to P.CFM_CANCEL, confirmRsps().last())
+        assertNull(model.snapshot().buttonConfirm)
+        confirmReq(P.CFM_ACTION_DESK_PAIR, 7, P.CFM_DROPPED)
+        assertEquals("Desk Pod button: cancelled; nothing was changed.", model.snapshot().buttonNotice!!.text)
+        // dropped by the Desk Pod (a reset hold replaces a waiting tap: state 2, then a new ask)
+        confirmReq(P.CFM_ACTION_DESK_PAIR, 8, P.CFM_ASK)
+        confirmReq(P.CFM_ACTION_DESK_PAIR, 8, P.CFM_DROPPED)
+        confirmReq(P.CFM_ACTION_FACTORY_RESET, 9, P.CFM_ASK)
+        assertEquals(9, model.snapshot().buttonConfirm!!.token)
+        assertTrue(model.snapshot().buttonConfirm!!.factoryReset)
+        assertEquals(BtrxDeskPodText.CONFIRM_RESET_TITLE, BtrxDeskPodText.confirmTitle(model.snapshot().buttonConfirm!!))
+        // done without asking (state 3) for a token asked while the app could not show it
+        model.answerButtonConfirm(false)
+        model.setButtonPanelAvailable(false)
+        sender.sent.clear()
+        confirmReq(P.CFM_ACTION_DESK_PAIR, 10, P.CFM_ASK)
+        assertNull(model.snapshot().buttonConfirm)
+        assertTrue("not in front: no shown", confirmRsps().isEmpty())
+        confirmReq(P.CFM_ACTION_DESK_PAIR, 10, P.CFM_DONE_NO_APP)
+        assertEquals("Desk Pod button: pairing opened.", model.snapshot().buttonNotice!!.text)
+        assertTrue(logs.any { it.contains("desk button: action=desk-pair token=10 state=done-no-app") })
+    }
+
+    @Test
+    fun panelClosesAfter15sAndUnknownTokensAreIgnored() {
+        buttonReady()
+        confirmReq(P.CFM_ACTION_DESK_PAIR, 0x0101, P.CFM_ASK)
+        confirmReq(P.CFM_ACTION_DESK_PAIR, 0x0202, P.CFM_DONE)          // never asked here
+        confirmReq(P.CFM_ACTION_FACTORY_RESET, 0x0303, P.CFM_DONE_NO_APP)
+        assertEquals(0x0101, model.snapshot().buttonConfirm!!.token)
+        assertNull(model.snapshot().buttonNotice)
+        assertNull(model.snapshot().deskResetAtMs)
+        confirmReq(P.CFM_ACTION_DESK_PAIR, 0x0101, P.CFM_ASK, version = 2)  // other version: ignored
+        confirmReq(P.CFM_ACTION_DESK_PAIR, 0x0404, P.CFM_ASK, backlog = true) // stale, from the connect backlog
+        confirmReq(P.CFM_ACTION_DESK_PAIR, 0x0505, P.CFM_ASK, from = pod)     // not the Desk Pod
+        assertEquals(0x0101, model.snapshot().buttonConfirm!!.token)
+        assertEquals(listOf(0x0101 to P.CFM_SHOWN), confirmRsps().filter { it.first != 0 })
+        advance(14_000)
+        assertEquals(1, model.snapshot().buttonConfirm!!.secondsLeft)
+        advance(1_000)
+        assertNull(model.snapshot().buttonConfirm)
+        assertEquals("Desk Pod button: no answer in 15 s; nothing was changed.", model.snapshot().buttonNotice!!.text)
+        model.answerButtonConfirm(true)                                 // nothing to answer
+        assertFalse(confirmRsps().any { it.second == P.CFM_CONFIRM })
+        confirmReq(P.CFM_ACTION_DESK_PAIR, 0x0101, P.CFM_DROPPED)        // the Desk Pod's drop: quiet
+        assertEquals("Desk Pod button: request dropped (no answer in time, or replaced); nothing was changed.", model.snapshot().buttonLastNotice!!.text)
+        confirmReq(P.CFM_ACTION_DESK_PAIR, 0x0101, P.CFM_DROPPED)        // a repeat of the outcome
+        assertEquals(1, logs.count { it.contains("token=257 state=dropped:") })
+    }
+
+    @Test
+    fun confirmedFactoryResetAsksTheRoleAndSaysTheDeskPodIsUnpaired() {
+        model.restorePairedPod(pod0106)
+        buttonReady()
+        confirmReq(P.CFM_ACTION_FACTORY_RESET, 0x2222, P.CFM_ASK)
+        model.answerButtonConfirm(true)
+        sender.sent.clear()
+        confirmReq(P.CFM_ACTION_FACTORY_RESET, 0x2222, P.CFM_DONE)
+        val s = model.snapshot()
+        assertNull(s.buttonConfirm)
+        assertEquals(now, s.deskResetAtMs)
+        assertEquals(BtrxButtonConfirm.RESET_DONE, s.buttonNotice!!.text)
+        assertEquals(listOf(P.ROLE_GET), sender.sent.filter { it.first == desk }.map { P.decodeFrame(it.second).type })
+        assertEquals(pod0106, s.pairedPod)                               // the app's record stays: Re-pair uses it
+        advance(BtrxButtonConfirm.NOTICE_MS + 1_000)
+        assertNotNull("the reset notice stays longer", model.snapshot().buttonNotice)
+        // the link is lost while a panel is up: it closes
+        confirmReq(P.CFM_ACTION_DESK_PAIR, 0x2223, P.CFM_ASK)
+        model.detach(sender, "test")
+        assertNull(model.snapshot().buttonConfirm)
+        assertNotNull(model.snapshot().deskResetAtMs)                    // until a pairing completes
+    }
 }

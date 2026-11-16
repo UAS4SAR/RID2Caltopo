@@ -218,6 +218,8 @@ final class BtrxBleCentral: NSObject, @unchecked Sendable {
     func startPairing() { queue.async { [self] in model.startPairing(); publish() } }
     func confirmPod() { queue.async { [self] in model.confirmPod(); publish() } }
     func repairDronePod() { queue.async { [self] in model.repairDronePod(); publish() } }
+    func answerButtonConfirm(_ confirm: Bool) { queue.async { [self] in model.answerButtonConfirm(confirm); publish() } }
+    func setButtonPanelAvailable(_ available: Bool) { queue.async { [self] in model.setButtonPanelAvailable(available); publish() } }
     func ignoreSourceSaved(_ srcId: Int) { queue.async { [self] in model.ignoreSourceSaved(srcId); publish() } }
     func unignoreSourceSaved(_ srcId: Int) { queue.async { [self] in model.unignoreSourceSaved(srcId); publish() } }
     func cancelPairing() { queue.async { [self] in model.cancelPairing(); publish() } }
@@ -840,6 +842,10 @@ public final class BtrxDeskPodCenter: ObservableObject {
     public func confirmPod() { central.confirmPod() }
     /// "Re-pair Drone Pod" after its confirmation: PAIR_OPEN plus the Desk Pod window (build 0x0106).
     public func repairDronePod() { central.repairDronePod() }
+    /// Desk Pod button panel (firmware 0x0108): Confirm / Cancel. Same as Android.
+    public func answerButtonConfirm(_ confirm: Bool) { central.answerButtonConfirm(confirm) }
+    /// The button panel can be seen (app active): keepalive and "shown" go out only then.
+    public func setButtonPanelAvailable(_ available: Bool) { central.setButtonPanelAvailable(available) }
     /// "Own aircraft (saved)" / "Remove" on a source (STEER_MUTE op 3 / 4, build 0x0106).
     public func ignoreSourceSaved(_ srcId: Int) { central.ignoreSourceSaved(srcId) }
     public func unignoreSourceSaved(_ srcId: Int) { central.unignoreSourceSaved(srcId) }

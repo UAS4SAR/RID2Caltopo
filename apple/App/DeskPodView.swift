@@ -24,6 +24,8 @@ struct DeskPodView: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 6) {
+                    // The map's button panel is behind this sheet: show it here too.
+                    if let v = s.buttonConfirm { BtrxButtonConfirmCard(center: center, view: v).padding(.bottom, 8) }
                     // Opens in Safari (the system browser), like Android's ACTION_VIEW.
                     if let url = URL(string: Text_.learnMoreURL) {
                         Link(Text_.learnMore, destination: url)
@@ -45,6 +47,8 @@ struct DeskPodView: View {
                     section("Desk Pod")
                     Text(Text_.roleLine(s))
                     Text(Text_.firmwareLine(s))
+                    Text(Text_.buttonConfirmLine(s)).font(.footnote)
+                    if let n = s.buttonLastNotice { Text(n.text).font(.footnote) }
 
                     Divider().padding(.vertical, 6)
                     section("Link health")
@@ -55,6 +59,7 @@ struct DeskPodView: View {
 
                     Divider().padding(.vertical, 6)
                     section("Pair drone pod")
+                    if s.deskResetAtMs != nil { Text(Text_.deskResetWarning).fontWeight(.semibold).foregroundStyle(.red) }
                     if let line = Text_.pairedLine(s) {
                         Text(line)
                         ForEach(Text_.pairedPodWarnings(s), id: \.self) { Text($0).font(.footnote).foregroundStyle(.red) }
@@ -623,5 +628,74 @@ extension Color {
     /// 0xRRGGBB.
     init(rgb: UInt32) {
         self.init(red: Double((rgb >> 16) & 0xFF) / 255, green: Double((rgb >> 8) & 0xFF) / 255, blue: Double(rgb & 0xFF) / 255)
+    }
+}
+
+/// Desk Pod button confirmation (firmware 0x0108) over the map: a small Confirm/Cancel card at
+/// the top, never a sheet or alert, so the map, the stream tiles and the alerts stay usable.
+/// Mounted as an overlay at the app root (outside the BTRX pane). While it is on screen and the
+/// scene is active it tells the center the panel can be seen: only then does the app send the
+/// keepalive and answer "shown", so with the app in the background the Desk Pod button acts on
+/// its own. The same card shows inside the Desk Pod pane (a sheet above this). Same as Android.
+struct BtrxButtonConfirmHost: View {
+    @ObservedObject var center: BtrxDeskPodCenter
+    @Environment(\.scenePhase) private var scenePhase
+
+    var body: some View {
+        let s = center.snapshot
+        VStack(spacing: 0) {
+            // Always present (zero size, no hit testing) so the availability below follows this host.
+            Color.clear.frame(width: 0, height: 0).allowsHitTesting(false)
+            if let v = s.buttonConfirm {
+                BtrxButtonConfirmCard(center: center, view: v)
+                    .frame(maxWidth: 460)
+                    .padding(.horizontal, 12)
+            } else if let n = s.buttonNotice {
+                Text(n.text)
+                    .font(.footnote)
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 12).padding(.vertical, 6)
+                    .background(Color.black.opacity(0.7), in: RoundedRectangle(cornerRadius: 10))
+                    .frame(maxWidth: 460)
+                    .padding(.horizontal, 12)
+                    .allowsHitTesting(false)
+            }
+        }
+        .padding(.top, 8)
+        .onAppear { center.setButtonPanelAvailable(scenePhase == .active) }
+        .onChange(of: scenePhase) { _, phase in center.setButtonPanelAvailable(phase == .active) }
+        .onDisappear { center.setButtonPanelAvailable(false) }
+    }
+}
+
+/// The Confirm/Cancel card (map overlay and Desk Pod pane). Factory reset is red and says it cannot be undone.
+struct BtrxButtonConfirmCard: View {
+    @ObservedObject var center: BtrxDeskPodCenter
+    let view: BtrxButtonConfirm.View
+
+    var body: some View {
+        let danger = view.factoryReset
+        VStack(alignment: .leading, spacing: 6) {
+            Text(BtrxDeskPodText.confirmTitle(view)).font(.headline).foregroundStyle(danger ? Color.red : Color.primary)
+            Text(BtrxDeskPodText.confirmBody(view)).font(.footnote)
+            Text(BtrxDeskPodText.confirmCountdown(view)).font(.footnote).fontWeight(.semibold)
+            if !view.confirmSent {
+                HStack(spacing: 10) {
+                    Button(BtrxDeskPodText.confirmCancel) { center.answerButtonConfirm(false) }.buttonStyle(.bordered)
+                    if danger {
+                        Button(BtrxDeskPodText.confirmResetOk, role: .destructive) { center.answerButtonConfirm(true) }
+                            .buttonStyle(.borderedProminent).tint(.red)
+                    } else {
+                        Button(BtrxDeskPodText.confirmOk) { center.answerButtonConfirm(true) }.buttonStyle(.borderedProminent)
+                    }
+                }
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(danger ? AnyShapeStyle(Color.red.opacity(0.12)) : AnyShapeStyle(.regularMaterial), in: RoundedRectangle(cornerRadius: 12))
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(danger ? Color.red : Color.clear, lineWidth: 2))
+        .shadow(radius: 6)
     }
 }

@@ -298,6 +298,25 @@ class BtrxProtocolTest {
     }
 
     @Test
+    fun confirmFramesMatchR2cSim() {
+        // Vectors from btrx ec1d105 tools/r2c_sim/protocol.py pack_confirm_req / pack_confirm_rsp.
+        assertEquals(0x17, P.CONFIRM_REQ); assertEquals(0x18, P.CONFIRM_RSP)
+        assertEquals("CONFIRM_REQ", P.typeName(P.CONFIRM_REQ)); assertEquals("CONFIRM_RSP", P.typeName(P.CONFIRM_RSP))
+        assertEquals(P.ConfirmReq(1, P.CFM_ACTION_FACTORY_RESET, 0x1234, 15, P.CFM_ASK), P.parseConfirmReq(h("010234120f00")))
+        assertEquals(P.ConfirmReq(1, P.CFM_ACTION_DESK_PAIR, 0xBEEF, 0, P.CFM_DONE_NO_APP), P.parseConfirmReq(h("0101efbe0003")))
+        assertEquals(P.ConfirmReq(2, 1, 1, 15, 0), P.parseConfirmReq(h("02010100" + "0f00ff")))  // version kept for the caller; trailing byte ok
+        try { P.parseConfirmReq(h("0101efbe00")); fail("5 bytes") } catch (_: P.PayloadException) {}
+        assertArrayEquals(h("01341201"), P.confirmRspPayload(0x1234, P.CFM_CONFIRM))
+        assertArrayEquals(h("01000003"), P.confirmRspPayload(0, P.CFM_KEEPALIVE))
+        val f = P.decodeFrame(P.confirmRspFrame(5, 0xBEEF, P.CFM_SHOWN))
+        assertEquals(P.CONFIRM_RSP, f.type); assertEquals(0L, f.podId)
+        assertEquals(P.ConfirmRsp(1, 0xBEEF, P.CFM_SHOWN), P.parseConfirmRsp(f.payload))
+        assertEquals("version=1 action=factory-reset token=4660 timeout_s=15 state=ask", BtrxFrameLog.describe(P.CONFIRM_REQ, h("010234120f00")))
+        assertEquals("version=1 token=0 answer=keepalive", BtrxFrameLog.describe(P.CONFIRM_RSP, h("01000003")))
+        assertFalse(P.buttonConfirmSupported(null)); assertFalse(P.buttonConfirmSupported(0x0107)); assertTrue(P.buttonConfirmSupported(0x0108))
+    }
+
+    @Test
     fun roleReportPayloadFromFirmware() {
         val r = P.parseRoleReport(h("020200080000015b128c4c71291c35000000000000"))
         assertEquals(P.ROLE_STARBOARD, r.role)

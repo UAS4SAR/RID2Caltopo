@@ -184,6 +184,41 @@ object BtrxDeskPodText {
         if (s.pairedPodQuiet) add(PAIRED_POD_QUIET)
     }
 
+    // ---- Desk Pod button confirmation (firmware 0x0108) ----
+
+    const val CONFIRM_PAIR_TITLE = "Change Drone Pod pairing?"
+    const val CONFIRM_PAIR_BODY = "The Desk Pod button was tapped. Confirm opens the Desk Pod's pairing window so a Drone Pod can pair. Cancel leaves the pairing as it is."
+    const val CONFIRM_RESET_TITLE = "Factory reset the Desk Pod?"
+    const val CONFIRM_RESET_BODY = "The Desk Pod button was held 10 s. A factory reset erases the Desk Pod's saved settings and its pairing, and cannot be undone. The Drone Pod must be paired again afterwards."
+    const val CONFIRM_OK = "Confirm"
+    const val CONFIRM_RESET_OK = "Factory reset"
+    const val CONFIRM_CANCEL = "Cancel"
+    const val CONFIRM_WAITING = "Confirmed. Waiting for the Desk Pod…"
+    const val DESK_RESET_WARNING = "The Desk Pod was factory reset from its button and is no longer paired. Re-pair the Drone Pod (or Pair drone pod)."
+
+    fun confirmTitle(v: BtrxButtonConfirm.View): String = when (v.action) {
+        P.CFM_ACTION_DESK_PAIR -> CONFIRM_PAIR_TITLE
+        P.CFM_ACTION_FACTORY_RESET -> CONFIRM_RESET_TITLE
+        else -> "Desk Pod button action ${v.action}?"
+    }
+
+    fun confirmBody(v: BtrxButtonConfirm.View): String = when (v.action) {
+        P.CFM_ACTION_DESK_PAIR -> CONFIRM_PAIR_BODY
+        P.CFM_ACTION_FACTORY_RESET -> CONFIRM_RESET_BODY
+        else -> "The Desk Pod asks to confirm a button action this app does not know."
+    }
+
+    fun confirmCountdown(v: BtrxButtonConfirm.View): String =
+        if (v.confirmSent) CONFIRM_WAITING else "Nothing happens unless you confirm (${v.secondsLeft} s left)."
+
+    /** Desk Pod pane: whether the Desk Pod asks this app before its button acts. */
+    fun buttonConfirmLine(s: BtrxDeskPodModel.Snapshot): String = "Desk Pod button: " + when (s.buttonConfirmLink) {
+        BtrxDeskPodModel.ButtonConfirmLink.ON -> "asks this app to confirm pairing or a factory reset"
+        BtrxDeskPodModel.ButtonConfirmLink.NO_LINK -> "acts at once (no link to the Desk Pod)"
+        BtrxDeskPodModel.ButtonConfirmLink.OLD_FIRMWARE -> "acts at once (confirmation needs Desk Pod firmware 0x0108)"
+        BtrxDeskPodModel.ButtonConfirmLink.NOT_IN_FRONT -> "acts at once (this app is not in front)"
+    }
+
     const val MUTE = "Mute"
     const val CLEAR_MUTES = "Clear mutes"
     // One Desk Pod and one Drone Pod per app: replace, never add another.

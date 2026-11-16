@@ -174,12 +174,33 @@ class BtrxDeskPodModel(
         val filterMessage: String? = null,
         /** DESK_PAIR source of the latest open (1 button, 2 phone/USB, 3 PAIR_OPEN). */
         val deskWindowSource: Int = 0,
+        /** Desk Pod button confirmation (build 0x0108): the Confirm/Cancel panel, or null. */
+        val buttonConfirm: BtrxButtonConfirm.View? = null,
+        /** The latest button result while it is shown on the map (non-blocking), or null. */
+        val buttonNotice: BtrxButtonConfirm.Notice? = null,
+        /** The latest button result, kept for the Desk Pod pane. */
+        val buttonLastNotice: BtrxButtonConfirm.Notice? = null,
+        val buttonConfirmLink: ButtonConfirmLink = ButtonConfirmLink.NO_LINK,
+        /** When the Desk Pod reported a factory reset from its button (it comes back unpaired), until a pairing completes. */
+        val deskResetAtMs: Long? = null,
     ) {
         val roleSupported: Boolean get() = role != null && P.buildSupported(role.buildHash)
         /** An op 3 / 4 for [srcId] is waiting for its FILTER_ACK. */
         fun filterPendingFor(srcId: Int): Boolean = filterPending.any { it.srcId == srcId }
         /** What opened the Desk Pod's current window (DESK_PAIR source), 0 when closed. */
         val windowSource: Int get() = if (windowOpen) deskWindowSource else 0
+    }
+
+    /** Whether this app keeps the Desk Pod asking before its button acts (the keepalive). */
+    enum class ButtonConfirmLink {
+        /** Keepalive every 5 s: the Desk Pod asks here first. */
+        ON,
+        /** No ready link to the Desk Pod. */
+        NO_LINK,
+        /** The Desk Pod reports a build before 0x0108 (or none yet): its button acts at once. */
+        OLD_FIRMWARE,
+        /** The app is not in front, so it cannot show the panel: the button acts at once. */
+        NOT_IN_FRONT,
     }
 
     private var sender: BtrxFrameSender? = null
@@ -216,6 +237,12 @@ class BtrxDeskPodModel(
     private var quietWatchSinceMs = 0L
     private val steering = BtrxSteering()
     private val imuCal = BtrxImuCal()
+    private val buttonConfirm = BtrxButtonConfirm(log)
+    /** The panel host is on screen (app in front); set by the UI. */
+    private var buttonPanelAvailable = false
+    /** The Desk Pod's build from its own HEALTH, when no ROLE_REPORT gave it. */
+    private var deskHealthBuild: Int? = null
+    private var deskResetAtMs: Long? = null
 
     // ---- link ----
 
@@ -237,6 +264,8 @@ class BtrxDeskPodModel(
         droppedEncrypted = 0; droppedOtherPort = 0
         liveCounts.clear(); backlogCounts.clear()
         detectTimes.clear()
+        deskHealthBuild = null
+        buttonConfirm.newSession()
         quietWatchSinceMs = clock()
     }
 
@@ -250,6 +279,7 @@ class BtrxDeskPodModel(
             if (pendingFilters.isNotEmpty()) filterMessage = "No answer from the Drone Pod: the link to the Desk Pod was lost."
             pendingFilters.clear()
             imuCal.linkLost(reason)
+            buttonConfirm.linkLost(clock(), reason)
         }
     }
 
@@ -336,6 +366,8 @@ class BtrxDeskPodModel(
         try {
             when (frame.type) {
                 P.DESK_PAIR -> if (fromDesk) onDeskPair(frame, meta)
+                // Desk Pod button confirmation (0x0108): live asks from the Desk Pod itself only.
+                P.CONFIRM_REQ -> if (fromDesk && !meta.backlog) onConfirmReq(P.parseConfirmReq(frame.payload))
                 // Pairing frames come from whichever pod is being paired, so they are not filtered.
                 P.PAIR_REQ -> onPairReq(P.parsePairReq(frame.payload), meta)
                 P.PAIR_ACK -> onPairAck(P.parsePairAck(frame.payload), meta)
@@ -346,6 +378,7 @@ class BtrxDeskPodModel(
                         h.phoneLost?.let { deskPhoneLost = it }
                         h.ext?.let { deskHealthExt = it }
                         deskUptimeS = h.uptimeS
+                        deskHealthBuild = h.buildHash
                         deskHealthAtMs = meta.arrivalMs
                     }
                 } else if (acceptsPodTraffic(frame, meta)) onPodTraffic(frame, meta)
@@ -506,6 +539,7 @@ class BtrxDeskPodModel(
             }
             pairing = pairing.copy(step = PairStep.PAIRED, aOk = ack.aOk, bOk = ack.bOk, ackFlags = ack.flags, message = msg, failedAt = null)
             log.debug("pairing: PAIR_ACK a_ok=${ack.aOk} b_ok=${ack.bOk}; paired ${BtrxClient.nodeName(c.node)} pod_id=%08x".format(c.assignedPodId))
+            deskResetAtMs = null
             onPaired(pod)
         } else {
             pairing = pairing.copy(aOk = ack.aOk, bOk = ack.bOk, ackFlags = ack.flags)
@@ -654,6 +688,57 @@ class BtrxDeskPodModel(
             filterMessage = "No answer from the Drone Pod for ${BtrxDeskPodText.srcIdText(it.srcId)}. Try again."
         }
         pendingFilters.removeAll(expired)
+        buttonConfirm.tick(now)
+        val local = localNode
+        if (buttonConfirm.keepaliveDue(now, buttonConfirmLinkLocked() == ButtonConfirmLink.ON) && local != null) {
+            outbox += local to { seq -> P.confirmRspFrame(seq, 0, P.CFM_KEEPALIVE) }
+        }
+    }
+
+    // ---- Desk Pod button confirmation (firmware 0x0108) ----
+
+    /** The Desk Pod's build: its ROLE_REPORT, else its own HEALTH; null before either. */
+    private fun deskBuildLocked(): Int? = role?.takeIf { it.role == P.ROLE_DESK_POD }?.buildHash ?: deskHealthBuild
+
+    private fun buttonConfirmLinkLocked(): ButtonConfirmLink = when {
+        link.phase != LinkPhase.READY || sender?.isReady != true || localNode == null -> ButtonConfirmLink.NO_LINK
+        !P.buttonConfirmSupported(deskBuildLocked()) && !buttonConfirm.seenThisSession -> ButtonConfirmLink.OLD_FIRMWARE
+        !buttonPanelAvailable -> ButtonConfirmLink.NOT_IN_FRONT
+        else -> ButtonConfirmLink.ON
+    }
+
+    /**
+     * The UI says whether the Confirm/Cancel panel can be seen (app in front, host composed).
+     * Off: no keepalive and no "shown", so the Desk Pod button acts on its own (3 s after an ask).
+     */
+    @Synchronized
+    fun setButtonPanelAvailable(available: Boolean) {
+        if (available != buttonPanelAvailable) log.info("desk button: panel ${if (available) "available" else "not available (app not in front)"}")
+        buttonPanelAvailable = available
+    }
+
+    private fun onConfirmReq(r: P.ConfirmReq) {
+        val now = clock()
+        val res = buttonConfirm.onRequest(r, now, buttonPanelAvailable)
+        val local = localNode ?: return
+        res.answers.forEach { (token, answer) -> outbox += local to { seq -> P.confirmRspFrame(seq, token, answer) } }
+        if (res.deskReset) {
+            deskResetAtMs = now
+            // It keeps the link but forgets its saved role and pairing: ask what it is now.
+            log.warn("desk button: the Desk Pod factory reset; it comes back unpaired. ROLE_GET sent.")
+            outbox += local to { seq -> P.roleGetFrame(seq) }
+        }
+    }
+
+    /** Confirm (true) or Cancel (false) on the Desk Pod button panel. */
+    fun answerButtonConfirm(confirm: Boolean) {
+        val sends = synchronized(this) {
+            val local = localNode
+            val ans = buttonConfirm.answer(confirm, clock())
+            if (ans != null && local != null) outbox += local to { seq -> P.confirmRspFrame(seq, ans.first, ans.second) }
+            takeOutbox()
+        }
+        deliver(sends)
     }
 
     @Synchronized
@@ -682,6 +767,11 @@ class BtrxDeskPodModel(
             filterPending = pendingFilters.toList(),
             filterMessage = filterMessage,
             deskWindowSource = window.source,
+            buttonConfirm = buttonConfirm.view(now),
+            buttonNotice = buttonConfirm.liveNotice(now),
+            buttonLastNotice = buttonConfirm.notice,
+            buttonConfirmLink = buttonConfirmLinkLocked(),
+            deskResetAtMs = deskResetAtMs,
         )
     }
 

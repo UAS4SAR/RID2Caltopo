@@ -165,6 +165,15 @@ public final class BtrxDeskPodModel {
         public var filterMessage: String?
         /// DESK_PAIR source of the latest open (1 button, 2 phone/USB, 3 PAIR_OPEN).
         public var deskWindowSource = 0
+        /// Desk Pod button confirmation (build 0x0108): the Confirm/Cancel panel, or nil.
+        public var buttonConfirm: BtrxButtonConfirm.View?
+        /// The latest button result while it is shown on the map (non-blocking), or nil.
+        public var buttonNotice: BtrxButtonConfirm.Notice?
+        /// The latest button result, kept for the Desk Pod pane.
+        public var buttonLastNotice: BtrxButtonConfirm.Notice?
+        public var buttonConfirmLink: ButtonConfirmLink = .noLink
+        /// When the Desk Pod reported a factory reset from its button (it comes back unpaired), until a pairing completes.
+        public var deskResetAtMs: Int64?
         public init() {}
         /// An op 3 / 4 for `srcId` is waiting for its FILTER_ACK.
         public func filterPendingFor(_ srcId: Int) -> Bool { filterPending.contains { $0.srcId == srcId } }
@@ -235,6 +244,24 @@ public final class BtrxDeskPodModel {
     private var quietWatchSinceMs: Int64 = 0
     private let steering = BtrxSteering()
     private let imuCal = BtrxImuCal()
+    private lazy var buttonConfirm = BtrxButtonConfirm(log: log)
+    /// The panel host is on screen (app in front); set by the UI.
+    private var buttonPanelAvailable = false
+    /// The Desk Pod's build from its own HEALTH, when no ROLE_REPORT gave it.
+    private var deskHealthBuild: Int?
+    private var deskResetAtMs: Int64?
+
+    /// Whether this app keeps the Desk Pod asking before its button acts (the keepalive). Same as Android.
+    public enum ButtonConfirmLink: Sendable, Equatable {
+        /// Keepalive every 5 s: the Desk Pod asks here first.
+        case on
+        /// No ready link to the Desk Pod.
+        case noLink
+        /// The Desk Pod reports a build before 0x0108 (or none yet): its button acts at once.
+        case oldFirmware
+        /// The app is not in front, so it cannot show the panel: the button acts at once.
+        case notInFront
+    }
 
     public init(log: BtrxLogger, clock: @escaping () -> Int64 = { Int64(Date().timeIntervalSince1970 * 1000) }, onPaired: @escaping (PairedPod) -> Void = { _ in },
                 onSavedIgnores: @escaping ([Int]) -> Void = { _ in }) {
@@ -262,6 +289,8 @@ public final class BtrxDeskPodModel {
         droppedEncrypted = 0; droppedOtherPort = 0
         liveCounts = [:]; backlogCounts = [:]
         detectTimes.removeAll()
+        deskHealthBuild = nil
+        buttonConfirm.newSession()
         quietWatchSinceMs = clock()
     }
 
@@ -273,6 +302,7 @@ public final class BtrxDeskPodModel {
         if !pendingFilters.isEmpty { filterMessage = "No answer from the Drone Pod: the link to the Desk Pod was lost." }
         pendingFilters.removeAll()
         imuCal.linkLost(reason: reason)
+        buttonConfirm.linkLost(nowMs: clock(), reason: reason)
     }
 
     /// Logged when a session ends (Nov 16: tell a Desk Pod reboot from a radio drop): the
@@ -335,6 +365,8 @@ public final class BtrxDeskPodModel {
         do {
             switch frame.type {
             case BtrxProtocol.DESK_PAIR: if fromDesk { try onDeskPair(frame, meta) }
+            // Desk Pod button confirmation (0x0108): live asks from the Desk Pod itself only.
+            case BtrxProtocol.CONFIRM_REQ: if fromDesk && !meta.backlog { onConfirmReq(try BtrxProtocol.parseConfirmReq(frame.payload)) }
             // Pairing frames come from whichever pod is being paired, so they are not filtered.
             case BtrxProtocol.PAIR_REQ: onPairReq(try BtrxProtocol.parsePairReq(frame.payload), meta)
             case BtrxProtocol.PAIR_ACK: onPairAck(try BtrxProtocol.parsePairAck(frame.payload), meta)
@@ -345,6 +377,7 @@ public final class BtrxDeskPodModel {
                     if let lost = h.phoneLost { deskPhoneLost = lost }
                     if let e = h.ext { deskHealthExt = e }
                     deskUptimeS = h.uptimeS
+                    deskHealthBuild = h.buildHash
                     deskHealthAtMs = meta.arrivalMs
                 }
             default: if meta.fromNode != localNode && acceptsPodTraffic(frame, meta) { try onPodTraffic(frame, meta) }
@@ -509,6 +542,7 @@ public final class BtrxDeskPodModel {
             pairing.message = ack.bOk != 1 ? "Paired, but the port board did not answer. Check the cable between the boards."
                 : pairing.repair ? "Drone Pod re-paired." : "Drone Pod paired."
             log.debug(String(format: "pairing: PAIR_ACK a_ok=%d b_ok=%d; paired %@ pod_id=%08x", ack.aOk, ack.bOk, BtrxClient.nodeName(c.node), c.assignedPodId))
+            deskResetAtMs = nil
             onPaired(pod)
         } else {
             fail(.confirming, "The Drone Pod did not take the pairing (a_ok=0, flags=\(BtrxProtocol.statusFlagNames(ack.flags))).")
@@ -633,6 +667,55 @@ public final class BtrxDeskPodModel {
         }
         pendingFilters.removeAll { now - $0.sentMs > Self.filterAckTimeoutMs }
         if let r = imuCal.tick(nowMs: now) { sendImuCal(r) }
+        buttonConfirm.tick(nowMs: now)
+        if buttonConfirm.keepaliveDue(nowMs: now, enabled: buttonConfirmLinkNow == .on) {
+            sendToDesk { BtrxProtocol.confirmRspFrame(seq: $0, token: 0, answer: BtrxProtocol.CFM_KEEPALIVE) }
+        }
+    }
+
+    // MARK: Desk Pod button confirmation (firmware 0x0108)
+
+    /// The Desk Pod's build: its ROLE_REPORT, else its own HEALTH; nil before either.
+    private var deskBuild: Int? {
+        if let r = role, r.role == BtrxProtocol.roleDeskPod { return r.buildHash }
+        return deskHealthBuild
+    }
+
+    private var buttonConfirmLinkNow: ButtonConfirmLink {
+        if link.phase != .ready || !(sender?.isReady ?? false) || localNode == nil { return .noLink }
+        if !BtrxProtocol.buttonConfirmSupported(deskBuild) && !buttonConfirm.seenThisSession { return .oldFirmware }
+        if !buttonPanelAvailable { return .notInFront }
+        return .on
+    }
+
+    /// The UI says whether the Confirm/Cancel panel can be seen (app in front, view on screen).
+    /// Off: no keepalive and no "shown", so the Desk Pod button acts on its own (3 s after an ask).
+    public func setButtonPanelAvailable(_ available: Bool) {
+        if available != buttonPanelAvailable { log.info("desk button: panel \(available ? "available" : "not available (app not in front)")") }
+        buttonPanelAvailable = available
+    }
+
+    private func sendToDesk(_ frame: (Int) -> [UInt8]) {
+        guard let s = sender, let local = localNode else { return }
+        s.sendFrame(to: local, frame: frame(s.nextSeq()))
+    }
+
+    private func onConfirmReq(_ r: BtrxProtocol.ConfirmReq) {
+        let now = clock()
+        let res = buttonConfirm.onRequest(r, nowMs: now, canShow: buttonPanelAvailable)
+        for a in res.answers { sendToDesk { BtrxProtocol.confirmRspFrame(seq: $0, token: a.token, answer: a.answer) } }
+        if res.deskReset {
+            deskResetAtMs = now
+            // It keeps the link but forgets its saved role and pairing: ask what it is now.
+            log.warn("desk button: the Desk Pod factory reset; it comes back unpaired. ROLE_GET sent.")
+            sendToDesk { BtrxProtocol.roleGetFrame(seq: $0) }
+        }
+    }
+
+    /// Confirm (true) or Cancel (false) on the Desk Pod button panel.
+    public func answerButtonConfirm(_ confirm: Bool) {
+        guard let a = buttonConfirm.answer(confirm: confirm, nowMs: clock()) else { return }
+        sendToDesk { BtrxProtocol.confirmRspFrame(seq: $0, token: a.token, answer: a.answer) }
     }
 
     public func snapshot() -> Snapshot {
@@ -661,6 +744,11 @@ public final class BtrxDeskPodModel {
         s.filterPending = pendingFilters
         s.filterMessage = filterMessage
         s.deskWindowSource = window.source
+        s.buttonConfirm = buttonConfirm.view(nowMs: now)
+        s.buttonNotice = buttonConfirm.liveNotice(nowMs: now)
+        s.buttonLastNotice = buttonConfirm.notice
+        s.buttonConfirmLink = buttonConfirmLinkNow
+        s.deskResetAtMs = deskResetAtMs
         return s
     }
 

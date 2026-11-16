@@ -1922,6 +1922,8 @@ class R2CActivity :
                         },
                     )
                 }
+                // Desk Pod button Confirm/Cancel (BTRX 0x0108): a card over the map, below the alerts.
+                org.ncssar.rid2caltopo.ui.BtrxButtonConfirmHost()
                 ProximityAlertHost(
                     onSuspend = { ProximityAlertCenter.suspendCurrentAlert() },
                     onMap = { alert ->

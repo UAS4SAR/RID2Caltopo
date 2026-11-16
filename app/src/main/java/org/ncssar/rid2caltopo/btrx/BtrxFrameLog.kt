@@ -62,6 +62,10 @@ object BtrxFrameLog {
                         e.excludedPerS, P.excludeFlagNames(e.excludeFlags))
                 } ?: "")
         }
+        P.CONFIRM_REQ -> P.parseConfirmReq(p).let {
+            "version=${it.version} action=${P.confirmActionName(it.action)} token=${it.token} timeout_s=${it.timeoutS} state=${P.confirmStateName(it.state)}"
+        }
+        P.CONFIRM_RSP -> P.parseConfirmRsp(p).let { "version=${it.version} token=${it.token} answer=${P.confirmAnswerName(it.answer)}" }
         P.PAIR_OPEN -> if (p.isEmpty()) "seconds=default" else "seconds=${p[0].toInt() and 0xFF}"
         P.DETECT -> P.parseDetect(p).let { d ->
             val head = "window_end_ms=${d.windowEndMs} roll=${d.rollX2 / 2.0} pitch=${d.pitchX2 / 2.0} roll_rate=${d.rollRateDps} " +

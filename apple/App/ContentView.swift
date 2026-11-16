@@ -1461,6 +1461,10 @@ struct ContentView: View {
                     location: locationProvider, onChooseMap: openCaltopoMapActions)
             }
         }
+        // Desk Pod button Confirm/Cancel (BTRX 0x0108): a card over the map, below the alerts.
+        .overlay(alignment: .top) {
+            if !organizationAccessBlocked { BtrxButtonConfirmHost(center: deskPod) }
+        }
         // Keep the compact warning host above navigation, including Live View.
         .overlay(alignment: .topTrailing) {
             if !organizationAccessBlocked {

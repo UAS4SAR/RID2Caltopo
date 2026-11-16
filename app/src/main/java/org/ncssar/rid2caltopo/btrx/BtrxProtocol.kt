@@ -49,6 +49,14 @@ object BtrxProtocol {
      * window on PAIR_OPEN from its app (DESK_PAIR source 3). The app keeps working with 0x0106.
      */
     const val BUILD_FILTER_SRC_ID = 0x0107
+    /**
+     * Build 0x0108 (btrx ec1d105): with a responsive app the Desk Pod button asks it first
+     * (CONFIRM_REQ / CONFIRM_RSP). Older Desk Pods ignore CONFIRM_RSP but still record the
+     * frame's RSSI / SNR (0 from the phone link) as their own lora_rssi / lora_snr, so the
+     * keepalive goes only to a Desk Pod reporting 0x0108 or later.
+     */
+    const val BUILD_BUTTON_CONFIRM = 0x0108
+    fun buttonConfirmSupported(buildHash: Int?): Boolean = buildHash != null && buildHash >= BUILD_BUTTON_CONFIRM
 
     // Message types (section 5 of the R2C integration brief).
     const val HELLO = 0x01
@@ -61,6 +69,10 @@ object BtrxProtocol {
     const val DESK_PAIR = 0x15
     /** App to the paired starboard board (relayed by the Desk Pod): open a pairing window (build 0x0106). */
     const val PAIR_OPEN = 0x16
+    /** Desk Pod to its app: confirm a button action (build 0x0108). */
+    const val CONFIRM_REQ = 0x17
+    /** Its app to the Desk Pod's own node: the answer, or a keepalive (build 0x0108). */
+    const val CONFIRM_RSP = 0x18
     const val ROLE_GET = 0x20
     const val ROLE_REPORT = 0x21
     const val ROLE_SET = 0x22
@@ -87,7 +99,8 @@ object BtrxProtocol {
     private val MSG_NAME = mapOf(
         HELLO to "HELLO", HELLO_ACK to "HELLO_ACK", PAIR_REQ to "PAIR_REQ",
         PAIR_CONFIRM to "PAIR_CONFIRM", PAIR_ACK to "PAIR_ACK", B_CFG to "B_CFG",
-        GESTURE to "GESTURE", DESK_PAIR to "DESK_PAIR", PAIR_OPEN to "PAIR_OPEN", ROLE_GET to "ROLE_GET",
+        GESTURE to "GESTURE", DESK_PAIR to "DESK_PAIR", PAIR_OPEN to "PAIR_OPEN",
+        CONFIRM_REQ to "CONFIRM_REQ", CONFIRM_RSP to "CONFIRM_RSP", ROLE_GET to "ROLE_GET",
         ROLE_REPORT to "ROLE_REPORT", ROLE_SET to "ROLE_SET", TIME_PING to "TIME_PING",
         TIME_PONG to "TIME_PONG", START to "START", STOP to "STOP", CTRL_ACK to "CTRL_ACK",
         SCAN_CFG to "SCAN_CFG", SCAN_CFG_ACK to "SCAN_CFG_ACK", FILTER_LIST to "FILTER_LIST",
@@ -747,6 +760,56 @@ object BtrxProtocol {
         encodeFrame(STEER_MUTE, seq = seq, podId = podId, payload = steerMutePayload(op, srcId))
 
     fun roleGetFrame(seq: Int): ByteArray = encodeFrame(ROLE_GET, seq = seq)
+
+    // ---- Desk Pod button confirmation (build 0x0108, PROTOCOL.md "Desk Pod button confirmation") ----
+
+    const val CONFIRM_VERSION = 1
+    const val CONFIRM_REQ_LEN = 6
+    const val CONFIRM_RSP_LEN = 4
+    // CONFIRM_REQ action
+    const val CFM_ACTION_DESK_PAIR = 1
+    const val CFM_ACTION_FACTORY_RESET = 2
+    // CONFIRM_REQ state
+    const val CFM_ASK = 0
+    const val CFM_DONE = 1
+    const val CFM_DROPPED = 2
+    const val CFM_DONE_NO_APP = 3
+    // CONFIRM_RSP answer
+    const val CFM_CANCEL = 0
+    const val CFM_CONFIRM = 1
+    const val CFM_SHOWN = 2
+    const val CFM_KEEPALIVE = 3
+    /** The Desk Pod's keepalive cadence for a responsive app (it waits 10 s). */
+    const val CONFIRM_KEEPALIVE_MS = 5_000L
+    /** The Desk Pod acts without asking when nothing answers a token this soon. */
+    const val CONFIRM_SHOWN_MS = 3_000L
+    const val CONFIRM_TIMEOUT_S = 15
+
+    data class ConfirmReq(val version: Int, val action: Int, val token: Int, val timeoutS: Int, val state: Int)
+
+    /** CONFIRM_REQ (0x17): 6 bytes; a version other than 1 is parsed and left to the caller to drop. */
+    fun parseConfirmReq(p: ByteArray): ConfirmReq {
+        need(p, CONFIRM_REQ_LEN, "CONFIRM_REQ")
+        return ConfirmReq(u8(p, 0), u8(p, 1), u16(p, 2), u8(p, 4), u8(p, 5))
+    }
+
+    data class ConfirmRsp(val version: Int, val token: Int, val answer: Int)
+
+    fun parseConfirmRsp(p: ByteArray): ConfirmRsp {
+        need(p, CONFIRM_RSP_LEN, "CONFIRM_RSP")
+        return ConfirmRsp(u8(p, 0), u16(p, 1), u8(p, 3))
+    }
+
+    fun confirmRspPayload(token: Int, answer: Int): ByteArray =
+        byteArrayOf(CONFIRM_VERSION.toByte(), token.toByte(), (token shr 8).toByte(), answer.toByte())
+
+    /** CONFIRM_RSP to the Desk Pod's own node (pod_id 0). */
+    fun confirmRspFrame(seq: Int, token: Int, answer: Int): ByteArray =
+        encodeFrame(CONFIRM_RSP, seq = seq, payload = confirmRspPayload(token, answer))
+
+    fun confirmActionName(a: Int): String = when (a) { CFM_ACTION_DESK_PAIR -> "desk-pair"; CFM_ACTION_FACTORY_RESET -> "factory-reset"; else -> a.toString() }
+    fun confirmStateName(s: Int): String = when (s) { CFM_ASK -> "ask"; CFM_DONE -> "done"; CFM_DROPPED -> "dropped"; CFM_DONE_NO_APP -> "done-no-app"; else -> s.toString() }
+    fun confirmAnswerName(a: Int): String = when (a) { CFM_CANCEL -> "cancel"; CFM_CONFIRM -> "confirm"; CFM_SHOWN -> "shown"; CFM_KEEPALIVE -> "keepalive"; else -> a.toString() }
 
     /** PAIR_OPEN seconds outside 10..120 (or none) mean 60 on the pod. */
     const val PAIR_OPEN_DEFAULT_S = 60

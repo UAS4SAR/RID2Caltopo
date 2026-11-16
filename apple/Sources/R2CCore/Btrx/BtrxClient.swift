@@ -146,7 +146,8 @@ public final class BtrxClient: BtrxFrameSender {
     /// Dropped (non-btrx) packets logged per session; all are counted.
     public static let droppedLogLimit = 5
     public static let alwaysLogged: Set<Int> = [BtrxProtocol.STEER, BtrxProtocol.PAIR_REQ, BtrxProtocol.PAIR_ACK,
-                                                BtrxProtocol.DESK_PAIR, BtrxProtocol.ROLE_REPORT, BtrxProtocol.IMU_CAL_ACK]
+                                                BtrxProtocol.DESK_PAIR, BtrxProtocol.ROLE_REPORT, BtrxProtocol.IMU_CAL_ACK,
+                                                BtrxProtocol.CONFIRM_REQ]
 
     /// A packet that is not a decoded port-256 packet. The first ``droppedLogLimit`` of a
     /// session are logged at debug (which reaches the session log) with the MeshPacket

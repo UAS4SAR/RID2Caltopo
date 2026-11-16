@@ -425,4 +425,24 @@ final class BtrxProtocolTests: XCTestCase {
         XCTAssertEqual(try BtrxFrameLog.describe(P.FILTER_ACK, P.fromHex("010101efbe03")), "version=1 op=1 ok=1 list_crc=0xbeef stored=3")
         XCTAssertFalse(P.savedIgnoreSupported(nil)); XCTAssertFalse(P.savedIgnoreSupported(0x0105)); XCTAssertTrue(P.savedIgnoreSupported(0x0106))
     }
+
+    func testConfirmFramesMatchR2cSim() throws {
+        // Vectors from btrx ec1d105 tools/r2c_sim/protocol.py pack_confirm_req / pack_confirm_rsp.
+        XCTAssertEqual(P.CONFIRM_REQ, 0x17); XCTAssertEqual(P.CONFIRM_RSP, 0x18)
+        XCTAssertEqual(P.typeName(P.CONFIRM_REQ), "CONFIRM_REQ"); XCTAssertEqual(P.typeName(P.CONFIRM_RSP), "CONFIRM_RSP")
+        XCTAssertEqual(try P.parseConfirmReq(P.fromHex("010234120f00")),
+                       P.ConfirmReq(version: 1, action: P.CFM_ACTION_FACTORY_RESET, token: 0x1234, timeoutS: 15, state: P.CFM_ASK))
+        XCTAssertEqual(try P.parseConfirmReq(P.fromHex("0101efbe0003")),
+                       P.ConfirmReq(version: 1, action: P.CFM_ACTION_DESK_PAIR, token: 0xBEEF, timeoutS: 0, state: P.CFM_DONE_NO_APP))
+        XCTAssertEqual(try P.parseConfirmReq(P.fromHex("020101000f00ff")), P.ConfirmReq(version: 2, action: 1, token: 1, timeoutS: 15, state: 0))
+        XCTAssertThrowsError(try P.parseConfirmReq(P.fromHex("0101efbe00")))
+        XCTAssertEqual(P.confirmRspPayload(token: 0x1234, answer: P.CFM_CONFIRM), P.fromHex("01341201"))
+        XCTAssertEqual(P.confirmRspPayload(token: 0, answer: P.CFM_KEEPALIVE), P.fromHex("01000003"))
+        let f = try P.decodeFrame(P.confirmRspFrame(seq: 5, token: 0xBEEF, answer: P.CFM_SHOWN))
+        XCTAssertEqual(f.type, P.CONFIRM_RSP); XCTAssertEqual(f.podId, 0)
+        XCTAssertEqual(try P.parseConfirmRsp(f.payload), P.ConfirmRsp(version: 1, token: 0xBEEF, answer: P.CFM_SHOWN))
+        XCTAssertEqual(try BtrxFrameLog.describe(P.CONFIRM_REQ, P.fromHex("010234120f00")), "version=1 action=factory-reset token=4660 timeout_s=15 state=ask")
+        XCTAssertEqual(try BtrxFrameLog.describe(P.CONFIRM_RSP, P.fromHex("01000003")), "version=1 token=0 answer=keepalive")
+        XCTAssertFalse(P.buttonConfirmSupported(nil)); XCTAssertFalse(P.buttonConfirmSupported(0x0107)); XCTAssertTrue(P.buttonConfirmSupported(0x0108))
+    }
 }

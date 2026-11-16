@@ -98,6 +98,8 @@ fun DeskPodScreen(onDismiss: () -> Unit) {
                     Text(BtrxDeskPodText.TITLE, Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
                     TextButton(onClick = onDismiss) { Text("Dismiss") }
                 }
+                // The map's button panel is behind this dialog: show it here too.
+                s.buttonConfirm?.let { BtrxButtonConfirmCard(it, Modifier.fillMaxWidth().padding(bottom = 8.dp)) }
                 Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     LearnMoreLink()
                     SectionTitle("Connection")
@@ -126,6 +128,8 @@ fun DeskPodScreen(onDismiss: () -> Unit) {
                     SectionTitle("Desk Pod")
                     Text(BtrxDeskPodText.roleLine(s))
                     Text(BtrxDeskPodText.firmwareLine(s))
+                    Text(BtrxDeskPodText.buttonConfirmLine(s), style = MaterialTheme.typography.bodySmall)
+                    s.buttonLastNotice?.let { Text(it.text, style = MaterialTheme.typography.bodySmall) }
 
                     HorizontalDivider(Modifier.padding(vertical = 6.dp))
                     SectionTitle("Link health")
@@ -136,6 +140,9 @@ fun DeskPodScreen(onDismiss: () -> Unit) {
 
                     HorizontalDivider(Modifier.padding(vertical = 6.dp))
                     SectionTitle("Pair drone pod")
+                    if (s.deskResetAtMs != null) {
+                        Text(BtrxDeskPodText.DESK_RESET_WARNING, color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.SemiBold)
+                    }
                     BtrxDeskPodText.pairedLine(s)?.let { line ->
                         Text(line)
                         BtrxDeskPodText.pairedPodWarnings(s).forEach {
