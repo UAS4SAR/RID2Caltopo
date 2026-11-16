@@ -49,7 +49,7 @@ struct DeskPodView: View {
                     Divider().padding(.vertical, 6)
                     section("Link health")
                     ForEach(Text_.healthLines(s), id: \.self) { Text($0) }
-                    Text(Text_.countsLine("Live frames", s.liveCounts)).font(.footnote)
+                    Text(Text_.liveFramesLine(s)).font(.footnote)
                     Text(Text_.countsLine("Backlog frames (old, display only)", s.backlogCounts)).font(.footnote)
                     BtrxBearingStatusLines(center: center)
 

@@ -59,6 +59,10 @@ class BtrxDeskPodModel(
         val phase: LinkPhase = LinkPhase.OFF,
         val detail: String = "",
         val deviceName: String? = null,
+        /** Bluetooth: connect attempts that failed in a row (0 once a session reaches READY). */
+        val failedAttempts: Int = 0,
+        /** Bluetooth: why the latest of those attempts failed, e.g. "connection failed (status 147)". */
+        val lastFailure: String? = null,
     )
 
     data class PairedPod(val node: Long, val podId: Long, val devA: Long, val devB: Long)
@@ -133,6 +137,10 @@ class BtrxDeskPodModel(
         val imuCal: BtrxImuCal.View? = null,
         /** phone_lost from the Desk Pod's own HEALTH (build 0x0104); null before one or on older builds. */
         val deskPhoneLost: Long? = null,
+        /** This session: packets dropped before btrx decoding, encrypted for another channel. */
+        val droppedEncrypted: Int = 0,
+        /** This session: packets dropped before btrx decoding, another port (not 256). */
+        val droppedOtherPort: Int = 0,
     ) {
         val roleSupported: Boolean get() = role != null && P.buildSupported(role.buildHash)
     }
@@ -148,6 +156,8 @@ class BtrxDeskPodModel(
     private var pairedPod: PairedPod? = null
     private var lastHealth: HealthReading? = null
     private var deskPhoneLost: Long? = null
+    private var droppedEncrypted = 0
+    private var droppedOtherPort = 0
     private val otherPods = mutableSetOf<Long>()
     private val detectTimes = ArrayDeque<Long>()
     private var lastDetectMs: Long? = null
@@ -178,6 +188,7 @@ class BtrxDeskPodModel(
         localNode = null
         role = null
         deskPhoneLost = null
+        droppedEncrypted = 0; droppedOtherPort = 0
         liveCounts.clear(); backlogCounts.clear()
         detectTimes.clear()
         quietWatchSinceMs = clock()
@@ -232,6 +243,10 @@ class BtrxDeskPodModel(
 
     @Synchronized
     fun onConfigured(node: Long) { localNode = node }
+
+    /** A non-btrx packet the client dropped (encrypted for another channel, or another port). */
+    @Synchronized
+    fun onPacketDropped(encrypted: Boolean) { if (encrypted) droppedEncrypted++ else droppedOtherPort++ }
 
     @Synchronized
     fun onLocalRoleReport(report: P.RoleReport) { role = report }
@@ -511,6 +526,7 @@ class BtrxDeskPodModel(
             pairedPodIdMismatches = podIdMismatches, lastMismatchPodId = lastMismatchPodId,
             pairedPodQuiet = pairedQuiet(now),
             deskPhoneLost = deskPhoneLost,
+            droppedEncrypted = droppedEncrypted, droppedOtherPort = droppedOtherPort,
             steerOverlay = if (steeringLinkUp()) steering.view(now) else null,
             lastSteer = steering.lastView(now),
             steeringRollCorrection = steering.rollCorrection,

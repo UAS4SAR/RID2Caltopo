@@ -61,6 +61,8 @@ class BtrxClient(
         fun onFrame(frame: P.Frame, meta: RadioMeta) {}
         /** A board sent a frame version this app does not understand (pilot alert in M2). */
         fun onVersionRefused(fromNode: Long, version: Int) {}
+        /** A packet that is not a decoded btrx (port 256) packet was dropped; [encrypted]: the node could not decode it. */
+        fun onPacketDropped(encrypted: Boolean) {}
 
         // Pairing (DESK_PAIR from the Desk Pod itself, PAIR_REQ / PAIR_ACK from the starboard
         // board) is handled by BtrxDeskPodModel from onFrame. PAIR_CONFIRM assigns a non-zero
@@ -124,7 +126,13 @@ class BtrxClient(
     private val backlogCounts = sortedMapOf<String, Int>()
     private val rejectCounts = sortedMapOf<String, Int>()
     private val refusedNodes = mutableSetOf<Long>()
-    private var otherPorts = 0
+    /** Packets dropped before btrx decoding: encrypted for a channel the Desk Pod cannot read, or another port. */
+    private var droppedEncrypted = 0
+    private var droppedOtherPort = 0
+    /** HEALTH/DETECT rx lines written at the session-log level: count per type, and when the last one was. */
+    private val rateLogged = HashMap<Int, Int>()
+    private val rateLastMs = HashMap<Int, Long>()
+    private val rateSkipped = HashMap<Int, Int>()
 
     /** Opens the API session: wake bytes, then want_config_id. */
     @Synchronized
@@ -295,9 +303,13 @@ class BtrxClient(
         val frames = if (frameCounts.isEmpty()) "none" else frameCounts.entries.joinToString(" ") { "${it.key}=${it.value}" }
         val backlog = if (backlogCounts.isEmpty()) "" else " backlog: " + backlogCounts.entries.joinToString(" ") { "${it.key}=${it.value}" }
         val rejects = if (rejectCounts.isEmpty()) "" else " rejected: " + rejectCounts.entries.joinToString(" ") { "${it.key}=${it.value}" }
-        val other = if (otherPorts == 0) "" else " other-port packets=$otherPorts"
-        return "frames: $frames$backlog$rejects$other"
+        val dropped = if (droppedEncrypted + droppedOtherPort == 0) "" else " dropped: encrypted=$droppedEncrypted other-port=$droppedOtherPort"
+        return "frames: $frames$backlog$rejects$dropped"
     }
+
+    /** Packets dropped before btrx decoding since connecting: (encrypted, other port). */
+    @Synchronized
+    fun droppedCounts(): Pair<Int, Int> = droppedEncrypted to droppedOtherPort
 
     /** Live frames of one type (delivered after config_complete_id). */
     @Synchronized
@@ -341,7 +353,7 @@ class BtrxClient(
 
     private fun onPacket(packet: FromRadio.Packet) {
         if (packet.portnum != P.PRIVATE_APP_PORT || packet.payload == null) {
-            otherPorts++
+            onDropped(packet)
             return
         }
         val now = clock()
@@ -375,7 +387,10 @@ class BtrxClient(
         count(if (backlog) backlogCounts else frameCounts, frame.typeName)
         // STEER (every second) and the rare frames a bench test needs are logged at debug,
         // which shows at every app log level; the rest (DETECT, HEALTH...) at info.
+        // HEALTH and DETECT: the first few, then one per type every 10 s, at debug too so
+        // they reach the session log; the rest at info as before.
         if (frame.type in ALWAYS_LOGGED) log.debug("rx $radio ${BtrxFrameLog.format(frame)}")
+        else if (frame.type in RATE_LOGGED) logRateLimited(frame.type, now, "rx $radio ${BtrxFrameLog.format(frame)}")
         else log.info("rx $radio ${BtrxFrameLog.format(frame)}")
         if (frame.type == P.STEER) logSteerFlagChange(packet.from, frame)
         if (frame.type == P.ROLE_REPORT && packet.from == localNode && backlog) {
@@ -397,6 +412,37 @@ class BtrxClient(
             }
         }
         listener.onFrame(frame, meta)
+    }
+
+    /**
+     * A packet that is not a decoded port-256 packet. The first [DROPPED_LOG_LIMIT] of a
+     * session are logged at debug (which reaches the session log) with the MeshPacket
+     * payload_variant, portnum, sender and length; all are counted.
+     */
+    private fun onDropped(packet: FromRadio.Packet) {
+        val encrypted = packet.portnum == null && packet.encryptedLength != null
+        if (encrypted) droppedEncrypted++ else droppedOtherPort++
+        val n = droppedEncrypted + droppedOtherPort
+        if (n <= DROPPED_LOG_LIMIT) {
+            log.debug("dropped packet $n/$DROPPED_LOG_LIMIT logged: payload_variant=${packet.payloadVariant} " +
+                "portnum=${packet.portnum ?: "-"} from=${nodeName(packet.from)} len=${packet.payloadLength}" +
+                if (encrypted) " (encrypted for a channel the Desk Pod cannot read)" else "")
+        }
+        listener.onPacketDropped(encrypted)
+    }
+
+    private fun logRateLimited(type: Int, now: Long, line: String) {
+        val logged = rateLogged[type] ?: 0
+        val last = rateLastMs[type]
+        if (logged < RATE_LOG_FIRST || last == null || now - last >= RATE_LOG_INTERVAL_MS) {
+            val skipped = rateSkipped.remove(type) ?: 0
+            rateLogged[type] = logged + 1
+            rateLastMs[type] = now
+            log.debug(if (skipped > 0) "$line (+$skipped not logged since the last one)" else line)
+        } else {
+            rateSkipped[type] = (rateSkipped[type] ?: 0) + 1
+            log.info(line)
+        }
     }
 
     private val steerFlags = HashMap<Long, Int>()
@@ -426,6 +472,12 @@ class BtrxClient(
         const val SERIAL_QUIET_GAP_MS = 300L
         /** Frame types logged at debug (shown at every app log level): STEER, and the rare
          *  frames that pairing, the role check and IMU calibration turn on. */
+        /** Frame types logged at debug rate-limited: the first [RATE_LOG_FIRST], then one per [RATE_LOG_INTERVAL_MS]. */
+        val RATE_LOGGED = setOf(P.HEALTH, P.DETECT)
+        const val RATE_LOG_FIRST = 3
+        const val RATE_LOG_INTERVAL_MS = 10_000L
+        /** Dropped (non-btrx) packets logged per session; all are counted. */
+        const val DROPPED_LOG_LIMIT = 5
         val ALWAYS_LOGGED = setOf(P.STEER, P.PAIR_REQ, P.PAIR_ACK, P.DESK_PAIR, P.ROLE_REPORT, P.IMU_CAL_ACK)
         /** ROLE_REPORT answer timeout, counted from this session's ROLE_GET. */
         const val ROLE_TIMEOUT_MS = 10_000L

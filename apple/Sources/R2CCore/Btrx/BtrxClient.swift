@@ -39,6 +39,8 @@ public protocol BtrxClientListener: AnyObject {
     func onLocalRoleReport(_ report: BtrxProtocol.RoleReport)
     func onFrame(_ frame: BtrxProtocol.Frame, meta: BtrxRadioMeta)
     func onVersionRefused(fromNode: UInt32, version: Int)
+    /// A packet that is not a decoded btrx (port 256) packet was dropped; `encrypted`: the node could not decode it.
+    func onPacketDropped(encrypted: Bool)
 }
 
 public extension BtrxClientListener {
@@ -46,6 +48,7 @@ public extension BtrxClientListener {
     func onLocalRoleReport(_ report: BtrxProtocol.RoleReport) {}
     func onFrame(_ frame: BtrxProtocol.Frame, meta: BtrxRadioMeta) {}
     func onVersionRefused(fromNode: UInt32, version: Int) {}
+    func onPacketDropped(encrypted: Bool) {}
 }
 
 /// Desk Pod client: the Meshtastic phone-API handshake, send/receive on app port 256,
@@ -125,13 +128,53 @@ public final class BtrxClient: BtrxFrameSender {
     private(set) var backlogCounts: [String: Int] = [:]
     private var rejectCounts: [String: Int] = [:]
     private var refusedNodes = Set<UInt32>()
-    private var otherPorts = 0
+    /// Packets dropped before btrx decoding: encrypted for a channel the Desk Pod cannot read, or another port.
+    private var droppedEncrypted = 0
+    private var droppedOtherPort = 0
+    /// HEALTH/DETECT rx lines written at the session-log level: count per type, and when the last one was.
+    private var rateLogged: [Int: Int] = [:]
+    private var rateLastMs: [Int: Int64] = [:]
+    private var rateSkipped: [Int: Int] = [:]
     private var steerFlags: [UInt32: Int] = [:]
 
     /// Frame types logged at debug (shown at every app log level): STEER, and the rare
     /// frames that pairing, the role check and IMU calibration turn on. Same as Android.
+    /// Frame types logged at debug rate-limited: the first ``rateLogFirst``, then one per ``rateLogIntervalMs``. Same as Android.
+    public static let rateLogged: Set<Int> = [BtrxProtocol.HEALTH, BtrxProtocol.DETECT]
+    public static let rateLogFirst = 3
+    public static let rateLogIntervalMs: Int64 = 10_000
+    /// Dropped (non-btrx) packets logged per session; all are counted.
+    public static let droppedLogLimit = 5
     public static let alwaysLogged: Set<Int> = [BtrxProtocol.STEER, BtrxProtocol.PAIR_REQ, BtrxProtocol.PAIR_ACK,
                                                 BtrxProtocol.DESK_PAIR, BtrxProtocol.ROLE_REPORT, BtrxProtocol.IMU_CAL_ACK]
+
+    /// A packet that is not a decoded port-256 packet. The first ``droppedLogLimit`` of a
+    /// session are logged at debug (which reaches the session log) with the MeshPacket
+    /// payload_variant, portnum, sender and length; all are counted. Same as Android.
+    private func onDropped(_ packet: MeshtasticPhoneAPI.Packet) {
+        let encrypted = packet.portnum == nil && packet.encryptedLength != nil
+        if encrypted { droppedEncrypted += 1 } else { droppedOtherPort += 1 }
+        let n = droppedEncrypted + droppedOtherPort
+        if n <= Self.droppedLogLimit {
+            log.debug("dropped packet \(n)/\(Self.droppedLogLimit) logged: payload_variant=\(packet.payloadVariant) "
+                + "portnum=\(packet.portnum.map(String.init) ?? "-") from=\(Self.nodeName(packet.from)) len=\(packet.payloadLength)"
+                + (encrypted ? " (encrypted for a channel the Desk Pod cannot read)" : ""))
+        }
+        listener?.onPacketDropped(encrypted: encrypted)
+    }
+
+    private func logRateLimited(_ type: Int, _ now: Int64, _ line: String) {
+        let logged = rateLogged[type] ?? 0
+        if logged < Self.rateLogFirst || rateLastMs[type] == nil || now - rateLastMs[type]! >= Self.rateLogIntervalMs {
+            let skipped = rateSkipped.removeValue(forKey: type) ?? 0
+            rateLogged[type] = logged + 1
+            rateLastMs[type] = now
+            log.debug(skipped > 0 ? "\(line) (+\(skipped) not logged since the last one)" : line)
+        } else {
+            rateSkipped[type, default: 0] += 1
+            log.info(line)
+        }
+    }
 
     /// One line whenever a Drone Pod's STEER flags change (bit 6: IMU calibration in use).
     private func logSteerFlagChange(_ from: UInt32, _ frame: BtrxProtocol.Frame) {
@@ -296,9 +339,12 @@ public final class BtrxClient: BtrxFrameSender {
         let frames = frameCounts.isEmpty ? "none" : list(frameCounts)
         let backlog = backlogCounts.isEmpty ? "" : " backlog: " + list(backlogCounts)
         let rejects = rejectCounts.isEmpty ? "" : " rejected: " + list(rejectCounts)
-        let other = otherPorts == 0 ? "" : " other-port packets=\(otherPorts)"
-        return "frames: \(frames)\(backlog)\(rejects)\(other)"
+        let dropped = droppedEncrypted + droppedOtherPort == 0 ? "" : " dropped: encrypted=\(droppedEncrypted) other-port=\(droppedOtherPort)"
+        return "frames: \(frames)\(backlog)\(rejects)\(dropped)"
     }
+
+    /// Packets dropped before btrx decoding since connecting.
+    public func droppedCounts() -> (encrypted: Int, otherPort: Int) { (droppedEncrypted, droppedOtherPort) }
 
     public func frameCount(_ typeName: String) -> Int { frameCounts[typeName] ?? 0 }
     public func backlogCount(_ typeName: String) -> Int { backlogCounts[typeName] ?? 0 }
@@ -333,7 +379,7 @@ public final class BtrxClient: BtrxFrameSender {
 
     private func onPacket(_ packet: MeshtasticPhoneAPI.Packet) {
         guard packet.portnum == BtrxProtocol.privateAppPort, let payload = packet.payload else {
-            otherPorts += 1
+            onDropped(packet)
             return
         }
         let now = clock()
@@ -364,7 +410,11 @@ public final class BtrxClient: BtrxFrameSender {
         if backlog { backlogCounts[frame.typeName, default: 0] += 1 } else { frameCounts[frame.typeName, default: 0] += 1 }
         // STEER (every second) and the rare frames a bench test needs are logged at debug,
         // which shows at every app log level; the rest (DETECT, HEALTH...) at info.
-        if Self.alwaysLogged.contains(frame.type) { log.debug("rx \(radio) \(BtrxFrameLog.format(frame))") } else { log.info("rx \(radio) \(BtrxFrameLog.format(frame))") }
+        // HEALTH and DETECT: the first few, then one per type every 10 s, at debug too so
+        // they reach the session log; the rest at info as before.
+        if Self.alwaysLogged.contains(frame.type) { log.debug("rx \(radio) \(BtrxFrameLog.format(frame))") }
+        else if Self.rateLogged.contains(frame.type) { logRateLimited(frame.type, now, "rx \(radio) \(BtrxFrameLog.format(frame))") }
+        else { log.info("rx \(radio) \(BtrxFrameLog.format(frame))") }
         if frame.type == BtrxProtocol.STEER { logSteerFlagChange(packet.from, frame) }
         if frame.type == BtrxProtocol.ROLE_REPORT && packet.from == localNode && backlog {
             log.info("stale ROLE_REPORT in the connect backlog ignored; waiting for the answer to this session's ROLE_GET")

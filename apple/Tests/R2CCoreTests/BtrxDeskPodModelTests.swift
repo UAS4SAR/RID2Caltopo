@@ -412,6 +412,29 @@ final class BtrxDeskPodModelTests: XCTestCase {
         func onLocalRoleReport(_ report: BtrxProtocol.RoleReport) { model.onLocalRoleReport(report) }
         func onFrame(_ frame: BtrxProtocol.Frame, meta: BtrxRadioMeta) { model.onFrame(frame, meta: meta) }
         func onVersionRefused(fromNode: UInt32, version: Int) {}
+        func onPacketDropped(encrypted: Bool) { model.onPacketDropped(encrypted: encrypted) }
+    }
+
+    func testDroppedPacketsShowOnTheLiveFramesLineAndRestartWithTheSession() throws {
+        XCTAssertEqual("Live frames: none", BtrxDeskPodText.liveFramesLine(model.snapshot()))
+        model.onPacketDropped(encrypted: true); model.onPacketDropped(encrypted: true); model.onPacketDropped(encrypted: false)
+        model.onFrame(try P.decodeFrame(P.encodeFrame(P.HEALTH, payload: [UInt8](repeating: 0, count: 30))), meta: meta(desk))
+        let s = model.snapshot()
+        XCTAssertEqual(2, s.droppedEncrypted); XCTAssertEqual(1, s.droppedOtherPort)
+        XCTAssertEqual("Live frames: HEALTH=1; dropped: encrypted=2 other-port=1", BtrxDeskPodText.liveFramesLine(s))
+        model.attach(FakeSender())
+        XCTAssertEqual("Live frames: none", BtrxDeskPodText.liveFramesLine(model.snapshot()))
+    }
+
+    func testLinkLineShowsReconnectAttemptsAndTheLastFailure() {
+        func line(_ link: Model.LinkStatus) -> String { model.setLink(link); return BtrxDeskPodText.linkLine(model.snapshot()) }
+        XCTAssertEqual("Bluetooth: connecting", line(Model.LinkStatus(kind: .bluetooth, phase: .connecting)))
+        XCTAssertEqual("Bluetooth: waiting to retry; reconnecting, attempt 2 (last failure: connection failed (status 8))",
+                       line(Model.LinkStatus(kind: .bluetooth, phase: .retryWait, failedAttempts: 1, lastFailure: "connection failed (status 8)")))
+        XCTAssertEqual("Bluetooth: connecting; reconnecting, attempt 10 (last failure: connection failed (status 147))",
+                       line(Model.LinkStatus(kind: .bluetooth, phase: .connecting, failedAttempts: 9, lastFailure: "connection failed (status 147)")))
+        XCTAssertEqual("Bluetooth: connected", line(Model.LinkStatus(kind: .bluetooth, phase: .ready)))
+        XCTAssertEqual("Bluetooth: off", line(Model.LinkStatus(kind: .bluetooth, phase: .off, failedAttempts: 3, lastFailure: "x")))
     }
 
     /// Field, Nov 16 (BT RX Desk Pod serial log): Drone Pod A !018968be sends 40-byte STEER (two

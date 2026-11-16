@@ -138,9 +138,49 @@ class BtrxClientTest {
         feed(btrxPacket(starboard, byteArrayOf(1, 2, 3), port = 1)) // text message port: ignored
         assertEquals(3, client.frameCount("DETECT"))
         assertEquals(1, client.frameCount("HEALTH"))
-        assertTrue(infos.any { it.startsWith("rx from=!4c8c125b rssi=-60 snr=7.5 DETECT seq=201") })
+        assertTrue((infos + debugs).any { it.startsWith("rx from=!4c8c125b rssi=-60 snr=7.5 DETECT seq=201") })
         assertTrue(client.summary(), client.summary().contains("DETECT=3 HEALTH=1"))
-        assertTrue(client.summary(), client.summary().contains("other-port packets=1"))
+        assertTrue(client.summary(), client.summary().contains("dropped: encrypted=0 other-port=1"))
+    }
+
+    /** MeshPacket whose payload_variant is encrypted (field 5): a channel the Desk Pod cannot read. */
+    private fun encryptedPacket(from: Long, bytes: Int): ByteArray {
+        val packet = ProtoWriter().fixed32(1, from).fixed32(2, 0xFFFFFFFFL).bytesField(5, ByteArray(bytes) { 0x5A }).fixed32(6, 7).bytes()
+        return ProtoWriter().varint(1, 9).bytesField(2, packet).bytes()
+    }
+
+    @Test
+    fun droppedPacketsAreCountedByKindAndTheFirstFiveLoggedAtDebug() {
+        val dropped = mutableListOf<Boolean>()
+        val c = BtrxClient(send = { sent += it }, log = logger, random = Random(1), clock = { now },
+            listener = object : BtrxClient.Listener { override fun onPacketDropped(encrypted: Boolean) { dropped += encrypted } })
+        c.onBytes(MeshtasticSerial.frame(encryptedPacket(0x018968BEL, 52)))
+        c.onBytes(MeshtasticSerial.frame(btrxPacket(0x018968BEL, byteArrayOf(1, 2, 3), port = 67)))
+        repeat(5) { c.onBytes(MeshtasticSerial.frame(encryptedPacket(0x018968BEL, 40))) }
+        assertEquals(6 to 1, c.droppedCounts())
+        assertEquals(listOf(true, false, true, true, true, true, true), dropped)
+        val lines = debugs.filter { it.startsWith("dropped packet ") }
+        assertEquals(lines.toString(), 5, lines.size)
+        assertEquals("dropped packet 1/5 logged: payload_variant=encrypted portnum=- from=!018968be len=52 (encrypted for a channel the Desk Pod cannot read)", lines[0])
+        assertEquals("dropped packet 2/5 logged: payload_variant=decoded portnum=67 from=!018968be len=3", lines[1])
+        assertTrue(c.summary(), c.summary().contains("dropped: encrypted=6 other-port=1"))
+        assertTrue(warns.isEmpty())
+    }
+
+    @Test
+    fun healthAndDetectReachTheSessionLogFirstThreeThenOncePer10s() {
+        handshake()
+        val detect = P.fromHex(BtrxProtocolTest.EXAMPLES.getValue("DETECT"))
+        repeat(6) { feed(btrxPacket(starboard, detect)); now += 1_000 } // 6 within 6 s
+        val rxDebug = { debugs.filter { it.startsWith("rx ") && it.contains(" DETECT ") } }
+        assertEquals(3, rxDebug().size)
+        assertEquals(3, infos.count { it.startsWith("rx ") && it.contains(" DETECT ") })
+        now += 10_000
+        feed(btrxPacket(starboard, detect))
+        assertEquals(4, rxDebug().size)
+        assertTrue(rxDebug().last(), rxDebug().last().endsWith("(+3 not logged since the last one)"))
+        feed(btrxPacket(starboard, P.fromHex(BtrxProtocolTest.EXAMPLES.getValue("HEALTH"))))
+        assertEquals(1, debugs.count { it.startsWith("rx ") && it.contains(" HEALTH ") })
     }
 
     @Test

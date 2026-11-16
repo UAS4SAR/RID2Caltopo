@@ -221,7 +221,8 @@ final class BtrxBleCentral: NSObject, @unchecked Sendable {
 
     private func status(_ phase: Model.LinkPhase, _ detail: String, _ name: String? = nil) {
         model.setLink(Model.LinkStatus(kind: phase == .off ? .none : .bluetooth, phase: phase, detail: detail,
-                                       deviceName: name ?? peripheral?.name))
+                                       deviceName: name ?? peripheral?.name,
+                                       failedAttempts: backoff.failures, lastFailure: backoff.lastFailure))
         publish()
     }
 
@@ -310,9 +311,10 @@ final class BtrxBleCentral: NSObject, @unchecked Sendable {
         queue.asyncAfter(deadline: .now() + Self.connectTimeout, execute: w)
     }
 
-    private func retryLater(_ phase: Model.LinkPhase, _ detail: String) {
+    /// `failure`: short reason for the Desk Pod screen's "reconnecting" line (default: the detail).
+    private func retryLater(_ phase: Model.LinkPhase, _ detail: String, failure: String? = nil) {
         guard enabled else { return }
-        let delay = backoff.nextDelayMs()
+        let delay = backoff.nextDelayMs(failure: failure ?? (detail.hasSuffix(".") ? String(detail.dropLast()) : detail))
         status(phase, "\(detail) Retrying in \(delay / 1000) s.")
         attemptWork?.cancel()
         let w = DispatchWorkItem { [weak self] in self?.attempt() }
@@ -463,7 +465,7 @@ final class BtrxBleCentral: NSObject, @unchecked Sendable {
         guard peripheral != nil || client != nil else { return }
         log.warn("ble: session ended: \(reason)")
         closeSession(reason)
-        retryLater(.retryWait, "Bluetooth link lost: \(reason).")
+        retryLater(.retryWait, "Bluetooth link lost: \(reason).", failure: reason)
     }
 
     private func closeSession(_ reason: String) {
@@ -647,6 +649,8 @@ extension BtrxBleCentral: BtrxClientListener {
     }
 
     func onVersionRefused(fromNode: UInt32, version: Int) {}
+
+    func onPacketDropped(encrypted: Bool) { model.onPacketDropped(encrypted: encrypted) }
 }
 
 /// Main-actor face of the Desk Pod link for SwiftUI: the published snapshot, the

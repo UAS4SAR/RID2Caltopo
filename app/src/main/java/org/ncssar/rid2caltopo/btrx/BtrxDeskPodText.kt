@@ -35,7 +35,14 @@ object BtrxDeskPodText {
             LinkKind.USB -> "USB (debug)"
             LinkKind.NONE -> "None"
         }
-        return "$kind: ${phaseName(s.link.phase)}"
+        return "$kind: ${phaseName(s.link.phase)}" + reconnectSuffix(s.link)
+    }
+
+    /** Bluetooth connects failing in a row: "; reconnecting, attempt N (last failure: ...)". */
+    fun reconnectSuffix(link: BtrxDeskPodModel.LinkStatus): String {
+        if (link.failedAttempts <= 0 || link.phase == LinkPhase.READY || link.phase == LinkPhase.OFF || link.phase == LinkPhase.PAUSED_FOR_USB) return ""
+        val last = link.lastFailure?.let { " (last failure: $it)" } ?: ""
+        return "; reconnecting, attempt ${link.failedAttempts + 1}$last"
     }
 
     fun phaseName(p: LinkPhase): String = when (p) {
@@ -93,6 +100,13 @@ object BtrxDeskPodText {
     /** Desk Pod HEALTH phone_lost (build 0x0104): messages dropped from its full queue to this app. */
     fun deskPhoneLostLine(lost: Long): String =
         "Desk Pod to app: ${if (lost >= 0xFFFFFFFFL) "4294967295+" else lost.toString()} message(s) dropped since the Desk Pod started (queue full)"
+
+    /** "Live frames: ..." plus the packets dropped before btrx decoding, when there are any. */
+    fun liveFramesLine(s: BtrxDeskPodModel.Snapshot): String {
+        val dropped = if (s.droppedEncrypted + s.droppedOtherPort == 0) ""
+            else "; dropped: encrypted=${s.droppedEncrypted} other-port=${s.droppedOtherPort}"
+        return countsLine("Live frames", s.liveCounts) + dropped
+    }
 
     fun countsLine(label: String, counts: Map<String, Int>): String =
         "$label: " + if (counts.isEmpty()) "none" else counts.toSortedMap().entries.joinToString(" ") { "${it.key}=${it.value}" }

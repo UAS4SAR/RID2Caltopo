@@ -40,8 +40,14 @@ public final class BtrxDeskPodModel {
         public var phase: LinkPhase = .off
         public var detail = ""
         public var deviceName: String?
-        public init(kind: LinkKind = .none, phase: LinkPhase = .off, detail: String = "", deviceName: String? = nil) {
+        /// Bluetooth: connect attempts that failed in a row (0 once a session reaches READY).
+        public var failedAttempts = 0
+        /// Bluetooth: why the latest of those attempts failed, e.g. "connection failed (status 147)".
+        public var lastFailure: String?
+        public init(kind: LinkKind = .none, phase: LinkPhase = .off, detail: String = "", deviceName: String? = nil,
+                    failedAttempts: Int = 0, lastFailure: String? = nil) {
             self.kind = kind; self.phase = phase; self.detail = detail; self.deviceName = deviceName
+            self.failedAttempts = failedAttempts; self.lastFailure = lastFailure
         }
     }
 
@@ -123,6 +129,10 @@ public final class BtrxDeskPodModel {
         public var imuCal: BtrxImuCal.View?
         /// phone_lost from the Desk Pod's own HEALTH (build 0x0104); nil before one or on older builds.
         public var deskPhoneLost: UInt32?
+        /// This session: packets dropped before btrx decoding, encrypted for another channel.
+        public var droppedEncrypted = 0
+        /// This session: packets dropped before btrx decoding, another port (not 256).
+        public var droppedOtherPort = 0
         public init() {}
         public var roleSupported: Bool { role.map { BtrxProtocol.buildSupported($0.buildHash) } ?? false }
     }
@@ -155,6 +165,8 @@ public final class BtrxDeskPodModel {
     private var pairedPod: PairedPod?
     private var lastHealth: HealthReading?
     private var deskPhoneLost: UInt32?
+    private var droppedEncrypted = 0
+    private var droppedOtherPort = 0
     private var otherPods = Set<UInt32>()
     private var detectTimes: [Int64] = []
     private var lastDetectMs: Int64?
@@ -188,6 +200,7 @@ public final class BtrxDeskPodModel {
         localNode = nil
         role = nil
         deskPhoneLost = nil
+        droppedEncrypted = 0; droppedOtherPort = 0
         liveCounts = [:]; backlogCounts = [:]
         detectTimes.removeAll()
         quietWatchSinceMs = clock()
@@ -232,6 +245,8 @@ public final class BtrxDeskPodModel {
     // MARK: client listener
 
     public func onConfigured(localNode node: UInt32) { localNode = node }
+    /// A non-btrx packet the client dropped (encrypted for another channel, or another port).
+    public func onPacketDropped(encrypted: Bool) { if encrypted { droppedEncrypted += 1 } else { droppedOtherPort += 1 } }
     public func onLocalRoleReport(_ report: BtrxProtocol.RoleReport) { role = report }
 
     public func onFrame(_ frame: BtrxProtocol.Frame, meta: BtrxRadioMeta) {
@@ -482,6 +497,7 @@ public final class BtrxDeskPodModel {
         s.deskPhoneLost = deskPhoneLost; s.dronePodHealth = lastHealth; s.otherPodNodes = otherPods.count; s.detectsLastMinute = detectTimes.count
         s.lastDetectMs = lastDetectMs; s.lastPacketRssi = lastRssi; s.lastPacketSnr = lastSnr
         s.liveCounts = liveCounts; s.backlogCounts = backlogCounts
+        s.droppedEncrypted = droppedEncrypted; s.droppedOtherPort = droppedOtherPort
         s.windowOpen = window.isOpen(nowMs: now); s.windowSecondsLeft = window.secondsLeft(nowMs: now); s.windowFromBacklog = window.openedFromBacklog
         var p = pairing
         if Self.activeSteps.contains(p.step) { p.windowSecondsLeft = window.secondsLeft(nowMs: now) }

@@ -206,6 +206,7 @@ object BtrxManager {
             worker.execute { bearing.onConnected() }
         }
         override fun onLocalRoleReport(report: BtrxProtocol.RoleReport) = model.onLocalRoleReport(report)
+        override fun onPacketDropped(encrypted: Boolean) = model.onPacketDropped(encrypted)
         override fun onFrame(frame: BtrxProtocol.Frame, meta: BtrxClient.RadioMeta) {
             lastDeskPodFrameMs = android.os.SystemClock.elapsedRealtime()
             model.onFrame(frame, meta)
@@ -415,8 +416,8 @@ object BtrxManager {
     }
 
     private fun bleLink(): BtrxBleLink = ble ?: BtrxBleLink(appContext, logger, object : BtrxBleLink.Events {
-        override fun onStatus(phase: LinkPhase, detail: String, deviceName: String?) {
-            bleStatus = LinkStatus(LinkKind.BLUETOOTH, phase, detail, deviceName ?: rememberedDeskPodName())
+        override fun onStatus(phase: LinkPhase, detail: String, deviceName: String?, failedAttempts: Int, lastFailure: String?) {
+            bleStatus = LinkStatus(LinkKind.BLUETOOTH, phase, detail, deviceName ?: rememberedDeskPodName(), failedAttempts, lastFailure)
             updateLinkStatus()
             publish()
         }

@@ -68,7 +68,18 @@ object MeshtasticSerial {
             val rxSnr: Float, val rxRssi: Int, val hopLimit: Int,
             /** Null when the packet was encrypted for a channel this node cannot read. */
             val portnum: Int?, val payload: ByteArray?,
-        ) : FromRadio()
+            /** Length of the encrypted bytes (MeshPacket field 5) when the node could not decode it. */
+            val encryptedLength: Int? = null,
+        ) : FromRadio() {
+            /** MeshPacket payload_variant: decoded (field 4), encrypted (field 5) or none. */
+            val payloadVariant: String get() = when {
+                portnum != null -> "decoded"
+                encryptedLength != null -> "encrypted"
+                else -> "none"
+            }
+            /** Bytes in the payload variant (decoded payload or encrypted blob). */
+            val payloadLength: Int get() = payload?.size ?: encryptedLength ?: 0
+        }
         /** Node, config, channel, log and every other record R2C does not use. */
         data class Other(val field: Int) : FromRadio()
     }
@@ -104,7 +115,7 @@ object MeshtasticSerial {
         val r = ProtoReader(buf)
         var from = 0L; var to = 0L; var channel = 0; var id = 0L
         var snr = 0f; var rssi = 0; var hop = 0
-        var port: Int? = null; var payload: ByteArray? = null
+        var port: Int? = null; var payload: ByteArray? = null; var encrypted: Int? = null
         while (r.hasMore()) {
             val (f, w) = r.tag()
             when {
@@ -124,6 +135,7 @@ object MeshtasticSerial {
                     }
                     if (payload == null) payload = ByteArray(0)
                 }
+                f == 5 && w == 2 -> encrypted = r.lengthDelimited().size
                 f == 6 && w == 5 -> id = r.fixed32()
                 f == 8 && w == 5 -> snr = java.lang.Float.intBitsToFloat(r.fixed32().toInt())
                 f == 9 && w == 0 -> hop = r.varint().toInt()
@@ -131,7 +143,7 @@ object MeshtasticSerial {
                 else -> r.skip(w)
             }
         }
-        return FromRadio.Packet(from, to, channel, id, snr, rssi, hop, port, payload)
+        return FromRadio.Packet(from, to, channel, id, snr, rssi, hop, port, payload, encrypted)
     }
 
     /** Splits the serial byte stream into protobuf messages, skipping text before 0x94 0xC3. */

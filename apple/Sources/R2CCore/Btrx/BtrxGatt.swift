@@ -102,11 +102,15 @@ public struct BtrxReconnectBackoff: Sendable {
 
     public init(firstMs: Int64 = 2_000, maxMs: Int64 = 30_000) { self.firstMs = firstMs; self.maxMs = maxMs }
 
-    public mutating func nextDelayMs() -> Int64 {
+    /// Why the latest failed attempt failed (shown on the Desk Pod screen); nil after ``reset()``.
+    public private(set) var lastFailure: String?
+
+    public mutating func nextDelayMs(failure: String? = nil) -> Int64 {
+        if let failure { lastFailure = failure }
         let d = min(firstMs << Int64(min(failures, 10)), maxMs)
         failures += 1
         return d
     }
 
-    public mutating func reset() { failures = 0 }
+    public mutating func reset() { failures = 0; lastFailure = nil }
 }

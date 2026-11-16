@@ -72,4 +72,17 @@ class BtrxLinkPolicyTest {
         b.reset()
         assertEquals(2_000L, b.nextDelayMs())
     }
+
+    @Test
+    fun backoffRemembersTheLatestFailureUntilReset() {
+        val b = BtrxReconnectBackoff()
+        b.nextDelayMs("connection failed (status 8)")
+        b.nextDelayMs("connection failed (status 147)")
+        b.nextDelayMs()
+        assertEquals(3, b.failures)
+        assertEquals("connection failed (status 147)", b.lastFailure)
+        b.reset()
+        assertEquals(0, b.failures)
+        assertEquals(null, b.lastFailure)
+    }
 }

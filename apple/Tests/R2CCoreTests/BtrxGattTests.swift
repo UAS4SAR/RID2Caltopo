@@ -110,4 +110,16 @@ final class BtrxGattTests: XCTestCase {
         b.reset()
         XCTAssertEqual(2_000, b.nextDelayMs())
     }
+
+    func testBackoffRemembersTheLatestFailureUntilReset() {
+        var b = BtrxReconnectBackoff()
+        _ = b.nextDelayMs(failure: "connection failed (status 8)")
+        _ = b.nextDelayMs(failure: "connection failed (status 147)")
+        _ = b.nextDelayMs()
+        XCTAssertEqual(3, b.failures)
+        XCTAssertEqual("connection failed (status 147)", b.lastFailure)
+        b.reset()
+        XCTAssertEqual(0, b.failures)
+        XCTAssertNil(b.lastFailure)
+    }
 }

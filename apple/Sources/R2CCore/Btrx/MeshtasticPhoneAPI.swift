@@ -68,6 +68,17 @@ public enum MeshtasticPhoneAPI {
         /// Nil when the packet was encrypted for a channel this node cannot read.
         public let portnum: Int?
         public let payload: [UInt8]?
+        /// Length of the encrypted bytes (MeshPacket field 5) when the node could not decode it.
+        public var encryptedLength: Int? = nil
+
+        /// MeshPacket payload_variant: decoded (field 4), encrypted (field 5) or none.
+        public var payloadVariant: String {
+            if portnum != nil { return "decoded" }
+            if encryptedLength != nil { return "encrypted" }
+            return "none"
+        }
+        /// Bytes in the payload variant (decoded payload or encrypted blob).
+        public var payloadLength: Int { payload?.count ?? encryptedLength ?? 0 }
     }
 
     public struct DecodeError: Error, Sendable { public let message: String }
@@ -101,7 +112,7 @@ public enum MeshtasticPhoneAPI {
         let r = ProtoReader(buf)
         var from: UInt32 = 0, to: UInt32 = 0, channel = 0, id: UInt32 = 0
         var snr: Float = 0, rssi = 0, hop = 0
-        var port: Int?, payload: [UInt8]?
+        var port: Int?, payload: [UInt8]?, encrypted: Int?
         while r.hasMore {
             let (f, w) = try r.tag()
             switch (f, w) {
@@ -120,6 +131,7 @@ public enum MeshtasticPhoneAPI {
                     }
                 }
                 if payload == nil { payload = [] }
+            case (5, 2): encrypted = try r.lengthDelimited().count
             case (6, 5): id = try r.fixed32()
             case (8, 5): snr = Float(bitPattern: try r.fixed32())
             case (9, 0): hop = Int(truncatingIfNeeded: try r.varint())
@@ -127,7 +139,7 @@ public enum MeshtasticPhoneAPI {
             default: try r.skip(w)
             }
         }
-        return Packet(from: from, to: to, channel: channel, id: id, rxSnr: snr, rxRssi: rssi, hopLimit: hop, portnum: port, payload: payload)
+        return Packet(from: from, to: to, channel: channel, id: id, rxSnr: snr, rxRssi: rssi, hopLimit: hop, portnum: port, payload: payload, encryptedLength: encrypted)
     }
 
     /// Splits a serial byte stream into protobuf messages (USB; kept for parity and tests).

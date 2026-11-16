@@ -426,6 +426,31 @@ class BtrxDeskPodModelTest {
         assertEquals("Firmware build: 0x00ff (older than this app supports; update to 0x0100 or newer)", BtrxDeskPodText.firmwareLine(model.snapshot()))
     }
 
+    @Test
+    fun droppedPacketsShowOnTheLiveFramesLineAndRestartWithTheSession() {
+        assertEquals("Live frames: none", BtrxDeskPodText.liveFramesLine(model.snapshot()))
+        model.onPacketDropped(encrypted = true); model.onPacketDropped(encrypted = true); model.onPacketDropped(encrypted = false)
+        model.onFrame(P.decodeFrame(P.encodeFrame(P.HEALTH, payload = ByteArray(30))), meta(desk))
+        val s = model.snapshot()
+        assertEquals(2, s.droppedEncrypted); assertEquals(1, s.droppedOtherPort)
+        assertEquals("Live frames: HEALTH=1; dropped: encrypted=2 other-port=1", BtrxDeskPodText.liveFramesLine(s))
+        model.attach(FakeSender())
+        assertEquals("Live frames: none", BtrxDeskPodText.liveFramesLine(model.snapshot()))
+    }
+
+    @Test
+    fun linkLineShowsReconnectAttemptsAndTheLastFailure() {
+        fun line(link: BtrxDeskPodModel.LinkStatus): String { model.setLink(link); return BtrxDeskPodText.linkLine(model.snapshot()) }
+        val bt = BtrxDeskPodModel.LinkKind.BLUETOOTH
+        assertEquals("Bluetooth: connecting", line(BtrxDeskPodModel.LinkStatus(bt, BtrxDeskPodModel.LinkPhase.CONNECTING)))
+        assertEquals("Bluetooth: waiting to retry; reconnecting, attempt 2 (last failure: connection failed (status 8))",
+            line(BtrxDeskPodModel.LinkStatus(bt, BtrxDeskPodModel.LinkPhase.RETRY_WAIT, failedAttempts = 1, lastFailure = "connection failed (status 8)")))
+        assertEquals("Bluetooth: connecting; reconnecting, attempt 10 (last failure: connection failed (status 147))",
+            line(BtrxDeskPodModel.LinkStatus(bt, BtrxDeskPodModel.LinkPhase.CONNECTING, failedAttempts = 9, lastFailure = "connection failed (status 147)")))
+        assertEquals("Bluetooth: connected", line(BtrxDeskPodModel.LinkStatus(bt, BtrxDeskPodModel.LinkPhase.READY, failedAttempts = 0)))
+        assertEquals("Bluetooth: off", line(BtrxDeskPodModel.LinkStatus(bt, BtrxDeskPodModel.LinkPhase.OFF, failedAttempts = 3, lastFailure = "x")))
+    }
+
     /**
      * Field, Nov 16 (BT RX Desk Pod serial log): Drone Pod A !018968be sends 40-byte STEER
      * (two extra sources) and 34-byte HEALTH (build 0x0104) through Desk Pod !66c842ca. The whole
@@ -447,6 +472,7 @@ class BtrxDeskPodModelTest {
                 override fun onConfigured(localNode: Long) = model.onConfigured(localNode)
                 override fun onLocalRoleReport(report: P.RoleReport) = model.onLocalRoleReport(report)
                 override fun onFrame(frame: P.Frame, meta: BtrxClient.RadioMeta) = model.onFrame(frame, meta)
+                override fun onPacketDropped(encrypted: Boolean) = model.onPacketDropped(encrypted)
             },
             random = java.util.Random(1), clock = { now },
         )

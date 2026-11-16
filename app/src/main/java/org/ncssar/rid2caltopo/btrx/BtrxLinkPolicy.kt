@@ -66,12 +66,16 @@ class BtrxReconnectBackoff(
 ) {
     var failures = 0
         private set
+    /** Why the latest failed attempt failed (shown on the Desk Pod screen); null after [reset]. */
+    var lastFailure: String? = null
+        private set
 
-    fun nextDelayMs(): Long {
+    fun nextDelayMs(failure: String? = null): Long {
+        if (failure != null) lastFailure = failure
         val d = (firstMs shl minOf(failures, 10)).coerceAtMost(maxMs)
         failures++
         return d
     }
 
-    fun reset() { failures = 0 }
+    fun reset() { failures = 0; lastFailure = null }
 }

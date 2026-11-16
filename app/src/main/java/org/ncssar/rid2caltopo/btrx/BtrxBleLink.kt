@@ -58,7 +58,8 @@ class BtrxBleLink(
     private val events: Events,
 ) {
     interface Events {
-        fun onStatus(phase: LinkPhase, detail: String, deviceName: String?)
+        /** [failedAttempts]/[lastFailure]: connects failing in a row and why the latest did (0/null once READY). */
+        fun onStatus(phase: LinkPhase, detail: String, deviceName: String?, failedAttempts: Int, lastFailure: String?)
         /** Forwarded client callbacks (the model). */
         val clientListener: BtrxClient.Listener
         fun onSessionStarted(client: BtrxClient)
@@ -148,7 +149,7 @@ class BtrxBleLink(
             handler.removeCallbacks(nextScan)
             stopScan()
             closeSession(reason)
-            events.onStatus(finalPhase, detail, null)
+            status(finalPhase, detail, null)
             done.countDown()
         }
         if (Thread.currentThread() !== thread) done.await(2, TimeUnit.SECONDS)
@@ -170,7 +171,7 @@ class BtrxBleLink(
     private fun attempt() {
         if (!running || gatt != null || scanning) return
         val adapter = adapter() ?: run {
-            events.onStatus(LinkPhase.UNAVAILABLE, "This tablet has no Bluetooth.", null)
+            status(LinkPhase.UNAVAILABLE, "This tablet has no Bluetooth.", null)
             return
         }
         if (!hasPermissions()) { retryLater(LinkPhase.NO_PERMISSION, "RID2Caltopo needs the Nearby devices permission."); return }
@@ -219,7 +220,7 @@ class BtrxBleLink(
         }
         scanning = true
         scanRound++
-        events.onStatus(LinkPhase.SCANNING, "Looking for the Desk Pod (scan $scanRound of $SCAN_ROUNDS).", null)
+        status(LinkPhase.SCANNING, "Looking for the Desk Pod (scan $scanRound of $SCAN_ROUNDS).", null)
         handler.postDelayed(scanDone, SCAN_MS)
     }
 
@@ -263,7 +264,7 @@ class BtrxBleLink(
     private fun connect(dev: BluetoothDevice, name: String?) {
         device = dev
         if (dev.bondState != BluetoothDevice.BOND_BONDED) {
-            events.onStatus(LinkPhase.BONDING, "Pairing with ${name ?: "the Desk Pod"}: enter the PIN printed on the Desk Pod (${MeshtasticBle.DEFAULT_PIN} by default).", name)
+            status(LinkPhase.BONDING, "Pairing with ${name ?: "the Desk Pod"}: enter the PIN printed on the Desk Pod (${MeshtasticBle.DEFAULT_PIN} by default).", name)
             registerBondReceiver(dev)
             handler.postDelayed(bondTimeout, BOND_TIMEOUT_MS)
             handler.postDelayed(bondPoll, BOND_POLL_MS)
@@ -321,7 +322,7 @@ class BtrxBleLink(
     }
 
     private fun openGatt(dev: BluetoothDevice, name: String?) {
-        events.onStatus(LinkPhase.CONNECTING, "Connecting to ${name ?: "the Desk Pod"}.", name)
+        status(LinkPhase.CONNECTING, "Connecting to ${name ?: "the Desk Pod"}.", name)
         handshakeWritten = false
         attMtu = 23
         val serial = ++sessionSerial
@@ -331,10 +332,14 @@ class BtrxBleLink(
         handler.postDelayed(connectTimeout, CONNECT_TIMEOUT_MS)
     }
 
-    private fun retryLater(phase: LinkPhase, detail: String) {
+    private fun status(phase: LinkPhase, detail: String, deviceName: String?) =
+        events.onStatus(phase, detail, deviceName, backoff.failures, backoff.lastFailure)
+
+    /** [failure]: short reason for the Desk Pod screen's "reconnecting" line. */
+    private fun retryLater(phase: LinkPhase, detail: String, failure: String = detail.trimEnd('.')) {
         if (!running) return
-        val delay = backoff.nextDelayMs()
-        events.onStatus(phase, "$detail Retrying in ${delay / 1000} s.", null)
+        val delay = backoff.nextDelayMs(failure)
+        status(phase, "$detail Retrying in ${delay / 1000} s.", null)
         handler.removeCallbacks(attempt)
         handler.postDelayed(attempt, delay)
     }
@@ -394,7 +399,7 @@ class BtrxBleLink(
         // to balanced once the Desk Pod has answered ROLE_GET.
         val fast = runCatching { g.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH) }.getOrDefault(false)
         log.info("ble: connection priority high ${if (fast) "requested" else "refused"}")
-        events.onStatus(LinkPhase.CONFIGURING, "Connected; reading the Desk Pod's configuration.", device?.name)
+        status(LinkPhase.CONFIGURING, "Connected; reading the Desk Pod's configuration.", device?.name)
         val q = BtrxGattQueue<Op>(start = { startOp(g, it) }, onStartFailed = { handler.post { sessionLost("Android refused a Bluetooth operation") } })
         queue = q
         drain = BtrxFromRadioDrain { q.enqueue(Op.ReadFromRadio) }
@@ -439,6 +444,7 @@ class BtrxBleLink(
                 }
                 override fun onFrame(frame: BtrxProtocol.Frame, meta: BtrxClient.RadioMeta) = forward.onFrame(frame, meta)
                 override fun onVersionRefused(fromNode: Long, version: Int) = forward.onVersionRefused(fromNode, version)
+                override fun onPacketDropped(encrypted: Boolean) = forward.onPacketDropped(encrypted)
             },
         )
         client = c
@@ -455,7 +461,7 @@ class BtrxBleLink(
         directTries = 0
         val dev = device ?: return
         events.rememberDevice(dev.address, dev.name)
-        events.onStatus(LinkPhase.READY, "Connected over Bluetooth.", dev.name)
+        status(LinkPhase.READY, "Connected over Bluetooth.", dev.name)
     }
 
     /** The ROLE_REPORT wait (timing in [BtrxClient.roleCheck]: from ROLE_GET, after the connect backlog). */
@@ -534,7 +540,7 @@ class BtrxBleLink(
         if (gatt == null && client == null) return
         log.warn("ble: session ended: $reason")
         closeSession(reason)
-        retryLater(LinkPhase.RETRY_WAIT, "Bluetooth link lost: $reason.")
+        retryLater(LinkPhase.RETRY_WAIT, "Bluetooth link lost: $reason.", failure = reason)
     }
 
     private fun closeSession(reason: String) {

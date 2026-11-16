@@ -157,9 +157,53 @@ final class BtrxClientTests: XCTestCase {
         c.onBytes(M.frame(packet(starboard, [1, 2, 3], port: 1)))
         XCTAssertEqual(3, c.frameCount("DETECT"))
         XCTAssertEqual(1, c.frameCount("HEALTH"))
-        XCTAssertTrue(log.infos.contains { $0.hasPrefix("rx from=!4c8c125b rssi=-60 snr=7.5 DETECT seq=201") })
+        XCTAssertTrue((log.infos + log.debugs).contains { $0.hasPrefix("rx from=!4c8c125b rssi=-60 snr=7.5 DETECT seq=201") })
         XCTAssertTrue(c.summary().contains("DETECT=3 HEALTH=1"), c.summary())
-        XCTAssertTrue(c.summary().contains("other-port packets=1"))
+        XCTAssertTrue(c.summary().contains("dropped: encrypted=0 other-port=1"), c.summary())
+    }
+
+    /// MeshPacket whose payload_variant is encrypted (field 5): a channel the Desk Pod cannot read.
+    func encryptedPacket(_ from: UInt32, _ bytes: Int) -> [UInt8] {
+        let packet = M.ProtoWriter().fixed32(1, from).fixed32(2, 0xFFFF_FFFF).bytesField(5, [UInt8](repeating: 0x5A, count: bytes)).fixed32(6, 7).bytes()
+        return M.ProtoWriter().varint(1, 9).bytesField(2, packet).bytes()
+    }
+
+    final class DropListener: BtrxClientListener {
+        var dropped: [Bool] = []
+        func onPacketDropped(encrypted: Bool) { dropped.append(encrypted) }
+    }
+
+    func testDroppedPacketsAreCountedByKindAndTheFirstFiveLoggedAtDebug() {
+        let l = DropListener()
+        let c = BtrxClient(send: { _ in }, log: log, listener: l, rng: BtrxTestRandom(state: 1), framing: .serial, clock: { [unowned self] in self.now })
+        c.onBytes(M.frame(encryptedPacket(0x0189_68BE, 52)))
+        c.onBytes(M.frame(packet(0x0189_68BE, [1, 2, 3], port: 67)))
+        for _ in 0..<5 { c.onBytes(M.frame(encryptedPacket(0x0189_68BE, 40))) }
+        XCTAssertEqual(c.droppedCounts().encrypted, 6)
+        XCTAssertEqual(c.droppedCounts().otherPort, 1)
+        XCTAssertEqual(l.dropped, [true, false, true, true, true, true, true])
+        let lines = log.debugs.filter { $0.hasPrefix("dropped packet ") }
+        XCTAssertEqual(lines.count, 5, "\(lines)")
+        XCTAssertEqual(lines.first, "dropped packet 1/5 logged: payload_variant=encrypted portnum=- from=!018968be len=52 (encrypted for a channel the Desk Pod cannot read)")
+        XCTAssertEqual(lines.dropFirst().first, "dropped packet 2/5 logged: payload_variant=decoded portnum=67 from=!018968be len=3")
+        XCTAssertTrue(c.summary().contains("dropped: encrypted=6 other-port=1"), c.summary())
+        XCTAssertTrue(log.warns.isEmpty)
+    }
+
+    func testHealthAndDetectReachTheSessionLogFirstThreeThenOncePer10s() throws {
+        let c = makeClient(.serial)
+        try handshakeSerial(c)
+        let detect = BtrxProtocolTests.example("DETECT")
+        for _ in 0..<6 { c.onBytes(M.frame(packet(starboard, detect))); now += 1_000 }
+        func rxDebug() -> [String] { log.debugs.filter { $0.hasPrefix("rx ") && $0.contains(" DETECT ") } }
+        XCTAssertEqual(rxDebug().count, 3)
+        XCTAssertEqual(log.infos.filter { $0.hasPrefix("rx ") && $0.contains(" DETECT ") }.count, 3)
+        now += 10_000
+        c.onBytes(M.frame(packet(starboard, detect)))
+        XCTAssertEqual(rxDebug().count, 4)
+        XCTAssertTrue(rxDebug().last?.hasSuffix("(+3 not logged since the last one)") == true, rxDebug().last ?? "")
+        c.onBytes(M.frame(packet(starboard, BtrxProtocolTests.example("HEALTH"))))
+        XCTAssertEqual(log.debugs.filter { $0.hasPrefix("rx ") && $0.contains(" HEALTH ") }.count, 1)
     }
 
     func testSerialFramesUntilTheFirstQuietGapAfterConfigCompleteAreBacklog() throws {

@@ -114,7 +114,7 @@ fun DeskPodScreen(onDismiss: () -> Unit) {
                     HorizontalDivider(Modifier.padding(vertical = 6.dp))
                     SectionTitle("Link health")
                     BtrxDeskPodText.healthLines(s).forEach { Text(it) }
-                    Text(BtrxDeskPodText.countsLine("Live frames", s.liveCounts), style = MaterialTheme.typography.bodySmall)
+                    Text(BtrxDeskPodText.liveFramesLine(s), style = MaterialTheme.typography.bodySmall)
                     Text(BtrxDeskPodText.countsLine("Backlog frames (old, display only)", s.backlogCounts), style = MaterialTheme.typography.bodySmall)
                     BtrxBearingStatusLines()
 

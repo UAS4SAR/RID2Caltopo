@@ -46,6 +46,7 @@ class BtrxUsbLink(
             }
             override fun onFrame(frame: BtrxProtocol.Frame, meta: BtrxClient.RadioMeta) = forward.onFrame(frame, meta)
             override fun onVersionRefused(fromNode: Long, version: Int) = forward.onVersionRefused(fromNode, version)
+            override fun onPacketDropped(encrypted: Boolean) = forward.onPacketDropped(encrypted)
         },
     )
 

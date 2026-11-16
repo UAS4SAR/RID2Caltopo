@@ -90,7 +90,14 @@ public enum BtrxDeskPodText {
         case .usb: kind = "USB (debug)"
         case .none: kind = "None"
         }
-        return "\(kind): \(phaseName(s.link.phase))"
+        return "\(kind): \(phaseName(s.link.phase))" + reconnectSuffix(s.link)
+    }
+
+    /// Bluetooth connects failing in a row: "; reconnecting, attempt N (last failure: ...)". Same as Android.
+    public static func reconnectSuffix(_ link: Model.LinkStatus) -> String {
+        if link.failedAttempts <= 0 || link.phase == .ready || link.phase == .off || link.phase == .pausedForUSB { return "" }
+        let last = link.lastFailure.map { " (last failure: \($0))" } ?? ""
+        return "; reconnecting, attempt \(link.failedAttempts + 1)\(last)"
     }
 
     public static func phaseName(_ p: Model.LinkPhase) -> String {
@@ -149,6 +156,13 @@ public enum BtrxDeskPodText {
     /// Desk Pod HEALTH phone_lost (build 0x0104): messages dropped from its full queue to this app.
     public static func deskPhoneLostLine(_ lost: UInt32) -> String {
         "Desk Pod to app: \(lost == UInt32.max ? "4294967295+" : String(lost)) message(s) dropped since the Desk Pod started (queue full)"
+    }
+
+    /// "Live frames: ..." plus the packets dropped before btrx decoding, when there are any.
+    public static func liveFramesLine(_ s: Model.Snapshot) -> String {
+        let dropped = s.droppedEncrypted + s.droppedOtherPort == 0 ? ""
+            : "; dropped: encrypted=\(s.droppedEncrypted) other-port=\(s.droppedOtherPort)"
+        return countsLine("Live frames", s.liveCounts) + dropped
     }
 
     public static func countsLine(_ label: String, _ counts: [String: Int]) -> String {
