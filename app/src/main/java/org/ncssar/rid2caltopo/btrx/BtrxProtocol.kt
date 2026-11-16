@@ -21,8 +21,16 @@ object BtrxProtocol {
     const val NONCE_LEN = 8
     const val PRIVATE_APP_PORT = 256
 
-    /** Board builds this app knows. A board reporting another build gets a notice (M2). */
-    val SUPPORTED_BUILDS: Set<Int> = setOf(0x0100, 0x0101, 0x0102)
+    /**
+     * Oldest board build this app supports. Builds are sequential (btrx PROTOCOL.md "Build
+     * number"; 0x0103 multi-source STEER, 0x0104 34-byte HEALTH) and newer builds only append
+     * fields, so any build at or above this is accepted; only older ones get a notice (M2).
+     */
+    const val MIN_SUPPORTED_BUILD = 0x0100
+    fun buildSupported(buildHash: Int): Boolean = buildHash >= MIN_SUPPORTED_BUILD
+    /** Notice text for a build below [MIN_SUPPORTED_BUILD]. */
+    fun buildSupportText(buildHash: Int): String =
+        if (buildSupported(buildHash)) "supported" else "older than this app supports; update to 0x%04x or newer".format(MIN_SUPPORTED_BUILD)
     /** Firmware that sends STEER (btrx PR #18, steering-report). */
     const val BUILD_STEER = 0x0101
     /** Firmware that answers IMU_CAL (btrx PR #18, af2549e). */

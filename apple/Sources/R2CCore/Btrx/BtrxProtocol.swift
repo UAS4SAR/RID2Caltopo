@@ -19,8 +19,15 @@ public enum BtrxProtocol {
     public static let nonceLen = 8
     public static let privateAppPort = 256
 
-    /// Board builds this app knows.
-    public static let supportedBuilds: Set<Int> = [0x0100, 0x0101, 0x0102]
+    /// Oldest board build this app supports. Builds are sequential (btrx PROTOCOL.md "Build
+    /// number"; 0x0103 multi-source STEER, 0x0104 34-byte HEALTH) and newer builds only append
+    /// fields, so any build at or above this is accepted; only older ones get a notice (M2).
+    public static let minSupportedBuild = 0x0100
+    public static func buildSupported(_ buildHash: Int) -> Bool { buildHash >= minSupportedBuild }
+    /// Notice text for a build below `minSupportedBuild`.
+    public static func buildSupportText(_ buildHash: Int) -> String {
+        buildSupported(buildHash) ? "supported" : String(format: "older than this app supports; update to 0x%04x or newer", minSupportedBuild)
+    }
     /// First build that sends STEER (DETECT every 5 s from this build).
     public static let buildSteer = 0x0101
     /// Firmware that answers IMU_CAL (btrx PR #18, af2549e).

@@ -401,6 +401,92 @@ class BtrxDeskPodModelTest {
         assertTrue(s.windowOpen)
     }
 
+    private fun role(build: Int) = P.RoleReport(role = P.ROLE_DESK_POD, source = 0, confirmed = 1, flags = 0, buildHash = build,
+        devId = 1, peerId = 0, podId = 0, imuWhoami = 0, txPolicy = 0)
+
+    @Test
+    fun deskPodOwnHealthShowsPhoneLostAndIsNotDronePodHealth() {
+        model.onLocalRoleReport(role(0x0104))
+        var s = model.snapshot()
+        assertTrue(s.roleSupported)
+        assertEquals("Firmware build: 0x0104 (supported)", BtrxDeskPodText.firmwareLine(s))
+        val h34 = ByteArray(34).also { P.putU32(it, 0, 500); it[6] = 3; P.putU32(it, 30, 17L) }
+        val frame = P.decodeFrame(P.encodeFrame(P.HEALTH, payload = h34))
+        model.onFrame(frame, meta(desk, backlog = true))
+        assertEquals(null, model.snapshot().deskPhoneLost) // backlog: not current
+        model.onFrame(frame, meta(desk))
+        s = model.snapshot()
+        assertEquals(17L, s.deskPhoneLost)
+        assertEquals(null, s.dronePodHealth)
+        assertEquals(0, s.otherPodNodes)
+        assertTrue(BtrxDeskPodText.healthLines(s).toString(),
+            BtrxDeskPodText.healthLines(s).contains("Desk Pod to app: 17 message(s) dropped since the Desk Pod started (queue full)"))
+        // A 30-byte HEALTH (older Desk Pod) adds no line.
+        model.onLocalRoleReport(role(0x00FF))
+        assertEquals("Firmware build: 0x00ff (older than this app supports; update to 0x0100 or newer)", BtrxDeskPodText.firmwareLine(model.snapshot()))
+    }
+
+    /**
+     * Field, Nov 16 (BT RX Desk Pod serial log): Drone Pod A !018968be sends 40-byte STEER
+     * (two extra sources) and 34-byte HEALTH (build 0x0104) through Desk Pod !66c842ca. The whole
+     * path (Meshtastic FromRadio -> BtrxClient -> model) must keep them for the paired pod.
+     */
+    @Test
+    fun build0104FramesFromPairedPod018968beReachTheScreenThroughTheClient() {
+        model.restorePairedPod(BtrxDeskPodModel.PairedPod(pod, 0x45D35AF0L, 0x4C8C125BL, 0x351C2971L))
+        model.setLink(BtrxDeskPodModel.LinkStatus(BtrxDeskPodModel.LinkKind.USB, BtrxDeskPodModel.LinkPhase.READY))
+        val out = mutableListOf<ByteArray>()
+        val quiet = object : BtrxClient.Logger {
+            override fun info(message: String) {}
+            override fun warn(message: String) { throw AssertionError("client warned: $message") }
+            override fun debug(message: String) {}
+        }
+        val client = BtrxClient(
+            send = { out += it }, log = quiet,
+            listener = object : BtrxClient.Listener {
+                override fun onConfigured(localNode: Long) = model.onConfigured(localNode)
+                override fun onLocalRoleReport(report: P.RoleReport) = model.onLocalRoleReport(report)
+                override fun onFrame(frame: P.Frame, meta: BtrxClient.RadioMeta) = model.onFrame(frame, meta)
+            },
+            random = java.util.Random(1), clock = { now },
+        )
+        client.start()
+        val msgs = mutableListOf<ByteArray>()
+        MeshtasticSerial.StreamDecoder({ msgs += it }).also { d -> out.forEach { d.feed(it) } }
+        val configId = MeshtasticSerial.ProtoReader(msgs.single()).let { r -> r.tag(); r.varint() }
+        fun feed(proto: ByteArray) = client.onBytes(MeshtasticSerial.frame(proto))
+        feed(MeshtasticSerial.ProtoWriter().bytesField(3, MeshtasticSerial.ProtoWriter().varint(1, desk).bytes()).bytes())
+        feed(MeshtasticSerial.ProtoWriter().varint(7, configId).bytes())
+        now += BtrxClient.SERIAL_QUIET_GAP_MS
+        client.checkQuietGap()
+
+        val steer27 = P.steerPayload(P.Steer(steerSeq = 9, flags = P.STEER_F_TARGET or P.STEER_F_IMU_OK, windowEndMs = 145_298L, ageMs = 61,
+            srcId = 1, rssiPort = -37, rssiStbd = -30, peakRssi = -25, hitsPort = 7, hitsStbd = 7, companyId = 0, devClass = 0, addrType = 0,
+            macLsbFirst = byteArrayOf(1, 2, 3, 4, 5, 6), rollX2 = 5, pitchX2 = 6))
+        val steer40 = steer27 + byteArrayOf(0x12) +
+            byteArrayOf(2, 0, (-50).toByte(), (-55).toByte(), 0x33, (1 shl 2).toByte()) +
+            byteArrayOf(3, 0, (-70).toByte(), (-128).toByte(), 0x01, (2 shl 2).toByte())
+        assertEquals(40, steer40.size)
+        val health34 = ByteArray(34).also { P.putU32(it, 0, 300); it[4] = 0x04; it[5] = 0x01; it[6] = 2; it[8] = 1; it[29] = 1; P.putU32(it, 30, 0) }
+        fun fromPod(type: Int, payload: ByteArray, seq: Int) = MeshtasticSerialTest.fromRadioPacket(
+            pod, 0xFFFFFFFFL, -68, 13f, P.PRIVATE_APP_PORT, P.encodeFrame(type, seq = seq, podId = 0x45D35AF0L, payload = payload))
+        feed(fromPod(P.STEER, steer40, 1))
+        feed(fromPod(P.HEALTH, health34, 2))
+        feed(fromPod(P.DETECT, P.decodeFrame(P.fromHex(BtrxProtocolTest.EXAMPLES.getValue("DETECT"))).payload, 3))
+
+        assertEquals(1, client.frameCount("STEER"))
+        assertEquals(1, client.frameCount("HEALTH"))
+        assertFalse(client.summary(), client.summary().contains("rejected"))
+        val s = model.snapshot()
+        assertEquals(1, s.liveCounts["STEER"]); assertEquals(1, s.liveCounts["HEALTH"]); assertEquals(1, s.liveCounts["DETECT"])
+        assertEquals(pod, s.dronePodHealth!!.node)
+        assertEquals(0x0104, s.dronePodHealth!!.health.buildHash)
+        assertEquals(1, s.detectsLastMinute)
+        assertEquals(0, s.pairedPodIdMismatches)
+        assertEquals(0, s.otherPodNodes)
+        assertTrue(s.lastSteer != null)
+    }
+
     // ---- backlog and paired-pod filtering ----
 
     private fun podFrame(name: String, podId: Long = 0): P.Frame {

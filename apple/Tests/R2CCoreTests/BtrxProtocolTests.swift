@@ -331,15 +331,35 @@ final class BtrxProtocolTests: XCTestCase {
         XCTAssertTrue(P.steerFlagNames(c.flags).contains("cal"))
     }
 
+    func testBuildsAtOrAboveTheMinimumAreSupported() {
+        // Field, Nov 16: a 0x0104 Desk Pod was flagged "not in this app's supported list".
+        for b in [0x0100, 0x0101, 0x0102, 0x0103, 0x0104, 0x0105, 0x0200] {
+            XCTAssertTrue(P.buildSupported(b), String(format: "0x%04x", b))
+            XCTAssertEqual("supported", P.buildSupportText(b))
+        }
+        XCTAssertFalse(P.buildSupported(0x00FF))
+        XCTAssertFalse(P.buildSupported(0))
+        XCTAssertEqual("older than this app supports; update to 0x0100 or newer", P.buildSupportText(0x00FF))
+    }
+
+    func testHealthToleratesTrailingBytesFromNewerBuilds() throws {
+        var h40 = [UInt8](repeating: 0, count: 40)
+        P.putU32(&h40, 0, 7); h40[6] = 3; P.putU32(&h40, 30, 12); h40[39] = 0x55
+        let h = try P.parseHealth(h40)
+        XCTAssertEqual(h.phoneLost, 12)
+        XCTAssertEqual(h.uptimeS, 7)
+        XCTAssertNil(try P.parseHealth([UInt8](repeating: 0, count: 33)).phoneLost)
+    }
+
     func testFirmware0102IsSupported() {
-        XCTAssertTrue(P.supportedBuilds.contains(0x0102))
+        XCTAssertTrue(P.buildSupported(0x0102))
         XCTAssertEqual("IMU_CAL", P.typeName(0x75))
         XCTAssertEqual("IMU_CAL_ACK", P.typeName(0x76))
     }
 
     func testFirmware0101IsSupported() {
-        XCTAssertTrue(P.supportedBuilds.contains(0x0101))
-        XCTAssertTrue(P.supportedBuilds.contains(0x0100))
+        XCTAssertTrue(P.buildSupported(0x0101))
+        XCTAssertTrue(P.buildSupported(0x0100))
         XCTAssertEqual("STEER", P.typeName(0x73))
         XCTAssertEqual("STEER_MUTE", P.typeName(0x74))
     }

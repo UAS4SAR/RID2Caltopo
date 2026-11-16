@@ -131,8 +131,10 @@ class BtrxDeskPodModel(
         val steeringRollCorrection: Boolean = BtrxSteering.ROLL_CORRECTION_DEFAULT,
         /** The Drone Pod IMU calibration flow (Desk Pod screen). */
         val imuCal: BtrxImuCal.View? = null,
+        /** phone_lost from the Desk Pod's own HEALTH (build 0x0104); null before one or on older builds. */
+        val deskPhoneLost: Long? = null,
     ) {
-        val roleSupported: Boolean get() = role != null && role.buildHash in P.SUPPORTED_BUILDS
+        val roleSupported: Boolean get() = role != null && P.buildSupported(role.buildHash)
     }
 
     private var sender: BtrxFrameSender? = null
@@ -145,6 +147,7 @@ class BtrxDeskPodModel(
     private var stepDeadlineMs = 0L
     private var pairedPod: PairedPod? = null
     private var lastHealth: HealthReading? = null
+    private var deskPhoneLost: Long? = null
     private val otherPods = mutableSetOf<Long>()
     private val detectTimes = ArrayDeque<Long>()
     private var lastDetectMs: Long? = null
@@ -174,6 +177,7 @@ class BtrxDeskPodModel(
         this.sender = sender
         localNode = null
         role = null
+        deskPhoneLost = null
         liveCounts.clear(); backlogCounts.clear()
         detectTimes.clear()
         quietWatchSinceMs = clock()
@@ -250,6 +254,10 @@ class BtrxDeskPodModel(
                 // Pairing frames come from whichever pod is being paired, so they are not filtered.
                 P.PAIR_REQ -> onPairReq(P.parsePairReq(frame.payload), meta)
                 P.PAIR_ACK -> onPairAck(P.parsePairAck(frame.payload), meta)
+                // The Desk Pod's own HEALTH (sent to its app from build 0x0104): only phone_lost is shown.
+                P.HEALTH -> if (localNode != null && meta.fromNode == localNode) {
+                    if (!meta.backlog) P.parseHealth(frame.payload).phoneLost?.let { deskPhoneLost = it }
+                } else if (acceptsPodTraffic(frame, meta)) onPodTraffic(frame, meta)
                 else -> if (meta.fromNode != localNode && acceptsPodTraffic(frame, meta)) onPodTraffic(frame, meta)
             }
         } catch (_: P.PayloadException) {
@@ -502,6 +510,7 @@ class BtrxDeskPodModel(
             pairedPod = pairedPod,
             pairedPodIdMismatches = podIdMismatches, lastMismatchPodId = lastMismatchPodId,
             pairedPodQuiet = pairedQuiet(now),
+            deskPhoneLost = deskPhoneLost,
             steerOverlay = if (steeringLinkUp()) steering.view(now) else null,
             lastSteer = steering.lastView(now),
             steeringRollCorrection = steering.rollCorrection,

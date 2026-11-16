@@ -371,7 +371,7 @@ public final class BtrxClient: BtrxFrameSender {
         } else if frame.type == BtrxProtocol.ROLE_REPORT && packet.from == localNode, let report = try? BtrxProtocol.parseRoleReport(frame.payload) {
             localRole = report
             if report.role == BtrxProtocol.roleDeskPod {
-                let build = BtrxProtocol.supportedBuilds.contains(report.buildHash) ? "supported" : "not in the supported list"
+                let build = BtrxProtocol.buildSupportText(report.buildHash)
                 let since = String(format: " %.1f s after connect", locale: Locale(identifier: "en_US_POSIX"), Double(clock() - startedMs) / 1000)
                 log.info(String(format: "Desk Pod confirmed: role=3 build_hash=0x%04x (%@)", report.buildHash, build) + since)
             } else {

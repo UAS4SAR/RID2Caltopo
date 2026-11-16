@@ -121,8 +121,10 @@ public final class BtrxDeskPodModel {
         public var steeringRollCorrection = BtrxSteering.rollCorrectionDefault
         /// The Drone Pod IMU calibration flow (Desk Pod screen).
         public var imuCal: BtrxImuCal.View?
+        /// phone_lost from the Desk Pod's own HEALTH (build 0x0104); nil before one or on older builds.
+        public var deskPhoneLost: UInt32?
         public init() {}
-        public var roleSupported: Bool { role.map { BtrxProtocol.supportedBuilds.contains($0.buildHash) } ?? false }
+        public var roleSupported: Bool { role.map { BtrxProtocol.buildSupported($0.buildHash) } ?? false }
     }
 
     public static let buttonWaitMs: Int64 = 120_000
@@ -152,6 +154,7 @@ public final class BtrxDeskPodModel {
     private var stepDeadlineMs: Int64 = 0
     private var pairedPod: PairedPod?
     private var lastHealth: HealthReading?
+    private var deskPhoneLost: UInt32?
     private var otherPods = Set<UInt32>()
     private var detectTimes: [Int64] = []
     private var lastDetectMs: Int64?
@@ -184,6 +187,7 @@ public final class BtrxDeskPodModel {
         self.sender = sender
         localNode = nil
         role = nil
+        deskPhoneLost = nil
         liveCounts = [:]; backlogCounts = [:]
         detectTimes.removeAll()
         quietWatchSinceMs = clock()
@@ -239,6 +243,9 @@ public final class BtrxDeskPodModel {
             // Pairing frames come from whichever pod is being paired, so they are not filtered.
             case BtrxProtocol.PAIR_REQ: onPairReq(try BtrxProtocol.parsePairReq(frame.payload), meta)
             case BtrxProtocol.PAIR_ACK: onPairAck(try BtrxProtocol.parsePairAck(frame.payload), meta)
+            // The Desk Pod's own HEALTH (sent to its app from build 0x0104): only phone_lost is shown.
+            case BtrxProtocol.HEALTH where localNode != nil && meta.fromNode == localNode:
+                if !meta.backlog, let lost = try BtrxProtocol.parseHealth(frame.payload).phoneLost { deskPhoneLost = lost }
             default: if meta.fromNode != localNode && acceptsPodTraffic(frame, meta) { try onPodTraffic(frame, meta) }
             }
         } catch {
@@ -472,7 +479,7 @@ public final class BtrxDeskPodModel {
         trimDetects(now)
         var s = Snapshot()
         s.nowMs = now; s.link = link; s.bluetoothPausedForUSB = pausedForUSB; s.localNode = localNode; s.role = role
-        s.dronePodHealth = lastHealth; s.otherPodNodes = otherPods.count; s.detectsLastMinute = detectTimes.count
+        s.deskPhoneLost = deskPhoneLost; s.dronePodHealth = lastHealth; s.otherPodNodes = otherPods.count; s.detectsLastMinute = detectTimes.count
         s.lastDetectMs = lastDetectMs; s.lastPacketRssi = lastRssi; s.lastPacketSnr = lastSnr
         s.liveCounts = liveCounts; s.backlogCounts = backlogCounts
         s.windowOpen = window.isOpen(nowMs: now); s.windowSecondsLeft = window.secondsLeft(nowMs: now); s.windowFromBacklog = window.openedFromBacklog

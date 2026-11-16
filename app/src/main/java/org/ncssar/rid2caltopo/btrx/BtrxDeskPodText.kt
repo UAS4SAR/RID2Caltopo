@@ -69,7 +69,7 @@ object BtrxDeskPodText {
 
     fun firmwareLine(s: BtrxDeskPodModel.Snapshot): String {
         val r = s.role ?: return "Firmware: not reported yet"
-        return "Firmware build: %s (%s)".format(Locale.US, hex4(r.buildHash), if (s.roleSupported) "supported" else "not in this app's supported list")
+        return "Firmware build: %s (%s)".format(Locale.US, hex4(r.buildHash), P.buildSupportText(r.buildHash))
     }
 
     /** Link-health lines, in display order. */
@@ -87,7 +87,12 @@ object BtrxDeskPodText {
         val last = s.lastDetectMs?.let { ", last ${ago(s.nowMs - it)}" } ?: ""
         add("Detections: ${s.detectsLastMinute} in the last minute$last")
         if (s.otherPodNodes > 0) add("Other Drone Pods heard on the channel: ${s.otherPodNodes}")
+        s.deskPhoneLost?.let { add(deskPhoneLostLine(it)) }
     }
+
+    /** Desk Pod HEALTH phone_lost (build 0x0104): messages dropped from its full queue to this app. */
+    fun deskPhoneLostLine(lost: Long): String =
+        "Desk Pod to app: ${if (lost >= 0xFFFFFFFFL) "4294967295+" else lost.toString()} message(s) dropped since the Desk Pod started (queue full)"
 
     fun countsLine(label: String, counts: Map<String, Int>): String =
         "$label: " + if (counts.isEmpty()) "none" else counts.toSortedMap().entries.joinToString(" ") { "${it.key}=${it.value}" }

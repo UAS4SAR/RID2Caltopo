@@ -385,7 +385,7 @@ class BtrxClient(
                 val report = P.parseRoleReport(frame.payload)
                 localRole = report
                 if (report.role == P.ROLE_DESK_POD) {
-                    val build = if (report.buildHash in P.SUPPORTED_BUILDS) "supported" else "not in the supported list"
+                    val build = P.buildSupportText(report.buildHash)
                     val since = " %.1f s after connect".format(Locale.US, (clock() - startedMs) / 1000.0)
                     log.info("Desk Pod confirmed: role=3 build_hash=0x%04x (%s)%s".format(report.buildHash, build, since))
                 } else {

@@ -444,8 +444,8 @@ class BtrxProtocolTest {
 
     @Test
     fun firmware0101IsSupported() {
-        assertTrue(P.SUPPORTED_BUILDS.contains(0x0101))
-        assertTrue(P.SUPPORTED_BUILDS.contains(0x0100))
+        assertTrue(P.buildSupported(0x0101))
+        assertTrue(P.buildSupported(0x0100))
         assertEquals("STEER", P.typeName(0x73))
         assertEquals("STEER_MUTE", P.typeName(0x74))
     }
@@ -512,7 +512,7 @@ class BtrxProtocolTest {
 
     @Test
     fun firmware0102IsSupported() {
-        assertTrue(P.SUPPORTED_BUILDS.contains(0x0102))
+        assertTrue(P.buildSupported(0x0102))
         assertEquals("IMU_CAL", P.typeName(0x75))
         assertEquals("IMU_CAL_ACK", P.typeName(0x76))
     }
@@ -557,6 +557,26 @@ class BtrxProtocolTest {
         if (len >= 34) { p[28] = 0x05; p[29] = 0x00; p[30] = (-70).toByte(); p[31] = (-128).toByte(); p[32] = 0xF1.toByte(); p[33] = (0x01 or 0x02 or (2 shl 2)).toByte() }
         if (len >= 40) { p[34] = 0x06; p[35] = 0x00; p[36] = (-80).toByte(); p[37] = (-75).toByte(); p[38] = 0x0F; p[39] = (4 shl 2).toByte() }
         return p
+    }
+
+    @Test fun buildsAtOrAboveTheMinimumAreSupported() {
+        // Field, Nov 16: a 0x0104 Desk Pod was flagged "not in this app's supported list".
+        for (b in listOf(0x0100, 0x0101, 0x0102, 0x0103, 0x0104, 0x0105, 0x0200)) {
+            assertTrue("0x%04x".format(b), P.buildSupported(b))
+            assertEquals("supported", P.buildSupportText(b))
+        }
+        assertFalse(P.buildSupported(0x00FF))
+        assertFalse(P.buildSupported(0))
+        assertEquals("older than this app supports; update to 0x0100 or newer", P.buildSupportText(0x00FF))
+    }
+
+    @Test fun healthToleratesTrailingBytesFromNewerBuilds() {
+        val h40 = ByteArray(40).also { P.putU32(it, 0, 7); it[6] = 3; P.putU32(it, 30, 12L); it[39] = 0x55 }
+        val h = P.parseHealth(h40)
+        assertEquals(12L, h.phoneLost)
+        assertEquals(7L, h.uptimeS)
+        // 31-33 bytes: the old 30 fields, no phone_lost.
+        assertEquals(null, P.parseHealth(ByteArray(33)).phoneLost)
     }
 
     @Test fun healthPhoneLostOptional() {

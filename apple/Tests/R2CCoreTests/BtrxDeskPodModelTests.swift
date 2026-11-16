@@ -379,6 +379,94 @@ final class BtrxDeskPodModelTests: XCTestCase {
 
     // MARK: backlog and paired-pod filtering
 
+    private func role(_ build: Int) -> P.RoleReport {
+        P.RoleReport(role: P.roleDeskPod, source: 0, confirmed: 1, flags: 0, buildHash: build,
+                     devId: 1, peerId: 0, podId: 0, imuWhoami: 0, txPolicy: 0)
+    }
+
+    func testDeskPodOwnHealthShowsPhoneLostAndIsNotDronePodHealth() throws {
+        model.onLocalRoleReport(role(0x0104))
+        var s = model.snapshot()
+        XCTAssertTrue(s.roleSupported)
+        XCTAssertEqual("Firmware build: 0x0104 (supported)", BtrxDeskPodText.firmwareLine(s))
+        var h34 = [UInt8](repeating: 0, count: 34)
+        P.putU32(&h34, 0, 500); h34[6] = 3; P.putU32(&h34, 30, 17)
+        let frame = try P.decodeFrame(P.encodeFrame(P.HEALTH, payload: h34))
+        model.onFrame(frame, meta: meta(desk, backlog: true))
+        XCTAssertNil(model.snapshot().deskPhoneLost) // backlog: not current
+        model.onFrame(frame, meta: meta(desk))
+        s = model.snapshot()
+        XCTAssertEqual(s.deskPhoneLost, 17)
+        XCTAssertNil(s.dronePodHealth)
+        XCTAssertEqual(s.otherPodNodes, 0)
+        XCTAssertTrue(BtrxDeskPodText.healthLines(s).contains("Desk Pod to app: 17 message(s) dropped since the Desk Pod started (queue full)"),
+                      "\(BtrxDeskPodText.healthLines(s))")
+        model.onLocalRoleReport(role(0x00FF))
+        XCTAssertEqual("Firmware build: 0x00ff (older than this app supports; update to 0x0100 or newer)", BtrxDeskPodText.firmwareLine(model.snapshot()))
+    }
+
+    final class ModelBridge: BtrxClientListener {
+        let model: Model
+        init(_ model: Model) { self.model = model }
+        func onConfigured(localNode: UInt32) { model.onConfigured(localNode: localNode) }
+        func onLocalRoleReport(_ report: BtrxProtocol.RoleReport) { model.onLocalRoleReport(report) }
+        func onFrame(_ frame: BtrxProtocol.Frame, meta: BtrxRadioMeta) { model.onFrame(frame, meta: meta) }
+        func onVersionRefused(fromNode: UInt32, version: Int) {}
+    }
+
+    /// Field, Nov 16 (BT RX Desk Pod serial log): Drone Pod A !018968be sends 40-byte STEER (two
+    /// extra sources) and 34-byte HEALTH (build 0x0104) through Desk Pod !66c842ca. The whole path
+    /// (Meshtastic FromRadio -> BtrxClient -> model) must keep them for the paired pod. Same as Android.
+    func testBuild0104FramesFromPairedPod018968beReachTheScreenThroughTheClient() throws {
+        typealias M = MeshtasticPhoneAPI
+        model.restorePairedPod(Model.PairedPod(node: pod, podId: 0x45D3_5AF0, devA: 0x4C8C_125B, devB: 0x351C_2971))
+        model.setLink(Model.LinkStatus(kind: .usb, phase: .ready))
+        var out: [[UInt8]] = []
+        let clientLog = BtrxTestLogger()
+        let bridge = ModelBridge(model)
+        let client = BtrxClient(send: { out.append($0) }, log: clientLog, listener: bridge, rng: BtrxTestRandom(state: 1),
+                                framing: .serial, clock: { [unowned self] in self.now })
+        client.start()
+        var msgs: [[UInt8]] = []
+        let d = M.StreamDecoder(onMessage: { msgs.append($0) })
+        out.forEach { d.feed($0) }
+        let r = M.ProtoReader(msgs[0]); _ = try r.tag(); let configId = try r.varint()
+        func feed(_ proto: [UInt8]) { client.onBytes(M.frame(proto)) }
+        feed(M.ProtoWriter().bytesField(3, M.ProtoWriter().varint(1, UInt64(desk)).bytes()).bytes())
+        feed(M.ProtoWriter().varint(7, configId).bytes())
+        now += BtrxClient.serialQuietGapMs
+        client.checkQuietGap()
+
+        let steer27 = P.steerPayload(P.Steer(steerSeq: 9, flags: P.STEER_F_TARGET | P.STEER_F_IMU_OK, windowEndMs: 145_298, ageMs: 61,
+                                             srcId: 1, rssiPort: -37, rssiStbd: -30, peakRssi: -25, hitsPort: 7, hitsStbd: 7, companyId: 0,
+                                             devClass: 0, addrType: 0, macLsbFirst: [1, 2, 3, 4, 5, 6], rollX2: 5, pitchX2: 6))
+        let steer40 = steer27 + [0x12] + [2, 0, UInt8(bitPattern: -50), UInt8(bitPattern: -55), 0x33, 1 << 2]
+            + [3, 0, UInt8(bitPattern: -70), UInt8(bitPattern: -128), 0x01, 2 << 2]
+        XCTAssertEqual(steer40.count, 40)
+        var health34 = [UInt8](repeating: 0, count: 34)
+        P.putU32(&health34, 0, 300); health34[4] = 0x04; health34[5] = 0x01; health34[6] = 2; health34[8] = 1; health34[29] = 1
+        func fromPod(_ type: Int, _ payload: [UInt8], _ seq: Int) -> [UInt8] {
+            MeshtasticPhoneAPITests.fromRadioPacket(from: pod, to: 0xFFFF_FFFF, rssi: -68, snr: 13, port: P.privateAppPort,
+                                                    payload: P.encodeFrame(type, seq: seq, podId: 0x45D3_5AF0, payload: payload))
+        }
+        feed(fromPod(P.STEER, steer40, 1))
+        feed(fromPod(P.HEALTH, health34, 2))
+        feed(fromPod(P.DETECT, example("DETECT").payload, 3))
+
+        XCTAssertEqual(client.frameCount("STEER"), 1)
+        XCTAssertEqual(client.frameCount("HEALTH"), 1)
+        XCTAssertFalse(client.summary().contains("rejected"), client.summary())
+        XCTAssertTrue(clientLog.warns.isEmpty, "\(clientLog.warns)")
+        let s = model.snapshot()
+        XCTAssertEqual(s.liveCounts["STEER"], 1); XCTAssertEqual(s.liveCounts["HEALTH"], 1); XCTAssertEqual(s.liveCounts["DETECT"], 1)
+        XCTAssertEqual(s.dronePodHealth?.node, pod)
+        XCTAssertEqual(s.dronePodHealth?.health.buildHash, 0x0104)
+        XCTAssertEqual(s.detectsLastMinute, 1)
+        XCTAssertEqual(s.pairedPodIdMismatches, 0)
+        XCTAssertEqual(s.otherPodNodes, 0)
+        XCTAssertNotNil(s.lastSteer)
+    }
+
     func podFrame(_ name: String, podId: UInt32 = 0) -> P.Frame {
         let ex = example(name)
         return try! P.decodeFrame(P.encodeFrame(ex.type, seq: ex.seq, podId: podId, payload: ex.payload))

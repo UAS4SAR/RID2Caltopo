@@ -125,7 +125,7 @@ public enum BtrxDeskPodText {
 
     public static func firmwareLine(_ s: Model.Snapshot) -> String {
         guard let r = s.role else { return "Firmware: not reported yet" }
-        return "Firmware build: \(String(format: "0x%04x", r.buildHash)) (\(s.roleSupported ? "supported" : "not in this app's supported list"))"
+        return "Firmware build: \(String(format: "0x%04x", r.buildHash)) (\(BtrxProtocol.buildSupportText(r.buildHash)))"
     }
 
     public static func healthLines(_ s: Model.Snapshot) -> [String] {
@@ -142,7 +142,13 @@ public enum BtrxDeskPodText {
         let last = s.lastDetectMs.map { ", last \(ago(s.nowMs - $0))" } ?? ""
         out.append("Detections: \(s.detectsLastMinute) in the last minute\(last)")
         if s.otherPodNodes > 0 { out.append("Other Drone Pods heard on the channel: \(s.otherPodNodes)") }
+        if let lost = s.deskPhoneLost { out.append(deskPhoneLostLine(lost)) }
         return out
+    }
+
+    /// Desk Pod HEALTH phone_lost (build 0x0104): messages dropped from its full queue to this app.
+    public static func deskPhoneLostLine(_ lost: UInt32) -> String {
+        "Desk Pod to app: \(lost == UInt32.max ? "4294967295+" : String(lost)) message(s) dropped since the Desk Pod started (queue full)"
     }
 
     public static func countsLine(_ label: String, _ counts: [String: Int]) -> String {
