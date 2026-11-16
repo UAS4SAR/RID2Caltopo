@@ -42,6 +42,13 @@ object BtrxProtocol {
      */
     const val BUILD_STABLE_IDS = 0x0106
     fun savedIgnoreSupported(buildHash: Int?): Boolean = buildHash != null && buildHash >= BUILD_STABLE_IDS
+    /**
+     * Build 0x0107 (btrx de212c2): FILTER_ACK is 8 bytes with the STEER_MUTE src_id echoed, op 4
+     * also removes saved entries by the id they were ignored under (works after the source left
+     * the pod's table), op 3 for an already-saved id answers ok, and the Desk Pod opens its
+     * window on PAIR_OPEN from its app (DESK_PAIR source 3). The app keeps working with 0x0106.
+     */
+    const val BUILD_FILTER_SRC_ID = 0x0107
 
     // Message types (section 5 of the R2C integration brief).
     const val HELLO = 0x01
@@ -181,6 +188,21 @@ object BtrxProtocol {
     // FILTER_ACK op (FILTER_LIST ops; STEER_MUTE 3 answers 1, 4 answers 2).
     const val FILTER_OP_ADD = 1
     const val FILTER_OP_REMOVE = 2
+    /** FILTER_ACK op 0: a FILTER_LIST replace (never an answer to STEER_MUTE). */
+    const val FILTER_OP_REPLACE = 0
+
+    // DESK_PAIR source: what opened the Desk Pod's window.
+    const val DESK_SRC_BUTTON = 1
+    /** DESK_PAIR sent to the Desk Pod from its USB or phone link (this app's Re-pair, or a bench test). */
+    const val DESK_SRC_LINK = 2
+    /** PAIR_OPEN from the app to the Desk Pod (build 0x0107). */
+    const val DESK_SRC_PAIR_OPEN = 3
+    fun deskPairSourceName(src: Int): String = when (src) {
+        DESK_SRC_BUTTON -> "button"
+        DESK_SRC_LINK -> "phone/USB-opened"
+        DESK_SRC_PAIR_OPEN -> "app-opened"
+        else -> src.toString()
+    }
 
     // STEER device kind (BTRX_DEV_*).
     const val DEV_UNKNOWN = 0
@@ -344,11 +366,18 @@ object BtrxProtocol {
         )
     }
 
-    data class FilterAck(val version: Int, val op: Int, val ok: Int, val listCrc: Int, val stored: Int)
+    /**
+     * FILTER_ACK (0x61). 6 bytes from build 0x0106; 8 from 0x0107, where bytes 6-7 echo the
+     * STEER_MUTE src_id ([srcId], 0 for a FILTER_LIST answer). [srcId] is null for the 6-byte form.
+     */
+    data class FilterAck(val version: Int, val op: Int, val ok: Int, val listCrc: Int, val stored: Int, val srcId: Int? = null)
+
+    const val FILTER_ACK_LEN = 6
+    const val FILTER_ACK_SRC_LEN = 8
 
     fun parseFilterAck(p: ByteArray): FilterAck {
-        need(p, 6, "FILTER_ACK")
-        return FilterAck(u8(p, 0), u8(p, 1), u8(p, 2), u16(p, 3), u8(p, 5))
+        need(p, FILTER_ACK_LEN, "FILTER_ACK")
+        return FilterAck(u8(p, 0), u8(p, 1), u8(p, 2), u16(p, 3), u8(p, 5), if (p.size >= FILTER_ACK_SRC_LEN) u16(p, 6) else null)
     }
 
     data class Health(

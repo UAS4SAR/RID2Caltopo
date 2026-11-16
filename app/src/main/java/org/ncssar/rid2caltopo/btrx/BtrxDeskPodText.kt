@@ -96,7 +96,22 @@ object BtrxDeskPodText {
         add("Detections: ${s.detectsLastMinute} in the last minute$last")
         if (s.otherPodNodes > 0) add("Other Drone Pods heard on the channel: ${s.otherPodNodes}")
         s.deskPhoneLost?.let { add(deskPhoneLostLine(it)) }
+        // Desk Pod HEALTH from byte 30: only phone_lost and reset_reason mean anything (38-43 are always 0).
         s.deskHealthExt?.let { add("Desk Pod last reset: ${resetReasonText(it.resetReason)}") }
+        add(deskWindowLine(s))
+    }
+
+    /** The Desk Pod's pairing state, from DESK_PAIR (not HEALTH). */
+    fun deskWindowLine(s: BtrxDeskPodModel.Snapshot): String =
+        if (s.windowOpen) "Desk Pod pairing window: open, ${s.windowSecondsLeft} s left (${deskPairSourceText(s.windowSource)})"
+        else "Desk Pod pairing window: closed"
+
+    /** DESK_PAIR source: 1 button, 2 phone/USB-opened (DESK_PAIR), 3 app-opened (PAIR_OPEN, build 0x0107). */
+    fun deskPairSourceText(src: Int): String = when (src) {
+        P.DESK_SRC_BUTTON -> "button"
+        P.DESK_SRC_LINK -> "phone/USB-opened"
+        P.DESK_SRC_PAIR_OPEN -> "app-opened"
+        else -> "source $src"
     }
 
     /** Drone Pod HEALTH fields from build 0x0106 (offsets 34-43). */

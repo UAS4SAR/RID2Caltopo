@@ -37,6 +37,12 @@ public enum BtrxProtocol {
     /// restarts), and a paired pod ignores nods. Same as Android.
     public static let buildStableIds = 0x0106
     public static func savedIgnoreSupported(_ buildHash: Int?) -> Bool { (buildHash ?? 0) >= buildStableIds }
+    /// Build 0x0107 (btrx de212c2): FILTER_ACK is 8 bytes with the STEER_MUTE src_id echoed, op 4
+    /// also removes saved entries by the id they were ignored under (works after the source left
+    /// the pod's table), op 3 for an already-saved id answers ok, and the Desk Pod opens its
+    /// window on PAIR_OPEN from its app (DESK_PAIR source 3). The app keeps working with 0x0106.
+    /// Same as Android.
+    public static let buildFilterSrcId = 0x0107
 
     public static let HELLO = 0x01, HELLO_ACK = 0x02, PAIR_REQ = 0x10, PAIR_CONFIRM = 0x11, PAIR_ACK = 0x12
     public static let B_CFG = 0x13, GESTURE = 0x14, DESK_PAIR = 0x15, PAIR_OPEN = 0x16, ROLE_GET = 0x20, ROLE_REPORT = 0x21
@@ -117,6 +123,20 @@ public enum BtrxProtocol {
     public static let MUTE_IGNORE = 3, MUTE_UNIGNORE = 4
     // FILTER_ACK op (FILTER_LIST ops; STEER_MUTE 3 answers 1, 4 answers 2).
     public static let FILTER_OP_ADD = 1, FILTER_OP_REMOVE = 2
+    /// FILTER_ACK op 0: a FILTER_LIST replace (never an answer to STEER_MUTE).
+    public static let FILTER_OP_REPLACE = 0
+
+    // DESK_PAIR source: what opened the Desk Pod's window. 2: DESK_PAIR sent to the Desk Pod from
+    // its USB or phone link (this app's Re-pair, or a bench test); 3: PAIR_OPEN from the app (0x0107).
+    public static let deskSrcButton = 1, deskSrcLink = 2, deskSrcPairOpen = 3
+    public static func deskPairSourceName(_ src: Int) -> String {
+        switch src {
+        case deskSrcButton: return "button"
+        case deskSrcLink: return "phone/USB-opened"
+        case deskSrcPairOpen: return "app-opened"
+        default: return String(src)
+        }
+    }
 
     // STEER device kind (BTRX_DEV_*).
     public static let DEV_UNKNOWN = 0, DEV_PHONE = 1, DEV_WEARABLE = 2, DEV_TRACKER = 3, DEV_AUDIO = 4, DEV_COMPUTER = 5
@@ -283,11 +303,22 @@ public enum BtrxProtocol {
                        result: p.count >= 14 ? Int(p[13]) : nil)
     }
 
-    public struct FilterAck: Sendable, Equatable { public let version: Int, op: Int, ok: Int, listCrc: Int, stored: Int }
+    /// FILTER_ACK (0x61). 6 bytes from build 0x0106; 8 from 0x0107, where bytes 6-7 echo the
+    /// STEER_MUTE src_id (`srcId`, 0 for a FILTER_LIST answer). `srcId` is nil for the 6-byte form.
+    public struct FilterAck: Sendable, Equatable {
+        public let version: Int, op: Int, ok: Int, listCrc: Int, stored: Int
+        public let srcId: Int?
+        public init(version: Int, op: Int, ok: Int, listCrc: Int, stored: Int, srcId: Int? = nil) {
+            self.version = version; self.op = op; self.ok = ok; self.listCrc = listCrc; self.stored = stored; self.srcId = srcId
+        }
+    }
+
+    public static let filterAckLen = 6, filterAckSrcLen = 8
 
     public static func parseFilterAck(_ p: [UInt8]) throws -> FilterAck {
-        try need(p, 6, "FILTER_ACK")
-        return FilterAck(version: Int(p[0]), op: Int(p[1]), ok: Int(p[2]), listCrc: u16(p, 3), stored: Int(p[5]))
+        try need(p, filterAckLen, "FILTER_ACK")
+        return FilterAck(version: Int(p[0]), op: Int(p[1]), ok: Int(p[2]), listCrc: u16(p, 3), stored: Int(p[5]),
+                         srcId: p.count >= filterAckSrcLen ? u16(p, 6) : nil)
     }
 
     public struct Health: Sendable, Equatable {

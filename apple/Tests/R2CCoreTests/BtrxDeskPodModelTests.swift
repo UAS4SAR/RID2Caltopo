@@ -36,10 +36,10 @@ final class BtrxDeskPodModelTests: XCTestCase {
         BtrxRadioMeta(fromNode: from, toNode: from == desk ? desk : 0xFFFF_FFFF, rxRssi: -45, rxSnr: 9.5, arrivalMs: now, backlog: backlog)
     }
 
-    func deskPair(_ open: Int, seconds: Int = 60, backlog: Bool = false, seq: Int? = nil) {
+    func deskPair(_ open: Int, seconds: Int = 60, backlog: Bool = false, seq: Int? = nil, source: Int = 1) {
         let s: Int
         if let seq { s = seq } else { deskSeq += 1; s = deskSeq }
-        let frame = try! P.decodeFrame(P.encodeFrame(P.DESK_PAIR, seq: s, payload: [UInt8(open), 1, UInt8(seconds & 0xFF), UInt8(seconds >> 8)]))
+        let frame = try! P.decodeFrame(P.encodeFrame(P.DESK_PAIR, seq: s, payload: [UInt8(open), UInt8(source), UInt8(seconds & 0xFF), UInt8(seconds >> 8)]))
         model.onFrame(frame, meta: meta(desk, backlog: backlog))
     }
 
@@ -871,10 +871,12 @@ final class BtrxDeskPodModelTests: XCTestCase {
         model.onFrame(try! P.decodeFrame(P.encodeFrame(P.HEALTH, seq: podSeq, podId: pod0106.podId, payload: p)), meta: meta(pod))
     }
 
-    private func filterAck(op: Int, ok: Int, stored: Int, from: UInt32? = nil) {
+    /// A 6-byte FILTER_ACK (build 0x0106), or the 8-byte one (0x0107) when `srcId` is given.
+    private func filterAck(op: Int, ok: Int, stored: Int, from: UInt32? = nil, srcId: Int? = nil) {
         podSeq += 1
         let f = P.encodeFrame(P.FILTER_ACK, seq: podSeq, podId: pod0106.podId, flags: ok == 0 ? P.F_ERROR : 0,
-                              payload: [1, UInt8(op), UInt8(ok), 0x34, 0x12, UInt8(stored)])
+                              payload: [1, UInt8(op), UInt8(ok), 0x34, 0x12, UInt8(stored)]
+                                + (srcId.map { [UInt8($0 & 0xFF), UInt8($0 >> 8)] } ?? []))
         model.onFrame(try! P.decodeFrame(f), meta: meta(from ?? pod))
     }
 
@@ -968,18 +970,19 @@ final class BtrxDeskPodModelTests: XCTestCase {
         let f = try P.decodeFrame(sender.sent[0].1)
         XCTAssertEqual(f.type, P.STEER_MUTE)
         XCTAssertEqual(f.payload, [3, 0xA3, 0xF1])
-        XCTAssertEqual(model.snapshot().filterPending?.srcId, 0xF1A3)
-        model.ignoreSourceSaved(0x0002)
-        XCTAssertEqual(sender.sent.count, 1, "one at a time")
+        XCTAssertEqual(model.snapshot().filterPending.map(\.srcId), [0xF1A3])
+        XCTAssertTrue(model.snapshot().filterPendingFor(0xF1A3))
+        model.ignoreSourceSaved(0xF1A3)
+        XCTAssertEqual(sender.sent.count, 1, "one at a time per source")
         filterAck(op: P.FILTER_OP_REMOVE, ok: 1, stored: 1)
         XCTAssertTrue(model.snapshot().savedIgnores.isEmpty)
         filterAck(op: P.FILTER_OP_ADD, ok: 1, stored: 1, from: 0x0BAD_BEEF)
         XCTAssertTrue(model.snapshot().savedIgnores.isEmpty)
         filterAck(op: P.FILTER_OP_ADD, ok: 1, stored: 1)
         XCTAssertEqual(model.snapshot().savedIgnores, [0xF1A3])
-        XCTAssertNil(model.snapshot().filterPending)
+        XCTAssertTrue(model.snapshot().filterPending.isEmpty)
         XCTAssertEqual(savedLists, [[0xF1A3]])
-        XCTAssertTrue(model.snapshot().filterMessage!.hasPrefix("Saved on the Drone Pod"))
+        XCTAssertTrue(model.snapshot().filterMessage!.hasPrefix("Saved source F1A3 on the Drone Pod"))
         model.ignoreSourceSaved(0x0002)
         filterAck(op: P.FILTER_OP_ADD, ok: 0, stored: 1)
         XCTAssertEqual(model.snapshot().savedIgnores, [0xF1A3])
@@ -991,8 +994,110 @@ final class BtrxDeskPodModelTests: XCTestCase {
         XCTAssertEqual(savedLists.last, [])
         model.ignoreSourceSaved(0x0003)
         advance(Model.filterAckTimeoutMs + 1000)
-        XCTAssertNil(model.snapshot().filterPending)
-        XCTAssertEqual(model.snapshot().filterMessage, "No answer from the Drone Pod. Try again.")
+        XCTAssertTrue(model.snapshot().filterPending.isEmpty)
+        XCTAssertEqual(model.snapshot().filterMessage, "No answer from the Drone Pod for source 0003. Try again.")
+    }
+
+    private func savedIgnoreReady(_ saved: [Int] = [], build: Int = 0x0106) {
+        useSavedListModel()
+        model.restorePairedPod(pod0106, savedIgnoreIds: saved)
+        model.setLink(Model.LinkStatus(kind: .usb, phase: .ready))
+        podHealth(build)
+        sender.sent.removeAll()
+    }
+
+    func testSixByteAcksMatchTheOldestWaitingRequestOfThatOp() {
+        savedIgnoreReady([0x0003])
+        model.ignoreSourceSaved(0x0001)
+        model.ignoreSourceSaved(0x0002)
+        model.unignoreSourceSaved(0x0003)
+        XCTAssertEqual(sender.sent.count, 3)
+        XCTAssertEqual(model.snapshot().filterPending.map(\.srcId), [1, 2, 3])
+        filterAck(op: P.FILTER_OP_REMOVE, ok: 1, stored: 0)   // the op 4 answer, though sent last
+        XCTAssertEqual(model.snapshot().filterPending.map(\.srcId), [1, 2])
+        XCTAssertTrue(model.snapshot().savedIgnores.isEmpty)
+        filterAck(op: P.FILTER_OP_ADD, ok: 1, stored: 1)
+        XCTAssertEqual(model.snapshot().savedIgnores, [1])
+        filterAck(op: P.FILTER_OP_ADD, ok: 0, stored: 1)
+        XCTAssertEqual(model.snapshot().savedIgnores, [1])
+        XCTAssertTrue(model.snapshot().filterMessage!.contains("did not save source 0002"))
+        XCTAssertTrue(model.snapshot().filterPending.isEmpty)
+    }
+
+    func testEightByteAcksMatchByEchoedSrcId() {
+        savedIgnoreReady(build: 0x0107)
+        model.ignoreSourceSaved(0x0001)
+        model.ignoreSourceSaved(0x0002)
+        filterAck(op: P.FILTER_OP_ADD, ok: 1, stored: 1, srcId: 0x0002)   // out of order
+        XCTAssertEqual(model.snapshot().savedIgnores, [2])
+        XCTAssertEqual(model.snapshot().filterPending.map(\.srcId), [1])
+        filterAck(op: P.FILTER_OP_ADD, ok: 1, stored: 2, srcId: 0)        // a FILTER_LIST answer: not ours
+        filterAck(op: P.FILTER_OP_REPLACE, ok: 1, stored: 2, srcId: 1)    // op 0: not ours
+        filterAck(op: P.FILTER_OP_ADD, ok: 1, stored: 2, srcId: 9)        // no request for 9
+        filterAck(op: P.FILTER_OP_REMOVE, ok: 1, stored: 2, srcId: 1)     // wrong op
+        XCTAssertEqual(model.snapshot().filterPending.map(\.srcId), [1])
+        XCTAssertEqual(model.snapshot().savedIgnores, [2])
+        filterAck(op: P.FILTER_OP_ADD, ok: 1, stored: 2, srcId: 1)
+        XCTAssertEqual(model.snapshot().savedIgnores, [1, 2])
+        XCTAssertTrue(model.snapshot().filterPending.isEmpty)
+        // 0x0107: op 3 for an already-saved id answers ok and it stays saved
+        model.ignoreSourceSaved(0x0001)
+        filterAck(op: P.FILTER_OP_ADD, ok: 1, stored: 2, srcId: 1)
+        XCTAssertEqual(model.snapshot().savedIgnores, [1, 2])
+    }
+
+    func testPendingRequestsAreCappedAndTimeOutEachOnItsOwn() {
+        savedIgnoreReady()
+        for id in 1...(Model.maxPendingFilters + 1) { model.ignoreSourceSaved(id) }
+        XCTAssertEqual(sender.sent.count, Model.maxPendingFilters)
+        XCTAssertEqual(model.snapshot().filterMessage, "Waiting for the Drone Pod to answer earlier changes.")
+        advance(5_000)
+        model.ignoreSourceSaved(0x0100)                   // still full
+        filterAck(op: P.FILTER_OP_ADD, ok: 1, stored: 1)
+        model.ignoreSourceSaved(0x0100)
+        XCTAssertEqual(sender.sent.count, Model.maxPendingFilters + 1)
+        advance(Model.filterAckTimeoutMs - 4_000)         // the first three expire, 0x0100 does not
+        XCTAssertEqual(model.snapshot().filterPending.map(\.srcId), [0x0100])
+        model.detach(sender, reason: "test")
+        XCTAssertTrue(model.snapshot().filterPending.isEmpty)
+    }
+
+    func testRemoveOfASavedButAbsentSourceOnBuild0106KeepsTheRow() throws {
+        savedIgnoreReady([0x148C])                        // saved earlier; no longer heard
+        model.unignoreSourceSaved(0x148C)
+        XCTAssertEqual(sender.sent.count, 1)
+        XCTAssertEqual(try P.decodeFrame(sender.sent[0].1).payload, [4, 0x8C, 0x14], "reuses the src_id op 3 was sent with")
+        filterAck(op: P.FILTER_OP_REMOVE, ok: 0, stored: 1)  // 0x0106: not in the live table
+        XCTAssertEqual(model.snapshot().savedIgnores, [0x148C])
+        XCTAssertTrue(savedLists.isEmpty)
+        let msg = model.snapshot().filterMessage!
+        XCTAssertTrue(msg.contains("no longer tracks source 148C") && msg.contains("0x0107") && msg.contains("stays in this list"), msg)
+        XCTAssertTrue(model.snapshot().filterPending.isEmpty)
+    }
+
+    func testRemoveOfASavedButAbsentSourceOnBuild0107() {
+        savedIgnoreReady([0x148C, 0x2000], build: 0x0107)
+        model.unignoreSourceSaved(0x148C)
+        filterAck(op: P.FILTER_OP_REMOVE, ok: 1, stored: 1, srcId: 0x148C)
+        XCTAssertEqual(model.snapshot().savedIgnores, [0x2000])
+        XCTAssertTrue(model.snapshot().filterMessage!.hasPrefix("Removed source 148C"))
+        model.unignoreSourceSaved(0x2000)
+        filterAck(op: P.FILTER_OP_REMOVE, ok: 0, stored: 0, srcId: 0x2000)  // nothing under that id on the pod
+        XCTAssertTrue(model.snapshot().savedIgnores.isEmpty)
+        XCTAssertEqual(savedLists, [[0x2000], []])
+        XCTAssertTrue(model.snapshot().filterMessage!.contains("had nothing saved under source 2000"))
+    }
+
+    func testDeskPairSourceIsTheDeskPodPairingState() {
+        XCTAssertTrue(BtrxDeskPodText.healthLines(model.snapshot()).contains("Desk Pod pairing window: closed"))
+        deskPair(1, seconds: 60, source: P.deskSrcLink)
+        XCTAssertEqual(model.snapshot().windowSource, P.deskSrcLink)
+        XCTAssertTrue(BtrxDeskPodText.healthLines(model.snapshot()).contains("Desk Pod pairing window: open, 60 s left (phone/USB-opened)"))
+        deskPair(1, seconds: 60, source: P.deskSrcPairOpen)
+        XCTAssertTrue(BtrxDeskPodText.healthLines(model.snapshot()).contains("Desk Pod pairing window: open, 60 s left (app-opened)"))
+        deskPair(0)
+        XCTAssertEqual(model.snapshot().windowSource, 0)
+        XCTAssertEqual(BtrxDeskPodText.deskPairSourceText(P.deskSrcButton), "button")
     }
 
     func testSavedIgnoresRestoreWithThePodAndClearWhenItIsReplaced() {

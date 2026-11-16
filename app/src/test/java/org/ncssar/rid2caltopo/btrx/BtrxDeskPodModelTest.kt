@@ -43,8 +43,8 @@ class BtrxDeskPodModelTest {
 
     private fun meta(from: Long, backlog: Boolean = false) = BtrxClient.RadioMeta(from, if (from == desk) desk else 0xFFFFFFFFL, -45, 9.5f, now, backlog)
 
-    private fun deskPair(open: Int, seconds: Int = 60, backlog: Boolean = false, seq: Int = ++deskSeq) =
-        model.onFrame(P.decodeFrame(P.encodeFrame(P.DESK_PAIR, seq = seq, payload = byteArrayOf(open.toByte(), 1, seconds.toByte(), (seconds shr 8).toByte()))), meta(desk, backlog))
+    private fun deskPair(open: Int, seconds: Int = 60, backlog: Boolean = false, seq: Int = ++deskSeq, source: Int = 1) =
+        model.onFrame(P.decodeFrame(P.encodeFrame(P.DESK_PAIR, seq = seq, payload = byteArrayOf(open.toByte(), source.toByte(), seconds.toByte(), (seconds shr 8).toByte()))), meta(desk, backlog))
 
     private fun pairReq(nonce: String = "570b73e9475dfe3f", from: Long = pod, backlog: Boolean = false, imuOk: Int = 1, devB: Long = 0x351C2971L) {
         val p = ByteArray(27)
@@ -910,9 +910,12 @@ class BtrxDeskPodModelTest {
         model.onFrame(P.decodeFrame(P.encodeFrame(P.HEALTH, seq = ++podSeq, podId = pod0106.podId, payload = p)), meta(pod))
     }
 
-    private fun filterAck(op: Int, ok: Int, stored: Int, from: Long = pod) =
+    /** A 6-byte FILTER_ACK (build 0x0106), or the 8-byte one (0x0107) when [srcId] is given. */
+    private fun filterAck(op: Int, ok: Int, stored: Int, from: Long = pod, srcId: Int? = null) =
         model.onFrame(P.decodeFrame(P.encodeFrame(P.FILTER_ACK, seq = ++podSeq, podId = pod0106.podId,
-            flags = if (ok == 0) P.F_ERROR else 0, payload = byteArrayOf(1, op.toByte(), ok.toByte(), 0x34, 0x12, stored.toByte()))), meta(from))
+            flags = if (ok == 0) P.F_ERROR else 0,
+            payload = byteArrayOf(1, op.toByte(), ok.toByte(), 0x34, 0x12, stored.toByte()) +
+                (srcId?.let { byteArrayOf(it.toByte(), (it shr 8).toByte()) } ?: ByteArray(0)))), meta(from))
 
     @Test
     fun repairSendsPairOpenAndDeskPairThenPairsTheSamePodAgain() {
@@ -1009,8 +1012,9 @@ class BtrxDeskPodModelTest {
         assertEquals(pod, sender.sent.single().first)
         assertEquals(P.STEER_MUTE, f.type)
         assertArrayEquals(byteArrayOf(3, 0xA3.toByte(), 0xF1.toByte()), f.payload)
-        assertEquals(0xF1A3, model.snapshot().filterPending!!.srcId)
-        model.ignoreSourceSaved(0x0002)                  // one at a time
+        assertEquals(listOf(0xF1A3), model.snapshot().filterPending.map { it.srcId })
+        assertTrue(model.snapshot().filterPendingFor(0xF1A3))
+        model.ignoreSourceSaved(0xF1A3)                  // one at a time per source
         assertEquals(1, sender.sent.size)
         filterAck(P.FILTER_OP_REMOVE, 1, 1)              // not the op we asked for
         assertTrue(model.snapshot().savedIgnores.isEmpty())
@@ -1018,9 +1022,9 @@ class BtrxDeskPodModelTest {
         assertTrue(model.snapshot().savedIgnores.isEmpty())
         filterAck(P.FILTER_OP_ADD, 1, 1)
         assertEquals(listOf(0xF1A3), model.snapshot().savedIgnores)
-        assertNull(model.snapshot().filterPending)
+        assertTrue(model.snapshot().filterPending.isEmpty())
         assertEquals(listOf(listOf(0xF1A3)), savedLists)
-        assertTrue(model.snapshot().filterMessage!!.startsWith("Saved on the Drone Pod"))
+        assertTrue(model.snapshot().filterMessage!!.startsWith("Saved source F1A3 on the Drone Pod"))
         // not saved: ok=0
         model.ignoreSourceSaved(0x0002)
         filterAck(P.FILTER_OP_ADD, 0, 1)
@@ -1035,8 +1039,116 @@ class BtrxDeskPodModelTest {
         // no answer
         model.ignoreSourceSaved(0x0003)
         advance(BtrxDeskPodModel.FILTER_ACK_TIMEOUT_MS + 1000)
-        assertNull(model.snapshot().filterPending)
-        assertEquals("No answer from the Drone Pod. Try again.", model.snapshot().filterMessage)
+        assertTrue(model.snapshot().filterPending.isEmpty())
+        assertEquals("No answer from the Drone Pod for source 0003. Try again.", model.snapshot().filterMessage)
+    }
+
+    private fun savedIgnoreReady(saved: List<Int> = emptyList(), build: Int = 0x0106) {
+        model.restorePairedPod(pod0106, saved)
+        model.setLink(BtrxDeskPodModel.LinkStatus(BtrxDeskPodModel.LinkKind.USB, BtrxDeskPodModel.LinkPhase.READY))
+        podHealth(build)
+        sender.sent.clear()
+    }
+
+    @Test
+    fun sixByteAcksMatchTheOldestWaitingRequestOfThatOp() {
+        savedIgnoreReady(listOf(0x0003))
+        model.ignoreSourceSaved(0x0001)
+        model.ignoreSourceSaved(0x0002)
+        model.unignoreSourceSaved(0x0003)
+        assertEquals(3, sender.sent.size)
+        assertEquals(listOf(0x0001, 0x0002, 0x0003), model.snapshot().filterPending.map { it.srcId })
+        filterAck(P.FILTER_OP_REMOVE, 1, 0)             // the op 4 answer, though sent last
+        assertEquals(listOf(0x0001, 0x0002), model.snapshot().filterPending.map { it.srcId })
+        assertTrue(model.snapshot().savedIgnores.isEmpty())
+        filterAck(P.FILTER_OP_ADD, 1, 1)
+        assertEquals(listOf(0x0001), model.snapshot().savedIgnores)
+        filterAck(P.FILTER_OP_ADD, 0, 1)
+        assertEquals(listOf(0x0001), model.snapshot().savedIgnores)
+        assertTrue(model.snapshot().filterMessage!!.contains("did not save source 0002"))
+        assertTrue(model.snapshot().filterPending.isEmpty())
+    }
+
+    @Test
+    fun eightByteAcksMatchByEchoedSrcId() {
+        savedIgnoreReady(build = 0x0107)
+        model.ignoreSourceSaved(0x0001)
+        model.ignoreSourceSaved(0x0002)
+        filterAck(P.FILTER_OP_ADD, 1, 1, srcId = 0x0002)  // out of order
+        assertEquals(listOf(0x0002), model.snapshot().savedIgnores)
+        assertEquals(listOf(0x0001), model.snapshot().filterPending.map { it.srcId })
+        filterAck(P.FILTER_OP_ADD, 1, 2, srcId = 0)       // a FILTER_LIST answer: not ours
+        filterAck(P.FILTER_OP_REPLACE, 1, 2, srcId = 0x0001) // op 0: not ours
+        filterAck(P.FILTER_OP_ADD, 1, 2, srcId = 0x0009)  // no request for 0x0009
+        filterAck(P.FILTER_OP_REMOVE, 1, 2, srcId = 0x0001) // wrong op
+        assertEquals(listOf(0x0001), model.snapshot().filterPending.map { it.srcId })
+        assertEquals(listOf(0x0002), model.snapshot().savedIgnores)
+        filterAck(P.FILTER_OP_ADD, 1, 2, srcId = 0x0001)
+        assertEquals(listOf(0x0001, 0x0002), model.snapshot().savedIgnores)
+        assertTrue(model.snapshot().filterPending.isEmpty())
+        // 0x0107: op 3 for an already-saved id answers ok and it stays saved
+        model.ignoreSourceSaved(0x0001)
+        filterAck(P.FILTER_OP_ADD, 1, 2, srcId = 0x0001)
+        assertEquals(listOf(0x0001, 0x0002), model.snapshot().savedIgnores)
+    }
+
+    @Test
+    fun pendingRequestsAreCappedAndTimeOutEachOnItsOwn() {
+        savedIgnoreReady()
+        (1..BtrxDeskPodModel.MAX_PENDING_FILTERS + 1).forEach { model.ignoreSourceSaved(it) }
+        assertEquals(BtrxDeskPodModel.MAX_PENDING_FILTERS, sender.sent.size)
+        assertEquals("Waiting for the Drone Pod to answer earlier changes.", model.snapshot().filterMessage)
+        advance(5_000)
+        model.ignoreSourceSaved(0x0100)                 // still full
+        filterAck(P.FILTER_OP_ADD, 1, 1)
+        model.ignoreSourceSaved(0x0100)
+        assertEquals(BtrxDeskPodModel.MAX_PENDING_FILTERS + 1, sender.sent.size)
+        advance(BtrxDeskPodModel.FILTER_ACK_TIMEOUT_MS - 4_000)  // the first three expire, 0x0100 does not
+        assertEquals(listOf(0x0100), model.snapshot().filterPending.map { it.srcId })
+        model.detach(sender, "test")
+        assertTrue(model.snapshot().filterPending.isEmpty())
+    }
+
+    @Test
+    fun removeOfASavedButAbsentSourceOnBuild0106KeepsTheRow() {
+        savedIgnoreReady(listOf(0x148C))                 // saved earlier; no longer heard
+        model.unignoreSourceSaved(0x148C)
+        // reuses the src_id op 3 was sent with
+        assertArrayEquals(byteArrayOf(4, 0x8C.toByte(), 0x14), P.decodeFrame(sender.sent.single().second).payload)
+        filterAck(P.FILTER_OP_REMOVE, 0, 1)              // 0x0106: not in the live table
+        assertEquals(listOf(0x148C), model.snapshot().savedIgnores)
+        assertTrue(savedLists.isEmpty())
+        val msg = model.snapshot().filterMessage!!
+        assertTrue(msg, msg.contains("no longer tracks source 148C") && msg.contains("0x0107") && msg.contains("stays in this list"))
+        assertTrue(model.snapshot().filterPending.isEmpty())
+    }
+
+    @Test
+    fun removeOfASavedButAbsentSourceOnBuild0107() {
+        savedIgnoreReady(listOf(0x148C, 0x2000), build = 0x0107)
+        model.unignoreSourceSaved(0x148C)
+        filterAck(P.FILTER_OP_REMOVE, 1, 1, srcId = 0x148C) // 0x0107 removes the saved entry
+        assertEquals(listOf(0x2000), model.snapshot().savedIgnores)
+        assertTrue(model.snapshot().filterMessage!!.startsWith("Removed source 148C"))
+        model.unignoreSourceSaved(0x2000)
+        filterAck(P.FILTER_OP_REMOVE, 0, 0, srcId = 0x2000) // nothing under that id on the pod
+        assertTrue(model.snapshot().savedIgnores.isEmpty())
+        assertEquals(listOf(listOf(0x2000), emptyList<Int>()), savedLists)
+        assertTrue(model.snapshot().filterMessage!!.contains("had nothing saved under source 2000"))
+    }
+
+    @Test
+    fun deskPairSourceIsTheDeskPodPairingState() {
+        val closed = BtrxDeskPodText.healthLines(model.snapshot())
+        assertTrue(closed.toString(), "Desk Pod pairing window: closed" in closed)
+        deskPair(1, seconds = 60, source = P.DESK_SRC_LINK)
+        assertEquals(P.DESK_SRC_LINK, model.snapshot().windowSource)
+        assertTrue("Desk Pod pairing window: open, 60 s left (phone/USB-opened)" in BtrxDeskPodText.healthLines(model.snapshot()))
+        deskPair(1, seconds = 60, source = P.DESK_SRC_PAIR_OPEN)
+        assertTrue("Desk Pod pairing window: open, 60 s left (app-opened)" in BtrxDeskPodText.healthLines(model.snapshot()))
+        deskPair(0)
+        assertEquals(0, model.snapshot().windowSource)
+        assertEquals("button", BtrxDeskPodText.deskPairSourceText(P.DESK_SRC_BUTTON))
     }
 
     @Test

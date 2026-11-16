@@ -17,7 +17,7 @@ public enum BtrxFrameLog {
         switch type {
         case P.DESK_PAIR:
             let d = try P.parseDeskPair(p)
-            let src = d.source == 1 ? "button" : d.source == 2 ? "test" : String(d.source)
+            let src = P.deskPairSourceName(d.source)
             return "open=\(d.open) source=\(src) seconds=\(d.secondsLeft)"
         case P.PAIR_OPEN:
             return p.isEmpty ? "seconds=default" : "seconds=\(p[0])"
@@ -41,7 +41,10 @@ public enum BtrxFrameLog {
             return "uptime_s=\(h.uptimeS) build_hash=\(String(format: "0x%04x", h.buildHash)) role=\(P.roleName(h.role)) source=\(h.source) confirmed=\(h.confirmed) flags=\(P.statusFlagNames(h.flags)) b_link_age_s=\(h.bLinkAgeS == 0xFFFF ? "never" : String(h.bLinkAgeS)) imu_ok=\(h.imuOk) die_temp_c=\(h.dieTempC) adv_port=\(h.advPerSPort) adv_stbd=\(h.advPerSStbd) lora_rssi=\(h.loraRssi) lora_snr=\(h.loraSnr) clock_offset_ms=\(h.clockOffsetMs) cfg_v=\(h.cfgVersion) filter_v=\(h.filterVersion) tx=\(P.txName(h.txPolicy)) error_flags=\(String(format: "0x%02x", h.errorFlags)) scanning=\(h.scanning)"
                 + (h.phoneLost.map { " phone_lost=\($0)" } ?? "")
                 + (h.ext.map { e in
-                    String(format: " reset_reason=0x%x(%@) pair_source=%@ nods_ignored=%d excluded_per_s=%d exclude_flags=%@",
+                    // The Desk Pod's bytes 38-43 are always 0 (PROTOCOL.md 0x0107): only reset_reason means anything there.
+                    h.role == P.roleDeskPod
+                        ? String(format: " reset_reason=0x%x(%@)", e.resetReason, P.resetReasonNames(e.resetReason))
+                        : String(format: " reset_reason=0x%x(%@) pair_source=%@ nods_ignored=%d excluded_per_s=%d exclude_flags=%@",
                            e.resetReason, P.resetReasonNames(e.resetReason), P.pairSourceName(e.pairSource), e.nodsIgnored,
                            e.excludedPerS, P.excludeFlagNames(e.excludeFlags))
                 } ?? "")
@@ -64,6 +67,7 @@ public enum BtrxFrameLog {
         case P.FILTER_ACK:
             let f = try P.parseFilterAck(p)
             return String(format: "version=%d op=%d ok=%d list_crc=0x%04x stored=%d", f.version, f.op, f.ok, f.listCrc, f.stored)
+                + (f.srcId.map { String(format: " src_id=0x%04x", $0) } ?? "")
         case P.STEER_MUTE:
             let m = try P.parseSteerMute(p)
             return "op=\(P.muteOpName(m.op)) src=\(m.srcId)"

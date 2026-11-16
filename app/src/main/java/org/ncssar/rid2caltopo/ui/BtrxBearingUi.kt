@@ -97,10 +97,10 @@ fun BtrxBearingSection() {
                 // Drone Pod 0x0106+: saved on the pod by src_id (STEER_MUTE op 3 / 4).
                 if (src.srcId in pod.savedIgnores) Row(verticalAlignment = Alignment.CenterVertically) {
                     Text("${BtrxDeskPodText.OWN_SAVED}: ${BtrxDeskPodText.OWN_SAVED_DONE}", style = MaterialTheme.typography.bodySmall)
-                    TextButton(onClick = { BtrxManager.unignoreSourceSaved(src.srcId) }, enabled = pod.filterPending == null) {
+                    TextButton(onClick = { BtrxManager.unignoreSourceSaved(src.srcId) }, enabled = !pod.filterPendingFor(src.srcId)) {
                         Text(BtrxDeskPodText.OWN_SAVED_REMOVE, style = MaterialTheme.typography.bodySmall)
                     }
-                } else TextButton(onClick = { BtrxManager.ignoreSourceSaved(src.srcId) }, enabled = pod.filterPending == null) {
+                } else TextButton(onClick = { BtrxManager.ignoreSourceSaved(src.srcId) }, enabled = !pod.filterPendingFor(src.srcId)) {
                     Text(BtrxDeskPodText.OWN_SAVED, style = MaterialTheme.typography.bodySmall)
                 }
             } else TextButton(onClick = { BtrxManager.bearing.setIgnored(src.key, !src.ignored) }) {
@@ -120,7 +120,7 @@ private fun BtrxSavedOwnAircraft(pod: org.ncssar.rid2caltopo.btrx.BtrxDeskPodMod
     pod.savedIgnores.forEach { id ->
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(BtrxDeskPodText.srcIdText(id), Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
-            TextButton(onClick = { BtrxManager.unignoreSourceSaved(id) }, enabled = pod.filterPending == null && pod.savedIgnoreSupported) {
+            TextButton(onClick = { BtrxManager.unignoreSourceSaved(id) }, enabled = !pod.filterPendingFor(id) && pod.savedIgnoreSupported) {
                 Text(BtrxDeskPodText.OWN_SAVED_REMOVE, style = MaterialTheme.typography.bodySmall)
             }
         }

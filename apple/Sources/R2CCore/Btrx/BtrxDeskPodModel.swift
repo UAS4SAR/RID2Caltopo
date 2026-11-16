@@ -104,7 +104,9 @@ public final class BtrxDeskPodModel {
         public init() {}
     }
 
-    /// A STEER_MUTE op 3 / 4 waiting for its FILTER_ACK.
+    /// A STEER_MUTE op 3 / 4 waiting for its FILTER_ACK. Up to `maxPendingFilters` may wait (one
+    /// per src_id); an 8-byte FILTER_ACK (0x0107) is matched by its echoed src_id, a 6-byte one
+    /// (0x0106) to the oldest waiting request of that op. Same as Android.
     public struct PendingFilter: Sendable, Equatable {
         public let op: Int, srcId: Int, sentMs: Int64
     }
@@ -157,11 +159,17 @@ public final class BtrxDeskPodModel {
         public var savedIgnoreSupported = false
         /// src ids the paired pod confirmed on its saved ignore list (FILTER_ACK ok=1).
         public var savedIgnores: [Int] = []
-        /// An op 3 / 4 waiting for FILTER_ACK.
-        public var filterPending: PendingFilter?
+        /// Op 3 / 4 requests waiting for FILTER_ACK, oldest first.
+        public var filterPending: [PendingFilter] = []
         /// The latest saved-ignore result, for the BTRX pane.
         public var filterMessage: String?
+        /// DESK_PAIR source of the latest open (1 button, 2 phone/USB, 3 PAIR_OPEN).
+        public var deskWindowSource = 0
         public init() {}
+        /// An op 3 / 4 for `srcId` is waiting for its FILTER_ACK.
+        public func filterPendingFor(_ srcId: Int) -> Bool { filterPending.contains { $0.srcId == srcId } }
+        /// What opened the Desk Pod's current window (DESK_PAIR source), 0 when closed.
+        public var windowSource: Int { windowOpen ? deskWindowSource : 0 }
         public var roleSupported: Bool { role.map { BtrxProtocol.buildSupported($0.buildHash) } ?? false }
     }
 
@@ -179,6 +187,8 @@ public final class BtrxDeskPodModel {
     /// Re-pair: the Desk Pod answers DESK_PAIR at once; a manual tap also counts until then.
     public static let repairWindowWaitMs: Int64 = 30_000
     public static let filterAckTimeoutMs: Int64 = 10_000
+    /// Op 3 / 4 requests that may wait for FILTER_ACK at once (one per src_id).
+    public static let maxPendingFilters = 4
     /// The pod's saved ignore list holds 32 addresses (PROTOCOL.md STEER_MUTE).
     public static let filterListMax = 32
     public static let repairKept = "The Drone Pod stays paired as it was."
@@ -205,7 +215,7 @@ public final class BtrxDeskPodModel {
     private var deskPhoneLost: UInt32?
     private var deskHealthExt: BtrxProtocol.HealthExt?
     private var savedIgnores = Set<Int>()
-    private var pendingFilter: PendingFilter?
+    private var pendingFilters: [PendingFilter] = []
     private var filterMessage: String?
     /// The Desk Pod's own latest live HEALTH this session: uptime_s and arrival (logged when the link drops).
     private var deskUptimeS: UInt32?
@@ -260,8 +270,8 @@ public final class BtrxDeskPodModel {
         self.sender = nil
         log.debug(linkDropLine(reason: reason, nowMs: clock()))
         if Self.activeSteps.contains(pairing.step) { fail(pairing.step, "The link to the Desk Pod was lost (\(reason)).") }
-        if pendingFilter != nil { filterMessage = "No answer from the Drone Pod: the link to the Desk Pod was lost." }
-        pendingFilter = nil
+        if !pendingFilters.isEmpty { filterMessage = "No answer from the Drone Pod: the link to the Desk Pod was lost." }
+        pendingFilters.removeAll()
         imuCal.linkLost(reason: reason)
     }
 
@@ -279,7 +289,7 @@ public final class BtrxDeskPodModel {
         if pod != pairedPod { imuCal.reset() } // another pod: its calibration state is not known
         pairedPod = pod
         savedIgnores = pod == nil ? [] : Set(savedIgnoreIds.filter { (1...0xFFFF).contains($0) })
-        pendingFilter = nil; filterMessage = nil
+        pendingFilters.removeAll(); filterMessage = nil
         quietWatchSinceMs = clock()
     }
 
@@ -305,7 +315,7 @@ public final class BtrxDeskPodModel {
             log.debug("own aircraft (saved): forgetting \(savedIgnores.count) saved id(s) with the unpaired pod")
             savedIgnores.removeAll(); onSavedIgnores([])
         }
-        pendingFilter = nil; filterMessage = nil
+        pendingFilters.removeAll(); filterMessage = nil
         pairedPod = nil; lastHealth = nil; otherPods.removeAll()
         podIdMismatches = 0; lastMismatchPodId = nil
         steering.reset()
@@ -617,11 +627,11 @@ public final class BtrxDeskPodModel {
         default: break
         }
         if Self.activeSteps.contains(pairing.step) { pairing.windowSecondsLeft = window.secondsLeft(nowMs: now) }
-        if let pf = pendingFilter, now - pf.sentMs > Self.filterAckTimeoutMs {
+        for pf in pendingFilters where now - pf.sentMs > Self.filterAckTimeoutMs {
             log.warn(String(format: "own aircraft (saved): no FILTER_ACK for %@ src=0x%04x within %d s", BtrxProtocol.muteOpName(pf.op), pf.srcId, Int(Self.filterAckTimeoutMs / 1000)))
-            filterMessage = "No answer from the Drone Pod. Try again."
-            pendingFilter = nil
+            filterMessage = "No answer from the Drone Pod for \(BtrxDeskPodText.srcIdText(pf.srcId)). Try again."
         }
+        pendingFilters.removeAll { now - $0.sentMs > Self.filterAckTimeoutMs }
         if let r = imuCal.tick(nowMs: now) { sendImuCal(r) }
     }
 
@@ -648,8 +658,9 @@ public final class BtrxDeskPodModel {
         s.deskHealthExt = deskHealthExt
         s.savedIgnoreSupported = savedIgnoreSupportedNow
         s.savedIgnores = savedIgnores.sorted()
-        s.filterPending = pendingFilter
+        s.filterPending = pendingFilters
         s.filterMessage = filterMessage
+        s.deskWindowSource = window.source
         return s
     }
 
@@ -668,13 +679,14 @@ public final class BtrxDeskPodModel {
 
     private func filterAction(op: Int, srcId: Int) {
         let now = clock()
-        let busy = pendingFilter.map { now - $0.sentMs <= Self.filterAckTimeoutMs } ?? false
+        let busy = pendingFilters.contains { $0.srcId == srcId && now - $0.sentMs <= Self.filterAckTimeoutMs }
         var blocked: String?
         if pairedPod == nil { blocked = "No Drone Pod is paired." }
         else if !savedIgnoreSupportedNow { blocked = "The Drone Pod's firmware does not save ignored sources (needs build 0x0106). Use Own aircraft on this device." }
         else if !(sender?.isReady ?? false) { blocked = "The Desk Pod is not connected." }
         else if !(1...0xFFFF).contains(srcId) { blocked = "That source has no Drone Pod id yet." }
-        else if busy { blocked = "Waiting for the Drone Pod to answer the last change." }
+        else if busy { blocked = "Waiting for the Drone Pod to answer the last change to \(BtrxDeskPodText.srcIdText(srcId))." }
+        else if pendingFilters.count >= Self.maxPendingFilters { blocked = "Waiting for the Drone Pod to answer earlier changes." }
         if let blocked {
             log.warn(String(format: "own aircraft (saved): %@ src=0x%04x not sent: %@", BtrxProtocol.muteOpName(op), srcId, blocked))
             filterMessage = blocked
@@ -683,31 +695,41 @@ public final class BtrxDeskPodModel {
         guard let pod = pairedPod, let s = sender else { return }
         log.info(String(format: "own aircraft (saved): STEER_MUTE %@ src=0x%04x to %@", BtrxProtocol.muteOpName(op), srcId, BtrxClient.nodeName(pod.node)))
         s.sendFrame(to: pod.node, frame: BtrxProtocol.steerMuteFrame(seq: s.nextSeq(), podId: pod.podId, op: op, srcId: srcId))
-        pendingFilter = PendingFilter(op: op, srcId: srcId, sentMs: now)
+        pendingFilters.removeAll { $0.srcId == srcId } // an expired one not yet ticked out
+        pendingFilters.append(PendingFilter(op: op, srcId: srcId, sentMs: now))
         filterMessage = op == BtrxProtocol.MUTE_IGNORE ? "Saving on the Drone Pod…" : "Removing from the Drone Pod…"
     }
 
     private func onFilterAck(_ ack: BtrxProtocol.FilterAck, frameFlags: Int) {
-        let wantOp: Int? = pendingFilter.flatMap { p in
-            p.op == BtrxProtocol.MUTE_IGNORE ? BtrxProtocol.FILTER_OP_ADD : p.op == BtrxProtocol.MUTE_UNIGNORE ? BtrxProtocol.FILTER_OP_REMOVE : nil
-        }
-        guard let pend = pendingFilter, ack.op == wantOp else {
-            log.debug("own aircraft (saved): FILTER_ACK op=\(ack.op) ok=\(ack.ok) stored=\(ack.stored) matches no request out; ignored")
+        typealias P = BtrxProtocol
+        let wantOp: Int? = ack.op == P.FILTER_OP_ADD ? P.MUTE_IGNORE : ack.op == P.FILTER_OP_REMOVE ? P.MUTE_UNIGNORE : nil
+        let idx: Int?
+        if wantOp == nil || ack.srcId == 0 { idx = nil }           // op 0 replace / 0x0107 FILTER_LIST answer: not ours
+        else if let sid = ack.srcId { idx = pendingFilters.firstIndex { $0.srcId == sid && $0.op == wantOp } }   // 0x0107: by echoed id
+        else { idx = pendingFilters.firstIndex { $0.op == wantOp } } // 0x0106: oldest waiting request of that op
+        guard let idx else {
+            log.debug("own aircraft (saved): FILTER_ACK op=\(ack.op) ok=\(ack.ok) stored=\(ack.stored) src_id=\(ack.srcId.map { String(format: "0x%04x", $0) } ?? "none") matches no request out; ignored")
             return
         }
-        pendingFilter = nil
-        let id = String(format: "0x%04x", pend.srcId)
-        log.info(String(format: "own aircraft (saved): FILTER_ACK op=%d ok=%d list_crc=0x%04x stored=%d flags=0x%02x for src=%@",
-                        ack.op, ack.ok, ack.listCrc, ack.stored, frameFlags, id))
+        let pend = pendingFilters.remove(at: idx)
+        let id = BtrxDeskPodText.srcIdText(pend.srcId)
+        log.info(String(format: "own aircraft (saved): FILTER_ACK op=%d ok=%d list_crc=0x%04x stored=%d flags=0x%02x for src=0x%04x (%@)",
+                        ack.op, ack.ok, ack.listCrc, ack.stored, frameFlags, pend.srcId, ack.srcId != nil ? "by src_id" : "6-byte ack, oldest waiting"))
+        let added = pend.op == P.MUTE_IGNORE
         if ack.ok == 1 {
-            let changed = pend.op == BtrxProtocol.MUTE_IGNORE ? savedIgnores.insert(pend.srcId).inserted : savedIgnores.remove(pend.srcId) != nil
+            let changed = added ? savedIgnores.insert(pend.srcId).inserted : savedIgnores.remove(pend.srcId) != nil
             if changed { onSavedIgnores(savedIgnores.sorted()) }
-            filterMessage = pend.op == BtrxProtocol.MUTE_IGNORE ? "Saved on the Drone Pod (\(ack.stored) of \(Self.filterListMax) saved)."
-                : "Removed from the Drone Pod (\(ack.stored) of \(Self.filterListMax) saved)."
+            filterMessage = added ? "Saved \(id) on the Drone Pod (\(ack.stored) of \(Self.filterListMax) saved)."
+                : "Removed \(id) from the Drone Pod (\(ack.stored) of \(Self.filterListMax) saved)."
+        } else if added {
+            filterMessage = "The Drone Pod did not save \(id): it saves only a source heard in the last 60 s, and holds \(Self.filterListMax)."
+        } else if ack.srcId == nil {
+            // 0x0106: op 4 resolves the id in its live table only; the saved row stays (Remove again on 0x0107).
+            filterMessage = "The Drone Pod no longer tracks \(id), so it could not remove it; that needs Drone Pod firmware 0x0107. It stays in this list."
         } else {
-            filterMessage = pend.op == BtrxProtocol.MUTE_IGNORE
-                ? "The Drone Pod did not save it: it saves only a source heard in the last 60 s, and holds \(Self.filterListMax)."
-                : "The Drone Pod did not remove it: it removes only a source it heard in the last 60 s."
+            // 0x0107: op 4 removes every saved entry ignored under that id; ok=0 means none was on the pod.
+            if savedIgnores.remove(pend.srcId) != nil { onSavedIgnores(savedIgnores.sorted()) }
+            filterMessage = "The Drone Pod had nothing saved under \(id); removed from this list."
         }
     }
 

@@ -21,7 +21,7 @@ object BtrxFrameLog {
 
     fun describe(type: Int, p: ByteArray): String = when (type) {
         P.DESK_PAIR -> P.parseDeskPair(p).let {
-            val src = when (it.source) { 1 -> "button"; 2 -> "test"; else -> it.source.toString() }
+            val src = P.deskPairSourceName(it.source)
             "open=${it.open} source=$src seconds=${it.secondsLeft}"
         }
         P.PAIR_REQ -> P.parsePairReq(p).let {
@@ -44,7 +44,8 @@ object BtrxFrameLog {
                 (it.result?.let { r -> " result=$r" } ?: "")
         }
         P.FILTER_ACK -> P.parseFilterAck(p).let {
-            "version=${it.version} op=${it.op} ok=${it.ok} list_crc=0x%04x stored=${it.stored}".format(it.listCrc)
+            "version=${it.version} op=${it.op} ok=${it.ok} list_crc=0x%04x stored=${it.stored}".format(it.listCrc) +
+                (it.srcId?.let { id -> " src_id=0x%04x".format(id) } ?: "")
         }
         P.HEALTH -> P.parseHealth(p).let {
             "uptime_s=%d build_hash=0x%04x role=%s source=%d confirmed=%d flags=%s b_link_age_s=%s imu_ok=%d die_temp_c=%d adv_port=%d adv_stbd=%d lora_rssi=%d lora_snr=%d clock_offset_ms=%d cfg_v=%d filter_v=%d tx=%s error_flags=0x%02x scanning=%d".format(
@@ -54,7 +55,9 @@ object BtrxFrameLog {
                 it.filterVersion, P.txName(it.txPolicy), it.errorFlags, it.scanning) +
                 (it.phoneLost?.let { l -> " phone_lost=$l" } ?: "") +
                 (it.ext?.let { e ->
-                    " reset_reason=0x%x(%s) pair_source=%s nods_ignored=%d excluded_per_s=%d exclude_flags=%s".format(
+                    // The Desk Pod's bytes 38-43 are always 0 (PROTOCOL.md 0x0107): only reset_reason means anything there.
+                    if (it.role == P.ROLE_DESK_POD) " reset_reason=0x%x(%s)".format(e.resetReason, P.resetReasonNames(e.resetReason))
+                    else " reset_reason=0x%x(%s) pair_source=%s nods_ignored=%d excluded_per_s=%d exclude_flags=%s".format(
                         e.resetReason, P.resetReasonNames(e.resetReason), P.pairSourceName(e.pairSource), e.nodsIgnored,
                         e.excludedPerS, P.excludeFlagNames(e.excludeFlags))
                 } ?: "")

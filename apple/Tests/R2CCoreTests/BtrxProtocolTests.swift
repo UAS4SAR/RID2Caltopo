@@ -390,6 +390,13 @@ final class BtrxProtocolTests: XCTestCase {
         XCTAssertNil(try P.parseHealth(Array(p[0..<43])).ext)
         let line = try BtrxFrameLog.describe(P.HEALTH, p)
         XCTAssertTrue(line.contains(" phone_lost=3 reset_reason=0x10004(soft-reset,wake-pin) pair_source=app (PAIR_OPEN) nods_ignored=300 excluded_per_s=16 exclude_flags=own-board,other-board,dji"), line)
+        // Desk Pod HEALTH: bytes 38-43 are always 0; only phone_lost and reset_reason are shown
+        var desk = p; desk[6] = UInt8(P.roleDeskPod)
+        let deskLine = try BtrxFrameLog.describe(P.HEALTH, desk)
+        XCTAssertTrue(deskLine.hasSuffix(" phone_lost=3 reset_reason=0x10004(soft-reset,wake-pin)"), deskLine)
+        XCTAssertFalse(deskLine.contains("pair_source"), deskLine)
+        XCTAssertEqual(P.deskPairSourceName(2), "phone/USB-opened"); XCTAssertEqual(P.deskPairSourceName(3), "app-opened")
+        XCTAssertTrue(try BtrxFrameLog.describe(P.DESK_PAIR, [1, 3, 60, 0]).contains("source=app-opened"))
         XCTAssertEqual(try BtrxFrameLog.describe(P.PAIR_OPEN, [90]), "seconds=90")
         XCTAssertEqual(try BtrxFrameLog.describe(P.PAIR_OPEN, []), "seconds=default")
     }
@@ -408,6 +415,13 @@ final class BtrxProtocolTests: XCTestCase {
         XCTAssertEqual(m.payload, [3, 0xA3, 0xF1])
         XCTAssertEqual(P.muteOpName(P.MUTE_IGNORE), "ignore"); XCTAssertEqual(P.muteOpName(P.MUTE_UNIGNORE), "unignore")
         XCTAssertEqual(try P.parseFilterAck(P.fromHex("010101efbe03")), P.FilterAck(version: 1, op: P.FILTER_OP_ADD, ok: 1, listCrc: 0xBEEF, stored: 3))
+        XCTAssertNil(try P.parseFilterAck(P.fromHex("010101efbe03")).srcId)
+        XCTAssertNil(try P.parseFilterAck(P.fromHex("010101efbe0300")).srcId, "7 bytes: no src_id")
+        XCTAssertEqual(try P.parseFilterAck(P.fromHex("010200efbe03a3f1")),
+                       P.FilterAck(version: 1, op: P.FILTER_OP_REMOVE, ok: 0, listCrc: 0xBEEF, stored: 3, srcId: 0xF1A3))
+        XCTAssertEqual(try P.parseFilterAck(P.fromHex("010001efbe030000")).srcId, 0)
+        XCTAssertEqual(try BtrxFrameLog.describe(P.FILTER_ACK, P.fromHex("010101efbe03")), "version=1 op=1 ok=1 list_crc=0xbeef stored=3")
+        XCTAssertEqual(try BtrxFrameLog.describe(P.FILTER_ACK, P.fromHex("010200efbe03a3f1")), "version=1 op=2 ok=0 list_crc=0xbeef stored=3 src_id=0xf1a3")
         XCTAssertEqual(try BtrxFrameLog.describe(P.FILTER_ACK, P.fromHex("010101efbe03")), "version=1 op=1 ok=1 list_crc=0xbeef stored=3")
         XCTAssertFalse(P.savedIgnoreSupported(nil)); XCTAssertFalse(P.savedIgnoreSupported(0x0105)); XCTAssertTrue(P.savedIgnoreSupported(0x0106))
     }

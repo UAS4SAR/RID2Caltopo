@@ -261,6 +261,13 @@ class BtrxProtocolTest {
         val line = BtrxFrameLog.describe(P.HEALTH, p)
         assertTrue(line, line.contains(" phone_lost=3 reset_reason=0x10004(soft-reset,wake-pin) pair_source=app (PAIR_OPEN) nods_ignored=300 excluded_per_s=16 exclude_flags=" +
             P.excludeFlagNames(0x0B)))
+        // Desk Pod HEALTH: bytes 38-43 are always 0; only phone_lost and reset_reason are shown
+        val desk = p.copyOf().also { it[6] = P.ROLE_DESK_POD.toByte() }
+        val deskLine = BtrxFrameLog.describe(P.HEALTH, desk)
+        assertTrue(deskLine, deskLine.endsWith(" phone_lost=3 reset_reason=0x10004(soft-reset,wake-pin)"))
+        assertFalse(deskLine, deskLine.contains("pair_source"))
+        assertEquals("phone/USB-opened", P.deskPairSourceName(2)); assertEquals("app-opened", P.deskPairSourceName(3))
+        assertTrue(BtrxFrameLog.describe(P.DESK_PAIR, byteArrayOf(1, 3, 60, 0)).contains("source=app-opened"))
         assertEquals("seconds=90", BtrxFrameLog.describe(P.PAIR_OPEN, byteArrayOf(90)))
         assertEquals("seconds=default", BtrxFrameLog.describe(P.PAIR_OPEN, ByteArray(0)))
     }
@@ -281,6 +288,12 @@ class BtrxProtocolTest {
         assertArrayEquals(byteArrayOf(3, 0xA3.toByte(), 0xF1.toByte()), m.payload)
         assertEquals("ignore", P.muteOpName(P.MUTE_IGNORE)); assertEquals("unignore", P.muteOpName(P.MUTE_UNIGNORE))
         assertEquals(P.FilterAck(1, P.FILTER_OP_ADD, 1, 0xBEEF, 3), P.parseFilterAck(h("010101efbe03")))
+        assertNull(P.parseFilterAck(h("010101efbe03")).srcId)
+        assertNull(P.parseFilterAck(h("010101efbe0300")).srcId)   // 7 bytes: no src_id
+        assertEquals(P.FilterAck(1, P.FILTER_OP_REMOVE, 0, 0xBEEF, 3, 0xF1A3), P.parseFilterAck(h("010200efbe03a3f1")))
+        assertEquals(0, P.parseFilterAck(h("010001efbe030000")).srcId)
+        assertEquals("version=1 op=1 ok=1 list_crc=0xbeef stored=3", BtrxFrameLog.describe(P.FILTER_ACK, h("010101efbe03")))
+        assertEquals("version=1 op=2 ok=0 list_crc=0xbeef stored=3 src_id=0xf1a3", BtrxFrameLog.describe(P.FILTER_ACK, h("010200efbe03a3f1")))
         assertFalse(P.savedIgnoreSupported(null)); assertFalse(P.savedIgnoreSupported(0x0105)); assertTrue(P.savedIgnoreSupported(0x0106))
     }
 

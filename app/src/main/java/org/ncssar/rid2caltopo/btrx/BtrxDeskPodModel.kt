@@ -48,7 +48,10 @@ import org.ncssar.rid2caltopo.btrx.BtrxProtocol as P
  *
  * Own aircraft (saved) (firmware 0x0106): STEER_MUTE op 3 / 4 by src_id puts the address on
  * (takes it off) the pod's saved ignore list; FILTER_ACK answers. [savedIgnores] is this
- * app's record of what the pod took (per paired pod, persisted by the caller).
+ * app's record of what the pod took: the src_id each op 3 was sent with (per paired pod,
+ * persisted by the caller), reused for op 4 even when the source is no longer heard. Up to
+ * [MAX_PENDING_FILTERS] requests may wait; an 8-byte FILTER_ACK (0x0107) is matched by its
+ * echoed src_id, a 6-byte one (0x0106) to the oldest waiting request of that op.
  *
  * IMU calibration (design doc section 29.3, firmware 0x0102): [BtrxImuCal] runs the flow;
  * IMU_CAL goes to the paired pod's node like STEER_MUTE, and only that pod's live
@@ -115,7 +118,7 @@ class BtrxDeskPodModel(
         val repairByNod: Boolean = false,
     )
 
-    /** A STEER_MUTE op 3 / 4 waiting for its FILTER_ACK. */
+    /** A STEER_MUTE op 3 / 4 waiting for its FILTER_ACK (oldest first in the snapshot). */
     data class PendingFilter(val op: Int, val srcId: Int, val sentMs: Long)
 
     data class HealthReading(val node: Long, val arrivalMs: Long, val rxRssi: Int, val rxSnr: Float, val health: P.Health)
@@ -165,12 +168,18 @@ class BtrxDeskPodModel(
         val savedIgnoreSupported: Boolean = false,
         /** src ids the paired pod confirmed on its saved ignore list (FILTER_ACK ok=1). */
         val savedIgnores: List<Int> = emptyList(),
-        /** An op 3 / 4 waiting for FILTER_ACK. */
-        val filterPending: PendingFilter? = null,
+        /** Op 3 / 4 requests waiting for FILTER_ACK, oldest first. */
+        val filterPending: List<PendingFilter> = emptyList(),
         /** The latest saved-ignore result, for the BTRX pane. */
         val filterMessage: String? = null,
+        /** DESK_PAIR source of the latest open (1 button, 2 phone/USB, 3 PAIR_OPEN). */
+        val deskWindowSource: Int = 0,
     ) {
         val roleSupported: Boolean get() = role != null && P.buildSupported(role.buildHash)
+        /** An op 3 / 4 for [srcId] is waiting for its FILTER_ACK. */
+        fun filterPendingFor(srcId: Int): Boolean = filterPending.any { it.srcId == srcId }
+        /** What opened the Desk Pod's current window (DESK_PAIR source), 0 when closed. */
+        val windowSource: Int get() = if (windowOpen) deskWindowSource else 0
     }
 
     private var sender: BtrxFrameSender? = null
@@ -186,7 +195,7 @@ class BtrxDeskPodModel(
     private var deskPhoneLost: Long? = null
     private var deskHealthExt: P.HealthExt? = null
     private val savedIgnores = sortedSetOf<Int>()
-    private var pendingFilter: PendingFilter? = null
+    private val pendingFilters = ArrayList<PendingFilter>()
     private var filterMessage: String? = null
     /** The Desk Pod's own latest live HEALTH this session: uptime_s and arrival (logged when the link drops). */
     private var deskUptimeS: Long? = null
@@ -238,8 +247,8 @@ class BtrxDeskPodModel(
             this.sender = null
             log.debug(linkDropLine(reason, clock()))
             if (pairing.step in ACTIVE_STEPS) fail(pairing.step, "The link to the Desk Pod was lost ($reason).")
-            pendingFilter?.let { filterMessage = "No answer from the Drone Pod: the link to the Desk Pod was lost." }
-            pendingFilter = null
+            if (pendingFilters.isNotEmpty()) filterMessage = "No answer from the Drone Pod: the link to the Desk Pod was lost."
+            pendingFilters.clear()
             imuCal.linkLost(reason)
         }
     }
@@ -262,7 +271,7 @@ class BtrxDeskPodModel(
         pairedPod = pod
         savedIgnores.clear()
         if (pod != null) savedIgnores += savedIgnoreIds.filter { it in 1..0xFFFF }
-        pendingFilter = null; filterMessage = null
+        pendingFilters.clear(); filterMessage = null
         quietWatchSinceMs = clock()
     }
 
@@ -293,7 +302,7 @@ class BtrxDeskPodModel(
             log.debug("own aircraft (saved): forgetting ${savedIgnores.size} saved id(s) with the unpaired pod")
             savedIgnores.clear(); onSavedIgnores(emptyList())
         }
-        pendingFilter = null; filterMessage = null
+        pendingFilters.clear(); filterMessage = null
         pairedPod = null; lastHealth = null; otherPods.clear()
         podIdMismatches = 0; lastMismatchPodId = null
         steering.reset()
@@ -639,13 +648,12 @@ class BtrxDeskPodModel(
             else -> Unit
         }
         if (pairing.step in ACTIVE_STEPS) pairing = pairing.copy(windowSecondsLeft = window.secondsLeft(now))
-        pendingFilter?.let {
-            if (now - it.sentMs > FILTER_ACK_TIMEOUT_MS) {
-                log.warn("own aircraft (saved): no FILTER_ACK for ${P.muteOpName(it.op)} src=0x%04x within %d s".format(it.srcId, FILTER_ACK_TIMEOUT_MS / 1000))
-                filterMessage = "No answer from the Drone Pod. Try again."
-                pendingFilter = null
-            }
+        val expired = pendingFilters.filter { now - it.sentMs > FILTER_ACK_TIMEOUT_MS }
+        expired.forEach {
+            log.warn("own aircraft (saved): no FILTER_ACK for ${P.muteOpName(it.op)} src=0x%04x within %d s".format(it.srcId, FILTER_ACK_TIMEOUT_MS / 1000))
+            filterMessage = "No answer from the Drone Pod for ${BtrxDeskPodText.srcIdText(it.srcId)}. Try again."
         }
+        pendingFilters.removeAll(expired)
     }
 
     @Synchronized
@@ -671,8 +679,9 @@ class BtrxDeskPodModel(
             deskHealthExt = deskHealthExt,
             savedIgnoreSupported = savedIgnoreSupportedLocked(),
             savedIgnores = savedIgnores.toList(),
-            filterPending = pendingFilter,
+            filterPending = pendingFilters.toList(),
             filterMessage = filterMessage,
+            deskWindowSource = window.source,
         )
     }
 
@@ -693,13 +702,14 @@ class BtrxDeskPodModel(
         val sends = synchronized(this) {
             val now = clock()
             val pod = pairedPod
-            val busy = pendingFilter?.takeIf { now - it.sentMs <= FILTER_ACK_TIMEOUT_MS }
+            val busy = pendingFilters.any { it.srcId == srcId && now - it.sentMs <= FILTER_ACK_TIMEOUT_MS }
             val blocked = when {
                 pod == null -> "No Drone Pod is paired."
                 !savedIgnoreSupportedLocked() -> "The Drone Pod's firmware does not save ignored sources (needs build 0x0106). Use Own aircraft on this device."
                 sender?.isReady != true -> "The Desk Pod is not connected."
                 srcId !in 1..0xFFFF -> "That source has no Drone Pod id yet."
-                busy != null -> "Waiting for the Drone Pod to answer the last change."
+                busy -> "Waiting for the Drone Pod to answer the last change to ${BtrxDeskPodText.srcIdText(srcId)}."
+                pendingFilters.size >= MAX_PENDING_FILTERS -> "Waiting for the Drone Pod to answer earlier changes."
                 else -> null
             }
             if (blocked != null) {
@@ -709,7 +719,8 @@ class BtrxDeskPodModel(
                 pod!!
                 log.info("own aircraft (saved): STEER_MUTE ${P.muteOpName(op)} src=0x%04x to %s".format(srcId, BtrxClient.nodeName(pod.node)))
                 outbox += pod.node to { seq -> P.steerMuteFrame(seq, pod.podId, op, srcId) }
-                pendingFilter = PendingFilter(op, srcId, now)
+                pendingFilters.removeAll { it.srcId == srcId } // an expired one not yet ticked out
+                pendingFilters += PendingFilter(op, srcId, now)
                 filterMessage = if (op == P.MUTE_IGNORE) "Saving on the Drone Pod…" else "Removing from the Drone Pod…"
             }
             takeOutbox()
@@ -718,24 +729,39 @@ class BtrxDeskPodModel(
     }
 
     private fun onFilterAck(ack: P.FilterAck, frameFlags: Int) {
-        val pend = pendingFilter
-        val wantOp = when (pend?.op) { P.MUTE_IGNORE -> P.FILTER_OP_ADD; P.MUTE_UNIGNORE -> P.FILTER_OP_REMOVE; else -> null }
-        if (pend == null || ack.op != wantOp) {
-            log.debug("own aircraft (saved): FILTER_ACK op=${ack.op} ok=${ack.ok} stored=${ack.stored} matches no request out; ignored")
+        val wantOp = when (ack.op) { P.FILTER_OP_ADD -> P.MUTE_IGNORE; P.FILTER_OP_REMOVE -> P.MUTE_UNIGNORE; else -> null }
+        val pend = when {
+            wantOp == null -> null                       // op 0: a FILTER_LIST replace, not ours
+            ack.srcId == 0 -> null                       // 0x0107 FILTER_LIST answer
+            ack.srcId != null -> pendingFilters.firstOrNull { it.srcId == ack.srcId && it.op == wantOp }   // 0x0107: by echoed id
+            else -> pendingFilters.firstOrNull { it.op == wantOp }   // 0x0106: oldest waiting request of that op
+        }
+        if (pend == null) {
+            log.debug("own aircraft (saved): FILTER_ACK op=${ack.op} ok=${ack.ok} stored=${ack.stored} src_id=${ack.srcId?.let { "0x%04x".format(it) } ?: "none"} matches no request out; ignored")
             return
         }
-        pendingFilter = null
-        val id = "0x%04x".format(pend.srcId)
-        log.info("own aircraft (saved): FILTER_ACK op=${ack.op} ok=${ack.ok} list_crc=0x%04x stored=${ack.stored} flags=0x%02x for src=$id".format(ack.listCrc, frameFlags))
-        if (ack.ok == 1) {
-            val changed = if (pend.op == P.MUTE_IGNORE) savedIgnores.add(pend.srcId) else savedIgnores.remove(pend.srcId)
-            if (changed) onSavedIgnores(savedIgnores.toList())
-            filterMessage = if (pend.op == P.MUTE_IGNORE) "Saved on the Drone Pod (${ack.stored} of $FILTER_LIST_MAX saved)."
-                else "Removed from the Drone Pod (${ack.stored} of $FILTER_LIST_MAX saved)."
-        } else {
-            filterMessage = if (pend.op == P.MUTE_IGNORE)
-                "The Drone Pod did not save it: it saves only a source heard in the last 60 s, and holds $FILTER_LIST_MAX."
-            else "The Drone Pod did not remove it: it removes only a source it heard in the last 60 s."
+        pendingFilters.remove(pend)
+        val id = BtrxDeskPodText.srcIdText(pend.srcId)
+        log.info("own aircraft (saved): FILTER_ACK op=${ack.op} ok=${ack.ok} list_crc=0x%04x stored=${ack.stored} flags=0x%02x for src=0x%04x (%s)".format(
+            ack.listCrc, frameFlags, pend.srcId, if (ack.srcId != null) "by src_id" else "6-byte ack, oldest waiting"))
+        val added = pend.op == P.MUTE_IGNORE
+        when {
+            ack.ok == 1 -> {
+                val changed = if (added) savedIgnores.add(pend.srcId) else savedIgnores.remove(pend.srcId)
+                if (changed) onSavedIgnores(savedIgnores.toList())
+                filterMessage = if (added) "Saved $id on the Drone Pod (${ack.stored} of $FILTER_LIST_MAX saved)."
+                    else "Removed $id from the Drone Pod (${ack.stored} of $FILTER_LIST_MAX saved)."
+            }
+            added -> filterMessage = "The Drone Pod did not save $id: it saves only a source heard in the last 60 s, and holds $FILTER_LIST_MAX."
+            ack.srcId == null -> {
+                // 0x0106: op 4 resolves the id in its live table only; the saved row stays (Remove again on 0x0107).
+                filterMessage = "The Drone Pod no longer tracks $id, so it could not remove it; that needs Drone Pod firmware 0x0107. It stays in this list."
+            }
+            else -> {
+                // 0x0107: op 4 removes every saved entry ignored under that id; ok=0 means none was on the pod.
+                if (savedIgnores.remove(pend.srcId)) onSavedIgnores(savedIgnores.toList())
+                filterMessage = "The Drone Pod had nothing saved under $id; removed from this list."
+            }
         }
     }
 
@@ -952,6 +978,8 @@ class BtrxDeskPodModel(
         /** Re-pair: the Desk Pod answers DESK_PAIR at once; a manual tap also counts until then. */
         const val REPAIR_WINDOW_WAIT_MS = 30_000L
         const val FILTER_ACK_TIMEOUT_MS = 10_000L
+        /** Op 3 / 4 requests that may wait for FILTER_ACK at once (one per src_id). */
+        const val MAX_PENDING_FILTERS = 4
         /** The pod's saved ignore list holds 32 addresses (PROTOCOL.md STEER_MUTE). */
         const val FILTER_LIST_MAX = 32
         const val REPAIR_KEPT = "The Drone Pod stays paired as it was."

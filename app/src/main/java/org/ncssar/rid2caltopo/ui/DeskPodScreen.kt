@@ -143,7 +143,7 @@ fun DeskPodScreen(onDismiss: () -> Unit) {
                         }
                     }
                     if (s.windowOpen && s.pairing.step == PairStep.IDLE) {
-                        Text("The Desk Pod pairing window is open (${s.windowSecondsLeft} s left).", style = MaterialTheme.typography.bodySmall)
+                        Text("The Desk Pod pairing window is open (${s.windowSecondsLeft} s left, ${BtrxDeskPodText.deskPairSourceText(s.windowSource)}).", style = MaterialTheme.typography.bodySmall)
                     }
                     PairingSection(s, onReplace = { replacing = it })
 

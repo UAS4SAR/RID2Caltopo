@@ -60,7 +60,7 @@ struct DeskPodView: View {
                         ForEach(Text_.pairedPodWarnings(s), id: \.self) { Text($0).font(.footnote).foregroundStyle(.red) }
                     }
                     if s.windowOpen && s.pairing.step == .idle {
-                        Text("The Desk Pod pairing window is open (\(s.windowSecondsLeft) s left).").font(.footnote)
+                        Text("The Desk Pod pairing window is open (\(s.windowSecondsLeft) s left, \(Text_.deskPairSourceText(s.windowSource))).").font(.footnote)
                     }
                     pairing(s.pairing)
 
@@ -520,11 +520,11 @@ struct BtrxBearingSection: View {
                 HStack {
                     Text("\(BtrxDeskPodText.ownSaved): \(BtrxDeskPodText.ownSavedDone)").font(.footnote)
                     Button(BtrxDeskPodText.ownSavedRemove) { center.unignoreSourceSaved(src.srcId) }
-                        .font(.footnote).disabled(pod.filterPending != nil)
+                        .font(.footnote).disabled(pod.filterPendingFor(src.srcId))
                 }
             } else {
                 Button(BtrxDeskPodText.ownSaved) { center.ignoreSourceSaved(src.srcId) }
-                    .font(.footnote).disabled(pod.filterPending != nil)
+                    .font(.footnote).disabled(pod.filterPendingFor(src.srcId))
             }
         } else {
             Button(src.ignored ? BtrxBearingText.unignore : BtrxBearingText.ignore) {
@@ -544,7 +544,7 @@ struct BtrxBearingSection: View {
                 Text(BtrxDeskPodText.srcIdText(id)).font(.footnote)
                 Spacer()
                 Button(BtrxDeskPodText.ownSavedRemove) { center.unignoreSourceSaved(id) }
-                    .font(.footnote).disabled(pod.filterPending != nil || !pod.savedIgnoreSupported)
+                    .font(.footnote).disabled(pod.filterPendingFor(id) || !pod.savedIgnoreSupported)
             }
         }
         if let m = pod.filterMessage { Text(m).font(.footnote) }

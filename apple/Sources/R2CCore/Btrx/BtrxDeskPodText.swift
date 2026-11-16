@@ -170,8 +170,26 @@ public enum BtrxDeskPodText {
         out.append("Detections: \(s.detectsLastMinute) in the last minute\(last)")
         if s.otherPodNodes > 0 { out.append("Other Drone Pods heard on the channel: \(s.otherPodNodes)") }
         if let lost = s.deskPhoneLost { out.append(deskPhoneLostLine(lost)) }
+        // Desk Pod HEALTH from byte 30: only phone_lost and reset_reason mean anything (38-43 are always 0).
         if let e = s.deskHealthExt { out.append("Desk Pod last reset: \(resetReasonText(e.resetReason))") }
+        out.append(deskWindowLine(s))
         return out
+    }
+
+    /// The Desk Pod's pairing state, from DESK_PAIR (not HEALTH). Same as Android.
+    public static func deskWindowLine(_ s: Model.Snapshot) -> String {
+        s.windowOpen ? "Desk Pod pairing window: open, \(s.windowSecondsLeft) s left (\(deskPairSourceText(s.windowSource)))"
+            : "Desk Pod pairing window: closed"
+    }
+
+    /// DESK_PAIR source: 1 button, 2 phone/USB-opened (DESK_PAIR), 3 app-opened (PAIR_OPEN, build 0x0107).
+    public static func deskPairSourceText(_ src: Int) -> String {
+        switch src {
+        case BtrxProtocol.deskSrcButton: return "button"
+        case BtrxProtocol.deskSrcLink: return "phone/USB-opened"
+        case BtrxProtocol.deskSrcPairOpen: return "app-opened"
+        default: return "source \(src)"
+        }
     }
 
     /// Drone Pod HEALTH fields from build 0x0106 (offsets 34-43).
