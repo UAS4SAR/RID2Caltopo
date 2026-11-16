@@ -135,7 +135,7 @@ static int pose_yaw(const btrx_bearing_t *h, int64_t t_end, bb_pose_at_t *out) {
     return 0;
 }
 
-static int pose_pos(btrx_bearing_t *h, int64_t t_rep, bb_pose_at_t *out) {
+int bb_pose_pos(btrx_bearing_t *h, int64_t t_rep, bb_pose_at_t *out) {
     const bb_pose_t *p = &h->pose;
     if (p->pos_n == 0 || !h->have_anchor) return BB_FATE_NO_POSITION;
     int64_t gap = (int64_t)h->cfg.max_pos_gap_ms * 1000;
@@ -190,5 +190,22 @@ static int pose_pos(btrx_bearing_t *h, int64_t t_rep, bb_pose_at_t *out) {
 int bb_pose_at(btrx_bearing_t *h, int64_t t_end, bb_pose_at_t *out) {
     int f = pose_yaw(h, t_end, out);
     if (f) return f;
-    return pose_pos(h, t_end - 500000, out);
+    return bb_pose_pos(h, t_end - 500000, out);
+}
+
+/* Horizontal speed from the two position fixes around t_rep (false when unknown). */
+bool bb_drone_speed(btrx_bearing_t *h, int64_t t_rep, float *mps) {
+    const bb_pose_t *p = &h->pose;
+    if (p->pos_n < 2 || !h->have_anchor) return false;
+    int32_t lo = 0, hi = p->pos_n;
+    while (lo < hi) { int32_t m = (lo + hi) / 2; if (pos_at(p, m)->t < t_rep) lo = m + 1; else hi = m; }
+    if (lo < 1) lo = 1;
+    if (lo >= p->pos_n) lo = p->pos_n - 1;
+    const bb_pos_t *a = pos_at(p, lo - 1), *b = pos_at(p, lo);
+    if (b->t <= a->t || b->t - a->t > (int64_t)h->cfg.max_pos_gap_ms * 1000) return false;
+    double ea, na, eb, nb;
+    bb_local(h, a->lat, a->lon, &ea, &na);
+    bb_local(h, b->lat, b->lon, &eb, &nb);
+    *mps = (float)(hypot(eb - ea, nb - na) / ((double)(b->t - a->t) / 1e6));
+    return true;
 }

@@ -207,6 +207,7 @@ public enum BtrxDeskPodText {
             out.append("Desk Pod hears Drone Pod: RSSI \(h.rxRssi) dBm, SNR \(String(format: "%.1f", h.rxSnr)) dB")
             out.append("Drone Pod hears Desk Pod: RSSI \(hh.loraRssi) dBm, SNR \(hh.loraSnr) dB")
             if let e = hh.ext { out.append(contentsOf: dronePodExtLines(e)) }
+            if let lost = hh.scanLostPerS { out.append(scanLostLine(lost)) }
         } else {
             out.append("Drone Pod: no HEALTH report yet (one arrives about every 60 s)")
         }
@@ -235,6 +236,9 @@ public enum BtrxDeskPodText {
         default: return "source \(src)"
         }
     }
+
+    /// Drone Pod HEALTH offset 44 (build 0x010A; absent on 0x0109). Same as Android.
+    public static func scanLostLine(_ perS: Int) -> String { "Drone Pod scan reports lost: \(perS) per second" }
 
     /// Drone Pod HEALTH fields from build 0x0106 (offsets 34-43).
     public static func dronePodExtLines(_ e: BtrxProtocol.HealthExt) -> [String] {

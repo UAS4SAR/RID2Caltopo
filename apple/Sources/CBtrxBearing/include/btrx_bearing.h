@@ -15,8 +15,10 @@
 extern "C" {
 #endif
 
-#define BTRX_BEARING_ABI_VERSION 1u
-#define BTRX_BEARING_MAX_SOURCES 8
+#define BTRX_BEARING_ABI_VERSION 2u
+/* 32 (was 8, Nov 16 watch test: an 8-slot LRU erased the watch's history). */
+#define BTRX_BEARING_MAX_SOURCES 32
+#define BTRX_BEARING_TRAIL_MAX 600            /* strength trail points of the focused source */
 #define BTRX_BEARING_MAX_REPORT_SOURCES 3    /* primary + up to 2 extras (build 0x0103) */
 #define BTRX_BEARING_RSSI_NOT_HEARD (-128)
 #define BTRX_BEARING_MAX_ALIASES 4
@@ -54,7 +56,7 @@ typedef struct {
     /* grid */
     float cell_m;                    /* 10 */
     int32_t grid_cells;              /* 192 (square, multiple of 16) */
-    int32_t max_sources;             /* 8 (<= BTRX_BEARING_MAX_SOURCES) */
+    int32_t max_sources;             /* 24 (<= BTRX_BEARING_MAX_SOURCES); full: evict least evidence */
     float footprint_m;               /* 400 */
     float recentre_margin_m;         /* 300 */
     /* model */
@@ -77,7 +79,7 @@ typedef struct {
     float fade_shape_p;              /* p in [1, 4], 1 = linear; weight = max(0, 1 - (age/N)^p) */
     float bucket_min_s, bucket_max_s;/* 6, 60: bucket width = clamp(N/10, min, max) */
     int32_t buckets_per_source;      /* 64 */
-    int32_t tile_pool_tiles;         /* 4096 x 1 KB (16x16 cells, uint16 E' and S) */
+    int32_t tile_pool_tiles;         /* 8192 x 1 KB (16x16 cells, uint16 E' and S) */
     float alpha_max, support_sat;    /* 0.7, 8: alpha = alpha_max * min(1, S/support_sat) */
     float alpha_visible;             /* 0.02: transparent below; sources_at threshold */
     float ray_halfwidth_ll;          /* -0.5: latest-ray edge level */
@@ -103,6 +105,39 @@ typedef struct {
     /* work */
     int32_t max_reports_per_tick;    /* 4 frames */
     int32_t publish_interval_ms;     /* 1000; a mute or fade change publishes at the next tick */
+    /* sources (Nov 16 watch test) */
+    int32_t extra_min_sightings;     /* 2: an extra (no address) not yet tracked becomes a source
+                                        on its 2nd sighting within extra_sighting_window_ms */
+    int32_t extra_sighting_window_ms;/* 60000 */
+    /* close range: footprint and ray length from the RSSI range estimate */
+    float range_ref_dbm;             /* -38: strongest-patch mean RSSI at 1 m */
+    float range_exponent;            /* 2.2: path-loss exponent */
+    float range_margin;              /* 3: reach = range * margin (about +10 dB): drawn wedge length */
+    float range_min_m;               /* 30: reach floor; footprint_m is the ceiling */
+    /* own aircraft suggestion: stronger than own_rssi_dbm for own_hold_ms while the drone
+       moved own_moved_m sets BTRX_BEARING_SRC_OWN_SUSPECT (a suggestion, never a mute) */
+    float own_rssi_dbm;              /* -40 */
+    int32_t own_hold_ms;             /* 60000 */
+    float own_moved_m;               /* 30 */
+    /* fine layer: reports while low and slow, or strong, also go to a finer grid */
+    float fine_cell_m;               /* 2.5; 0 = no fine layer */
+    int32_t fine_grid_cells;         /* 160 (400 m) */
+    float fine_footprint_m;          /* 100 */
+    float fine_max_agl_m, fine_max_speed_mps; /* 30, 4: "low and slow" */
+    float fine_strong_dbm;           /* -65: or this strong */
+    int32_t fine_tile_pool_tiles;    /* 3072 */
+    /* latest ray: lobes within ray_ambiguous_ll nats of each other are drawn alike; the
+       in-front lobe (|bearing from the nose| < 90) is the main one then */
+    float ray_ambiguous_ll;          /* 0.5 */
+    float focus_dim;                 /* 0.25: alpha of the other sources while one is focused */
+    float pin_max_axis_2s_m;         /* 30: an estimate this tight is "pinned" (map marker) */
+    /* attitude and averaging (pod build 0x010A, PROTOCOL.md "Attitude and the gate") */
+    bool gate_on_attitude_flag;      /* false: STEER flags bit 3 is advice; true = old reject */
+    bool roll_correct;               /* true: port-stbd + k(depression) * roll, no pitch term */
+    float roll_full_weight_deg;      /* 10: full weight up to this |roll| */
+    float roll_max_deg;              /* 45: weight falls to 0.25 here; beyond, gated */
+    int32_t avg_windows;             /* 3: average a source over up to 3 STEER windows */
+    int32_t avg_span_ms;             /* 2600: ... whose window ends lie within this span */
     btrx_bearing_now_us_fn now_us;   /* own-worker mode only; may be NULL */
     btrx_bearing_log_fn log;         /* may be NULL */
     void *callback_ctx;
@@ -209,6 +244,9 @@ void btrx_bearing_short_id(uint64_t key, char out[8]);    /* 6 chars + NUL */
 enum {
     BTRX_BEARING_SRC_IGNORED = 1u << 0,  /* own aircraft: never accumulated */
     BTRX_BEARING_SRC_MUTED = 1u << 1,    /* hidden on the map; still accumulated */
+    BTRX_BEARING_SRC_OWN_SUSPECT = 1u << 2, /* set by the layer: looks like it rides on the drone;
+                                               its estimate is not drawn until decided */
+    BTRX_BEARING_SRC_OWN_CLEARED = 1u << 3, /* set by the app: "not on the drone"; no suggestion */
 };
 /* Sets or clears `mask` bits to `value` for each key (panel rows, "Mute all"). */
 btrx_bearing_status_t btrx_bearing_set_source_flags(btrx_bearing_t *h, const uint64_t *keys,
@@ -230,6 +268,10 @@ btrx_bearing_status_t btrx_bearing_set_fade(btrx_bearing_t *h, float total_s, fl
  * applied at the next tick. */
 btrx_bearing_status_t btrx_bearing_set_stable_src_ids(btrx_bearing_t *h, bool stable);
 
+/* Focus (any thread, next tick): the other sources' shading at focus_dim; the snapshot carries
+ * the focused source's strength trail. key 0 clears. */
+btrx_bearing_status_t btrx_bearing_set_focus(btrx_bearing_t *h, uint64_t key);
+
 /* Work */
 btrx_bearing_status_t btrx_bearing_tick(btrx_bearing_t *h, int64_t now_us, bool *published);
 btrx_bearing_status_t btrx_bearing_start_worker(btrx_bearing_t *h);  /* needs cfg.now_us */
@@ -249,11 +291,19 @@ typedef struct {
 
 typedef struct {                     /* latest-ray outline, section 5.1 */
     bool valid;
+    bool ambiguous;                  /* front and back lobes about equally likely: draw both alike */
     double apex_lat_deg, apex_lon_deg;
     float centre_true_deg, half_width_deg, length_m;
     float mirror_true_deg;           /* NaN when the mirror lobe is not significant */
     int64_t t_us;                    /* report time; the outline fades over 5 s from here */
+    float range_m;                   /* RSSI range estimate (NaN unknown); length_m = reach from it */
 } btrx_bearing_ray_t;
+
+typedef struct {                     /* strength trail point (focused source) */
+    double lat_deg, lon_deg;         /* drone position at the report */
+    int64_t t_us;
+    int8_t rssi_dbm;                 /* strongest patch mean */
+} btrx_bearing_trail_point_t;
 
 typedef struct {
     uint64_t key;                    /* address key, or provisional (pod session, src_id), or src_id key (stable ids) */
@@ -263,7 +313,7 @@ typedef struct {
     char short_id[8];
     btrx_bearing_class_t dev_class;
     uint8_t rgb[3];
-    uint32_t flags;                  /* IGNORED, MUTED */
+    uint32_t flags;                  /* IGNORED, MUTED, OWN_SUSPECT, OWN_CLEARED */
     int64_t first_heard_us, last_heard_us;
     uint32_t reports_in, reports_used, reports_in_window;
     float effective_reports;
@@ -271,6 +321,14 @@ typedef struct {
     const uint8_t *alpha;            /* width*height, row 0 = north; muted sources too */
     btrx_bearing_estimate_t estimate;   /* drawn only when not muted */
     btrx_bearing_ray_t latest_ray;      /* drawn only when not muted */
+    int8_t last_rssi_dbm;            /* strongest patch mean, latest report; -128 none */
+    int8_t max_rssi_dbm;             /* strongest in the fade window; -128 none */
+    bool strongest_valid;            /* "strongest here": where the drone heard it strongest */
+    double strongest_lat_deg, strongest_lon_deg;
+    int64_t strongest_t_us;
+    bool label_valid;                /* label point inside the shaded area */
+    double label_lat_deg, label_lon_deg;
+    bool pinned;                     /* estimate valid and 2 sigma <= pin_max_axis_2s_m */
 } btrx_bearing_source_t;
 
 typedef enum {
@@ -320,6 +378,14 @@ typedef struct {
     int32_t source_count;
     btrx_bearing_source_t sources[BTRX_BEARING_MAX_SOURCES];
     btrx_bearing_stats_t stats;
+    uint64_t focus_key;              /* 0 = none; other sources at focus_dim alpha */
+    /* fine layer (fine_cell_m), only reports while low and slow or strong; draw over rgba */
+    bool fine_valid;
+    int32_t fine_width, fine_height;
+    double fine_north_deg, fine_south_deg, fine_east_deg, fine_west_deg;
+    const uint8_t *fine_rgba;        /* fine_width*fine_height*4, premultiplied, row 0 = north */
+    int32_t trail_count;             /* focused source, oldest first */
+    const btrx_bearing_trail_point_t *trail;
 } btrx_bearing_snapshot_t;
 
 /* Copy of the latest stats, refreshed by tick at the publish interval even
@@ -332,11 +398,15 @@ const btrx_bearing_snapshot_t *btrx_bearing_snapshot_acquire(btrx_bearing_t *h);
 void btrx_bearing_snapshot_release(btrx_bearing_t *h, const btrx_bearing_snapshot_t *s);
 
 /* Deep copy of a snapshot into caller-owned buffers (rgba: width*height*4 bytes;
- * alpha: width*height*MAX_SOURCES bytes), so a platform wrapper can keep the
- * current snapshot for its UI thread while its worker is the one reader. */
+ * alpha: width*height*MAX_SOURCES bytes; fine: fine_width*fine_height*4 bytes, may be
+ * NULL to drop the fine layer; trail: TRAIL_MAX points, may be NULL), so a platform
+ * wrapper can keep the current snapshot for its UI thread while its worker is the one reader. */
 btrx_bearing_status_t btrx_bearing_snapshot_copy(const btrx_bearing_snapshot_t *src,
         btrx_bearing_snapshot_t *dst, uint8_t *rgba, size_t rgba_size,
-        uint8_t *alpha, size_t alpha_size);
+        uint8_t *alpha, size_t alpha_size, uint8_t *fine_rgba, size_t fine_size,
+        btrx_bearing_trail_point_t *trail, int32_t trail_max);
+/* Largest fine raster side for a config (0 = no fine layer), for buffer sizing. */
+int32_t btrx_bearing_fine_cells(const btrx_bearing_config_t *cfg);
 
 /* Tap query (section 5.2): sources with visible shading (muted included)
  * within radius_m of the point, by contribution, highest first.

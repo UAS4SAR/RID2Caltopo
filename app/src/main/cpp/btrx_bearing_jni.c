@@ -8,7 +8,10 @@
  *
  * Meta layout of copySnapshot (mirrored in BtrxBearingNative.kt):
  *   [0] seq [1] t_us [2] width [3] height [4] north [5] south [6] east [7] west [8] source_count
- *   [16..] stats (BBN_STATS_* below), [116 + 40*i ..] source i (BBN_SRC_* below).
+ *   [9] focused source index (-1 none) [10] fine_valid [11] fine cells (square)
+ *   [12] fine north [13] fine south [14] fine east [15] fine west
+ *   [16..] stats (BBN_STATS_* below, 87 used), [112] trail point count (focused source),
+ *   [116 + 56*i ..] source i (bbn_meta below).
  */
 #include <jni.h>
 #include <pthread.h>
@@ -20,7 +23,8 @@
 
 #define BBN_META_STATS 16
 #define BBN_META_SOURCES 116
-#define BBN_META_PER_SOURCE 40
+#define BBN_META_PER_SOURCE 56
+#define BBN_META_TRAIL_COUNT 112
 #define BBN_META_SIZE (BBN_META_SOURCES + BBN_META_PER_SOURCE * BTRX_BEARING_MAX_SOURCES)
 #define BBN_LOG_LINES 256
 #define BBN_LOG_LEN 320
@@ -33,6 +37,9 @@ typedef struct {
     btrx_bearing_snapshot_t snap;      /* deep copy, pointers into the buffers below */
     uint8_t *rgba;
     uint8_t *alpha;
+    int32_t fine_cells;
+    uint8_t *fine;
+    btrx_bearing_trail_point_t *trail;
     pthread_mutex_t log_lock;
     char log_lines[BBN_LOG_LINES][BBN_LOG_LEN];
     int log_head, log_count;
@@ -88,12 +95,15 @@ JNIEXPORT jlong JNICALL JFN(nativeCreate)(JNIEnv *env, jobject self, jbyteArray 
     size_t n = (size_t)cfg.grid_cells * (size_t)cfg.grid_cells;
     w->rgba = malloc(n * 4);
     w->alpha = malloc(n * BTRX_BEARING_MAX_SOURCES);
+    w->fine_cells = btrx_bearing_fine_cells(&cfg);
+    w->fine = malloc((size_t)(w->fine_cells > 0 ? w->fine_cells * w->fine_cells : 1) * 4);
+    w->trail = malloc(sizeof(btrx_bearing_trail_point_t) * BTRX_BEARING_TRAIL_MAX);
     pthread_mutex_init(&w->snap_lock, NULL);
     pthread_mutex_init(&w->log_lock, NULL);
-    if (!w->rgba || !w->alpha || btrx_bearing_create(&cfg, k, &w->h) != BTRX_BEARING_OK) {
+    if (!w->rgba || !w->alpha || !w->fine || !w->trail || btrx_bearing_create(&cfg, k, &w->h) != BTRX_BEARING_OK) {
         pthread_mutex_destroy(&w->snap_lock);
         pthread_mutex_destroy(&w->log_lock);
-        free(w->rgba); free(w->alpha); free(w);
+        free(w->rgba); free(w->alpha); free(w->fine); free(w->trail); free(w);
         return 0;
     }
     return (jlong)(intptr_t)w;
@@ -106,7 +116,7 @@ JNIEXPORT void JNICALL JFN(nativeDestroy)(JNIEnv *env, jobject self, jlong handl
     btrx_bearing_destroy(w->h);
     pthread_mutex_destroy(&w->snap_lock);
     pthread_mutex_destroy(&w->log_lock);
-    free(w->rgba); free(w->alpha); free(w);
+    free(w->rgba); free(w->alpha); free(w->fine); free(w->trail); free(w);
 }
 
 JNIEXPORT jint JNICALL JFN(nativePushPose)(JNIEnv *env, jobject self, jlong handle, jlong t_us, jlong push_us,
@@ -221,6 +231,12 @@ JNIEXPORT jint JNICALL JFN(nativeSetStableSrcIds)(JNIEnv *env, jobject self, jlo
     return w ? btrx_bearing_set_stable_src_ids(w->h, stable == JNI_TRUE) : BTRX_BEARING_E_INVALID;
 }
 
+JNIEXPORT jint JNICALL JFN(nativeSetFocus)(JNIEnv *env, jobject self, jlong handle, jlong key) {
+    (void)env; (void)self;
+    bbn_t *w = bbn(handle);
+    return w ? btrx_bearing_set_focus(w->h, (uint64_t)key) : BTRX_BEARING_E_INVALID;
+}
+
 JNIEXPORT jint JNICALL JFN(nativeReset)(JNIEnv *env, jobject self, jlong handle, jint what, jlong key) {
     (void)env; (void)self;
     bbn_t *w = bbn(handle);
@@ -261,7 +277,12 @@ static void bbn_meta(const btrx_bearing_snapshot_t *s, double *m) {
     m[0] = (double)s->seq; m[1] = (double)s->t_us; m[2] = s->width; m[3] = s->height;
     m[4] = s->north_deg; m[5] = s->south_deg; m[6] = s->east_deg; m[7] = s->west_deg;
     m[8] = s->source_count;
+    m[9] = -1;
+    for (int k = 0; k < s->source_count; k++) if (s->focus_key && s->sources[k].key == s->focus_key) m[9] = k;
+    m[10] = s->fine_valid ? 1 : 0; m[11] = s->fine_width;
+    m[12] = s->fine_north_deg; m[13] = s->fine_south_deg; m[14] = s->fine_east_deg; m[15] = s->fine_west_deg;
     bbn_stats(&s->stats, m + BBN_META_STATS);
+    m[BBN_META_TRAIL_COUNT] = s->trail_count;
     for (int k = 0; k < s->source_count && k < BTRX_BEARING_MAX_SOURCES; k++) {
         const btrx_bearing_source_t *src = &s->sources[k];
         double *o = m + BBN_META_SOURCES + BBN_META_PER_SOURCE * k;
@@ -280,6 +301,12 @@ static void bbn_meta(const btrx_bearing_snapshot_t *s, double *m) {
         o[j++] = r->centre_true_deg; o[j++] = r->half_width_deg; o[j++] = r->length_m;
         o[j++] = r->mirror_true_deg; o[j++] = (double)r->t_us;
         o[j++] = src->src_id; o[j++] = src->src_keyed ? 1 : 0;   /* 31, 32 */
+        o[j++] = r->ambiguous ? 1 : 0; o[j++] = r->range_m;      /* 33, 34 */
+        o[j++] = src->last_rssi_dbm; o[j++] = src->max_rssi_dbm; /* 35, 36 */
+        o[j++] = src->strongest_valid ? 1 : 0; o[j++] = src->strongest_lat_deg; o[j++] = src->strongest_lon_deg; /* 37-39 */
+        o[j++] = (double)src->strongest_t_us;                    /* 40 */
+        o[j++] = src->label_valid ? 1 : 0; o[j++] = src->label_lat_deg; o[j++] = src->label_lon_deg; /* 41-43 */
+        o[j++] = src->pinned ? 1 : 0;                            /* 44 */
     }
 }
 
@@ -290,7 +317,7 @@ static void bbn_meta(const btrx_bearing_snapshot_t *s, double *m) {
  * first publish.
  */
 JNIEXPORT jint JNICALL JFN(nativeCopySnapshot)(JNIEnv *env, jobject self, jlong handle, jobject rgba_buffer,
-        jlongArray keys, jbyteArray short_ids, jdoubleArray meta) {
+        jobject fine_buffer, jdoubleArray trail_out, jlongArray keys, jbyteArray short_ids, jdoubleArray meta) {
     (void)self;
     bbn_t *w = bbn(handle);
     if (!w || !keys || !short_ids || !meta) return BTRX_BEARING_E_INVALID;
@@ -300,7 +327,8 @@ JNIEXPORT jint JNICALL JFN(nativeCopySnapshot)(JNIEnv *env, jobject self, jlong 
     if (!s) return BTRX_BEARING_E_NO_SNAPSHOT;
     size_t n = (size_t)w->cells * (size_t)w->cells;
     pthread_mutex_lock(&w->snap_lock);
-    btrx_bearing_status_t st = btrx_bearing_snapshot_copy(s, &w->snap, w->rgba, n * 4, w->alpha, n * BTRX_BEARING_MAX_SOURCES);
+    btrx_bearing_status_t st = btrx_bearing_snapshot_copy(s, &w->snap, w->rgba, n * 4, w->alpha, n * BTRX_BEARING_MAX_SOURCES,
+            w->fine, (size_t)w->fine_cells * (size_t)w->fine_cells * 4, w->trail, BTRX_BEARING_TRAIL_MAX);
     w->have_snap = st == BTRX_BEARING_OK;
     pthread_mutex_unlock(&w->snap_lock);
     btrx_bearing_snapshot_release(w->h, s);
@@ -313,6 +341,24 @@ JNIEXPORT jint JNICALL JFN(nativeCopySnapshot)(JNIEnv *env, jobject self, jlong 
         size_t need = (size_t)c->width * (size_t)c->height * 4;
         if (dst && cap >= (jlong)need) memcpy(dst, c->rgba, need);
     }
+    if (fine_buffer && c->fine_valid) {
+        uint8_t *dst = (*env)->GetDirectBufferAddress(env, fine_buffer);
+        jlong cap = (*env)->GetDirectBufferCapacity(env, fine_buffer);
+        size_t need = (size_t)c->fine_width * (size_t)c->fine_height * 4;
+        if (dst && cap >= (jlong)need) memcpy(dst, c->fine_rgba, need);
+    }
+    if (trail_out && c->trail_count > 0) {
+        jsize cap = (*env)->GetArrayLength(env, trail_out) / 3;
+        jsize nt = c->trail_count < cap ? c->trail_count : cap;
+        double *tp = malloc(sizeof(double) * 3 * (size_t)(nt > 0 ? nt : 1));
+        if (tp) {
+            for (jsize i = 0; i < nt; i++) {
+                tp[3 * i] = c->trail[i].lat_deg; tp[3 * i + 1] = c->trail[i].lon_deg; tp[3 * i + 2] = c->trail[i].rssi_dbm;
+            }
+            (*env)->SetDoubleArrayRegion(env, trail_out, 0, 3 * nt, tp);
+            free(tp);
+        }
+    }
     jlong k[BTRX_BEARING_MAX_SOURCES] = {0};
     jbyte ids[8 * BTRX_BEARING_MAX_SOURCES];
     memset(ids, 0, sizeof ids);
@@ -322,9 +368,11 @@ JNIEXPORT jint JNICALL JFN(nativeCopySnapshot)(JNIEnv *env, jobject self, jlong 
     }
     (*env)->SetLongArrayRegion(env, keys, 0, BTRX_BEARING_MAX_SOURCES, k);
     (*env)->SetByteArrayRegion(env, short_ids, 0, 8 * BTRX_BEARING_MAX_SOURCES, ids);
-    double m[BBN_META_SIZE];
+    double *m = malloc(sizeof(double) * BBN_META_SIZE);   /* 15 KB: not on the stack */
+    if (!m) return BTRX_BEARING_E_NOMEM;
     bbn_meta(c, m);
     (*env)->SetDoubleArrayRegion(env, meta, 0, BBN_META_SIZE, m);
+    free(m);
     return c->source_count;
 }
 

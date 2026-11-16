@@ -686,6 +686,10 @@ struct RIDTrackMapView: View {
     /// BTRX bearing layer (not observed here: the map follows its snapshot directly).
     @Environment(\.btrxDeskPod) private var btrxCenter
     @State private var btrxPanel: BtrxBearingPanelRequest?
+    /// Pinned-source inspect card (Nov 16): the tapped source key, nil = closed.
+    @State private var btrxInspect: UInt64?
+    /// "Focus this source": handed to the map once (zoom).
+    @State private var btrxFocusRequest: BtrxFocusRequest?
     @State private var showDeskPodFromMap = false
     let onReturnToMain: () -> Void
     let onConfirmPairedDrone: (RidAircraftIdentity) -> Void
@@ -1587,8 +1591,11 @@ struct RIDTrackMapView: View {
                     }
                 },
                 btrx: btrxCenter,
-                onSelectBtrx: inset ? nil : { point, keys in btrxPanel = BtrxBearingPanelRequest(point: point, keys: keys) },
-                onDeskPodDoubleTap: inset ? nil : { showDeskPodFromMap = true }
+                onSelectBtrx: inset ? nil : { point, keys in btrxInspect = nil; btrxPanel = BtrxBearingPanelRequest(point: point, keys: keys) },
+                onDeskPodDoubleTap: inset ? nil : { showDeskPodFromMap = true },
+                onPinnedBtrx: inset ? nil : { key in btrxPanel = nil; btrxInspect = key },
+                btrxFocusRequest: inset ? nil : btrxFocusRequest,
+                btrxCrosshairKey: inset ? nil : btrxInspect
             )
             // Why the bearing layer draws nothing (main map only).
             .overlay(alignment: .top) {
@@ -1601,10 +1608,26 @@ struct RIDTrackMapView: View {
             // "BTRX sources here" at the tap point (main map only).
             .overlay(alignment: .topLeading) {
                 if !inset, let request = btrxPanel, let btrxCenter {
-                    BtrxBearingPanel(center: btrxCenter, rows: request.keys) { btrxPanel = nil }
+                    BtrxBearingPanel(center: btrxCenter, rows: request.keys, onDismiss: { btrxPanel = nil },
+                                     onFocus: { src in btrxPanel = nil; btrxFocusRequest = BtrxFocusRequest(source: src) })
                         .offset(x: request.point.x, y: request.point.y)
                         .id(request.id)
                 }
+            }
+            // Pinned-source inspect card, own-aircraft suggestion and the focus chip (Nov 16; main map only).
+            .overlay(alignment: .bottomLeading) {
+                if !inset, let key = btrxInspect, let btrxCenter {
+                    BtrxPinnedInspectCard(center: btrxCenter, key: key,
+                                          onFocus: { src in btrxFocusRequest = BtrxFocusRequest(source: src) },
+                                          onDismiss: { btrxInspect = nil })
+                        .padding(.leading, 8).padding(.bottom, 72)
+                }
+            }
+            .overlay(alignment: .bottom) {
+                if !inset, let btrxCenter { BtrxOwnAircraftSuggestion(center: btrxCenter).padding(.bottom, 120).padding(.horizontal, 56) }
+            }
+            .overlay(alignment: .top) {
+                if !inset, let btrxCenter { BtrxFocusChip(center: btrxCenter).padding(.top, 48) }
             }
             // Only map-content taps expand a split pane. Settings controls must
             // not also change the layout and destroy their presenting view.
@@ -4248,6 +4271,12 @@ private final class CameraFootprintMapView: UIView {
     private let debugThrottle = CameraFootprintDebugThrottle()
     private let solidHalo = CAShapeLayer()
     private let solidStroke = CAShapeLayer()
+    /// Camera centre crosshair (Nov 16) and its distance/bearing label to the selected target.
+    private let crossHalo = CAShapeLayer()
+    private let crossStroke = CAShapeLayer()
+    private var crossLabels: [CATextLayer] = []
+    /// Selected target marker (BTRX inspected / focused source), nil = none.
+    var target: () -> CLLocationCoordinate2D? = { nil }
     private let dem: GeoTiffElevationSource = {
         let root = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory
@@ -4272,7 +4301,13 @@ private final class CameraFootprintMapView: UIView {
         solidStroke.fillColor = nil
         solidStroke.strokeColor = stroke
         solidStroke.lineWidth = 1.25
-        for shape in [solidHalo, solidStroke] {
+        crossHalo.fillColor = nil
+        crossHalo.strokeColor = halo
+        crossHalo.lineWidth = 4
+        crossStroke.fillColor = nil
+        crossStroke.strokeColor = stroke
+        crossStroke.lineWidth = 2
+        for shape in [solidHalo, solidStroke, crossHalo, crossStroke] {
             layer.addSublayer(shape)
         }
     }
@@ -4308,7 +4343,7 @@ private final class CameraFootprintMapView: UIView {
     override func layoutSubviews() {
         super.layoutSubviews()
         let scale = traitCollection.displayScale
-        for shape in [solidHalo, solidStroke] {
+        for shape in [solidHalo, solidStroke, crossHalo, crossStroke] {
             shape.frame = bounds
             shape.contentsScale = scale
         }
@@ -4402,6 +4437,27 @@ private final class CameraFootprintMapView: UIView {
                 solid.addLine(to: points[next])
             }
         }
+        let cross = UIBezierPath()
+        var labels: [(CGPoint, String)] = []
+        let targetCoordinate = target()
+        func crosshair(_ outline: CameraFootprintOutline) {
+            guard let c = outline.center else { return }
+            let p = map.convert(CLLocationCoordinate2D(latitude: c.latitude, longitude: c.longitude), toPointTo: self)
+            let r: CGFloat = 10, gap: CGFloat = 3
+            cross.move(to: CGPoint(x: p.x - r, y: p.y)); cross.addLine(to: CGPoint(x: p.x - gap, y: p.y))
+            cross.move(to: CGPoint(x: p.x + gap, y: p.y)); cross.addLine(to: CGPoint(x: p.x + r, y: p.y))
+            cross.move(to: CGPoint(x: p.x, y: p.y - r)); cross.addLine(to: CGPoint(x: p.x, y: p.y - gap))
+            cross.move(to: CGPoint(x: p.x, y: p.y + gap)); cross.addLine(to: CGPoint(x: p.x, y: p.y + r))
+            if let t = targetCoordinate {
+                let (d, b) = cameraCrosshairToTarget(c, t.latitude, t.longitude)
+                labels.append((CGPoint(x: p.x + r + 4, y: p.y - r - 14), BtrxBearingText.crosshairToTarget(distanceM: d, bearingDeg: b)))
+            }
+        }
+        defer {
+            crossHalo.path = cross.cgPath
+            crossStroke.path = cross.cgPath
+            updateCrossLabels(labels)
+        }
         // One outline per aircraft. Unbounded far edges stay open (no far segment, no dash).
         let outlines = overlayBook.sync(inputs: inputs, terrain: terrain)
         let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
@@ -4423,15 +4479,47 @@ private final class CameraFootprintMapView: UIView {
                     )
                 }
                 strokeOutline(outline)
+                crosshair(outline)
             }
         }
         solidHalo.path = solid.cgPath
         solidStroke.path = solid.cgPath
     }
 
+    private func updateCrossLabels(_ labels: [(CGPoint, String)]) {
+        while crossLabels.count < labels.count {
+            let t = CATextLayer()
+            t.fontSize = 12
+            t.foregroundColor = UIColor.white.cgColor
+            t.backgroundColor = UIColor(white: 0.125, alpha: 0.85).cgColor
+            t.cornerRadius = 3
+            t.alignmentMode = .center
+            t.contentsScale = traitCollection.displayScale
+            layer.addSublayer(t)
+            crossLabels.append(t)
+        }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        for (i, t) in crossLabels.enumerated() {
+            if i < labels.count {
+                let (p, text) = labels[i]
+                t.string = text
+                let w = (text as NSString).size(withAttributes: [.font: UIFont.systemFont(ofSize: 12)]).width + 8
+                t.frame = CGRect(x: p.x, y: p.y, width: w, height: 16)
+                t.isHidden = false
+            } else {
+                t.isHidden = true
+            }
+        }
+        CATransaction.commit()
+    }
+
     private func clearPaths() {
         solidHalo.path = nil
         solidStroke.path = nil
+        crossHalo.path = nil
+        crossStroke.path = nil
+        updateCrossLabels([])
     }
 }
 
@@ -4781,6 +4869,10 @@ private struct OperationalMKMapView: UIViewRepresentable {
     var btrx: BtrxDeskPodCenter? = nil
     var onSelectBtrx: ((CGPoint, [UInt64]) -> Void)? = nil
     var onDeskPodDoubleTap: (() -> Void)? = nil
+    var onPinnedBtrx: ((UInt64) -> Void)? = nil
+    var btrxFocusRequest: BtrxFocusRequest? = nil
+    /// Inspected BTRX source: the camera crosshair's distance/bearing target (else the focused one).
+    var btrxCrosshairKey: UInt64? = nil
 
     func makeCoordinator() -> Coordinator {
         Coordinator(
@@ -4857,8 +4949,14 @@ private struct OperationalMKMapView: UIViewRepresentable {
         context.coordinator.onAttributionViewportChanged = onAttributionViewportChanged
         defer {
             context.coordinator.btrxMap.onSelect = onSelectBtrx
+            context.coordinator.btrxMap.onPinned = onPinnedBtrx
             context.coordinator.btrxMap.onDeskPodDoubleTap = onDeskPodDoubleTap
             context.coordinator.btrxMap.attach(btrx, map: map, inset: inset)
+            context.coordinator.btrxMap.crosshairKey = btrxCrosshairKey
+            if let request = btrxFocusRequest, request.id != context.coordinator.btrxFocusHandled {
+                context.coordinator.btrxFocusHandled = request.id
+                context.coordinator.btrxMap.focus(request.source)
+            }
         }
         context.coordinator.updateMappingLayers(on:map,layers:mappingLayers)
         context.coordinator.onSelectAircraft = onSelectAircraft
@@ -4929,6 +5027,7 @@ private struct OperationalMKMapView: UIViewRepresentable {
             contours: showContours,
             revision: tileCacheRevision
         )
+        context.coordinator.footprintView.target = { [weak btrxMap = context.coordinator.btrxMap] in btrxMap?.crosshairTarget() }
         context.coordinator.footprintView.bind(on: map, inputs: cameraFootprintInputProvider)
         context.coordinator.updateOperationalOverlays(
             on: map,
@@ -4966,6 +5065,7 @@ private struct OperationalMKMapView: UIViewRepresentable {
         @Binding private var operatorAdjustedViewport: Bool
         let footprintView = CameraFootprintMapView()
         let btrxMap = BtrxBearingMapController()
+        var btrxFocusHandled: UUID?
         private var tileFingerprint = ""
         private var mappingLayerFingerprint: [MappingLayer] = []
         private var mappingBoundaryFingerprint: [Bool] = []
@@ -7471,7 +7571,9 @@ final class BtrxBearingMapRenderer: MKOverlayRenderer, @unchecked Sendable {
     private let lock = NSLock()
     private var snapshot: BtrxBearingSnapshot?
     private var image: CGImage?
+    private var fineImage: CGImage?
     private let nowUs: () -> Int64
+    static let pinRadiusPt: CGFloat = 9
 
     init(overlay: MKOverlay, nowUs: @escaping () -> Int64) {
         self.nowUs = nowUs
@@ -7481,7 +7583,8 @@ final class BtrxBearingMapRenderer: MKOverlayRenderer, @unchecked Sendable {
     /// Main thread: show `snap` (nil clears).
     func show(_ snap: BtrxBearingSnapshot?) {
         let img = snap.flatMap(Self.image(of:))
-        lock.lock(); snapshot = snap; image = img; lock.unlock()
+        let fine = snap.flatMap(Self.fineImage(of:))
+        lock.lock(); snapshot = snap; image = img; fineImage = fine; lock.unlock()
         setNeedsDisplay()
     }
 
@@ -7495,6 +7598,42 @@ final class BtrxBearingMapRenderer: MKOverlayRenderer, @unchecked Sendable {
                        provider: provider, decode: nil, shouldInterpolate: true, intent: .defaultIntent)
     }
 
+    /// Fine layer (2.5 m cells) raster, nil when there is none.
+    static func fineImage(of snap: BtrxBearingSnapshot) -> CGImage? {
+        guard let f = snap.fine, f.cells > 0, f.rgba.count >= f.cells * f.cells * 4,
+              let provider = CGDataProvider(data: f.rgba as CFData)
+        else { return nil }
+        return CGImage(width: f.cells, height: f.cells, bitsPerComponent: 8, bitsPerPixel: 32,
+                       bytesPerRow: f.cells * 4, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                       bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+                       provider: provider, decode: nil, shouldInterpolate: true, intent: .defaultIntent)
+    }
+
+    private func drawRaster(_ img: CGImage, north: Double, south: Double, east: Double, west: Double,
+                            mapRect: MKMapRect, in ctx: CGContext) {
+        let nw = point(for: MKMapPoint(CLLocationCoordinate2D(latitude: north, longitude: west)))
+        let se = point(for: MKMapPoint(CLLocationCoordinate2D(latitude: south, longitude: east)))
+        let rect = CGRect(x: nw.x, y: nw.y, width: se.x - nw.x, height: se.y - nw.y)
+        guard rect.intersects(self.rect(for: mapRect)) else { return }
+        ctx.saveGState()
+        ctx.interpolationQuality = .medium
+        ctx.translateBy(x: rect.minX, y: rect.maxY)
+        ctx.scaleBy(x: 1, y: -1) // row 0 north
+        ctx.draw(img, in: CGRect(origin: .zero, size: rect.size))
+        ctx.restoreGState()
+    }
+
+    /// Main thread: the pinned source whose marker is within the touch radius of `p` (map points of this renderer).
+    func pinnedSource(near coordinate: CLLocationCoordinate2D, radiusM: Double) -> BtrxBearingSource? {
+        lock.lock(); let snap = snapshot; lock.unlock()
+        let here = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
+        return snap?.sources
+            .filter { $0.pinned && !$0.muted && !$0.ignored && $0.estimate != nil }
+            .map { s in (s, here.distance(from: CLLocation(latitude: s.estimate!.lat, longitude: s.estimate!.lon))) }
+            .filter { $0.1 <= radiusM }
+            .min { $0.1 < $1.1 }?.0
+    }
+
     func hasFadingRay(nowUs: Int64) -> Bool {
         lock.lock(); defer { lock.unlock() }
         return snapshot?.sources.contains { s in
@@ -7506,30 +7645,24 @@ final class BtrxBearingMapRenderer: MKOverlayRenderer, @unchecked Sendable {
     override func draw(_ mapRect: MKMapRect, zoomScale: MKZoomScale, in ctx: CGContext) {
         lock.lock(); let snap = snapshot; let img = image; lock.unlock()
         guard let snap else { return }
+        lock.lock(); let fineImg = fineImage; lock.unlock()
         let px = 1 / zoomScale // one screen point in map points
-        if let img {
-            let nw = point(for: MKMapPoint(CLLocationCoordinate2D(latitude: snap.north, longitude: snap.west)))
-            let se = point(for: MKMapPoint(CLLocationCoordinate2D(latitude: snap.south, longitude: snap.east)))
-            let rect = CGRect(x: nw.x, y: nw.y, width: se.x - nw.x, height: se.y - nw.y)
-            if rect.intersects(self.rect(for: mapRect)) {
-                ctx.saveGState()
-                ctx.interpolationQuality = .medium
-                ctx.translateBy(x: rect.minX, y: rect.maxY)
-                ctx.scaleBy(x: 1, y: -1) // row 0 north
-                ctx.draw(img, in: CGRect(origin: .zero, size: rect.size))
-                ctx.restoreGState()
-            }
+        if let img { drawRaster(img, north: snap.north, south: snap.south, east: snap.east, west: snap.west, mapRect: mapRect, in: ctx) }
+        if let fineImg, let f = snap.fine {
+            drawRaster(fineImg, north: f.north, south: f.south, east: f.east, west: f.west, mapRect: mapRect, in: ctx)
         }
         let now = nowUs()
         UIGraphicsPushContext(ctx)
         defer { UIGraphicsPopContext() }
+        drawTrail(snap, px: px, in: ctx)
         for s in snap.sources where !s.muted && !s.ignored {
+            let dim = snap.focusKey != 0 && s.key != snap.focusKey
             let color = UIColor(red: CGFloat((s.rgb >> 16) & 0xFF) / 255, green: CGFloat((s.rgb >> 8) & 0xFF) / 255,
                                 blue: CGFloat(s.rgb & 0xFF) / 255, alpha: 1)
             if let ray = s.latestRay {
                 let age = now - ray.tUs
                 if (0..<Self.rayFadeUs).contains(age) {
-                    let a = CGFloat(1 - Double(age) / Double(Self.rayFadeUs))
+                    let a = CGFloat(1 - Double(age) / Double(Self.rayFadeUs)) * (dim ? 0.35 : 1)
                     let apex = point(for: MKMapPoint(CLLocationCoordinate2D(latitude: ray.apexLat, longitude: ray.apexLon)))
                     ctx.setStrokeColor(color.withAlphaComponent(a).cgColor)
                     ctx.setLineWidth(2.5 * px)
@@ -7539,7 +7672,14 @@ final class BtrxBearingMapRenderer: MKOverlayRenderer, @unchecked Sendable {
                         ctx.addLine(to: point(for: MKMapPoint(Self.destination(ray.apexLat, ray.apexLon, Double(b), Double(ray.lengthM)))))
                     }
                     ctx.strokePath()
-                    if let m = ray.mirrorTrueDeg {
+                    if let m = ray.mirrorTrueDeg, ray.ambiguous {
+                        // Front and back about equally likely: the same full wedge both ways.
+                        for b in [m - ray.halfWidthDeg, m, m + ray.halfWidthDeg] {
+                            ctx.move(to: apex)
+                            ctx.addLine(to: point(for: MKMapPoint(Self.destination(ray.apexLat, ray.apexLon, Double(b), Double(ray.lengthM)))))
+                        }
+                        ctx.strokePath()
+                    } else if let m = ray.mirrorTrueDeg {
                         ctx.setLineWidth(1.5 * px)
                         ctx.setLineDash(phase: 0, lengths: [8 * px, 6 * px])
                         ctx.move(to: apex)
@@ -7553,18 +7693,66 @@ final class BtrxBearingMapRenderer: MKOverlayRenderer, @unchecked Sendable {
                 for k: Float in [1, 2] {
                     let path = ellipsePath(est.lat, est.lon, k * est.axisMajor1sM, k * est.axisMinor1sM, est.axisMajorDeg)
                     ctx.addPath(path); ctx.setStrokeColor(UIColor.white.withAlphaComponent(0.8).cgColor); ctx.setLineWidth(4 * px); ctx.strokePath()
-                    ctx.addPath(path); ctx.setStrokeColor(color.withAlphaComponent(k == 1 ? 1 : 0.67).cgColor); ctx.setLineWidth(2 * px); ctx.strokePath()
+                    ctx.addPath(path); ctx.setStrokeColor(color.withAlphaComponent((k == 1 ? 1 : 0.67) * (dim ? 0.33 : 1)).cgColor); ctx.setLineWidth(2 * px); ctx.strokePath()
                 }
                 let c = point(for: MKMapPoint(CLLocationCoordinate2D(latitude: est.lat, longitude: est.lon)))
-                let dot = CGRect(x: c.x - 4 * px, y: c.y - 4 * px, width: 8 * px, height: 8 * px)
-                ctx.setFillColor(color.cgColor); ctx.fillEllipse(in: dot)
-                ctx.setStrokeColor(UIColor.white.withAlphaComponent(0.8).cgColor); ctx.setLineWidth(2 * px); ctx.strokeEllipse(in: dot)
+                if s.pinned {
+                    drawPin(at: c, color: color.withAlphaComponent(dim ? 0.5 : 1), px: px, in: ctx)
+                } else {
+                    let dot = CGRect(x: c.x - 4 * px, y: c.y - 4 * px, width: 8 * px, height: 8 * px)
+                    ctx.setFillColor(color.cgColor); ctx.fillEllipse(in: dot)
+                    ctx.setStrokeColor(UIColor.white.withAlphaComponent(0.8).cgColor); ctx.setLineWidth(2 * px); ctx.strokeEllipse(in: dot)
+                }
                 drawLabel(BtrxBearingText.label(s), at: CGPoint(x: c.x + 8 * px, y: c.y - 8 * px), px: px)
+            } else if let lat = s.labelLat, let lon = s.labelLon {
+                // Inside the shading (Nov 16: labels sat 240 m out along a fixed 400 m ray).
+                drawLabel(BtrxBearingText.label(s), at: point(for: MKMapPoint(CLLocationCoordinate2D(latitude: lat, longitude: lon))), px: px)
             } else if let ray = s.latestRay {
                 let end = point(for: MKMapPoint(Self.destination(ray.apexLat, ray.apexLon, Double(ray.centreTrueDeg), Double(ray.lengthM) * 0.6)))
                 drawLabel(BtrxBearingText.label(s), at: end, px: px)
             }
         }
+    }
+
+    /// Pinned source: a bold ring with a cross and a centre dot, distinct from the estimate dot. Same as Android.
+    private func drawPin(at c: CGPoint, color: UIColor, px: CGFloat, in ctx: CGContext) {
+        let r = Self.pinRadiusPt * px
+        let ring = CGRect(x: c.x - r, y: c.y - r, width: 2 * r, height: 2 * r)
+        ctx.setStrokeColor(UIColor.white.withAlphaComponent(0.8).cgColor); ctx.setLineWidth(5 * px); ctx.strokeEllipse(in: ring)
+        ctx.setStrokeColor(color.cgColor); ctx.setLineWidth(3 * px); ctx.strokeEllipse(in: ring)
+        for (a, b) in [(CGPoint(x: c.x - 1.6 * r, y: c.y), CGPoint(x: c.x - 0.5 * r, y: c.y)), (CGPoint(x: c.x + 0.5 * r, y: c.y), CGPoint(x: c.x + 1.6 * r, y: c.y)),
+                       (CGPoint(x: c.x, y: c.y - 1.6 * r), CGPoint(x: c.x, y: c.y - 0.5 * r)), (CGPoint(x: c.x, y: c.y + 0.5 * r), CGPoint(x: c.x, y: c.y + 1.6 * r))] {
+            ctx.move(to: a); ctx.addLine(to: b)
+        }
+        ctx.strokePath()
+        ctx.setFillColor(color.cgColor)
+        ctx.fillEllipse(in: CGRect(x: c.x - 3 * px, y: c.y - 3 * px, width: 6 * px, height: 6 * px))
+    }
+
+    /// Focused source: dots along the flight path, blue (weak) to red (strong), and "strongest here". Same as Android.
+    private func drawTrail(_ snap: BtrxBearingSnapshot, px: CGFloat, in ctx: CGContext) {
+        if !snap.trail.isEmpty {
+            let lo = snap.trail.map(\.rssiDbm).min()!, hi = snap.trail.map(\.rssiDbm).max()!
+            let span = CGFloat(max(1, hi - lo))
+            for t in snap.trail {
+                let p = point(for: MKMapPoint(CLLocationCoordinate2D(latitude: t.lat, longitude: t.lon)))
+                let f = CGFloat(t.rssiDbm - lo) / span
+                let r = (2.5 + 2.5 * f) * px
+                ctx.setFillColor(UIColor(red: f, green: 0.24 * (1 - f), blue: 1 - f, alpha: 0.9).cgColor)
+                ctx.fillEllipse(in: CGRect(x: p.x - r, y: p.y - r, width: 2 * r, height: 2 * r))
+            }
+        }
+        guard snap.focusKey != 0, let f = snap.sources.first(where: { $0.key == snap.focusKey }),
+              let lat = f.strongestLat, let lon = f.strongestLon else { return }
+        let p = point(for: MKMapPoint(CLLocationCoordinate2D(latitude: lat, longitude: lon)))
+        let r = 9 * px
+        for (w, c) in [(5 * px, UIColor.white.withAlphaComponent(0.8)), (3 * px, UIColor(red: 0.84, green: 0, blue: 0, alpha: 1))] {
+            ctx.setStrokeColor(c.cgColor); ctx.setLineWidth(w)
+            ctx.move(to: CGPoint(x: p.x - r, y: p.y - r)); ctx.addLine(to: CGPoint(x: p.x + r, y: p.y + r))
+            ctx.move(to: CGPoint(x: p.x - r, y: p.y + r)); ctx.addLine(to: CGPoint(x: p.x + r, y: p.y - r))
+            ctx.strokePath()
+        }
+        drawLabel(BtrxBearingText.strongestHere + (f.maxRssiDbm.map { " \($0) dBm" } ?? ""), at: CGPoint(x: p.x + r + 4 * px, y: p.y + 4 * px), px: px)
     }
 
     /// `at` is the text baseline start, as on Android.
@@ -7622,6 +7810,20 @@ final class BtrxBearingMapController: NSObject, UIGestureRecognizerDelegate {
     private var inset = false
     private var fadeTimer: Timer?
     var onSelect: ((CGPoint, [UInt64]) -> Void)?
+    /// Tap on a pinned-source marker: the inspect card (Nov 16).
+    var onPinned: ((UInt64) -> Void)?
+    /// The inspected source; the camera crosshair measures to it, else to the focused one.
+    var crosshairKey: UInt64?
+
+    /// Camera crosshair target: the inspected source, else the focused one (its estimate, else strongest-here). Same as Android.
+    func crosshairTarget() -> CLLocationCoordinate2D? {
+        guard let snap = snapshot, center?.bearingOn == true else { return nil }
+        let key = crosshairKey ?? (snap.focusKey != 0 ? snap.focusKey : nil)
+        guard let key, let s = snap.sources.first(where: { $0.key == key }) else { return nil }
+        if let e = s.estimate { return CLLocationCoordinate2D(latitude: e.lat, longitude: e.lon) }
+        if let a = s.strongestLat, let b = s.strongestLon { return CLLocationCoordinate2D(latitude: a, longitude: b) }
+        return nil
+    }
     var annotationHit: ((CGPoint, MKMapView) -> Bool)?
     /// Map double tap while the Desk Pod is talking (Ken, Nov 13); nil on inset maps.
     var onDeskPodDoubleTap: (() -> Void)?
@@ -7757,12 +7959,47 @@ final class BtrxBearingMapController: NSObject, UIGestureRecognizerDelegate {
         guard gesture.state == .ended, let map = gesture.view as? MKMapView else { return }
         let location = gesture.location(in: map)
         if annotationHit?(location, map) == true { return }
+        if !inset, let renderer {
+            let here = map.convert(location, toCoordinateFrom: map)
+            let edge = map.convert(CGPoint(x: location.x + BtrxBearingMapRenderer.pinRadiusPt * 2.2, y: location.y), toCoordinateFrom: map)
+            let r = CLLocation(latitude: here.latitude, longitude: here.longitude).distance(from: CLLocation(latitude: edge.latitude, longitude: edge.longitude))
+            if let pin = renderer.pinnedSource(near: here, radiusM: r) { onPinned?(pin.key); return }
+        }
         let hits = sources(at: location, in: map)
         guard !hits.isEmpty else { return }
         onSelect?(location, hits.map(\.key))
     }
 
     func hasSources(at location: CGPoint, in map: MKMapView) -> Bool { !sources(at: location, in: map).isEmpty }
+
+    /// "Focus this source": the layer dims the others at its next tick; the map zooms to the
+    /// source now (2 sigma ellipse, strongest-here, label point, latest ray apex; at least 150 m).
+    func focus(_ s: BtrxBearingSource) {
+        center?.bearing.setFocus(s.key)
+        guard let map, let region = Self.focusRegion(s) else { return }
+        map.setRegion(region, animated: true)
+    }
+
+    nonisolated static func focusRegion(_ s: BtrxBearingSource, minSpanM: Double = 150) -> MKCoordinateRegion? {
+        var pts: [CLLocationCoordinate2D] = []
+        if let e = s.estimate {
+            let r = 2 * Double(e.axisMajor1sM)
+            let dLat = r / 111_320, dLon = r / (111_320 * cos(e.lat * .pi / 180))
+            pts += [CLLocationCoordinate2D(latitude: e.lat + dLat, longitude: e.lon + dLon), CLLocationCoordinate2D(latitude: e.lat - dLat, longitude: e.lon - dLon)]
+        }
+        if let a = s.strongestLat, let b = s.strongestLon { pts.append(CLLocationCoordinate2D(latitude: a, longitude: b)) }
+        if let a = s.labelLat, let b = s.labelLon { pts.append(CLLocationCoordinate2D(latitude: a, longitude: b)) }
+        if let r = s.latestRay { pts.append(CLLocationCoordinate2D(latitude: r.apexLat, longitude: r.apexLon)) }
+        guard !pts.isEmpty else { return nil }
+        let n = pts.map(\.latitude).max()!, so = pts.map(\.latitude).min()!
+        let e = pts.map(\.longitude).max()!, w = pts.map(\.longitude).min()!
+        let cLat = (n + so) / 2, cLon = (e + w) / 2
+        // 20 % margin each side, like Android's 48 dp border.
+        let spanLat = max(n - so, minSpanM / 111_320) * 1.4
+        let spanLon = max(e - w, minSpanM / (111_320 * cos(cLat * .pi / 180))) * 1.4
+        return MKCoordinateRegion(center: CLLocationCoordinate2D(latitude: cLat, longitude: cLon),
+                                  span: MKCoordinateSpan(latitudeDelta: spanLat, longitudeDelta: spanLon))
+    }
 
     private func sources(at location: CGPoint, in map: MKMapView) -> [BtrxBearingSource] {
         guard !inset, snapshot != nil, let layer = center?.bearing else { return [] }
@@ -7821,6 +8058,12 @@ struct BtrxMapStatusChip: View {
             }
         }
     }
+}
+
+/// "Focus this source" from the panel or the inspect card; the map zooms once per request.
+struct BtrxFocusRequest: Identifiable, Equatable {
+    let id = UUID()
+    let source: BtrxBearingSource
 }
 
 struct BtrxBearingPanelRequest: Identifiable, Equatable {

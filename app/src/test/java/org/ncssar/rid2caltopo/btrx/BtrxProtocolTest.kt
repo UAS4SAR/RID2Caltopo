@@ -232,6 +232,23 @@ class BtrxProtocolTest {
         assertEquals(1, hl.scanning)
     }
 
+    /** Build 0x010A HEALTH (btrx d74aaec): 46 bytes, scan_lost_per_s u16 at 44; 44 bytes still valid. */
+    @Test
+    fun health46ScanLostFromBuild010A() {
+        val p = ByteArray(46)
+        P.putU32(p, 30, 7)
+        p[43] = P.EXCL_OWN.toByte()
+        p[44] = 0x2A; p[45] = 0x01                                  // 298 per second
+        val h = P.parseHealth(p)
+        assertEquals(298, h.scanLostPerS)
+        assertEquals(7L, h.phoneLost)
+        assertEquals(P.EXCL_OWN, h.ext!!.excludeFlags)
+        assertNull(P.parseHealth(p.copyOf(44)).scanLostPerS)
+        assertEquals(h.ext, P.parseHealth(p.copyOf(44)).ext)
+        assertNull(P.parseHealth(p.copyOf(45)).scanLostPerS)
+        assertEquals("Drone Pod scan reports lost: 298 per second", org.ncssar.rid2caltopo.btrx.BtrxDeskPodText.scanLostLine(298))
+    }
+
     /** Build 0x0106 HEALTH (PROTOCOL.md): 44 bytes, new fields at 34-43; 30 and 34 still read, longer tolerated. */
     @Test
     fun health44FromBuild0106() {
@@ -258,6 +275,7 @@ class BtrxProtocolTest {
         assertEquals(3L, P.parseHealth(p.copyOf(34)).phoneLost)
         assertNull(P.parseHealth(p.copyOf(43)).ext)
         assertNull(P.parseHealth(p.copyOf(30)).phoneLost)
+        assertNull(h.scanLostPerS)                                  // 44 bytes (0x0106-0x0109): no scan_lost
         val line = BtrxFrameLog.describe(P.HEALTH, p)
         assertTrue(line, line.contains(" phone_lost=3 reset_reason=0x10004(soft-reset,wake-pin) pair_source=app (PAIR_OPEN) nods_ignored=300 excluded_per_s=16 exclude_flags=" +
             P.excludeFlagNames(0x0B)))

@@ -91,6 +91,7 @@ object BtrxDeskPodText {
             add("Desk Pod hears Drone Pod: RSSI ${h.rxRssi} dBm, SNR ${"%.1f".format(Locale.US, h.rxSnr)} dB")
             add("Drone Pod hears Desk Pod: RSSI ${hh.loraRssi} dBm, SNR ${hh.loraSnr} dB")
             hh.ext?.let { addAll(dronePodExtLines(it)) }
+            hh.scanLostPerS?.let { add(scanLostLine(it)) }
         }
         val last = s.lastDetectMs?.let { ", last ${ago(s.nowMs - it)}" } ?: ""
         add("Detections: ${s.detectsLastMinute} in the last minute$last")
@@ -113,6 +114,9 @@ object BtrxDeskPodText {
         P.DESK_SRC_PAIR_OPEN -> "app-opened"
         else -> "source $src"
     }
+
+    /** Drone Pod HEALTH offset 44 (build 0x010A; absent on 0x0109). */
+    fun scanLostLine(perS: Int): String = "Drone Pod scan reports lost: $perS per second"
 
     /** Drone Pod HEALTH fields from build 0x0106 (offsets 34-43). */
     fun dronePodExtLines(e: P.HealthExt): List<String> = listOf(

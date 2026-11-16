@@ -60,7 +60,8 @@ object BtrxFrameLog {
                     else " reset_reason=0x%x(%s) pair_source=%s nods_ignored=%d excluded_per_s=%d exclude_flags=%s".format(
                         e.resetReason, P.resetReasonNames(e.resetReason), P.pairSourceName(e.pairSource), e.nodsIgnored,
                         e.excludedPerS, P.excludeFlagNames(e.excludeFlags))
-                } ?: "")
+                } ?: "") +
+                (it.scanLostPerS?.let { l -> " scan_lost_per_s=$l" } ?: "")
         }
         P.CONFIRM_REQ -> P.parseConfirmReq(p).let {
             "version=${it.version} action=${P.confirmActionName(it.action)} token=${it.token} timeout_s=${it.timeoutS} state=${P.confirmStateName(it.state)}"

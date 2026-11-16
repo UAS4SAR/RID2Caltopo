@@ -341,6 +341,9 @@ public enum BtrxProtocol {
         public var phoneLost: UInt32? = nil
         /// Offsets 34-43 (build 0x0106); nil for shorter HEALTH.
         public var ext: HealthExt? = nil
+        /// Offset 44, u16 LE (build 0x010A, btrx d74aaec): scan reports this board lost per
+        /// second. Parsed by length: nil for 44-byte (0x0106-0x0109) HEALTH. Same as Android.
+        public var scanLostPerS: Int? = nil
     }
 
     /// HEALTH fields from build 0x0106 (PROTOCOL.md HEALTH offsets 34-43).
@@ -362,6 +365,7 @@ public enum BtrxProtocol {
     public static let healthLen = 30
     public static let healthLostLen = 34
     public static let healthExtLen = 44
+    public static let healthScanLostLen = 46
 
     public static let pairSrcNone = 0, pairSrcNod = 1, pairSrcApp = 2
     public static func pairSourceName(_ src: Int) -> String {
@@ -400,7 +404,8 @@ public enum BtrxProtocol {
                       txPolicy: Int(p[27]), errorFlags: Int(p[28]), scanning: Int(p[29]),
                       phoneLost: p.count >= healthLostLen ? u32(p, 30) : nil,
                       ext: p.count >= healthExtLen ? HealthExt(resetReason: u32(p, 34), pairSource: Int(p[38]), nodsIgnored: u16(p, 39),
-                                                               excludedPerS: u16(p, 41), excludeFlags: Int(p[43])) : nil)
+                                                               excludedPerS: u16(p, 41), excludeFlags: Int(p[43])) : nil,
+                      scanLostPerS: p.count >= healthScanLostLen ? u16(p, 44) : nil)
     }
 
     /// TIME_PING payload (protocol.py pack_time): ping_seq, 0, t1, t2 = 0, t3 = 0, u16 0.

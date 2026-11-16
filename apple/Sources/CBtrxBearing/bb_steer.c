@@ -134,8 +134,39 @@ static void srcid_remap(btrx_bearing_t *h, int32_t from, int32_t to) {
     for (int32_t i = 0; i < h->srcid_n; i++) if (h->srcid[i].slot == from) h->srcid[i].slot = to;
 }
 
+static void colour_remember(btrx_bearing_t *h, uint64_t key, uint8_t colour) {
+    if (!key) return;
+    for (int32_t i = 0; i < h->colmem_n; i++)
+        if (h->colmem[i].key == key) {
+            memmove(&h->colmem[i], &h->colmem[i + 1], sizeof h->colmem[0] * (size_t)(h->colmem_n - i - 1));
+            h->colmem_n--;
+            break;
+        }
+    if (h->colmem_n == BB_COLOUR_MEMORY) {
+        memmove(&h->colmem[0], &h->colmem[1], sizeof h->colmem[0] * (BB_COLOUR_MEMORY - 1));
+        h->colmem_n--;
+    }
+    h->colmem[h->colmem_n].key = key;
+    h->colmem[h->colmem_n].colour = colour;
+    h->colmem_n++;
+}
+
+/* Fine layer sources are slot-parallel: slot i there is slot i here. */
+static void fine_clear_slot(btrx_bearing_t *h, int32_t slot) {
+    if (!h->fine) return;
+    bb_source_t *c = &h->fine->sources[slot];
+    if (c->used) bb_source_free_buckets(h->fine, c);
+    bb_bucket_t *b = c->buckets;
+    memset(c, 0, sizeof *c);
+    c->buckets = b;
+    for (int32_t i = 0; i < h->fine->cfg.buckets_per_source; i++) b[i].tile_head = BB_NONE;
+}
+
 void bb_source_evict(btrx_bearing_t *h, int32_t slot) {
     bb_source_t *s = &h->sources[slot];
+    colour_remember(h, s->key, s->colour);
+    for (int32_t a = 0; a < s->alias_count; a++) colour_remember(h, s->aliases[a], s->colour);
+    fine_clear_slot(h, slot);
     bb_source_free_buckets(h, s);
     bb_diversity_drop_slot(h, slot);
     bb_bucket_t *b = s->buckets;
@@ -167,18 +198,82 @@ static void apply_pending_flags(btrx_bearing_t *h, bb_source_t *s) {
     }
 }
 
+/* Evidence a source holds now: fade-weighted, diversity-discounted report count. */
+static float source_evidence(const btrx_bearing_t *h, const bb_source_t *s, int64_t now_us) {
+    float e = 0;
+    for (int32_t i = 0; i < h->cfg.buckets_per_source; i++)
+        if (s->buckets[i].used) e += bb_fade_weight(h, &s->buckets[i], now_us) * s->buckets[i].eff;
+    return e;
+}
+
+/* Full: evict the source with the least evidence (Nov 16: the 8-slot LRU erased a watch
+ * with 34 reports of history for passers-by heard once). Heard in the last 30 s counts one
+ * report more, so a newcomer gets a chance against an old one-off; the focused source and
+ * sources with a valid estimate are kept while anything else can go; ties: least recent. */
+static int32_t evict_choice(const btrx_bearing_t *h, int64_t t_us) {
+    int32_t best = BB_NONE;
+    float best_score = 0;
+    int best_tier = 0;
+    for (int32_t i = 0; i < h->cfg.max_sources; i++) {
+        const bb_source_t *s = &h->sources[i];
+        bool focused = h->focus_key && (s->key == h->focus_key);
+        int tier = focused ? 2 : (s->est_valid ? 1 : 0);
+        float score = source_evidence(h, s, t_us) + (t_us - s->last_us < 30000000 ? 1.0f : 0.0f);
+        if (best == BB_NONE || tier < best_tier || (tier == best_tier && (score < best_score
+                || (score == best_score && s->last_us < h->sources[best].last_us)))) {
+            best = i; best_score = score; best_tier = tier;
+        }
+    }
+    return best;
+}
+
+static uint8_t pick_colour(const btrx_bearing_t *h, int32_t slot, uint64_t key) {
+    bool used[BB_PALETTE] = { false };
+    for (int32_t i = 0; i < h->cfg.max_sources; i++)
+        if (i != slot && h->sources[i].used) used[h->sources[i].colour % BB_PALETTE] = true;
+    for (int32_t i = h->colmem_n - 1; i >= 0; i--)          /* the colour it had before */
+        if (h->colmem[i].key == key && !used[h->colmem[i].colour % BB_PALETTE]) return h->colmem[i].colour;
+    uint8_t start = (uint8_t)((key ^ (key >> 29) ^ (key >> 47)) % BB_PALETTE);
+    for (int k = 0; k < BB_PALETTE; k++) {
+        uint8_t c = (uint8_t)((start + k) % BB_PALETTE);
+        if (!used[c]) return c;
+    }
+    return start;
+}
+
+/* Extras (no address) start a source only on their extra_min_sightings-th sighting within
+ * the window: one-off passers-by do not take a slot (Nov 16). */
+static bool extra_sighting(btrx_bearing_t *h, uint64_t key, int64_t t_us) {
+    int32_t need = h->cfg.extra_min_sightings;
+    if (need <= 1) return true;
+    int64_t win = (int64_t)h->cfg.extra_sighting_window_ms * 1000;
+    for (int32_t i = 0; i < h->cand_n; i++) {
+        if (h->cand[i].key != key) continue;
+        if (t_us - h->cand[i].t > win) h->cand[i].n = 0;
+        h->cand[i].n++;
+        h->cand[i].t = t_us;
+        if (h->cand[i].n >= need) {
+            memmove(&h->cand[i], &h->cand[i + 1], sizeof h->cand[0] * (size_t)(h->cand_n - i - 1));
+            h->cand_n--;
+            return true;
+        }
+        return false;
+    }
+    if (h->cand_n == BB_CAND_TABLE) {
+        memmove(&h->cand[0], &h->cand[1], sizeof h->cand[0] * (BB_CAND_TABLE - 1));
+        h->cand_n--;
+    }
+    h->cand[h->cand_n].key = key; h->cand[h->cand_n].t = t_us; h->cand[h->cand_n].n = 1;
+    h->cand_n++;
+    return false;
+}
+
 static int32_t new_source(btrx_bearing_t *h, uint64_t key, bool provisional, int64_t t_us) {
     int32_t slot = BB_NONE;
     for (int32_t i = 0; i < h->cfg.max_sources; i++) if (!h->sources[i].used) { slot = i; break; }
     if (slot == BB_NONE) {
-        /* least recently heard without a valid estimate, else least recently heard */
-        int32_t lru = BB_NONE, lru_noest = BB_NONE;
-        for (int32_t i = 0; i < h->cfg.max_sources; i++) {
-            const bb_source_t *s = &h->sources[i];
-            if (lru == BB_NONE || s->last_us < h->sources[lru].last_us) lru = i;
-            if (!s->est_valid && (lru_noest == BB_NONE || s->last_us < h->sources[lru_noest].last_us)) lru_noest = i;
-        }
-        slot = lru_noest != BB_NONE ? lru_noest : lru;
+        slot = evict_choice(h, t_us);
+        h->evictions++;
         bb_source_evict(h, slot);
     }
     bb_source_t *s = &h->sources[slot];
@@ -188,15 +283,9 @@ static int32_t new_source(btrx_bearing_t *h, uint64_t key, bool provisional, int
     s->src_keyed = false;
     s->src_id = 0;
     s->first_us = s->last_us = t_us;
-    /* colour: first palette entry not in use, starting after the last one handed out */
-    for (int k = 0; k < 8; k++) {
-        uint8_t c = (uint8_t)((h->next_colour + k) % 8);
-        bool used = false;
-        for (int32_t i = 0; i < h->cfg.max_sources; i++)
-            if (i != slot && h->sources[i].used && h->sources[i].colour == c) used = true;
-        if (!used) { s->colour = c; break; }
-    }
-    h->next_colour = (uint8_t)((s->colour + 1) % 8);
+    /* colour tied to the device: the one it had, else a free one picked from its key */
+    s->colour = pick_colour(h, slot, key);
+    s->last_rssi = BTRX_BEARING_RSSI_NOT_HEARD;
     for (int32_t i = 0; i < h->cfg.buckets_per_source; i++) { memset(&s->buckets[i], 0, sizeof s->buckets[i]); s->buckets[i].tile_head = BB_NONE; }
     s->ray.mirror_true_deg = NAN;
     apply_pending_flags(h, s);
@@ -213,6 +302,18 @@ static void merge_into(btrx_bearing_t *h, int32_t dst, int32_t src) {
     merge_class(d, s->cls);
     d->flags |= s->flags & BTRX_BEARING_SRC_IGNORED;
     for (int32_t i = 0; i < h->div.n; i++) if (h->div.item[i].slot == src) h->div.item[i].slot = dst;
+    if (h->fine) {
+        bb_source_t *fd = &h->fine->sources[dst], *fs = &h->fine->sources[src];
+        if (fs->used) {
+            if (!fd->used) { fd->used = true; fd->key = d->key; }
+            bb_merge_source(h->fine, fd, fs);
+        }
+        fine_clear_slot(h, src);
+    }
+    if (s->trail_n > d->trail_n) {       /* keep the longer strength trail */
+        memcpy(d->trail, s->trail, sizeof d->trail);
+        d->trail_head = s->trail_head; d->trail_n = s->trail_n;
+    }
     srcid_remap(h, src, dst);
     bb_bucket_t *b = s->buckets;
     memset(s, 0, sizeof *s);
@@ -279,6 +380,7 @@ int32_t bb_resolve_entry(btrx_bearing_t *h, const btrx_bearing_report_source_t *
             /* Stable ids: the src_id names one device; a real source, not provisional. */
             slot = bb_find_source(h, sk);
             if (slot == BB_NONE) {
+                if (!extra_sighting(h, sk, t_us)) return BB_NONE;
                 slot = new_source(h, sk, false, t_us);
                 h->sources[slot].src_keyed = true;
                 h->stats.extras_unresolved++;
@@ -293,7 +395,10 @@ int32_t bb_resolve_entry(btrx_bearing_t *h, const btrx_bearing_report_source_t *
             uint64_t k = bb_siphash24(h->key, buf, sizeof buf);
             if (!k) k = 1;
             slot = bb_find_source(h, k);
-            if (slot == BB_NONE) slot = new_source(h, k, true, t_us);
+            if (slot == BB_NONE) {
+                if (!extra_sighting(h, k, t_us)) return BB_NONE;
+                slot = new_source(h, k, true, t_us);
+            }
             srcid_set(h, rs->src_id, slot);
             h->stats.extras_unresolved++;
         }

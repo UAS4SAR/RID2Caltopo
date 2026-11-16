@@ -589,6 +589,7 @@ struct BtrxBearingSourceRow: View {
             Text(source.className)
             Text(BtrxBearingText.lastHeard(nowUs: nowUs, lastUs: source.lastHeardUs)).font(.footnote)
             Text(BtrxBearingText.reports(source.reportsInWindow)).font(.footnote)
+            if source.ownSuspect { Text(BtrxBearingText.ownSuspectTag).font(.footnote).foregroundStyle(.red) }
         }
     }
 }
@@ -600,6 +601,7 @@ struct BtrxBearingPanel: View {
     @ObservedObject var center: BtrxDeskPodCenter
     let rows: [UInt64]
     let onDismiss: () -> Void
+    var onFocus: (BtrxBearingSource) -> Void = { _ in }
 
     var body: some View {
         if let snap = center.bearingSnapshot {
@@ -608,7 +610,11 @@ struct BtrxBearingPanel: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text(BtrxBearingText.panelTitle).font(.headline)
                 ForEach(listed) { src in
-                    BtrxBearingSourceRow(source: src, nowUs: snap.tUs) { shown in center.bearing.setMuted([src.key], muted: !shown) }
+                    HStack {
+                        BtrxBearingSourceRow(source: src, nowUs: snap.tUs) { shown in center.bearing.setMuted([src.key], muted: !shown) }
+                        Spacer(minLength: 4)
+                        Button(BtrxBearingText.focus) { onFocus(src) }.font(.footnote)
+                    }
                 }
                 HStack(spacing: 8) {
                     Button(BtrxBearingText.muteAll) { center.bearing.setMuted(listed.map(\.key), muted: true) }.buttonStyle(.bordered)
@@ -620,6 +626,81 @@ struct BtrxBearingPanel: View {
             .frame(maxWidth: 420, alignment: .leading)
             .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
             .shadow(radius: 6)
+        }
+    }
+}
+
+/// "Save as own aircraft": on the pod by src_id when the firmware keeps a saved list,
+/// otherwise this device only. Same as Android's btrxSaveOwnAircraft.
+@MainActor
+func btrxSaveOwnAircraft(_ center: BtrxDeskPodCenter, _ src: BtrxBearingSource) {
+    if center.snapshot.savedIgnoreSupported && src.srcId != 0 { center.ignoreSourceSaved(src.srcId) }
+    else { center.bearing.setIgnored(src.key, ignored: true) }
+}
+
+/// Own-aircraft suggestion (Nov 16 watch test): a source stronger than about -40 dBm for a
+/// minute while the drone moved. A suggestion only: nothing is muted until Ken answers.
+/// Same as Android.
+struct BtrxOwnAircraftSuggestion: View {
+    @ObservedObject var center: BtrxDeskPodCenter
+    var body: some View {
+        if center.bearingOn, let src = center.bearingSnapshot?.sources.first(where: { $0.ownSuspect && !$0.ignored }) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(BtrxBearingText.ownSuggestion(src)).font(.footnote)
+                HStack(spacing: 8) {
+                    Button(BtrxBearingText.ownSuggestSave) { btrxSaveOwnAircraft(center, src) }.buttonStyle(.bordered)
+                    Button(BtrxBearingText.ownSuggestKeep) { center.bearing.clearOwnSuspect(src.key) }
+                }
+            }
+            .padding(10)
+            .frame(maxWidth: 520, alignment: .leading)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+            .shadow(radius: 6)
+        }
+    }
+}
+
+/// Inspect card of a pinned (triangulated) source. Same as Android's BtrxPinnedInspectCard.
+struct BtrxPinnedInspectCard: View {
+    @ObservedObject var center: BtrxDeskPodCenter
+    let key: UInt64
+    let onFocus: (BtrxBearingSource) -> Void
+    let onDismiss: () -> Void
+    var body: some View {
+        if let snap = center.bearingSnapshot, let src = snap.sources.first(where: { $0.key == key }) {
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) {
+                    RoundedRectangle(cornerRadius: 3).fill(Color(rgb: src.rgb)).frame(width: 16, height: 16)
+                    Text(BtrxBearingText.pinnedTitle).font(.headline)
+                }
+                ForEach(BtrxBearingText.inspectLines(src, nowUs: snap.tUs), id: \.self) { Text($0).font(.footnote) }
+                HStack(spacing: 8) {
+                    Button(BtrxBearingText.focus) { onFocus(src) }.buttonStyle(.bordered)
+                    Button(BtrxBearingText.close, action: onDismiss)
+                }
+            }
+            .padding(12)
+            .frame(maxWidth: 420, alignment: .leading)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+            .shadow(radius: 6)
+        }
+    }
+}
+
+/// Shown while a source is focused: its short ID and "Clear focus". Same as Android.
+struct BtrxFocusChip: View {
+    @ObservedObject var center: BtrxDeskPodCenter
+    var body: some View {
+        if center.bearingOn, let snap = center.bearingSnapshot, snap.focusKey != 0,
+           let src = snap.sources.first(where: { $0.key == snap.focusKey }) {
+            HStack(spacing: 6) {
+                RoundedRectangle(cornerRadius: 2).fill(Color(rgb: src.rgb)).frame(width: 12, height: 12)
+                Text(src.shortID).font(.footnote)
+                Button(BtrxBearingText.clearFocus) { center.bearing.setFocus(0) }.font(.footnote)
+            }
+            .foregroundStyle(.white)
+            .padding(.horizontal, 10).padding(.vertical, 6)
+            .background(Color(white: 0.125).opacity(0.9), in: Capsule())
         }
     }
 }

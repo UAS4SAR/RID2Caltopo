@@ -49,9 +49,27 @@ public struct BtrxBearingEstimate: Sendable, Equatable {
 }
 
 public struct BtrxBearingRay: Sendable, Equatable {
+    /// lengthM: the RSSI range estimate times a margin, up to the 400 m footprint (Nov 16).
     public let apexLat: Double, apexLon: Double, centreTrueDeg: Float, halfWidthDeg: Float, lengthM: Float
     public let mirrorTrueDeg: Float?
     public let tUs: Int64
+    /// Front and back about equally likely: draw both lobes alike (centre = the front one).
+    public var ambiguous: Bool = false
+    /// RSSI slant range estimate, nil when unknown.
+    public var rangeM: Float? = nil
+}
+
+/// Strength trail point of the focused source: drone position and strongest-patch RSSI.
+public struct BtrxBearingTrailPoint: Sendable, Equatable {
+    public let lat: Double, lon: Double, rssiDbm: Int
+}
+
+/// Fine layer (2.5 m cells; reports while low and slow, or strong), drawn over the coarse raster.
+public struct BtrxBearingFine: Sendable, Equatable {
+    public let cells: Int
+    public let north: Double, south: Double, east: Double, west: Double
+    /// cells * cells * 4, premultiplied RGBA, row 0 north.
+    public let rgba: Data
 }
 
 public struct BtrxBearingSource: Sendable, Equatable, Identifiable {
@@ -73,7 +91,20 @@ public struct BtrxBearingSource: Sendable, Equatable, Identifiable {
     public var srcId: Int = 0
     /// Build 0x0106+: seen only as an extra so far, keyed by its stable src_id.
     public var srcKeyed: Bool = false
+    /// Strongest-patch mean RSSI of the latest report / strongest in the fade window; nil = none.
+    public var lastRssiDbm: Int? = nil
+    public var maxRssiDbm: Int? = nil
+    /// "Strongest here": where the drone heard it strongest (fade window).
+    public var strongestLat: Double? = nil
+    public var strongestLon: Double? = nil
+    /// Label point inside the shaded area.
+    public var labelLat: Double? = nil
+    public var labelLon: Double? = nil
+    /// Estimate valid and tight (2 sigma <= 30 m): drawn as a distinct "pinned" marker.
+    public var pinned: Bool = false
     public var muted: Bool { flags & UInt32(BTRX_BEARING_SRC_MUTED) != 0 }
+    /// Looks like it rides on the drone (a suggestion; Ken decides).
+    public var ownSuspect: Bool { flags & UInt32(BTRX_BEARING_SRC_OWN_SUSPECT) != 0 }
     public var ignored: Bool { flags & UInt32(BTRX_BEARING_SRC_IGNORED) != 0 }
     public var className: String { BtrxBearingText.className(devClass) }
 }
@@ -100,6 +131,11 @@ public struct BtrxBearingSnapshot: Sendable, Equatable {
     public let rgba: Data
     public let sources: [BtrxBearingSource]
     public let stats: BtrxBearingStats
+    /// Focused source key, 0 = none.
+    public var focusKey: UInt64 = 0
+    public var fine: BtrxBearingFine? = nil
+    /// Strength trail of the focused source, oldest first.
+    public var trail: [BtrxBearingTrailPoint] = []
 }
 
 /// Why the layer draws nothing (field test, Nov 13): `line` is the short map status, nil
@@ -200,6 +236,9 @@ public final class BtrxBearingLayer: @unchecked Sendable {
     private var rgbaBuf: UnsafeMutablePointer<UInt8>?
     private var alphaBuf: UnsafeMutablePointer<UInt8>?
     private var bufCells = 0
+    private var fineBuf: UnsafeMutablePointer<UInt8>?
+    private var fineBufBytes = 0
+    private let trailBuf = UnsafeMutablePointer<btrx_bearing_trail_point_t>.allocate(capacity: Int(BTRX_BEARING_TRAIL_MAX))
     private var current: BtrxBearingSnapshot?
 
     // TIME_PING (spec 3.2): every 30 s, plus a burst of 3 at start, pod restart and reconnect.
@@ -229,7 +268,7 @@ public final class BtrxBearingLayer: @unchecked Sendable {
 
     deinit {
         if let h = handle { btrx_bearing_destroy(h) }
-        rgbaBuf?.deallocate(); alphaBuf?.deallocate()
+        rgbaBuf?.deallocate(); alphaBuf?.deallocate(); fineBuf?.deallocate(); trailBuf.deallocate()
         pthread_rwlock_destroy(&rw)
     }
 
@@ -275,6 +314,13 @@ public final class BtrxBearingLayer: @unchecked Sendable {
             rgbaBuf = .allocate(capacity: cells * 4)
             alphaBuf = .allocate(capacity: cells * Int(BTRX_BEARING_MAX_SOURCES))
             bufCells = cells
+        }
+        let fineCells = Int(btrx_bearing_fine_cells(&cfg))
+        let fineBytes = fineCells * fineCells * 4
+        if fineBufBytes != fineBytes {
+            fineBuf?.deallocate()
+            fineBuf = fineBytes > 0 ? .allocate(capacity: fineBytes) : nil
+            fineBufBytes = fineBytes
         }
         lastError = nil
         lagTrace = trace
@@ -502,7 +548,8 @@ public final class BtrxBearingLayer: @unchecked Sendable {
             defer { btrx_bearing_snapshot_release(h, s) }
             snapLock.lock()
             defer { snapLock.unlock() }
-            let st = btrx_bearing_snapshot_copy(s, &snapCopy, rgbaBuf, bufCells * 4, alphaBuf, bufCells * Int(BTRX_BEARING_MAX_SOURCES))
+            let st = btrx_bearing_snapshot_copy(s, &snapCopy, rgbaBuf, bufCells * 4, alphaBuf, bufCells * Int(BTRX_BEARING_MAX_SOURCES),
+                                                fineBuf, fineBufBytes, trailBuf, Int32(BTRX_BEARING_TRAIL_MAX))
             haveSnap = st == BTRX_BEARING_OK
             guard haveSnap else { return nil }
             let decoded = Self.decode(snapCopy)
@@ -556,18 +603,36 @@ public final class BtrxBearingLayer: @unchecked Sendable {
                 let r = src.latest_ray
                 let ray = r.valid ? BtrxBearingRay(apexLat: r.apex_lat_deg, apexLon: r.apex_lon_deg, centreTrueDeg: r.centre_true_deg,
                     halfWidthDeg: r.half_width_deg, lengthM: r.length_m, mirrorTrueDeg: r.mirror_true_deg.isFinite ? r.mirror_true_deg : nil,
-                    tUs: r.t_us) : nil
+                    tUs: r.t_us, ambiguous: r.ambiguous, rangeM: r.range_m.isFinite ? r.range_m : nil) : nil
                 let rgb = withUnsafeBytes(of: src.rgb) { b in (UInt32(b[0]) << 16) | (UInt32(b[1]) << 8) | UInt32(b[2]) }
                 return BtrxBearingSource(index: i, key: src.key, shortID: id, provisional: src.provisional,
                     devClass: Int(src.dev_class.rawValue), rgb: rgb, flags: src.flags, firstHeardUs: src.first_heard_us,
                     lastHeardUs: src.last_heard_us, reportsIn: Int(src.reports_in), reportsUsed: Int(src.reports_used),
                     reportsInWindow: Int(src.reports_in_window), peakAlpha: src.peak_alpha, estimate: est, latestRay: ray,
-                    srcId: Int(src.src_id), srcKeyed: src.src_keyed)
+                    srcId: Int(src.src_id), srcKeyed: src.src_keyed,
+                    lastRssiDbm: src.last_rssi_dbm == -128 ? nil : Int(src.last_rssi_dbm),
+                    maxRssiDbm: src.max_rssi_dbm == -128 ? nil : Int(src.max_rssi_dbm),
+                    strongestLat: src.strongest_valid ? src.strongest_lat_deg : nil,
+                    strongestLon: src.strongest_valid ? src.strongest_lon_deg : nil,
+                    labelLat: src.label_valid ? src.label_lat_deg : nil,
+                    labelLon: src.label_valid ? src.label_lon_deg : nil,
+                    pinned: src.pinned)
             }
+        }
+        var fine: BtrxBearingFine?
+        if s.fine_valid, let f = s.fine_rgba, s.fine_width > 0, s.fine_width == s.fine_height {
+            fine = BtrxBearingFine(cells: Int(s.fine_width), north: s.fine_north_deg, south: s.fine_south_deg,
+                                   east: s.fine_east_deg, west: s.fine_west_deg,
+                                   rgba: Data(bytes: f, count: Int(s.fine_width) * Int(s.fine_height) * 4))
+        }
+        var trail: [BtrxBearingTrailPoint] = []
+        if let t = s.trail, s.trail_count > 0 {
+            trail = (0..<Int(s.trail_count)).map { BtrxBearingTrailPoint(lat: t[$0].lat_deg, lon: t[$0].lon_deg, rssiDbm: Int(t[$0].rssi_dbm)) }
         }
         return BtrxBearingSnapshot(seq: s.seq, tUs: s.t_us, width: Int(s.width), height: Int(s.height),
                                    north: s.north_deg, south: s.south_deg, east: s.east_deg, west: s.west_deg,
-                                   rgba: rgba, sources: sources, stats: stats)
+                                   rgba: rgba, sources: sources, stats: stats,
+                                   focusKey: s.focus_key, fine: fine, trail: trail)
     }
 
     // MARK: UI
@@ -614,6 +679,19 @@ public final class BtrxBearingLayer: @unchecked Sendable {
         }
     }
 
+    /// Main thread: "Focus this source" (0 = clear). Applied at the next tick, which publishes.
+    public func setFocus(_ key: UInt64) {
+        withHandle(()) { h in _ = btrx_bearing_set_focus(h, key) }
+    }
+
+    /// Main thread: the own-aircraft suggestion answered "not on the drone".
+    public func clearOwnSuspect(_ key: UInt64) {
+        let cleared = UInt32(BTRX_BEARING_SRC_OWN_CLEARED)
+        let mask = cleared | UInt32(BTRX_BEARING_SRC_OWN_SUSPECT)
+        var k = key
+        withHandle(()) { h in _ = btrx_bearing_set_source_flags(h, &k, 1, mask, cleared) }
+    }
+
     public func setFade(_ settings: BtrxBearingSettings) {
         let s = settings.clamped()
         withHandle(()) { h in _ = btrx_bearing_set_fade(h, s.fadeTotalS, s.fadeShapeP) }
@@ -653,6 +731,41 @@ public enum BtrxBearingText {
     public static let noSources = "No sources yet."
     public static let ignore = "Ignore (own aircraft)"
     public static let unignore = "Stop ignoring"
+    public static let focus = "Focus this source"
+    public static let clearFocus = "Clear focus"
+    public static let ownSuggestSave = "Own aircraft (saved)"
+    public static let ownSuggestKeep = "Not on the drone"
+    public static let ownSuspectTag = "own aircraft?"
+    public static let strongestHere = "strongest here"
+    public static let pinnedTitle = "BTRX source located"
+    public static let close = "Close"
+
+    /// Own-aircraft suggestion (Nov 16): strong while the drone moved; a suggestion only.
+    public static func ownSuggestion(_ s: BtrxBearingSource) -> String {
+        "\(s.shortID) (\(s.className)) looks like it rides on the drone: stronger than -40 dBm for a minute while the drone moved. " +
+            "No estimate is drawn for it until you decide."
+    }
+
+    /// Inspect card of a pinned source: one line per field. Same as Android.
+    public static func inspectLines(_ s: BtrxBearingSource, nowUs: Int64) -> [String] {
+        var out = ["Source \(s.shortID)" + (s.srcId != 0 ? " (id \(s.srcId))" : "") + " · \(s.className)"]
+        if let e = s.estimate {
+            out.append(String(format: "Estimate %.6f, %.6f", e.lat, e.lon))
+            out.append("Uncertainty ±\(Int(e.plusMinus2sM.rounded())) m (2σ)" + (e.ambiguous ? " · ambiguous" : ""))
+        }
+        out.append("Reports \(s.reportsInWindow) in the fade window (\(s.reportsUsed) used of \(s.reportsIn))")
+        out.append("Last heard \(lastHeard(nowUs: nowUs, lastUs: s.lastHeardUs))")
+        if let peak = s.maxRssiDbm {
+            out.append("Peak RSSI \(peak) dBm" + (s.lastRssiDbm.map { " (latest \($0) dBm)" } ?? ""))
+        }
+        return out
+    }
+
+    /// Distance and true bearing from the camera crosshair to a target: "42 m · 135°".
+    public static func crosshairToTarget(distanceM: Double, bearingDeg: Double) -> String {
+        let b = Int((bearingDeg.truncatingRemainder(dividingBy: 360) + 360).truncatingRemainder(dividingBy: 360).rounded()) % 360
+        return "\(Int(distanceM.rounded())) m · \(b)°"
+    }
 
     public static func className(_ devClass: Int) -> String {
         switch devClass {
@@ -679,7 +792,7 @@ public enum BtrxBearingText {
 
     /// Map label (spec 5): `phone · Q3x9Kd · 23 rpt · ±18 m`, plus "ambiguous".
     public static func label(_ s: BtrxBearingSource) -> String {
-        let base = "\(s.className) · \(s.shortID) · \(reports(s.reportsInWindow))"
+        let base = "\(s.className) · \(s.shortID) · \(reports(s.reportsInWindow))" + (s.ownSuspect ? " · \(ownSuspectTag)" : "")
         guard let est = s.estimate else { return base }
         return base + " · ±\(Int(est.plusMinus2sM.rounded())) m" + (est.ambiguous ? " · ambiguous" : "")
     }

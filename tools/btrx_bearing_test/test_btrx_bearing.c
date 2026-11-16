@@ -30,7 +30,9 @@ static void m2ll(double e, double n, double *lat, double *lon) {
 
 static btrx_bearing_t *mk(btrx_bearing_config_t *over) {
     btrx_bearing_config_t c;
-    if (over) c = *over; else btrx_bearing_config_default(&c);
+    /* The older tests resolve extras on their first sighting (their subject); the
+     * 2-sighting rule of the defaults has its own tests (test_watch_fixes). */
+    if (over) c = *over; else { btrx_bearing_config_default(&c); c.extra_min_sightings = 1; }
     btrx_bearing_t *h = NULL;
     btrx_bearing_status_t st = btrx_bearing_create(&c, KEY, &h);
     if (st != BTRX_BEARING_OK) { printf("create failed %d\n", st); exit(2); }
@@ -788,16 +790,16 @@ static void test_stable_ids(void) {
     CHECK(saw_w && saw_1, "src ids 0xF1A3 and 1 reported in the snapshot");
     if (sn) btrx_bearing_snapshot_release(h, sn);
     int32_t slot_w = BB_NONE;
-    for (int i = 0; i < 8; i++) if (h->sources[i].used && h->sources[i].src_id == W) slot_w = i;
+    for (int i = 0; i < BTRX_BEARING_MAX_SOURCES; i++) if (h->sources[i].used && h->sources[i].src_id == W) slot_w = i;
     CHECK(slot_w != BB_NONE, "slot for 0xF1A3");
     uint64_t key_w = slot_w != BB_NONE ? h->sources[slot_w].key : 0;
     /* pod restart: the id table is cleared, the src_id key still finds the same source */
-    int before = 0; for (int i = 0; i < 8; i++) before += h->sources[i].used;
+    int before = 0; for (int i = 0; i < BTRX_BEARING_MAX_SOURCES; i++) before += h->sources[i].used;
     uint32_t sess = h->clock.session;
     s.pod_off += 17000000;
     inject(h, &s, 12000000, 50, 0, 20, 30, e, 3, true);
     CHECK(h->clock.session == sess + 1, "restart detected");
-    int after = 0; for (int i = 0; i < 8; i++) after += h->sources[i].used;
+    int after = 0; for (int i = 0; i < BTRX_BEARING_MAX_SOURCES; i++) after += h->sources[i].used;
     CHECK(after == before, "same sources after a pod restart (%d -> %d)", before, after);
     CHECK(slot_w != BB_NONE && h->sources[slot_w].reports_in == 2 && h->sources[slot_w].key == key_w, "0xF1A3 kept its source (%u reports)",
           slot_w != BB_NONE ? h->sources[slot_w].reports_in : 0);
@@ -807,7 +809,7 @@ static void test_stable_ids(void) {
     inject(h, &s, 13000000, 100, 0, 40, 30, &pw, 1, true);
     CHECK(src_of(h, K) == &h->sources[slot_w] && !h->sources[slot_w].src_keyed && h->stats.provisional_merges == merges + 1,
           "src-keyed source takes the address key");
-    int after2 = 0; for (int i = 0; i < 8; i++) after2 += h->sources[i].used;
+    int after2 = 0; for (int i = 0; i < BTRX_BEARING_MAX_SOURCES; i++) after2 += h->sources[i].used;
     CHECK(after2 == after, "no new source for the address");
     /* another restart, then 0xF1A3 as an extra again: found by its src_id alias */
     s.pod_off += 17000000;
@@ -815,7 +817,7 @@ static void test_stable_ids(void) {
     inject(h, &s, 14000000, 150, 0, 60, 30, e2, 2, true);
     CHECK(src_of(h, K) == &h->sources[slot_w] && h->sources[slot_w].reports_in == 4, "extra finds the address source by src_id after a restart (%u)",
           h->sources[slot_w].reports_in);
-    int after3 = 0; for (int i = 0; i < 8; i++) after3 += h->sources[i].used;
+    int after3 = 0; for (int i = 0; i < BTRX_BEARING_MAX_SOURCES; i++) after3 += h->sources[i].used;
     CHECK(after3 == after2, "still no new source");
     btrx_bearing_destroy(h);
 
@@ -823,10 +825,10 @@ static void test_stable_ids(void) {
     h = mk(NULL);
     inj_t s2 = { 0, 0, 0 };
     inject(h, &s2, 10000000, 0, 0, 0, 30, e, 3, true);
-    int b0 = 0; for (int i = 0; i < 8; i++) b0 += h->sources[i].used;
+    int b0 = 0; for (int i = 0; i < BTRX_BEARING_MAX_SOURCES; i++) b0 += h->sources[i].used;
     s2.pod_off += 17000000;
     inject(h, &s2, 12000000, 50, 0, 20, 30, e, 3, true);
-    int b1 = 0; for (int i = 0; i < 8; i++) b1 += h->sources[i].used;
+    int b1 = 0; for (int i = 0; i < BTRX_BEARING_MAX_SOURCES; i++) b1 += h->sources[i].used;
     CHECK(b1 == b0 + 2, "older firmware: extras are per pod session (%d -> %d)", b0, b1);
     btrx_bearing_destroy(h);
 
@@ -842,8 +844,8 @@ static void test_stable_ids(void) {
         inject(h, &s3, 10000000 + (int64_t)i * 1000000, 0, 0, (float)(i % 36) * 10, 30, ab, 2, true);
     }
     CHECK(h->srcid_n <= 64, "id table bounded (%d)", h->srcid_n);
-    int used = 0; for (int i = 0; i < 8; i++) used += h->sources[i].used;
-    CHECK(used == 8, "eviction keeps 8 sources (%d)", used);
+    int used = 0; for (int i = 0; i < BTRX_BEARING_MAX_SOURCES; i++) used += h->sources[i].used;
+    CHECK(used == h->cfg.max_sources, "eviction keeps %d sources (%d)", h->cfg.max_sources, used);
     btrx_bearing_destroy(h);
 
     uint8_t hp[44]; memset(hp, 0, sizeof hp);
@@ -903,13 +905,13 @@ static void test_resolution(void) {
     btrx_bearing_tick(ha, 17500000, NULL);
     CHECK(sk2->flags & BTRX_BEARING_SRC_MUTED, "mute by alias");
     /* pod restart clears the id table: same src 31 as extra is a new provisional source */
-    int before = 0; for (int i = 0; i < 8; i++) before += ha->sources[i].used;
+    int before = 0; for (int i = 0; i < BTRX_BEARING_MAX_SOURCES; i++) before += ha->sources[i].used;
     uint32_t sess = ha->clock.session;
     sa.pod_off += 17000000;   /* pod clock restarted: window_end_ms goes backward */
     btrx_bearing_report_source_t e3[2] = { prim0, ex };
     inject(ha, &sa, 18000000, 300, 0, 40, 30, e3, 2, true);
     CHECK(ha->clock.session == sess + 1, "restart detected");
-    int after = 0; for (int i = 0; i < 8; i++) after += ha->sources[i].used;
+    int after = 0; for (int i = 0; i < BTRX_BEARING_MAX_SOURCES; i++) after += ha->sources[i].used;
     CHECK(after == before + 1, "id table cleared: new provisional (%d -> %d)", before, after);
     btrx_bearing_destroy(ha); btrx_bearing_destroy(hb);
     /* ignored sources are not accumulated; flags set before first sight apply when it appears */
@@ -1195,7 +1197,15 @@ static void scenarios(void) {
         s.traj = traj_hover; s.ctx = &hc2; s.flags = 0x01;   /* IMU not ok */
         s.src[0] = (sim_src_t){ 100, 0, 0x56, 6, 5, false }; s.n_src = 1;
         sim_run(&s, 0, 20);
-        CHECK(h->stats.used == 0, "bit 4 clear: gated");
+        CHECK(h->stats.used > 0, "bit 4 clear: used at half weight, no roll correction (%u)", h->stats.used);
+        btrx_bearing_destroy(h);
+        btrx_bearing_config_t cg; btrx_bearing_config_default(&cg); cg.gate_on_attitude_flag = true;
+        h = mk(&cg);
+        sim_init(&s, h);
+        s.traj = traj_hover; s.ctx = &hc2; s.flags = 0x01;
+        s.src[0] = (sim_src_t){ 100, 0, 0x56, 6, 5, false }; s.n_src = 1;
+        sim_run(&s, 0, 20);
+        CHECK(h->stats.used == 0, "gate_on_attitude_flag: bit 4 clear gated");
         btrx_bearing_destroy(h);
     }
     /* 6. two sources as primary + extra, then three entries: separate colours, no merging */
@@ -1266,7 +1276,7 @@ static void bench_run(int entries, const char *label) {
         if (h->stats.used > used0) { tot += dt; n++; if (dt > worst) worst = dt; }
     }
     printf("  per report, %s: mean %.3f ms, max %.3f ms (%d timed, tick includes the pose drain)\n", label, tot / (n ? n : 1) * 1e3, worst * 1e3, n);
-    int ns = 0; for (int i = 0; i < 8; i++) ns += h->sources[i].used;
+    int ns = 0; for (int i = 0; i < BTRX_BEARING_MAX_SOURCES; i++) ns += h->sources[i].used;
     double t0 = now_s();
     for (int i = 0; i < 20; i++) bb_publish(h, 610000000 + i * 1000);
     printf("  per redraw (publish: composite, alpha, estimate, RGBA), %d sources, %d tiles: %.3f ms\n", ns, h->tiles_in_use, (now_s() - t0) / 20 * 1e3);
@@ -1300,6 +1310,228 @@ static void push_report_only(btrx_bearing_t *h, int64_t t_end, uint8_t seq, cons
     r.steer_seq = seq; r.flags = 0x51;
     r.src[0] = *e; r.source_count = 1;
     btrx_bearing_push_report(h, &r);
+}
+
+
+/* ================= Nov 16 watch-test fixes ================= */
+static void inject_r(btrx_bearing_t *h, inj_t *s, int64_t t_end, double e, double n, float yaw, float agl,
+        const btrx_bearing_report_source_t *ent, int n_ent, uint8_t flags, int8_t roll_x2) {
+    int64_t t = s->last_yaw_t ? s->last_yaw_t + 33333 : t_end - 1100000;
+    if (t < t_end - 1100000) t = t_end - 1100000;
+    for (; t <= t_end + 100000; t += 33333) { push_yaw(h, t, yaw); s->last_yaw_t = t; }
+    push_pos(h, t_end - 500000, e, n, agl);
+    btrx_bearing_report_t r; memset(&r, 0, sizeof r);
+    r.arrival_us = t_end; r.push_us = r.arrival_us + 1000;
+    r.window_end_ms = (uint32_t)((t_end - s->pod_off) / 1000);
+    r.steer_seq = s->seq++; r.flags = flags; r.roll_x2 = roll_x2;
+    for (int k = 0; k < n_ent; k++) r.src[k] = ent[k];
+    r.source_count = (uint8_t)n_ent;
+    btrx_bearing_push_report(h, &r);
+    btrx_bearing_tick(h, t_end + 200000, NULL);
+}
+
+static int count_used(const btrx_bearing_t *h) {
+    int n = 0; for (int i = 0; i < BTRX_BEARING_MAX_SOURCES; i++) n += h->sources[i].used; return n;
+}
+
+
+static void test_watch_fixes(void) {
+    printf("watch-test fixes (Nov 16)\n");
+    btrx_bearing_config_t c;
+    btrx_bearing_config_default(&c);
+    CHECK(c.max_sources >= 16 && c.max_sources <= BTRX_BEARING_MAX_SOURCES && BTRX_BEARING_MAX_SOURCES == 32, "16-32 sources (%d)", c.max_sources);
+    CHECK(btrx_bearing_abi_version() == 2, "ABI 2");
+
+    /* 1. eviction by least evidence, not least recent; colour follows the device */
+    btrx_bearing_config_t c3 = c; c3.max_sources = 3; c3.extra_min_sightings = 1;
+    btrx_bearing_t *h = mk(&c3);
+    inj_t s = { 0, 0, 0 };
+    btrx_bearing_report_source_t wa = entry(0xA, 1, -62, -70, 5);
+    for (int i = 0; i < 20; i++) inject(h, &s, 10000000 + (int64_t)i * 1000000, i * 6.0, 0, 90, 30, &wa, 1, true);
+    uint8_t col_a = src_of(h, 0xA)->colour;
+    btrx_bearing_report_source_t wb = entry(0xB, 2, -80, -78, 5), wc = entry(0xC, 3, -80, -79, 5), wd = entry(0xD, 4, -81, -80, 5);
+    inject(h, &s, 70000000, 0, 0, 0, 30, &wb, 1, true);       /* A last heard 41 s ago, B and C newer */
+    inject(h, &s, 71000000, 0, 0, 0, 30, &wc, 1, true);
+    inject(h, &s, 72000000, 0, 0, 0, 30, &wd, 1, true);
+    CHECK(src_of(h, 0xA) != NULL, "least-recent source with 20 reports kept");
+    CHECK(src_of(h, 0xD) != NULL && count_used(h) == 3, "newcomer took a weak source's slot");
+    CHECK(h->evictions == 1, "one eviction (%u)", h->evictions);
+    uint64_t gone = src_of(h, 0xB) ? 0xC : 0xB;
+    uint8_t col_gone = 255;
+    for (int i = 0; i < h->colmem_n; i++) if (h->colmem[i].key == gone) col_gone = h->colmem[i].colour;
+    CHECK(col_gone != 255, "evicted source's colour remembered");
+    btrx_bearing_report_source_t wg = entry(gone, 9, -80, -79, 5);
+    inject(h, &s, 73000000, 0, 0, 0, 30, &wg, 1, true);
+    CHECK(src_of(h, gone) && (src_of(h, gone)->colour == col_gone || src_of(h, 0xA)->colour == col_gone), "returning device gets its colour back");
+    CHECK(src_of(h, 0xA)->colour == col_a, "kept source's colour unchanged");
+    btrx_bearing_destroy(h);
+
+    /* 2. extras start a source on the 2nd sighting within 60 s */
+    h = mk(&c);
+    s = (inj_t){ 0, 0, 0 };
+    btrx_bearing_set_stable_src_ids(h, true);
+    btrx_bearing_report_source_t p0 = entry(0x7000, 0x9C41, -50, -55, 9);
+    btrx_bearing_report_source_t x = entry(0, 0x1234, -70, -66, 3); x.rank = 1;
+    btrx_bearing_report_source_t px[2] = { p0, x };
+    inject(h, &s, 10000000, 0, 0, 0, 30, px, 2, true);
+    CHECK(count_used(h) == 1, "extra seen once: not tracked (%d)", count_used(h));
+    inject(h, &s, 11000000, 0, 0, 0, 30, px, 2, true);
+    CHECK(count_used(h) == 2, "extra seen twice: tracked (%d)", count_used(h));
+    btrx_bearing_report_source_t y = entry(0, 0x4321, -70, -66, 3); y.rank = 1;
+    btrx_bearing_report_source_t py[2] = { p0, y };
+    inject(h, &s, 12000000, 0, 0, 0, 30, py, 2, true);
+    inject(h, &s, 80000000, 0, 0, 0, 30, py, 2, true);
+    CHECK(count_used(h) == 2, "two sightings 68 s apart: not tracked (%d)", count_used(h));
+    CHECK(h->extras_tentative == 3, "tentative entries counted (%u)", h->extras_tentative);
+    btrx_bearing_destroy(h);
+
+    /* 3. own aircraft suggestion: -32 dBm for 70 s while the drone flies 140 m */
+    h = mk(&c);
+    s = (inj_t){ 0, 0, 0 };
+    btrx_bearing_report_source_t own = entry(0x0BAD, 7, -32, -33, 15);
+    btrx_bearing_report_source_t gnd = entry(0x600D, 8, -70, -76, 5);
+    for (int i = 0; i <= 70; i++) {
+        btrx_bearing_report_source_t two[2] = { own, gnd }; two[1].rank = 1;
+        inject(h, &s, 10000000 + (int64_t)i * 1000000, i * 2.0, 0, 90, 30, two, 2, true);
+    }
+    btrx_bearing_tick(h, 82000000, NULL);
+    const btrx_bearing_snapshot_t *sn = btrx_bearing_snapshot_acquire(h);
+    const btrx_bearing_source_t *so = snap_src(sn, 0x0BAD), *sg = snap_src(sn, 0x600D);
+    CHECK(so && (so->flags & BTRX_BEARING_SRC_OWN_SUSPECT), "strong for 70 s while moving: suggested own aircraft");
+    CHECK(so && !so->estimate.valid && !so->pinned, "suggested: no estimate drawn");
+    CHECK(so && !(so->flags & (BTRX_BEARING_SRC_IGNORED | BTRX_BEARING_SRC_MUTED)), "a suggestion only: not muted or ignored");
+    CHECK(sg && !(sg->flags & BTRX_BEARING_SRC_OWN_SUSPECT), "weaker ground source not suggested");
+    if (sn) btrx_bearing_snapshot_release(h, sn);
+    uint64_t kown = 0x0BAD;
+    btrx_bearing_set_source_flags(h, &kown, 1, BTRX_BEARING_SRC_OWN_CLEARED, BTRX_BEARING_SRC_OWN_CLEARED);
+    for (int i = 71; i <= 150; i++) inject(h, &s, 10000000 + (int64_t)i * 1000000, i * 2.0, 0, 90, 30, &own, 1, true);
+    CHECK(!(src_of(h, 0x0BAD)->flags & BTRX_BEARING_SRC_OWN_SUSPECT), "'not on the drone': no new suggestion");
+    btrx_bearing_destroy(h);
+    h = mk(&c);
+    s = (inj_t){ 0, 0, 0 };
+    for (int i = 0; i <= 90; i++) inject(h, &s, 10000000 + (int64_t)i * 1000000, 0, 0, (float)(i * 4 % 360), 30, &own, 1, true);
+    CHECK(!(src_of(h, 0x0BAD)->flags & BTRX_BEARING_SRC_OWN_SUSPECT), "hovering over a strong ground source: no suggestion");
+    btrx_bearing_destroy(h);
+
+    /* 4. roll: k by depression; the correction moves the likelihood peak back; weighting */
+    NEAR(bb_roll_k(10), 0.10, 1e-6, "k shallow");
+    NEAR(bb_roll_k(45), 0.13, 1e-6, "k 45 deg down");
+    NEAR(bb_roll_k(90), 0.22, 1e-6, "k straight below");
+    h = mk(&c);
+    {
+        bb_geom_t g; memset(&g, 0, sizeof g);
+        g.sigma2 = 4; g.roll_deg = 10;
+        float dpred = btrx_bearing_pattern_delta_db(h, -40, 45);
+        g.obs = dpred - bb_roll_k(45) * 10;          /* measured, biased by 10 deg starboard-down roll */
+        NEAR(bb_loglik(h, &g, -40, 45), 0, 1e-5, "roll-corrected residual zero");
+        g.roll_deg = 0;
+        CHECK(bb_loglik(h, &g, -40, 45) < -0.05f, "uncorrected residual not zero");
+    }
+    btrx_bearing_destroy(h);
+    h = mk(&c);
+    s = (inj_t){ 0, 0, 0 };
+    btrx_bearing_report_source_t er = entry(0x1, 1, -60, -66, 5);
+    inject_r(h, &s, 10000000, 0, 0, 0, 30, &er, 1, 0x19, 24);     /* bit 3 set, roll 12 (0x0109 gate is 10) */
+    inject_r(h, &s, 11000000, 5, 0, 0, 30, &er, 1, 0x19, 60);     /* roll 30 */
+    inject_r(h, &s, 12000000, 10, 0, 0, 30, &er, 1, 0x19, 100);   /* roll 50: gated */
+    CHECK(h->stats.used == 2 && h->stats.gated == 1, "bit 3 is advice: rolls 12 and 30 used, 50 gated (%u used, %u gated)", h->stats.used, h->stats.gated);
+    btrx_bearing_destroy(h);
+
+    /* 5. averaging: one sample per patch per window, alternating patches */
+    h = mk(&c);
+    s = (inj_t){ 0, 0, 0 };
+    btrx_bearing_report_source_t ap = entry(0x2, 2, -70, BTRX_BEARING_RSSI_NOT_HEARD, 1); ap.hits_stbd = 0;
+    btrx_bearing_report_source_t as = entry(0x2, 2, BTRX_BEARING_RSSI_NOT_HEARD, -74, 1); as.hits_port = 0;
+    inject(h, &s, 10000000, 0, 0, 0, 30, &ap, 1, true);
+    CHECK(h->stats.used == 0, "one sample on one patch: not enough alone");
+    inject(h, &s, 11000000, 3, 0, 0, 30, &as, 1, true);
+    CHECK(h->stats.used == 1, "averaged with the previous window: both patches, used (%u)", h->stats.used);
+    inject(h, &s, 16000000, 6, 0, 0, 30, &ap, 1, true);
+    CHECK(h->stats.used == 1, "windows older than avg_span_ms are not averaged");
+    btrx_bearing_destroy(h);
+
+    /* 6. wedge length from the range estimate; front lobe when ambiguous */
+    h = mk(&c);
+    s = (inj_t){ 0, 0, 0 };
+    btrx_bearing_report_source_t near = entry(0x3, 3, -52, -56, 9), far = entry(0x4, 4, -92, -95, 9);
+    btrx_bearing_report_source_t nf[2] = { near, far }; nf[1].rank = 1;
+    inject(h, &s, 10000000, 0, 0, 0, 30, nf, 2, true);
+    btrx_bearing_report_source_t ahead = entry(0x5, 5, -70, -70, 15);
+    inject(h, &s, 11000000, 0, 0, 0, 30, &ahead, 1, true);
+    btrx_bearing_tick(h, 12500000, NULL);
+    sn = btrx_bearing_snapshot_acquire(h);
+    const btrx_bearing_source_t *sns = snap_src(sn, 0x3), *sfs = snap_src(sn, 0x4), *sah = snap_src(sn, 0x5);
+    CHECK(sns && sns->latest_ray.length_m >= 30 && sns->latest_ray.length_m < 100 && isfinite(sns->latest_ray.range_m),
+            "strong: short wedge (%g m, range %g m)", sns ? sns->latest_ray.length_m : -1, sns ? sns->latest_ray.range_m : -1);
+    CHECK(sfs && sfs->latest_ray.length_m == 400, "weak: wedge to the footprint (%g)", sfs ? sfs->latest_ray.length_m : -1);
+    CHECK(sah && sah->latest_ray.ambiguous && fabsf(bb_wrap180(sah->latest_ray.centre_true_deg)) < 90,
+            "equal patches: ambiguous, front lobe first (%g)", sah ? sah->latest_ray.centre_true_deg : -1);
+    if (sn) btrx_bearing_snapshot_release(h, sn);
+    btrx_bearing_destroy(h);
+
+    /* 7. close pass, low and slow: trail, strongest here, label, fine layer, focus, copy */
+    h = mk(&c);
+    s = (inj_t){ 0, 0, 0 };
+    const double se = 40, sn_ = 10;                  /* source; drone flies east along n = 0 at 2 m/s, 20 m AGL */
+    for (int i = 0; i <= 60; i++) {
+        double de = i * 2.0, dn = 0;
+        double r = hypot(hypot(se - de, sn_ - dn), 20);
+        int lvl = (int)lrint(-38 - 22 * log10(r));
+        btrx_bearing_report_source_t ec = entry(0x6, 6, lvl + 2, lvl - 2, 3);
+        btrx_bearing_report_source_t eo = entry(0x7, 7, -80, -78, 3);
+        btrx_bearing_report_source_t two[2] = { ec, eo }; two[1].rank = 1;
+        inject(h, &s, 10000000 + (int64_t)i * 1000000, de, dn, 90, 20, two, 2, true);
+    }
+    btrx_bearing_set_focus(h, 0x6);
+    btrx_bearing_tick(h, 72000000, NULL);
+    sn = btrx_bearing_snapshot_acquire(h);
+    const btrx_bearing_source_t *sc = snap_src(sn, 0x6);
+    CHECK(sn && sn->focus_key == 0x6 && sn->trail_count == 61, "focused source's strength trail (%d)", sn ? sn->trail_count : -1);
+    if (sc && sc->strongest_valid) {
+        double lat, lon; m2ll(se, 0, &lat, &lon);
+        double d = hypot((sc->strongest_lat_deg - lat) * BB_DEG * BB_EARTH_R, (sc->strongest_lon_deg - lon) * BB_DEG * BB_EARTH_R * cos(LAT0 * BB_DEG));
+        CHECK(d < 10, "strongest here at the closest approach (%.1f m off)", d);
+        CHECK(sc->max_rssi_dbm >= -70 && sc->last_rssi_dbm < sc->max_rssi_dbm, "max %d, last %d dBm", sc->max_rssi_dbm, sc->last_rssi_dbm);
+    } else CHECK(false, "strongest here");
+    CHECK(sc && sc->label_valid, "label point inside the shading");
+    CHECK(sn && sn->fine_valid && sn->fine_width == 160 && sn->fine_rgba, "fine layer published while low and slow");
+    if (sn && sn->fine_valid) {
+        double span = (sn->fine_north_deg - sn->fine_south_deg) * BB_DEG * BB_EARTH_R;
+        NEAR(span, 400, 1, "fine raster 160 x 2.5 m");
+        int lit = 0; for (int i = 0; i < 160 * 160; i++) lit += sn->fine_rgba[i * 4 + 3] > 0;
+        CHECK(lit > 100, "fine raster shaded (%d px)", lit);
+    }
+    uint8_t *rgba = malloc(192 * 192 * 4), *alpha = malloc(192 * 192 * BTRX_BEARING_MAX_SOURCES), *fine = malloc(160 * 160 * 4);
+    btrx_bearing_trail_point_t *trail = malloc(sizeof *trail * BTRX_BEARING_TRAIL_MAX);
+    btrx_bearing_snapshot_t cp;
+    CHECK(sn && btrx_bearing_snapshot_copy(sn, &cp, rgba, 192 * 192 * 4, alpha, 192 * 192 * BTRX_BEARING_MAX_SOURCES,
+            fine, 160 * 160 * 4, trail, BTRX_BEARING_TRAIL_MAX) == BTRX_BEARING_OK && cp.fine_rgba == fine && cp.trail == trail
+            && cp.trail_count == sn->trail_count && memcmp(fine, sn->fine_rgba, 160 * 160 * 4) == 0, "deep copy with fine layer and trail");
+    CHECK(sn && btrx_bearing_snapshot_copy(sn, &cp, rgba, 192 * 192 * 4, alpha, 192 * 192 * BTRX_BEARING_MAX_SOURCES,
+            NULL, 0, NULL, 0) == BTRX_BEARING_OK && !cp.fine_valid && cp.trail_count == 0, "copy without fine layer and trail");
+    double sum_focus = 0;
+    if (sn) for (int i = 0; i < 192 * 192; i++) sum_focus += sn->rgba[i * 4 + 3];
+    if (sn) btrx_bearing_snapshot_release(h, sn);
+    btrx_bearing_set_focus(h, 0);
+    btrx_bearing_tick(h, 72100000, NULL);
+    sn = btrx_bearing_snapshot_acquire(h);
+    double sum_all = 0;
+    if (sn) for (int i = 0; i < 192 * 192; i++) sum_all += sn->rgba[i * 4 + 3];
+    CHECK(sn && sn->focus_key == 0 && sn->trail_count == 0 && sum_all > sum_focus, "focus cleared: others full strength (%.0f > %.0f)", sum_all, sum_focus);
+    if (sn) btrx_bearing_snapshot_release(h, sn);
+    btrx_bearing_destroy(h);
+    free(rgba); free(alpha); free(fine); free(trail);
+
+    /* high and fast, weak: no fine layer */
+    h = mk(&c);
+    s = (inj_t){ 0, 0, 0 };
+    btrx_bearing_report_source_t ew = entry(0x8, 8, -84, -88, 5);
+    for (int i = 0; i <= 20; i++) inject(h, &s, 10000000 + (int64_t)i * 1000000, i * 12.0, 0, 90, 100, &ew, 1, true);
+    btrx_bearing_tick(h, 32000000, NULL);
+    sn = btrx_bearing_snapshot_acquire(h);
+    CHECK(sn && !sn->fine_valid, "high, fast and weak: coarse only");
+    if (sn) btrx_bearing_snapshot_release(h, sn);
+    btrx_bearing_destroy(h);
 }
 
 static void test_stats_without_view(void) {
@@ -1356,6 +1588,7 @@ int main(int argc, char **argv) {
     test_stable_ids();
     test_backlog_health();
     test_stats_without_view();
+    test_watch_fixes();
     test_threads();
     test_worker_and_abi();
     scenarios();

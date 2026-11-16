@@ -78,7 +78,9 @@ final class CameraFootprintTests: XCTestCase {
         let outline=CameraFootprintGeometry.project(input(),elevation:{ _,_ in samples += 1; return 900 },edgeSubdivisions:1)
         XCTAssertEqual(outline.count,4)
         XCTAssertTrue(outline.vertices.allSatisfy(\.corner))
-        XCTAssertLessThan(samples,200)
+        // Four corner rays plus the optical axis (centre crosshair, Nov 16): same per-ray budget.
+        XCTAssertLessThan(samples,250)
+        XCTAssertNotNil(outline.center)
         let drawing=CameraFootprintDrawing(input:input(),terrain:outline)
         XCTAssertEqual(drawing.boundary,outline)
         XCTAssertEqual(drawing.corners.vertices,outline.vertices)

@@ -44,9 +44,20 @@ class BtrxBearingLayerTest {
         override fun setFade(handle: Long, totalS: Float, shapeP: Float): Int { calls += "fade $totalS $shapeP"; return 0 }
         override fun setStableSrcIds(handle: Long, stable: Boolean): Int { calls += "stable $stable"; return 0 }
         override fun reset(handle: Long, what: Int, key: Long): Int = 0
+        override fun setFocus(handle: Long, key: Long): Int { calls += "focus $key"; return 0 }
         override fun tick(handle: Long, nowUs: Long): Int = if (publish) 1.also { publish = false } else 0
-        override fun copySnapshot(handle: Long, rgba: ByteBuffer, keys: LongArray, shortIds: ByteArray, meta: DoubleArray): Int {
+        var withFine = false
+        override fun copySnapshot(handle: Long, rgba: ByteBuffer, fine: ByteBuffer?, trail: DoubleArray?, keys: LongArray, shortIds: ByteArray, meta: DoubleArray): Int {
             meta.fill(0.0)
+            meta[BtrxBearingNative.META_FOCUS_INDEX] = -1.0
+            if (withFine) {
+                meta[BtrxBearingNative.META_FOCUS_INDEX] = 0.0
+                meta[BtrxBearingNative.META_FINE_VALID] = 1.0; meta[BtrxBearingNative.META_FINE_CELLS] = 160.0
+                meta[12] = 37.002; meta[13] = 36.998; meta[14] = -121.998; meta[15] = -122.002
+                fine!!.put(0, 7); fine.put(3, 200.toByte())
+                meta[BtrxBearingNative.META_TRAIL_COUNT] = 2.0
+                trail!![0] = 37.0; trail[1] = -122.0; trail[2] = -71.0; trail[3] = 37.0001; trail[4] = -122.0; trail[5] = -64.0
+            }
             meta[0] = 5.0; meta[1] = 1e9; meta[2] = 2.0; meta[3] = 2.0
             meta[4] = 37.01; meta[5] = 37.0; meta[6] = -121.99; meta[7] = -122.0; meta[8] = 2.0
             val q = BtrxBearingNative.META_STATS
@@ -64,6 +75,14 @@ class BtrxBearingLayerTest {
                 meta[o + 31] = if (i == 0) 0xF1A3.toDouble() else 7.0
                 meta[o + 32] = if (i == 1) 1.0 else 0.0
                 if (i == 0) { meta[o + 13] = 1.0; meta[o + 15] = 37.005; meta[o + 16] = -121.995; meta[o + 17] = 9f.toDouble() }
+                meta[o + 35] = if (i == 0) -64.0 else -128.0; meta[o + 36] = if (i == 0) -58.0 else -128.0
+                if (i == 0) {
+                    meta[o + 23] = 1.0; meta[o + 28] = 120.0; meta[o + 29] = Double.NaN; meta[o + 33] = 1.0; meta[o + 34] = 31.5
+                    meta[o + 37] = 1.0; meta[o + 38] = 37.0001; meta[o + 39] = -122.0
+                    meta[o + 41] = 1.0; meta[o + 42] = 37.004; meta[o + 43] = -121.996
+                    meta[o + 44] = 1.0
+                }
+                if (i == 1) meta[o + 5] = (BtrxBearingNative.SRC_MUTED or BtrxBearingNative.SRC_OWN_SUSPECT).toDouble()
             }
             return 2
         }
@@ -243,6 +262,48 @@ class BtrxBearingLayerTest {
         assertEquals(0, e.flags.last().third)
         l.noteRendered(5L); l.noteRendered(5L)
         assertEquals(1, e.calls.count { it == "rendered 5" })
+    }
+
+    @Test fun snapshotDecodesWatchTestFields() {
+        val e = FakeEngine()
+        val l = layer(e)
+        l.start(BtrxBearingSettings(), false, true)
+        e.publish = true
+        tickAt(l, now + 200_000L)
+        var s = l.snapshot.value!!
+        assertEquals(0L, s.focusKey)
+        assertNull(s.fine)
+        assertTrue(s.trail.isEmpty())
+        val a = s.sources[0]
+        assertTrue(a.pinned)
+        assertEquals(-64, a.lastRssiDbm)
+        assertEquals(-58, a.maxRssiDbm)
+        assertEquals(37.0001, a.strongestLat!!, 1e-9)
+        assertEquals(37.004, a.labelLat!!, 1e-9)
+        assertTrue(a.latestRay!!.ambiguous)
+        assertEquals(31.5f, a.latestRay!!.rangeM!!, 1e-3f)
+        assertEquals(120f, a.latestRay!!.lengthM, 1e-3f)
+        assertFalse(a.ownSuspect)
+        val b = s.sources[1]
+        assertTrue(b.ownSuspect)
+        assertNull(b.lastRssiDbm)
+        assertNull(b.strongestLat)
+        assertFalse(b.pinned)
+        l.setFocus(100L)
+        assertEquals("focus 100", e.calls.last())
+        e.withFine = true
+        e.publish = true
+        tickAt(l, now + 400_000L)
+        s = l.snapshot.value!!
+        assertEquals(100L, s.focusKey)
+        assertEquals(160, s.fine!!.cells)
+        assertEquals(37.002, s.fine!!.north, 1e-9)
+        assertEquals(7.toByte(), s.fine!!.rgba[0])
+        assertEquals(160 * 160 * 4, s.fine!!.rgba.size)
+        assertEquals(listOf(-71, -64), s.trail.map { it.rssiDbm })
+        l.clearOwnSuspect(101L)
+        assertEquals(Triple(listOf(101L), BtrxBearingNative.SRC_OWN_CLEARED or BtrxBearingNative.SRC_OWN_SUSPECT,
+            BtrxBearingNative.SRC_OWN_CLEARED), e.flags.last())
     }
 
     @Test fun podRestartStartsABurst() {

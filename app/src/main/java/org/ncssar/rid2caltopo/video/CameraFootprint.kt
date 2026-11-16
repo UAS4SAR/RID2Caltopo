@@ -23,6 +23,11 @@ internal data class CameraFootprintOutline(
     val nearGroundMeters: Double = 0.0,
     val farGroundMeters: Double = 0.0,
     val clamped: Boolean = false,
+    /**
+     * Camera centre crosshair (Nov 16): where the optical axis meets the ground, by the same
+     * projection as the outline. Null when the axis misses the ground within [CameraFootprintGeometry.MAX_RANGE].
+     */
+    val center: CameraFootprintVertex? = null,
 ) {
     val size: Int get() = vertices.size
     fun isEmpty(): Boolean = vertices.isEmpty()
@@ -152,6 +157,7 @@ internal object CameraFootprintGeometry {
             val farLeftTip = if (cornerHits[3].atMaxRange) horizontalTip(rayDir(corners[3].first, corners[3].second)) else cornerHits[3]
             val farRightTip = if (cornerHits[2].atMaxRange) horizontalTip(rayDir(corners[2].first, corners[2].second)) else cornerHits[2]
             val farGround = (farLeftTip.groundMeters + farRightTip.groundMeters) / 2.0
+            val axis = hit(0.0, 0.0)?.takeIf { !it.atMaxRange }
 
             val vertices = buildList {
                 if (closed) {
@@ -210,6 +216,7 @@ internal object CameraFootprintGeometry {
                 nearGroundMeters = nearGround,
                 farGroundMeters = farGround,
                 clamped = clamped,
+                center = axis?.let { vertex(it, corner = false) },
             )
         }
     }

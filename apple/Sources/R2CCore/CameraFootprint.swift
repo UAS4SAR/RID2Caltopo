@@ -27,16 +27,21 @@ public struct CameraFootprintOutline: Sendable, Equatable {
     public let nearGroundMeters: Double
     public let farGroundMeters: Double
     public let clamped: Bool
+    /// Camera centre crosshair (Nov 16): where the optical axis meets the ground, by the same
+    /// projection as the outline. Nil when the axis misses the ground within `maximumRange`.
+    public let center: CameraFootprintVertex?
     public var isEmpty: Bool { vertices.isEmpty }
     public var count: Int { vertices.count }
 
     public init(vertices: [CameraFootprintVertex], closed: Bool,
-                nearGroundMeters: Double = 0, farGroundMeters: Double = 0, clamped: Bool = false) {
+                nearGroundMeters: Double = 0, farGroundMeters: Double = 0, clamped: Bool = false,
+                center: CameraFootprintVertex? = nil) {
         self.vertices = vertices
         self.closed = closed
         self.nearGroundMeters = nearGroundMeters
         self.farGroundMeters = farGroundMeters
         self.clamped = clamped
+        self.center = center
     }
 
     public static let empty = CameraFootprintOutline(vertices: [], closed: true)
@@ -161,6 +166,7 @@ public enum CameraFootprintGeometry {
         let farLeftTip = cornerHits[3].atMaxRange ? horizontalTip(rayDir(corners[3].0, corners[3].1)) : cornerHits[3]
         let farRightTip = cornerHits[2].atMaxRange ? horizontalTip(rayDir(corners[2].0, corners[2].1)) : cornerHits[2]
         let farGround = (farLeftTip.groundMeters + farRightTip.groundMeters) / 2
+        let axis = hit(0, 0).flatMap { $0.atMaxRange ? nil : $0 }
 
         var vertices: [CameraFootprintVertex] = []
         if closed {
@@ -211,7 +217,8 @@ public enum CameraFootprintGeometry {
             closed: closed,
             nearGroundMeters: nearGround,
             farGroundMeters: farGround,
-            clamped: clamped
+            clamped: clamped,
+            center: axis.map { vertex($0, corner: false) }
         )
     }
 }
@@ -287,7 +294,7 @@ public struct CameraFootprintDrawing: Sendable {
             corners = CameraFootprintOutline(
                 vertices: terrainCorners, closed: boundary.closed,
                 nearGroundMeters: boundary.nearGroundMeters, farGroundMeters: boundary.farGroundMeters,
-                clamped: boundary.clamped
+                clamped: boundary.clamped, center: boundary.center
             )
         } else {
             let flat = CameraFootprintGeometry.project(input)
@@ -295,7 +302,7 @@ public struct CameraFootprintDrawing: Sendable {
                 corners = CameraFootprintOutline(
                     vertices: terrainCorners, closed: boundary.closed,
                     nearGroundMeters: boundary.nearGroundMeters, farGroundMeters: boundary.farGroundMeters,
-                    clamped: boundary.clamped
+                    clamped: boundary.clamped, center: boundary.center
                 )
             } else {
                 corners = flat
@@ -523,4 +530,14 @@ public extension CameraFootprintGeometry {
         }
         return strokes
     }
+}
+
+/// Camera crosshair to a selected target marker: ground distance (m) and true bearing (deg). Same as Android.
+public func cameraCrosshairToTarget(_ center: CameraFootprintVertex, _ targetLat: Double, _ targetLon: Double) -> (distanceM: Double, bearingDeg: Double) {
+    let d = cameraFootprintDistanceMeters(center.latitude, center.longitude, targetLat, targetLon)
+    let p1 = center.latitude * .pi / 180, p2 = targetLat * .pi / 180
+    let dl = (targetLon - center.longitude) * .pi / 180
+    let y = sin(dl) * cos(p2), x = cos(p1) * sin(p2) - sin(p1) * cos(p2) * cos(dl)
+    let b = (atan2(y, x) * 180 / .pi + 360).truncatingRemainder(dividingBy: 360)
+    return (d, b)
 }

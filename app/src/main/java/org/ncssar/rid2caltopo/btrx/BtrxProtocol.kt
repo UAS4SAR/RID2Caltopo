@@ -407,6 +407,11 @@ object BtrxProtocol {
         val phoneLost: Long? = null,
         /** Offsets 34-43 (build 0x0106); null for 30- and 34-byte HEALTH. */
         val ext: HealthExt? = null,
+        /**
+         * Offset 44, u16 LE (build 0x010A, btrx d74aaec): scan reports this board lost per
+         * second. Parsed by length: null for 44-byte (0x0106-0x0109) HEALTH, never assumed.
+         */
+        val scanLostPerS: Int? = null,
     )
 
     /**
@@ -418,6 +423,7 @@ object BtrxProtocol {
     const val HEALTH_LEN = 30
     const val HEALTH_LOST_LEN = 34
     const val HEALTH_EXT_LEN = 44
+    const val HEALTH_SCAN_LOST_LEN = 46
 
     // HEALTH pair_source (build 0x0106).
     const val PAIR_SRC_NONE = 0
@@ -459,6 +465,7 @@ object BtrxProtocol {
             u8(p, 28), u8(p, 29),
             phoneLost = if (p.size >= HEALTH_LOST_LEN) u32(p, 30) else null,
             ext = if (p.size >= HEALTH_EXT_LEN) HealthExt(u32(p, 34), u8(p, 38), u16(p, 39), u16(p, 41), u8(p, 43)) else null,
+            scanLostPerS = if (p.size >= HEALTH_SCAN_LOST_LEN) u16(p, 44) else null,
         )
     }
 

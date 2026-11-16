@@ -28,6 +28,9 @@
 #define BB_IN_CMDS 128
 #define BB_LOG_LINE 256
 #define BB_T_NONE INT64_MIN
+#define BB_PALETTE 12
+#define BB_CAND_TABLE 64                 /* extras seen once, not tracked yet */
+#define BB_COLOUR_MEMORY 64              /* key -> colour of evicted sources */
 
 /* ---------- tiles and buckets (bb_tiles.c) ---------- */
 typedef struct {
@@ -67,12 +70,22 @@ typedef struct {
     btrx_bearing_ray_t ray;
     bool est_valid;                  /* from the last publish (eviction preference) */
     uint64_t heard_order;            /* monotone counter of last heard (draw order) */
+    /* strength trail: strongest patch mean at the drone position, every report heard */
+    struct { int64_t t; float e, n; int8_t rssi; } trail[BTRX_BEARING_TRAIL_MAX];
+    int32_t trail_head, trail_n;
+    int8_t last_rssi;
+    /* own aircraft suggestion: current run of strong reports */
+    int64_t own_t0, own_last;
+    float own_e0, own_n0, own_moved;
+    /* the last STEER windows of it, for averaging (newest first) */
+    struct { int64_t t; int8_t rp, rs; uint8_t hp, hs; float roll; } win[4];
+    int32_t win_n;
 } bb_source_t;
 
 /* ---------- inputs ---------- */
 typedef struct { int64_t t1, t4; uint32_t t2, t3; } bb_sync_in_t;
 typedef struct { int64_t host_us; uint8_t role; uint32_t uptime_s; bool known; uint32_t lost; } bb_health_in_t;
-enum { BB_CMD_FLAGS = 1, BB_CMD_CLASS, BB_CMD_FADE, BB_CMD_RESET, BB_CMD_RENDERED, BB_CMD_CONNECTED, BB_CMD_STABLE_IDS };
+enum { BB_CMD_FLAGS = 1, BB_CMD_CLASS, BB_CMD_FADE, BB_CMD_RESET, BB_CMD_RENDERED, BB_CMD_CONNECTED, BB_CMD_STABLE_IDS, BB_CMD_FOCUS };
 typedef struct { int type; uint64_t key; uint32_t a, b; float f1, f2; uint64_t seq; int64_t us; } bb_cmd_t;
 
 #define BB_RING(T, N) struct { T item[N]; int32_t head, count; }
@@ -164,6 +177,8 @@ typedef struct {
     btrx_bearing_snapshot_t pub;
     uint8_t *rgba;
     uint8_t *alpha;
+    uint8_t *fine_rgba;
+    btrx_bearing_trail_point_t *trail;
 } bb_snap_t;
 
 /* ---------- per-entry geometry for the likelihood ---------- */
@@ -176,6 +191,10 @@ typedef struct {
     float sigma2;
     float kappa, q;
     float div;                       /* 1 / (1 + k), diversity discount */
+    float foot_m;                    /* footprint radius of this report (0 = cfg.footprint_m) */
+    float reach_m;                   /* drawn wedge length (RSSI range * margin); 0 = footprint */
+    float range_m;                   /* RSSI slant range estimate; NaN unknown */
+    float roll_deg;                  /* pod roll (+ starboard down) for the correction; 0 = none */
 } bb_geom_t;
 
 struct btrx_bearing {
@@ -243,6 +262,16 @@ struct btrx_bearing {
     btrx_bearing_stats_t stats_pub;
     bool stats_pub_valid;
     int64_t last_stats_us;
+    /* Nov 16 additions */
+    btrx_bearing_t *fine;            /* fine layer: accumulation only, slot-parallel sources */
+    bool is_fine;
+    uint64_t focus_key;
+    struct { uint64_t key; int64_t t; int32_t n; } cand[BB_CAND_TABLE];
+    int32_t cand_n;
+    struct { uint64_t key; uint8_t colour; } colmem[BB_COLOUR_MEMORY];
+    int32_t colmem_n;
+    uint32_t extras_tentative;       /* entries of not-yet-tracked extras (log only) */
+    uint32_t evictions;
 };
 
 /* helpers */
@@ -274,6 +303,9 @@ void bb_local(const btrx_bearing_t *h, double lat, double lon, double *e, double
 void bb_latlon(const btrx_bearing_t *h, double e, double n, double *lat, double *lon);
 int bb_pose_ready(const btrx_bearing_t *h, int64_t t_end, int64_t now, int32_t *wait);
 int bb_pose_at(btrx_bearing_t *h, int64_t t_end, bb_pose_at_t *out);
+int bb_pose_pos(btrx_bearing_t *h, int64_t t_rep, bb_pose_at_t *out);   /* position and AGL only */
+bool bb_drone_speed(btrx_bearing_t *h, int64_t t_rep, float *mps);
+void bb_source_heard_at(btrx_bearing_t *h, bb_source_t *s, int64_t t, float e, float n, int8_t rssi);
 
 /* bb_tiles.c */
 void bb_tiles_init(btrx_bearing_t *h);
@@ -290,8 +322,11 @@ void bb_composite_source(btrx_bearing_t *h, bb_source_t *src, int64_t now_us, fl
 
 /* bb_grid.c */
 float bb_loglik(const btrx_bearing_t *h, const bb_geom_t *g, float phi_deg, float dep_deg);
+float bb_roll_k(float dep_deg);
 void bb_grid_add(btrx_bearing_t *h, bb_source_t *src, bb_bucket_t *b, const bb_geom_t *g);
 void bb_latest_ray(btrx_bearing_t *h, bb_source_t *src, const bb_geom_t *g, int64_t t_us);
+float bb_range_m(const btrx_bearing_t *h, float rssi_dbm);   /* RSSI range estimate */
+float bb_reach_m(const btrx_bearing_t *h, float rssi_dbm, float ceiling_m);
 
 /* bb_diversity.c */
 int32_t bb_diversity_count(btrx_bearing_t *h, int32_t slot, int64_t t, float e, float n, float yaw);
@@ -304,6 +339,7 @@ void bb_estimate(btrx_bearing_t *h, const float *e, float eff, float yaw_span, f
 /* bb_render.c */
 void bb_publish(btrx_bearing_t *h, int64_t now_us);
 void bb_view_update(btrx_bearing_t *h, double e, double n);
+const uint8_t *bb_palette(uint8_t colour);
 
 /* bb_steer.c */
 int32_t bb_resolve_entry(btrx_bearing_t *h, const btrx_bearing_report_source_t *rs, int64_t t_us);

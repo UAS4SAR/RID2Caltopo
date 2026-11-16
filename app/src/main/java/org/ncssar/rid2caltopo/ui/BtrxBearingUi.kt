@@ -162,6 +162,7 @@ fun BtrxBearingSourceRow(src: BtrxBearingSource, nowUs: Long, onShownChange: (Bo
         Text(src.className)
         Text(BtrxBearingText.lastHeard(nowUs, src.lastHeardUs), style = MaterialTheme.typography.bodySmall)
         Text(BtrxBearingText.reports(src.reportsInWindow), style = MaterialTheme.typography.bodySmall)
+        if (src.ownSuspect) Text(BtrxBearingText.OWN_SUSPECT_TAG, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
     }
 }
 
@@ -171,7 +172,12 @@ fun BtrxBearingSourceRow(src: BtrxBearingSource, nowUs: Long, onShownChange: (Bo
  * [rows] are keys in tap order; the row content follows the live snapshot.
  */
 @Composable
-fun BtrxBearingPanel(rows: List<Long>, onDismiss: () -> Unit, modifier: Modifier = Modifier) {
+fun BtrxBearingPanel(
+    rows: List<Long>,
+    onDismiss: () -> Unit,
+    modifier: Modifier = Modifier,
+    onFocus: (BtrxBearingSource) -> Unit = {},
+) {
     val snap by BtrxManager.bearing.snapshot.collectAsState()
     val s = snap ?: return
     val byKey = s.sources.associateBy { it.key }
@@ -180,13 +186,90 @@ fun BtrxBearingPanel(rows: List<Long>, onDismiss: () -> Unit, modifier: Modifier
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Text(BtrxBearingText.PANEL_TITLE, style = MaterialTheme.typography.titleMedium)
             listed.forEach { src ->
-                BtrxBearingSourceRow(src, s.tUs, onShownChange = { shown -> BtrxManager.bearing.setMuted(listOf(src.key), !shown) })
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(Modifier.weight(1f)) {
+                        BtrxBearingSourceRow(src, s.tUs, onShownChange = { shown -> BtrxManager.bearing.setMuted(listOf(src.key), !shown) })
+                    }
+                    TextButton(onClick = { onFocus(src) }) { Text(BtrxBearingText.FOCUS, style = MaterialTheme.typography.bodySmall) }
+                }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(onClick = { BtrxManager.bearing.setMuted(listed.map { it.key }, true) }) { Text(BtrxBearingText.MUTE_ALL) }
                 OutlinedButton(onClick = { BtrxManager.bearing.setMuted(listed.map { it.key }, false) }) { Text(BtrxBearingText.UNMUTE_ALL) }
                 TextButton(onClick = onDismiss) { Text(BtrxBearingText.DONE) }
             }
+        }
+    }
+}
+
+/**
+ * "Save as own aircraft": on the pod by src_id when the firmware keeps a saved list,
+ * otherwise this device only. Shared by the suggestion card and the Developer Tools rows.
+ */
+fun btrxSaveOwnAircraft(src: BtrxBearingSource) {
+    val pod = BtrxManager.snapshot.value
+    if (pod.savedIgnoreSupported && src.srcId != 0) BtrxManager.ignoreSourceSaved(src.srcId)
+    else BtrxManager.bearing.setIgnored(src.key, true)
+}
+
+/**
+ * Own-aircraft suggestion (Nov 16 watch test): a source stronger than about -40 dBm for a
+ * minute while the drone moved. A suggestion only: nothing is muted until Ken answers, and
+ * the layer draws no estimate for it meanwhile. Hidden once saved, ignored or cleared.
+ */
+@Composable
+fun BtrxOwnAircraftSuggestion(modifier: Modifier = Modifier) {
+    val snap by BtrxManager.bearing.snapshot.collectAsState()
+    val src = snap?.sources?.firstOrNull { it.ownSuspect && !it.ignored } ?: return
+    Surface(modifier.widthIn(max = 520.dp), shape = RoundedCornerShape(8.dp), tonalElevation = 6.dp, shadowElevation = 6.dp) {
+        Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(BtrxBearingText.ownSuggestion(src), style = MaterialTheme.typography.bodySmall)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = { btrxSaveOwnAircraft(src) }) { Text(BtrxBearingText.OWN_SUGGEST_SAVE) }
+                TextButton(onClick = { BtrxManager.bearing.clearOwnSuspect(src.key) }) { Text(BtrxBearingText.OWN_SUGGEST_KEEP) }
+            }
+        }
+    }
+}
+
+/** Inspect card of a pinned (triangulated) source: ID/type, estimate and radius, counts, last heard, peak RSSI. */
+@Composable
+fun BtrxPinnedInspectCard(
+    key: Long,
+    onFocus: (BtrxBearingSource) -> Unit,
+    onDismiss: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val snap by BtrxManager.bearing.snapshot.collectAsState()
+    val s = snap ?: return
+    val src = s.sources.firstOrNull { it.key == key } ?: return
+    Surface(modifier.widthIn(max = 420.dp), shape = MaterialTheme.shapes.medium, tonalElevation = 6.dp, shadowElevation = 6.dp) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Box(Modifier.size(16.dp).background(Color(0xFF000000.toInt() or src.rgb), RoundedCornerShape(3.dp)))
+                Text(BtrxBearingText.PINNED_TITLE, style = MaterialTheme.typography.titleMedium)
+            }
+            BtrxBearingText.inspectLines(src, s.tUs).forEach { Text(it, style = MaterialTheme.typography.bodySmall) }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = { onFocus(src) }) { Text(BtrxBearingText.FOCUS) }
+                TextButton(onClick = onDismiss) { Text(BtrxBearingText.CLOSE) }
+            }
+        }
+    }
+}
+
+/** Shown while a source is focused: its short ID and "Clear focus". */
+@Composable
+fun BtrxFocusChip(onClear: () -> Unit, modifier: Modifier = Modifier) {
+    val snap by BtrxManager.bearing.snapshot.collectAsState()
+    val s = snap ?: return
+    if (s.focusKey == 0L) return
+    val src = s.sources.firstOrNull { it.key == s.focusKey } ?: return
+    Surface(modifier, shape = RoundedCornerShape(16.dp), color = Color(0xE6202020), contentColor = Color.White) {
+        Row(Modifier.padding(start = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.size(12.dp).background(Color(0xFF000000.toInt() or src.rgb), RoundedCornerShape(2.dp)))
+            Text(" ${src.shortId}", style = MaterialTheme.typography.bodySmall)
+            TextButton(onClick = onClear) { Text(BtrxBearingText.CLEAR_FOCUS, color = Color.White, style = MaterialTheme.typography.bodySmall) }
         }
     }
 }

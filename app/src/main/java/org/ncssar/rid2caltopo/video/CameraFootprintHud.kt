@@ -5,6 +5,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -82,6 +83,8 @@ internal fun CameraFootprintHud(
     terrain: CameraFootprintTerrainCache,
     projectionClock: CameraFootprintProjectionClock,
     modifier: Modifier = Modifier,
+    /** Selected target marker (BTRX pinned / focused source), for the crosshair's distance and bearing. */
+    target: Pair<Double, Double>? = null,
 ) {
     val drawingsState = remember { mutableStateOf<List<CameraFootprintDrawing>>(emptyList()) }
     val overlayBook = remember { CameraFootprintOverlayBook() }
@@ -134,7 +137,36 @@ internal fun CameraFootprintHud(
         if (frame < 0 || posed.isEmpty()) return@Canvas
         val map = projectionClock.mapView ?: return@Canvas
         drawIntoCanvas { canvas ->
-            drawCameraFootprints(canvas.nativeCanvas, map, posed, paints, density)
+            drawCameraFootprints(canvas.nativeCanvas, map, posed, paints, density, target)
         }
     }
+}
+
+/**
+ * [CameraFootprintHud] with the crosshair target (Nov 16): the inspected BTRX source, else the
+ * focused one (its estimate, else its strongest-here point). Collects the bearing snapshot in
+ * its own scope so the map pane does not recompose once a second.
+ */
+@Composable
+internal fun CameraFootprintHudWithBtrxTarget(
+    viewModel: StreamsViewModel,
+    terrain: CameraFootprintTerrainCache,
+    projectionClock: CameraFootprintProjectionClock,
+    modifier: Modifier = Modifier,
+    inspectKey: Long?,
+    bearingOn: Boolean,
+) {
+    val snap by org.ncssar.rid2caltopo.btrx.BtrxManager.bearing.snapshot.collectAsState()
+    val target = btrxCrosshairTarget(if (bearingOn) snap else null, inspectKey)
+    CameraFootprintHud(viewModel, terrain, projectionClock, modifier, target)
+}
+
+internal fun btrxCrosshairTarget(snap: org.ncssar.rid2caltopo.btrx.BtrxBearingSnapshot?, inspectKey: Long?): Pair<Double, Double>? {
+    snap ?: return null
+    val key = inspectKey ?: snap.focusKey.takeIf { it != 0L } ?: return null
+    val src = snap.sources.firstOrNull { it.key == key } ?: return null
+    src.estimate?.let { return it.lat to it.lon }
+    val lat = src.strongestLat ?: return null
+    val lon = src.strongestLon ?: return null
+    return lat to lon
 }

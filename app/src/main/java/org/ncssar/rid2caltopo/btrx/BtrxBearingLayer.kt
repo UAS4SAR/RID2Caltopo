@@ -58,8 +58,16 @@ data class BtrxBearingEstimate(
 
 data class BtrxBearingRay(
     val apexLat: Double, val apexLon: Double, val centreTrueDeg: Float, val halfWidthDeg: Float,
+    /** Wedge length: the RSSI range estimate times a margin, up to the 400 m footprint. */
     val lengthM: Float, val mirrorTrueDeg: Float?, val tUs: Long,
+    /** Front and back about equally likely: draw both lobes alike (centre = the front one). */
+    val ambiguous: Boolean = false,
+    /** RSSI slant range estimate, null when unknown. */
+    val rangeM: Float? = null,
 )
+
+/** Strength trail point of the focused source: drone position and strongest-patch RSSI. */
+data class BtrxBearingTrailPoint(val lat: Double, val lon: Double, val rssiDbm: Int)
 
 data class BtrxBearingSource(
     val index: Int,
@@ -82,9 +90,22 @@ data class BtrxBearingSource(
     val srcId: Int = 0,
     /** Build 0x0106+: seen only as an extra so far, keyed by its stable src_id. */
     val srcKeyed: Boolean = false,
+    /** Strongest-patch mean RSSI of the latest report / strongest in the fade window; null = none. */
+    val lastRssiDbm: Int? = null,
+    val maxRssiDbm: Int? = null,
+    /** "Strongest here": where the drone heard it strongest (fade window). */
+    val strongestLat: Double? = null,
+    val strongestLon: Double? = null,
+    /** Label point inside the shaded area. */
+    val labelLat: Double? = null,
+    val labelLon: Double? = null,
+    /** Estimate valid and tight (2 sigma <= 30 m): drawn as a distinct "pinned" marker. */
+    val pinned: Boolean = false,
 ) {
     val muted: Boolean get() = flags and BtrxBearingNative.SRC_MUTED != 0
     val ignored: Boolean get() = flags and BtrxBearingNative.SRC_IGNORED != 0
+    /** The layer suggests "Own aircraft": strong while the drone moved. Estimate hidden until decided. */
+    val ownSuspect: Boolean get() = flags and BtrxBearingNative.SRC_OWN_SUSPECT != 0
     val className: String get() = BtrxBearingText.className(devClass)
 }
 
@@ -108,6 +129,18 @@ class BtrxBearingSnapshot(
     val rgba: ByteArray,
     val sources: List<BtrxBearingSource>,
     val stats: BtrxBearingStats,
+    /** Focused source key, 0 = none. */
+    val focusKey: Long = 0L,
+    /** Fine layer (2.5 m cells; reports while low and slow, or strong), drawn over [rgba]. */
+    val fine: BtrxBearingFine? = null,
+    /** Strength trail of the focused source, oldest first. */
+    val trail: List<BtrxBearingTrailPoint> = emptyList(),
+)
+
+class BtrxBearingFine(
+    val cells: Int, val north: Double, val south: Double, val east: Double, val west: Double,
+    /** cells * cells * 4, premultiplied RGBA, row 0 north. */
+    val rgba: ByteArray,
 )
 
 /**
@@ -181,6 +214,8 @@ class BtrxBearingLayer(
     // the published Kotlin snapshot the same snapshot.
     private val snapLock = Any()
     private var rgbaBuffer: ByteBuffer? = null
+    private var fineBuffer: ByteBuffer? = null
+    private val trailBuf = DoubleArray(3 * BtrxBearingNative.TRAIL_MAX)
     private val keys = LongArray(BtrxBearingNative.MAX_SOURCES)
     private val shortIds = ByteArray(8 * BtrxBearingNative.MAX_SOURCES)
     private val meta = DoubleArray(BtrxBearingNative.META_SIZE)
@@ -411,10 +446,11 @@ class BtrxBearingLayer(
 
     private fun copySnapshot() {
         val buf = rgbaBuffer ?: ByteBuffer.allocateDirect(MAX_RGBA_BYTES).order(ByteOrder.nativeOrder()).also { rgbaBuffer = it }
+        val fbuf = fineBuffer ?: ByteBuffer.allocateDirect(FINE_RGBA_BYTES).order(ByteOrder.nativeOrder()).also { fineBuffer = it }
         synchronized(snapLock) {
-            val n = withHandle(-1) { h -> engine.copySnapshot(h, buf, keys, shortIds, meta) }
+            val n = withHandle(-1) { h -> engine.copySnapshot(h, buf, fbuf, trailBuf, keys, shortIds, meta) }
             if (n < 0) return
-            val snap = decode(buf, n)
+            val snap = decode(buf, fbuf, n)
             _snapshot.value = snap
             if (lastPodSession >= 0 && snap.stats.podSession != lastPodSession) {
                 log("bearing: Drone Pod session ${snap.stats.podSession} (pod restart); TIME_PING burst")
@@ -442,7 +478,7 @@ class BtrxBearingLayer(
         )
     }
 
-    private fun decode(buf: ByteBuffer, count: Int): BtrxBearingSnapshot {
+    private fun decode(buf: ByteBuffer, fbuf: ByteBuffer, count: Int): BtrxBearingSnapshot {
         val m = meta
         val w = m[2].toInt()
         val ht = m[3].toInt()
@@ -460,16 +496,33 @@ class BtrxBearingLayer(
             ) else null
             val ray = if (v(23) != 0.0) BtrxBearingRay(
                 v(24), v(25), v(26).toFloat(), v(27).toFloat(), v(28).toFloat(), v(29).toFloat().takeIf { it.isFinite() }, v(30).toLong(),
+                ambiguous = v(33) != 0.0, rangeM = v(34).toFloat().takeIf { it.isFinite() && it > 0f },
             ) else null
+            fun rssi(j: Int) = v(j).toInt().takeIf { it > -128 }
             BtrxBearingSource(
                 index = i, key = keys[i], shortId = id, provisional = v(0) != 0.0, devClass = v(1).toInt(),
                 rgb = (v(2).toInt() shl 16) or (v(3).toInt() shl 8) or v(4).toInt(), flags = v(5).toInt(),
                 firstHeardUs = v(6).toLong(), lastHeardUs = v(7).toLong(), reportsIn = v(8).toInt(), reportsUsed = v(9).toInt(),
                 reportsInWindow = v(10).toInt(), peakAlpha = v(12).toFloat(), estimate = est, latestRay = ray,
                 srcId = v(31).toInt(), srcKeyed = v(32) != 0.0,
+                lastRssiDbm = rssi(35), maxRssiDbm = rssi(36),
+                strongestLat = if (v(37) != 0.0) v(38) else null, strongestLon = if (v(37) != 0.0) v(39) else null,
+                labelLat = if (v(41) != 0.0) v(42) else null, labelLon = if (v(41) != 0.0) v(43) else null,
+                pinned = v(44) != 0.0,
             )
         }
-        return BtrxBearingSnapshot(m[0].toLong(), m[1].toLong(), w, ht, m[4], m[5], m[6], m[7], rgba, sources, stats)
+        val focusIdx = m[BtrxBearingNative.META_FOCUS_INDEX].toInt()
+        val focusKey = if (focusIdx in 0 until count) keys[focusIdx] else 0L
+        val fc = m[BtrxBearingNative.META_FINE_CELLS].toInt()
+        val fine = if (m[BtrxBearingNative.META_FINE_VALID] != 0.0 && fc > 0 && fc * fc * 4 <= fbuf.capacity()) {
+            val fr = ByteArray(fc * fc * 4)
+            fbuf.position(0); fbuf.get(fr, 0, fr.size); fbuf.position(0)
+            val q = BtrxBearingNative.META_FINE_NORTH
+            BtrxBearingFine(fc, m[q], m[q + 1], m[q + 2], m[q + 3], fr)
+        } else null
+        val nt = m[BtrxBearingNative.META_TRAIL_COUNT].toInt().coerceIn(0, BtrxBearingNative.TRAIL_MAX)
+        val trail = (0 until nt).map { BtrxBearingTrailPoint(trailBuf[3 * it], trailBuf[3 * it + 1], trailBuf[3 * it + 2].toInt()) }
+        return BtrxBearingSnapshot(m[0].toLong(), m[1].toLong(), w, ht, m[4], m[5], m[6], m[7], rgba, sources, stats, focusKey, fine, trail)
     }
 
     // ---- UI ----
@@ -509,6 +562,19 @@ class BtrxBearingLayer(
         withHandle(Unit) { h -> engine.reset(h, BtrxBearingNative.RESET_ALL, 0L) }
     }
 
+    /** UI thread: "Focus this source" (0 = clear). Applied at the next tick, which publishes. */
+    fun setFocus(key: Long) {
+        withHandle(Unit) { h -> engine.setFocus(h, key) }
+    }
+
+    /** UI thread: the own-aircraft suggestion answered "not on the drone". */
+    fun clearOwnSuspect(key: Long) {
+        withHandle(Unit) { h ->
+            engine.setSourceFlags(h, longArrayOf(key), BtrxBearingNative.SRC_OWN_CLEARED or BtrxBearingNative.SRC_OWN_SUSPECT,
+                BtrxBearingNative.SRC_OWN_CLEARED)
+        }
+    }
+
     /** UI thread: the overlay showing snapshot [seq] is on screen (T7). */
     fun noteRendered(seq: Long) {
         if (seq == lastRenderedSeq) return
@@ -539,6 +605,7 @@ class BtrxBearingLayer(
         private const val E_LATE = -5
         /** 192 x 192 cells (config default), with room for a larger grid. */
         private const val MAX_RGBA_BYTES = 256 * 256 * 4
+        private const val FINE_RGBA_BYTES = BtrxBearingNative.FINE_CELLS * BtrxBearingNative.FINE_CELLS * 4
     }
 }
 
@@ -567,6 +634,36 @@ object BtrxBearingText {
     const val NO_SOURCES = "No sources yet."
     const val IGNORE = "Ignore (own aircraft)"
     const val UNIGNORE = "Stop ignoring"
+    const val FOCUS = "Focus this source"
+    const val CLEAR_FOCUS = "Clear focus"
+    const val OWN_SUGGEST_SAVE = "Own aircraft (saved)"
+    const val OWN_SUGGEST_KEEP = "Not on the drone"
+    const val OWN_SUSPECT_TAG = "own aircraft?"
+    const val STRONGEST_HERE = "strongest here"
+    const val PINNED_TITLE = "BTRX source located"
+    const val CLOSE = "Close"
+
+    /** Own-aircraft suggestion (Nov 16): strong while the drone moved; a suggestion only. */
+    fun ownSuggestion(s: BtrxBearingSource): String =
+        "${s.shortId} (${s.className}) looks like it rides on the drone: stronger than -40 dBm for a minute while the drone moved. " +
+            "No estimate is drawn for it until you decide."
+
+    /** Inspect card of a pinned source: one line per field. */
+    fun inspectLines(s: BtrxBearingSource, nowUs: Long): List<String> {
+        val est = s.estimate
+        return listOfNotNull(
+            "Source ${s.shortId}" + (if (s.srcId != 0) " (id ${s.srcId})" else "") + " · ${s.className}",
+            est?.let { "Estimate %.6f, %.6f".format(java.util.Locale.US, it.lat, it.lon) },
+            est?.let { "Uncertainty ±${it.plusMinus2sM.roundToInt()} m (2σ)" + if (it.ambiguous) " · ambiguous" else "" },
+            "Reports ${s.reportsInWindow} in the fade window (${s.reportsUsed} used of ${s.reportsIn})",
+            "Last heard ${lastHeard(nowUs, s.lastHeardUs)}",
+            s.maxRssiDbm?.let { "Peak RSSI $it dBm" + (s.lastRssiDbm?.let { l -> " (latest $l dBm)" } ?: "") },
+        )
+    }
+
+    /** Distance and true bearing from the camera crosshair to a target: "42 m · 135°". */
+    fun crosshairToTarget(distanceM: Double, bearingDeg: Double): String =
+        "${distanceM.roundToInt()} m · ${((bearingDeg % 360 + 360) % 360).roundToInt() % 360}°"
 
     fun className(devClass: Int): String = when (devClass) {
         1 -> "phone"
@@ -594,7 +691,7 @@ object BtrxBearingText {
 
     /** Map label (spec 5): `phone · Q3x9Kd · 23 rpt · ±18 m`, plus "ambiguous". */
     fun label(s: BtrxBearingSource): String {
-        val base = "${s.className} · ${s.shortId} · ${reports(s.reportsInWindow)}"
+        val base = "${s.className} · ${s.shortId} · ${reports(s.reportsInWindow)}" + if (s.ownSuspect) " · $OWN_SUSPECT_TAG" else ""
         val est = s.estimate ?: return base
         val pm = " · ±${est.plusMinus2sM.roundToInt()} m"
         return base + pm + if (est.ambiguous) " · ambiguous" else ""

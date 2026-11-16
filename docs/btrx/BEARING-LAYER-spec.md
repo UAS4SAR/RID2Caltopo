@@ -1611,3 +1611,36 @@ Field test fixes (November 13, 2026, evening):
 Bench checks still open (need builds 0x0103 / 0x0104 flashed): 34-byte HEALTH
 lost count, TIME_PONG offset, STEER extras, hover-yaw ridge on real data, tap
 routing, mute/unmute, fade sliders, lag trace through `lag_report.py`.
+
+## Nov 16 watch test changes (ABI 2)
+
+From the 14:17 PT watch test (Garmin on the ground, phone on the drone) and the BT RX
+steering-report notes (btrx d74aaec). Works fully on Drone Pod 0x0109; nothing depends on 0x010A.
+
+- **History kept.** Up to 24 sources (max 32). Eviction drops the least evidence (fade-weighted
+  reports, +1 if heard in 30 s; focused > with estimate > others), not the least recent. An
+  extra is tracked only after 2 sightings within 60 s. Colours come from a 12-colour palette,
+  remembered per source key, so a returning source keeps its colour.
+- **On-drone suggestion.** Stronger than -40 dBm (reset below -46 dBm or after a 10 s gap)
+  for 60 s while the drone moved 30 m sets `SRC_OWN_SUSPECT`: no estimate is drawn and the map
+  asks "Own aircraft (saved)" / "Not on the drone" (`SRC_OWN_CLEARED`). Never a mute by itself.
+- **STEER bit 3 is advice.** Reports are no longer dropped on bit 3 (0x0109: roll > 10 deg or
+  pitch > 15 deg). Roll from bytes 25/26 (0.5 deg) corrects port - stbd by k x roll (k 0.10 up to
+  30 deg off nadir, 0.13 at 45, 0.22 straight below); weight 1 at 10 deg falling to 0.25 at 45
+  deg; over 45 deg gated. Pitch ignored. IMU not OK: half weight. `gate_on_attitude_flag`
+  restores the old behaviour.
+- **Averaging.** Each source's report is averaged with up to 2 earlier windows within 2.6 s
+  (hit-weighted) before the bearing likelihood.
+- **Close range.** Wedge length from the RSSI range (-38 dBm at 1 m, exponent 2.2, x3 margin,
+  30-400 m); ambiguous lobes (within 0.5 nats) are drawn alike, centre on the in-front lobe.
+  The coarse footprint stays 400 m. Labels sit inside the shading (cells >= 90 % of peak).
+- **Fine layer.** 2.5 m cells over 400 m, 100 m footprint, when AGL <= 30 m and speed <= 4 m/s
+  or the report is >= -65 dBm; composited with the same colours and focus.
+- **Focus this source.** Others at 25 % alpha; the snapshot carries the focused source's strength
+  trail (drone positions with RSSI) and "strongest here".
+- **Pinned marker.** An estimate with 2 sigma <= 30 m is drawn as a ring-and-cross marker; tap
+  opens an inspect card (ID/type, estimate, uncertainty, reports, last heard, peak RSSI, Focus).
+- **Camera crosshair** (map only, not CalTopo): the optical-axis ground point by the same
+  projection as the FOV outline, with distance and bearing to the inspected/focused source.
+- **HEALTH 46 bytes** (0x010A): `scan_lost_per_s` u16 at 44, shown in Drone Pod health when
+  present; 44-byte HEALTH stays valid.

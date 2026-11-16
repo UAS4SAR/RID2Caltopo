@@ -33,6 +33,22 @@ internal class CameraFootprintStrokePaints(density: Float) {
     val border = Paint(halo).apply {
         color = AndroidColor.parseColor("#FF80DEEA"); strokeWidth = 1.25f * density
     }
+    /** Centre crosshair: a little bolder than the outline so it reads as the aim point. */
+    val crossHalo = Paint(halo).apply { strokeWidth = 4f * density }
+    val cross = Paint(halo).apply { color = AndroidColor.parseColor("#FF80DEEA"); strokeWidth = 2f * density }
+    val text = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = AndroidColor.WHITE; textSize = 12f * density }
+    val textBg = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = AndroidColor.parseColor("#D9202020") }
+}
+
+/** Camera crosshair to a selected target marker: ground distance (m) and true bearing (deg). */
+internal fun cameraCrosshairToTarget(center: CameraFootprintVertex, targetLat: Double, targetLon: Double): Pair<Double, Double> {
+    val d = cameraFootprintDistanceMeters(center.latitude, center.longitude, targetLat, targetLon)
+    val p1 = Math.toRadians(center.latitude); val p2 = Math.toRadians(targetLat)
+    val dl = Math.toRadians(targetLon - center.longitude)
+    val y = kotlin.math.sin(dl) * kotlin.math.cos(p2)
+    val x = kotlin.math.cos(p1) * kotlin.math.sin(p2) - kotlin.math.sin(p1) * kotlin.math.cos(p2) * kotlin.math.cos(dl)
+    val b = (Math.toDegrees(kotlin.math.atan2(y, x)) + 360.0) % 360.0
+    return d to b
 }
 
 internal fun drawCameraFootprints(
@@ -40,7 +56,9 @@ internal fun drawCameraFootprints(
     mapView: MapView,
     footprints: List<CameraFootprintDrawing>,
     paints: CameraFootprintStrokePaints,
-    @Suppress("UNUSED_PARAMETER") density: Float,
+    density: Float,
+    /** Selected target marker (lat, lon): label each crosshair with distance and bearing to it. */
+    target: Pair<Double, Double>? = null,
 ) {
     if (footprints.isEmpty() || mapView.width <= 0 || mapView.height <= 0) return
     val projection = mapView.projection
@@ -65,7 +83,25 @@ internal fun drawCameraFootprints(
     }
     footprints.forEach { footprint ->
         // One outline per aircraft. Unbounded far edges stay open (no far segment, no dash).
-        strokeOutline(cameraFootprintDisplayOutline(footprint))
+        val outline = cameraFootprintDisplayOutline(footprint)
+        strokeOutline(outline)
+        outline.center?.let { c ->
+            projection.toPixels(GeoPoint(c.latitude, c.longitude), pixel)
+            val x = pixel.x.toFloat(); val y = pixel.y.toFloat()
+            val r = 10f * density; val gap = 3f * density
+            for (p in listOf(paints.crossHalo, paints.cross)) {
+                canvas.drawLine(x - r, y, x - gap, y, p); canvas.drawLine(x + gap, y, x + r, y, p)
+                canvas.drawLine(x, y - r, x, y - gap, p); canvas.drawLine(x, y + gap, x, y + r, p)
+            }
+            if (target != null) {
+                val (d, b) = cameraCrosshairToTarget(c, target.first, target.second)
+                val label = org.ncssar.rid2caltopo.btrx.BtrxBearingText.crosshairToTarget(d, b)
+                val w = paints.text.measureText(label); val pad = 3f * density
+                val tx = x + r + 4f * density; val ty = y - r
+                canvas.drawRect(tx - pad, ty - paints.text.textSize, tx + w + pad, ty + pad, paints.textBg)
+                canvas.drawText(label, tx, ty, paints.text)
+            }
+        }
     }
 }
 

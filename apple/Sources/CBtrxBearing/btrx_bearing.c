@@ -12,7 +12,7 @@ void btrx_bearing_config_default(btrx_bearing_config_t *c) {
     memset(c, 0, sizeof *c);
     c->struct_size = (uint32_t)sizeof *c;
     c->abi_version = BTRX_BEARING_ABI_VERSION;
-    c->cell_m = 10; c->grid_cells = 192; c->max_sources = 8;
+    c->cell_m = 10; c->grid_cells = 192; c->max_sources = 24;
     c->footprint_m = 400; c->recentre_margin_m = 300;
     c->sigma_sample_db = 5.5f; c->sigma_c0_db = 0.5f; c->c0_db = 0; c->sigma_model_db = 2;
     c->student_nu = 4; c->p_far = 0.05f; c->scan_floor_dbm = -100; c->hpbw_deg = 90;
@@ -20,7 +20,7 @@ void btrx_bearing_config_default(btrx_bearing_config_t *c) {
     c->tempering = 0.5f; c->info_ref_db = 2;
     c->diversity_m = 5; c->diversity_deg = 5; c->diversity_window_ms = 30000; c->diversity_cap = 9;
     c->fade_total_s = 600; c->fade_shape_p = 1; c->bucket_min_s = 6; c->bucket_max_s = 60;
-    c->buckets_per_source = 64; c->tile_pool_tiles = 4096;
+    c->buckets_per_source = 64; c->tile_pool_tiles = 8192;
     c->alpha_max = 0.7f; c->support_sat = 8; c->alpha_visible = 0.02f; c->ray_halfwidth_ll = -0.5f;
     c->max_yaw_rate_dps = 10; c->max_yaw_change_deg = 10;
     c->max_yaw_gap_ms = 500; c->max_pos_gap_ms = 3000; c->max_pos_extrapolate_ms = 1500;
@@ -32,6 +32,19 @@ void btrx_bearing_config_default(btrx_bearing_config_t *c) {
     c->est_min_reports = 10; c->est_min_yaw_span_deg = 60; c->est_min_baseline_m = 50;
     c->est_max_axis_2s_m = 200; c->second_peak_mass = 0.25f;
     c->max_reports_per_tick = 4; c->publish_interval_ms = 1000;
+    c->extra_min_sightings = 2; c->extra_sighting_window_ms = 60000;
+    c->range_ref_dbm = -38; c->range_exponent = 2.2f; c->range_margin = 3; c->range_min_m = 30;
+    c->own_rssi_dbm = -40; c->own_hold_ms = 60000; c->own_moved_m = 30;
+    c->fine_cell_m = 2.5f; c->fine_grid_cells = 160; c->fine_footprint_m = 100;
+    c->fine_max_agl_m = 30; c->fine_max_speed_mps = 4; c->fine_strong_dbm = -65; c->fine_tile_pool_tiles = 3072;
+    c->ray_ambiguous_ll = 0.5f; c->focus_dim = 0.25f; c->pin_max_axis_2s_m = 30;
+    c->gate_on_attitude_flag = false; c->roll_correct = true;
+    c->roll_full_weight_deg = 10; c->roll_max_deg = 45;
+    c->avg_windows = 3; c->avg_span_ms = 2600;
+}
+
+int32_t btrx_bearing_fine_cells(const btrx_bearing_config_t *c) {
+    return c && c->fine_cell_m > 0 ? c->fine_grid_cells : 0;
 }
 
 const char *btrx_bearing_status_string(btrx_bearing_status_t s) {
@@ -67,6 +80,11 @@ static bool config_ok(const btrx_bearing_config_t *c) {
     if (c->pos_ring_capacity / c->max_pos_rate_hz < need_s) return false;
     if (c->lag_history < 1 || c->max_reports_per_tick < 1 || c->publish_interval_ms < 0) return false;
     if (c->diversity_cap < 0 || c->sync_window_ms <= 0) return false;
+    if (c->fine_cell_m < 0 || !fin(c->fine_cell_m)) return false;
+    if (c->fine_cell_m > 0 && (c->fine_grid_cells < BB_TILE || c->fine_grid_cells % BB_TILE != 0
+            || c->fine_grid_cells > 1024 || !(c->fine_footprint_m > 0) || c->fine_tile_pool_tiles < 1)) return false;
+    if (!(c->range_exponent > 0) || !fin(c->range_ref_dbm) || !(c->range_margin >= 0)) return false;
+    if (!(c->focus_dim >= 0 && c->focus_dim <= 1) || !(c->roll_max_deg > 0)) return false;
     return true;
 }
 
@@ -131,6 +149,42 @@ btrx_bearing_status_t btrx_bearing_create(const btrx_bearing_config_t *cfg,
     h->view_tiles = cfg->grid_cells / BB_TILE;
     h->clock.err_ms = -1;
     atomic_init(&h->worker_stop, false);
+    if (cfg->fine_cell_m > 0) {
+        /* Fine layer: accumulation only (no inputs, snapshots or worker of its own); its
+         * sources are slot-parallel to this handle's; shares the pattern tables. */
+        btrx_bearing_t *f = calloc(1, sizeof *f);
+        if (!f) { btrx_bearing_destroy(h); return BTRX_BEARING_E_NOMEM; }
+        h->fine = f;
+        f->is_fine = true;
+        f->cfg = *cfg;
+        f->cfg.cell_m = cfg->fine_cell_m;
+        f->cfg.grid_cells = cfg->fine_grid_cells;
+        f->cfg.footprint_m = cfg->fine_footprint_m;
+        f->cfg.recentre_margin_m = 0.3f * cfg->fine_grid_cells * cfg->fine_cell_m;
+        f->cfg.tile_pool_tiles = cfg->fine_tile_pool_tiles;
+        f->cfg.fine_cell_m = 0;
+        memcpy(f->key, incident_key, 16);
+        f->fade_total_s = h->fade_total_s; f->fade_shape_p = h->fade_shape_p;
+        size_t FN = (size_t)cfg->fine_grid_cells * (size_t)cfg->fine_grid_cells;
+        f->pattern_delta = h->pattern_delta; f->pattern_sum = h->pattern_sum;
+        f->bucket_mem = calloc((size_t)cfg->buckets_per_source * (size_t)cfg->max_sources, sizeof(bb_bucket_t));
+        f->tiles = malloc((size_t)cfg->fine_tile_pool_tiles * sizeof(bb_tile_t));
+        f->scr_e = malloc(FN * sizeof(float));
+        f->scr_s = malloc(FN * sizeof(float));
+        for (int i = 0; i < 3; i++) h->snaps[i].fine_rgba = calloc(FN * 4, 1);
+        if (!f->bucket_mem || !f->tiles || !f->scr_e || !f->scr_s || !h->snaps[0].fine_rgba
+                || !h->snaps[1].fine_rgba || !h->snaps[2].fine_rgba) { btrx_bearing_destroy(h); return BTRX_BEARING_E_NOMEM; }
+        for (int32_t i = 0; i < cfg->max_sources; i++) {
+            f->sources[i].buckets = f->bucket_mem + (size_t)i * cfg->buckets_per_source;
+            for (int32_t j = 0; j < cfg->buckets_per_source; j++) f->sources[i].buckets[j].tile_head = BB_NONE;
+        }
+        bb_tiles_init(f);
+        f->view_tiles = f->cfg.grid_cells / BB_TILE;
+    }
+    for (int i = 0; i < 3; i++) {
+        h->snaps[i].trail = calloc(BTRX_BEARING_TRAIL_MAX, sizeof(btrx_bearing_trail_point_t));
+        if (!h->snaps[i].trail) { btrx_bearing_destroy(h); return BTRX_BEARING_E_NOMEM; }
+    }
     *out = h;
     return BTRX_BEARING_OK;
 }
@@ -150,7 +204,14 @@ void btrx_bearing_destroy(btrx_bearing_t *h) {
     free(h->lag.rec); free(h->lag.yaw_in); free(h->lag.pos_in); free(h->lag.scratch);
     free(h->bucket_mem); free(h->tiles);
     free(h->scr_e); free(h->scr_s); free(h->scr_stack); free(h->scr_mask);
-    for (int i = 0; i < 3; i++) { free(h->snaps[i].rgba); free(h->snaps[i].alpha); }
+    for (int i = 0; i < 3; i++) {
+        free(h->snaps[i].rgba); free(h->snaps[i].alpha); free(h->snaps[i].fine_rgba); free(h->snaps[i].trail);
+    }
+    if (h->fine) {
+        btrx_bearing_t *f = h->fine;
+        free(f->bucket_mem); free(f->tiles); free(f->scr_e); free(f->scr_s);
+        free(f);
+    }
     free(h);
 }
 
@@ -253,6 +314,12 @@ btrx_bearing_status_t btrx_bearing_set_stable_src_ids(btrx_bearing_t *h, bool st
     return push_cmd(h, &c);
 }
 
+btrx_bearing_status_t btrx_bearing_set_focus(btrx_bearing_t *h, uint64_t key) {
+    if (!h) return BTRX_BEARING_E_INVALID;
+    bb_cmd_t c = { .type = BB_CMD_FOCUS, .key = key };
+    return push_cmd(h, &c);
+}
+
 btrx_bearing_status_t btrx_bearing_reset(btrx_bearing_t *h, int what, uint64_t key) {
     if (!h || what < BTRX_BEARING_RESET_ALL || what > BTRX_BEARING_RESET_CLOCK) return BTRX_BEARING_E_INVALID;
     bb_cmd_t c = { .type = BB_CMD_RESET, .a = (uint32_t)what, .key = key };
@@ -268,6 +335,9 @@ static void apply_cmd(btrx_bearing_t *h, const bb_cmd_t *c) {
             bb_source_t *s = &h->sources[slot];
             uint32_t before = s->flags;
             s->flags = (s->flags & ~c->a) | (c->b & c->a);
+            /* decided (own aircraft saved = IGNORED, or "not on the drone"): no suggestion */
+            if (s->flags & (BTRX_BEARING_SRC_OWN_CLEARED | BTRX_BEARING_SRC_IGNORED)) s->flags &= ~BTRX_BEARING_SRC_OWN_SUSPECT;
+            if (s->flags & BTRX_BEARING_SRC_OWN_CLEARED) s->own_t0 = 0;
             if ((s->flags & BTRX_BEARING_SRC_IGNORED) && !(before & BTRX_BEARING_SRC_IGNORED)) {
                 bb_source_free_buckets(h, s);
                 s->ray.valid = false;
@@ -297,9 +367,16 @@ static void apply_cmd(btrx_bearing_t *h, const bb_cmd_t *c) {
     case BB_CMD_STABLE_IDS:
         h->stable_src_ids = c->a != 0;
         break;
+    case BB_CMD_FOCUS: {
+        int32_t slot = bb_find_source(h, c->key);
+        h->focus_key = slot != BB_NONE ? h->sources[slot].key : c->key;
+        h->force_publish = true;
+        break;
+    }
     case BB_CMD_FADE:
         h->fade_total_s = c->f1;
         h->fade_shape_p = c->f2;
+        if (h->fine) { h->fine->fade_total_s = c->f1; h->fine->fade_shape_p = c->f2; }
         h->force_publish = true;
         break;
     case BB_CMD_RESET:
@@ -308,6 +385,8 @@ static void apply_cmd(btrx_bearing_t *h, const bb_cmd_t *c) {
             h->div.n = h->div.head = 0;
             bb_srcid_clear(h);
             h->pend_flags_n = 0;
+            h->cand_n = 0;
+            h->focus_key = 0;
         } else if (c->a == BTRX_BEARING_RESET_SOURCE) {
             int32_t slot = bb_find_source(h, c->key);
             if (slot != BB_NONE) bb_source_evict(h, slot);
@@ -364,6 +443,36 @@ static void pending_push(btrx_bearing_t *h, const bb_pending_t *p) {
     h->pending_n++;
 }
 
+/* Every report that heard a source with the drone position known (gated or not): the
+ * strength trail, and the own-aircraft suggestion (strong for own_hold_ms while the
+ * drone moved own_moved_m: a source on the airframe; Nov 16, the ..148C at -30 dBm). */
+void bb_source_heard_at(btrx_bearing_t *h, bb_source_t *s, int64_t t, float e, float n, int8_t rssi) {
+    int32_t cap = BTRX_BEARING_TRAIL_MAX;
+    int32_t at = (s->trail_head + s->trail_n) % cap;
+    if (s->trail_n == cap) { s->trail_head = (s->trail_head + 1) % cap; at = (s->trail_head + cap - 1) % cap; }
+    else s->trail_n++;
+    s->trail[at].t = t; s->trail[at].e = e; s->trail[at].n = n; s->trail[at].rssi = rssi;
+    if (rssi >= h->cfg.own_rssi_dbm) {
+        if (s->own_t0 == 0 || t - s->own_last > 10000000) {
+            s->own_t0 = t; s->own_e0 = e; s->own_n0 = n; s->own_moved = 0;
+        }
+        s->own_last = t;
+        float d = hypotf(e - s->own_e0, n - s->own_n0);
+        if (d > s->own_moved) s->own_moved = d;
+        if (!(s->flags & (BTRX_BEARING_SRC_OWN_SUSPECT | BTRX_BEARING_SRC_OWN_CLEARED | BTRX_BEARING_SRC_IGNORED))
+                && t - s->own_t0 >= (int64_t)h->cfg.own_hold_ms * 1000 && s->own_moved >= h->cfg.own_moved_m) {
+            s->flags |= BTRX_BEARING_SRC_OWN_SUSPECT;
+            h->force_publish = true;
+            char sid[8];
+            btrx_bearing_short_id(s->key, sid);
+            bb_log(h, 1, "BBOWN %s suggest own aircraft: >= %.0f dBm for %.0f s, drone moved %.0f m",
+                    sid, (double)h->cfg.own_rssi_dbm, (double)(t - s->own_t0) / 1e6, (double)s->own_moved);
+        }
+    } else if (rssi < h->cfg.own_rssi_dbm - 6) {
+        s->own_t0 = 0;                                  /* clearly weaker: the run ends */
+    }
+}
+
 static void evaluate(btrx_bearing_t *h, bb_pending_t *p, int64_t now) {
     const btrx_bearing_report_t *r = &p->r;
     bb_lagrec_t *rec = bb_lag_new(h, p);
@@ -374,10 +483,34 @@ static void evaluate(btrx_bearing_t *h, bb_pending_t *p, int64_t now) {
     rec->n = 0;
     if (f == BB_FATE_NO_HEADING) { h->stats.no_heading++; rec->fate = (uint8_t)f; }
     else if (f == BB_FATE_NO_POSITION) { h->stats.no_position++; rec->fate = (uint8_t)f; }
-    bool frame_gated = !(r->flags & 0x10) || (r->flags & 0x08);
+    /* Attitude (pod 0x0109 and 0x010A): flags bit 3 is the pod's advice (0x0109: roll > 10 or
+     * pitch > 15 deg; 0x010A: roll > 15, pitch > 35, roll rate > 15 deg/s). The pod sends every
+     * report, so the layer decides: roll from bytes 25/26 corrects port - stbd and lowers the
+     * weight beyond roll_full_weight_deg; pitch is ignored (no left/right bias on track). */
+    const bool imu_ok = (r->flags & 0x10) != 0;
+    const float roll = imu_ok ? 0.5f * (float)r->roll_x2 : 0.0f;
+    bool frame_gated;
+    float att_w = 1.0f;
+    if (h->cfg.gate_on_attitude_flag) {
+        frame_gated = !imu_ok || (r->flags & 0x08);
+    } else {
+        frame_gated = false;
+        if (!imu_ok) att_w = 0.5f;                      /* roll unknown: no correction */
+        else {
+            float a = fabsf(roll), full = h->cfg.roll_full_weight_deg, mx = h->cfg.roll_max_deg;
+            if (a > mx) frame_gated = true;
+            else if (a > full && mx > full) att_w = 1.0f - 0.75f * (a - full) / (mx - full);
+        }
+    }
     if (!f && (pose.yaw_rate > h->cfg.max_yaw_rate_dps || pose.yaw_change > h->cfg.max_yaw_change_deg)) frame_gated = true;
     if (!f && frame_gated) { h->stats.gated++; rec->fate = BB_FATE_GATED; }
     if (r->source_count == 0 && !rec->fate) rec->fate = BB_FATE_EMPTY;
+    /* drone position for the strength trail and the own-aircraft check, also when gated */
+    bb_pose_at_t pp;
+    bool have_pos = f == 0 ? true : bb_pose_pos(h, t_rep, &pp) == 0;
+    if (f == 0) pp = pose;
+    float speed = NAN;
+    bool have_speed = have_pos && bb_drone_speed(h, t_rep, &speed);
     bool any_used = false;
     const float lnpf = logf(h->cfg.p_far);
     const float ss2 = h->cfg.sigma_sample_db * h->cfg.sigma_sample_db;
@@ -385,48 +518,91 @@ static void evaluate(btrx_bearing_t *h, bb_pending_t *p, int64_t now) {
     for (int k = 0; k < r->source_count; k++) {
         const btrx_bearing_report_source_t *rs = &r->src[k];
         int32_t slot = bb_resolve_entry(h, rs, t_rep);
+        rec->rank[rec->n] = rs->rank;
+        uint8_t *ef = &rec->efate[rec->n];
+        if (slot == BB_NONE) {                          /* extra seen once: not tracked yet */
+            memcpy(rec->sid[rec->n], "new?", 5);
+            rec->n++;
+            *ef = BB_FATE_GATED;
+            h->extras_tentative++;
+            continue;
+        }
         bb_source_t *s = &h->sources[slot];
         s->reports_in++;
         if (t_rep > s->last_us) s->last_us = t_rep;
-        rec->rank[rec->n] = rs->rank;
         btrx_bearing_short_id(s->key, rec->sid[rec->n]);
-        uint8_t *ef = &rec->efate[rec->n];
         rec->n++;
+        bool hp0 = rs->rssi_port != BTRX_BEARING_RSSI_NOT_HEARD && rs->hits_port > 0;
+        bool hs0 = rs->rssi_stbd != BTRX_BEARING_RSSI_NOT_HEARD && rs->hits_stbd > 0;
+        int8_t best = BTRX_BEARING_RSSI_NOT_HEARD;
+        if (hp0) best = rs->rssi_port;
+        if (hs0 && rs->rssi_stbd > best) best = rs->rssi_stbd;
+        if (best != BTRX_BEARING_RSSI_NOT_HEARD) {
+            s->last_rssi = best;
+            if (have_pos) bb_source_heard_at(h, s, t_rep, (float)pp.e, (float)pp.n, best);
+        }
         if (f || frame_gated) continue;
         if (s->flags & BTRX_BEARING_SRC_IGNORED) { h->stats.ignored++; *ef = BB_FATE_IGNORED; continue; }
-        bool hp = rs->rssi_port != BTRX_BEARING_RSSI_NOT_HEARD && rs->hits_port > 0;
-        bool hs = rs->rssi_stbd != BTRX_BEARING_RSSI_NOT_HEARD && rs->hits_stbd > 0;
+        /* Average over the last avg_windows windows (a ~1 Hz advertiser gives about one
+         * sample per patch per window): hit-weighted means, hits summed. Each window then
+         * counts 1/n in the weights, so the evidence is not counted n times. */
+        if (s->win_n > 0 && s->win[0].t == t_rep) s->win_n = 0;   /* same window again: restart */
+        memmove(&s->win[1], &s->win[0], sizeof s->win[0] * 3);
+        s->win[0].t = t_rep; s->win[0].rp = rs->rssi_port; s->win[0].rs = rs->rssi_stbd;
+        s->win[0].hp = hp0 ? rs->hits_port : 0; s->win[0].hs = hs0 ? rs->hits_stbd : 0; s->win[0].roll = roll;
+        if (s->win_n < 4) s->win_n++;
+        int nwin = 0, hits_p = 0, hits_s = 0;
+        float sum_p = 0, sum_s = 0, sum_roll = 0;
+        int max_w = h->cfg.avg_windows < 1 ? 1 : (h->cfg.avg_windows > 4 ? 4 : h->cfg.avg_windows);
+        for (int w = 0; w < s->win_n && w < max_w; w++) {
+            if (t_rep - s->win[w].t > (int64_t)h->cfg.avg_span_ms * 1000) break;
+            nwin++;
+            hits_p += s->win[w].hp; sum_p += (float)s->win[w].hp * s->win[w].rp;
+            hits_s += s->win[w].hs; sum_s += (float)s->win[w].hs * s->win[w].rs;
+            sum_roll += (float)(s->win[w].hp + s->win[w].hs) * s->win[w].roll;
+        }
+        bool hp = hits_p > 0, hs = hits_s > 0;
+        float mp = hp ? sum_p / hits_p : 0, msb = hs ? sum_s / hits_s : 0;
         bb_geom_t g;
         memset(&g, 0, sizeof g);
         g.de = pose.e; g.dn = pose.n; g.agl = pose.agl; g.yaw = pose.yaw;
+        g.roll_deg = h->cfg.roll_correct && hits_p + hits_s > 0 ? sum_roll / (float)(hits_p + hits_s) : 0.0f;
         float sd2;
         if (hp && hs) {
             g.censored = false;
-            g.obs = (float)(rs->rssi_port - rs->rssi_stbd);
-            sd2 = ss2 * (1.0f / rs->hits_port + 1.0f / rs->hits_stbd);
-        } else if (hp != hs && (hp ? rs->hits_port : rs->hits_stbd) >= 2) {
+            g.obs = mp - msb;
+            sd2 = ss2 * (1.0f / hits_p + 1.0f / hits_s);
+        } else if (hp != hs && (hp ? hits_p : hits_s) >= 2) {
             g.censored = true;
             g.heard_port = hp;
-            g.obs = (float)(hp ? rs->rssi_port : rs->rssi_stbd);
-            sd2 = ss2 * (1.0f / (hp ? rs->hits_port : rs->hits_stbd) + 1.0f);
+            g.obs = hp ? mp : msb;
+            sd2 = ss2 * (1.0f / (hp ? hits_p : hits_s) + 1.0f);
         } else {
             h->stats.gated++;
             *ef = BB_FATE_GATED;
             continue;
         }
+        float level = hp && hs ? fmaxf(mp, msb) : (hp ? mp : msb);
+        /* The coarse footprint stays footprint_m: a range-limited footprint would mark a
+         * strong-transmitting phone's true cells "far" (Tx power varies by 10 dB and more).
+         * The range estimate sets the drawn wedge (reach) and the fine layer only. */
+        g.foot_m = h->cfg.footprint_m;
+        g.reach_m = bb_reach_m(h, level, h->cfg.footprint_m);
+        g.range_m = bb_range_m(h, level);
         g.sigma2 = sd2 + fixed2;
         float qi = h->cfg.info_ref_db * h->cfg.info_ref_db / sd2;
         if (qi > 1) qi = 1;
         int32_t kd = bb_diversity_count(h, slot, t_rep, (float)pose.e, (float)pose.n, pose.yaw);
         g.div = 1.0f / (1.0f + (float)kd);
-        g.kappa = h->cfg.tempering * g.div;
-        g.q = qi * g.div;
+        float wgt = att_w / (float)nwin;
+        g.kappa = h->cfg.tempering * g.div * wgt;
+        g.q = qi * g.div * wgt;
         bb_bucket_t *b = bb_bucket_for(h, s, t_rep);
         if (!b) { *ef = BB_FATE_GATED; continue; }
         b->n++;
         b->sum_t_us += t_rep - b->start_us;
         b->far_sum += g.kappa * lnpf;
-        b->eff += g.div;
+        b->eff += g.div * att_w;                  /* one new window per report */
         int bin = (int)(pose.yaw / 10.0f);
         if (bin < 0) bin = 0;
         if (bin >= BB_YAW_BINS) bin = BB_YAW_BINS - 1;
@@ -438,6 +614,21 @@ static void evaluate(btrx_bearing_t *h, bb_pending_t *p, int64_t now) {
         if (fn > b->max_n) b->max_n = fn;
         bb_grid_add(h, s, b, &g);
         bb_latest_ray(h, s, &g, t_rep);
+        /* fine layer: low and slow, or strong */
+        if (h->fine && ((pose.agl <= h->cfg.fine_max_agl_m && have_speed && speed <= h->cfg.fine_max_speed_mps)
+                || level >= h->cfg.fine_strong_dbm)) {
+            bb_source_t *cs = &h->fine->sources[slot];
+            if (!cs->used) { cs->used = true; cs->key = s->key; }
+            bb_bucket_t *fb = bb_bucket_for(h->fine, cs, t_rep);
+            if (fb) {
+                bb_geom_t gf = g;
+                gf.foot_m = bb_reach_m(h, level, h->fine->cfg.footprint_m);
+                fb->n++;
+                fb->sum_t_us += t_rep - fb->start_us;
+                fb->eff += g.div * att_w;
+                bb_grid_add(h->fine, cs, fb, &gf);
+            }
+        }
         s->reports_used++;
         s->heard_order = ++h->heard_counter;
         h->stats.used++;
@@ -547,11 +738,17 @@ btrx_bearing_status_t btrx_bearing_tick(btrx_bearing_t *h, int64_t now, bool *pu
     bb_clock_update(&h->clock, now, h->cfg.sync_window_ms);
     process_pending(h, now);
     if (bb_expire(h, now)) h->dirty = true;
+    if (h->fine && bb_expire(h->fine, now)) h->dirty = true;
     if (h->pose.pos_n > 0 && h->have_anchor) {
         const bb_pos_t *q = &h->pose.pos[(h->pose.pos_head - 1 + h->pose.pos_cap) % h->pose.pos_cap];
         double e, n;
         bb_local(h, q->lat, q->lon, &e, &n);
         bb_view_update(h, e, n);
+        if (h->fine) {
+            h->fine->have_anchor = true;
+            h->fine->lat0 = h->lat0; h->fine->lon0 = h->lon0; h->fine->coslat0 = h->coslat0;
+            bb_view_update(h->fine, e, n);
+        }
     }
     bool any_data = false;
     for (int32_t i = 0; i < h->cfg.max_sources && !any_data; i++) if (h->sources[i].used) any_data = true;

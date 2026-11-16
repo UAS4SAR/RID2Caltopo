@@ -2,10 +2,22 @@
 #include <math.h>
 #include "bb_internal.h"
 
+/* Roll bias of port - stbd per degree of roll (+ starboard down), by depression of the
+ * source: 0.10 at 30 deg down or shallower, 0.13 at 45, 0.22 straight below
+ * (PROTOCOL.md "Attitude and the gate", geometric estimates). */
+float bb_roll_k(float dep_deg) {
+    if (dep_deg <= 30.0f) return 0.10f;
+    if (dep_deg <= 45.0f) return 0.10f + 0.03f * (dep_deg - 30.0f) / 15.0f;
+    if (dep_deg >= 90.0f) return 0.22f;
+    return 0.13f + 0.09f * (dep_deg - 45.0f) / 45.0f;
+}
+
 float bb_loglik(const btrx_bearing_t *h, const bb_geom_t *g, float phi_deg, float dep_deg) {
     float dpred = bb_pattern_lookup(h->pattern_delta, phi_deg, dep_deg);
     if (!g->censored) {
-        float r = g->obs - dpred - h->cfg.c0_db;
+        float obs = g->obs;
+        if (g->roll_deg != 0.0f) obs += bb_roll_k(dep_deg) * g->roll_deg;
+        float r = obs - dpred - h->cfg.c0_db;
         float nu = h->cfg.student_nu;
         return -0.5f * (nu + 1.0f) * log1pf(r * r / (nu * g->sigma2));
     }
@@ -16,8 +28,26 @@ float bb_loglik(const btrx_bearing_t *h, const bb_geom_t *g, float phi_deg, floa
     return (float)log(phi);
 }
 
+/* Slant range from the strongest patch mean (log-distance model); NaN when not heard. */
+float bb_range_m(const btrx_bearing_t *h, float rssi_dbm) {
+    if (!(rssi_dbm > BTRX_BEARING_RSSI_NOT_HEARD)) return NAN;
+    float d = powf(10.0f, (h->cfg.range_ref_dbm - rssi_dbm) / (10.0f * h->cfg.range_exponent));
+    return d < 1.0f ? 1.0f : d;
+}
+
+/* How far out a report can say anything: range * margin, clamped to [range_min_m, ceiling]. */
+float bb_reach_m(const btrx_bearing_t *h, float rssi_dbm, float ceiling_m) {
+    float d = bb_range_m(h, rssi_dbm);
+    if (!(d > 0) || !(h->cfg.range_margin > 0)) return ceiling_m;
+    float r = d * h->cfg.range_margin;
+    if (r < h->cfg.range_min_m) r = h->cfg.range_min_m;
+    if (r > ceiling_m) r = ceiling_m;
+    return r;
+}
+
 void bb_grid_add(btrx_bearing_t *h, bb_source_t *src, bb_bucket_t *b, const bb_geom_t *g) {
-    const float cell = h->cfg.cell_m, fp = h->cfg.footprint_m, fp2 = fp * fp;
+    const float cell = h->cfg.cell_m;
+    const float fp = g->foot_m > 0 && g->foot_m < h->cfg.footprint_m ? g->foot_m : h->cfg.footprint_m, fp2 = fp * fp;
     const float lnpf = logf(h->cfg.p_far);
     int32_t R = (int32_t)ceilf(fp / cell);
     int32_t cx = (int32_t)floor(g->de / cell), cy = (int32_t)floor(g->dn / cell);
@@ -59,6 +89,8 @@ void bb_grid_add(btrx_bearing_t *h, bb_source_t *src, bb_bucket_t *b, const bb_g
 
 void bb_latest_ray(btrx_bearing_t *h, bb_source_t *src, const bb_geom_t *g, int64_t t_us) {
     float ll[360];
+    const float reach = g->reach_m > 0 && g->reach_m < h->cfg.footprint_m ? g->reach_m : h->cfg.footprint_m;
+    /* depression as before (half the footprint): the RSSI range is too uncertain to steer it */
     float r0 = h->cfg.footprint_m * 0.5f;
     float dep = atan2f(g->agl, r0) * (float)(180.0 / BB_PI);
     int kmax = 0;
@@ -69,8 +101,10 @@ void bb_latest_ray(btrx_bearing_t *h, bb_source_t *src, const bb_geom_t *g, int6
     float thr = h->cfg.ray_halfwidth_ll;
     btrx_bearing_ray_t *ray = &src->ray;
     ray->valid = true;
+    ray->ambiguous = false;
     ray->t_us = t_us;
-    ray->length_m = h->cfg.footprint_m;
+    ray->length_m = reach;
+    ray->range_m = g->range_m > 0 ? g->range_m : NAN;
     bb_latlon(h, g->de, g->dn, &ray->apex_lat_deg, &ray->apex_lon_deg);
     uint8_t in_main[360] = { 0 };
     int left = 0, right = 0;
@@ -93,4 +127,18 @@ void bb_latest_ray(btrx_bearing_t *h, bb_source_t *src, const bb_geom_t *g, int6
     while (ml < 359 && !in_main[(m - ml - 1 + 360) % 360] && ll[(m - ml - 1 + 360) % 360] > thr) ml++;
     while (mr < 359 && !in_main[(m + mr + 1) % 360] && ll[(m + mr + 1) % 360] > thr) mr++;
     ray->mirror_true_deg = bb_wrap360((float)m + 0.5f * (float)(mr - ml));
+    /* Lobes about equally likely: ambiguous, drawn alike. The patches look forward, so the
+     * in-front lobe is the main one then (Nov 16: rays picked the rear lobe). */
+    if (ll[kmax] - ll[m] < h->cfg.ray_ambiguous_ll) {
+        ray->ambiguous = true;
+        bool main_front = fabsf(bb_wrap180(ray->centre_true_deg - g->yaw)) < 90.0f;
+        bool mirror_front = fabsf(bb_wrap180(ray->mirror_true_deg - g->yaw)) < 90.0f;
+        if (!main_front && mirror_front) {
+            float c = ray->centre_true_deg;
+            ray->centre_true_deg = ray->mirror_true_deg;
+            ray->mirror_true_deg = c;
+            float hw = 0.5f * (float)(ml + mr + 1);
+            if (hw > ray->half_width_deg) ray->half_width_deg = hw;
+        }
+    }
 }

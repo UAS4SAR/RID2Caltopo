@@ -24,10 +24,16 @@ interface BtrxBearingEngine {
     /** Pod build 0x0106+: src_id is a stable hash of the address (btrx_bearing_set_stable_src_ids). */
     fun setStableSrcIds(handle: Long, stable: Boolean): Int
     fun reset(handle: Long, what: Int, key: Long): Int
+    /** Focus one source (0 = none): the others dimmed, its strength trail in the snapshot. */
+    fun setFocus(handle: Long, key: Long): Int
     /** 1 = a snapshot was published, 0 = not, negative = error. */
     fun tick(handle: Long, nowUs: Long): Int
-    /** Source count, or a negative status (-6 before the first publish). Layout: [BtrxBearingNative] META_*. */
-    fun copySnapshot(handle: Long, rgba: ByteBuffer, keys: LongArray, shortIds: ByteArray, meta: DoubleArray): Int
+    /**
+     * Source count, or a negative status (-6 before the first publish). Layout: [BtrxBearingNative] META_*.
+     * [fine]: the fine layer raster (FINE_CELLS^2 * 4 bytes) when meta[META_FINE_VALID] != 0;
+     * [trail]: lat, lon, rssi per point of the focused source (meta[META_TRAIL_COUNT] points).
+     */
+    fun copySnapshot(handle: Long, rgba: ByteBuffer, fine: ByteBuffer?, trail: DoubleArray?, keys: LongArray, shortIds: ByteArray, meta: DoubleArray): Int
     /**
      * The latest stats into [out] (size [BtrxBearingNative.STATS_SIZE], the layout of meta at
      * META_STATS), refreshed by tick about once a second even before the first snapshot.
@@ -42,10 +48,19 @@ interface BtrxBearingEngine {
 }
 
 object BtrxBearingNative : BtrxBearingEngine {
-    const val MAX_SOURCES = 8
+    const val ABI_VERSION = 2
+    const val MAX_SOURCES = 32
+    const val TRAIL_MAX = 600
+    /** Fine layer raster side (btrx_bearing_config_t.fine_grid_cells default). */
+    const val FINE_CELLS = 160
+    const val META_FOCUS_INDEX = 9
+    const val META_FINE_VALID = 10
+    const val META_FINE_CELLS = 11
+    const val META_FINE_NORTH = 12
     const val META_STATS = 16
+    const val META_TRAIL_COUNT = 112
     const val META_SOURCES = 116
-    const val META_PER_SOURCE = 40
+    const val META_PER_SOURCE = 56
     const val META_SIZE = META_SOURCES + META_PER_SOURCE * MAX_SOURCES
     const val STATS_SIZE = META_SOURCES - META_STATS
     const val STAGE_COUNT = 10
@@ -56,6 +71,10 @@ object BtrxBearingNative : BtrxBearingEngine {
 
     const val SRC_IGNORED = 1
     const val SRC_MUTED = 2
+    /** Set by the layer: looks like it rides on the drone (a suggestion; estimate hidden). */
+    const val SRC_OWN_SUSPECT = 4
+    /** Set by the app: "not on the drone", no more suggestions. */
+    const val SRC_OWN_CLEARED = 8
 
     const val RESET_ALL = 0
 
@@ -64,7 +83,7 @@ object BtrxBearingNative : BtrxBearingEngine {
     /** Loaded on first use (the layer switch or the fade readout), not at app start. */
     override val available: Boolean by lazy {
         runCatching { System.loadLibrary("btrx_bearing") }.isSuccess &&
-            runCatching { nativeAbiVersion() == 1 }.getOrDefault(false)
+            runCatching { nativeAbiVersion() == ABI_VERSION }.getOrDefault(false)
     }
 
     override fun create(incidentKey: ByteArray, fadeTotalS: Float, fadeShapeP: Float, lagTrace: Boolean): Long =
@@ -83,9 +102,10 @@ object BtrxBearingNative : BtrxBearingEngine {
     override fun setFade(handle: Long, totalS: Float, shapeP: Float) = nativeSetFade(handle, totalS, shapeP)
     override fun setStableSrcIds(handle: Long, stable: Boolean) = nativeSetStableSrcIds(handle, stable)
     override fun reset(handle: Long, what: Int, key: Long) = nativeReset(handle, what, key)
+    override fun setFocus(handle: Long, key: Long) = nativeSetFocus(handle, key)
     override fun tick(handle: Long, nowUs: Long) = nativeTick(handle, nowUs)
-    override fun copySnapshot(handle: Long, rgba: ByteBuffer, keys: LongArray, shortIds: ByteArray, meta: DoubleArray) =
-        nativeCopySnapshot(handle, rgba, keys, shortIds, meta)
+    override fun copySnapshot(handle: Long, rgba: ByteBuffer, fine: ByteBuffer?, trail: DoubleArray?, keys: LongArray, shortIds: ByteArray, meta: DoubleArray) =
+        nativeCopySnapshot(handle, rgba, fine, trail, keys, shortIds, meta)
     override fun copyStats(handle: Long, out: DoubleArray) = nativeCopyStats(handle, out)
     override fun sourcesAt(handle: Long, lat: Double, lon: Double, radiusM: Float, out: IntArray) = nativeSourcesAt(handle, lat, lon, radiusM, out)
     override fun halfStrengthS(totalS: Float, shapeP: Float): Float =
@@ -106,8 +126,9 @@ object BtrxBearingNative : BtrxBearingEngine {
     private external fun nativeSetFade(handle: Long, totalS: Float, shapeP: Float): Int
     private external fun nativeSetStableSrcIds(handle: Long, stable: Boolean): Int
     private external fun nativeReset(handle: Long, what: Int, key: Long): Int
+    private external fun nativeSetFocus(handle: Long, key: Long): Int
     private external fun nativeTick(handle: Long, nowUs: Long): Int
-    private external fun nativeCopySnapshot(handle: Long, rgba: ByteBuffer, keys: LongArray, shortIds: ByteArray, meta: DoubleArray): Int
+    private external fun nativeCopySnapshot(handle: Long, rgba: ByteBuffer, fine: ByteBuffer?, trail: DoubleArray?, keys: LongArray, shortIds: ByteArray, meta: DoubleArray): Int
     private external fun nativeCopyStats(handle: Long, out: DoubleArray): Int
     private external fun nativeSourcesAt(handle: Long, lat: Double, lon: Double, radiusM: Float, out: IntArray): Int
     private external fun nativeHalfStrengthS(totalS: Float, shapeP: Float): Float

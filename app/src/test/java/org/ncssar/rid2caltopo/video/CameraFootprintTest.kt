@@ -76,7 +76,9 @@ class CameraFootprintTest {
         val outline=CameraFootprintGeometry.project(input(),elevation={ _,_ -> samples++; 900.0 },edgeSubdivisions=1)
         assertEquals(4,outline.size)
         assertTrue(outline.vertices.all { it.corner })
-        assertTrue("Four rays should need fewer than 200 samples here; got $samples",samples<200)
+        // Four corner rays plus the optical axis (centre crosshair, Nov 16): same per-ray budget.
+        assertTrue("Five rays should need fewer than 250 samples here; got $samples",samples<250)
+        assertNotNull(outline.center)
         val drawing=cameraFootprintDrawing(input(),outline)
         assertEquals(outline,drawing.boundary)
         assertEquals(outline.vertices,drawing.corners.vertices)

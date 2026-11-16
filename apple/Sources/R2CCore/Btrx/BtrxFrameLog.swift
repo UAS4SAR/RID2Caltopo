@@ -54,6 +54,7 @@ public enum BtrxFrameLog {
                            e.resetReason, P.resetReasonNames(e.resetReason), P.pairSourceName(e.pairSource), e.nodsIgnored,
                            e.excludedPerS, P.excludeFlagNames(e.excludeFlags))
                 } ?? "")
+                + (h.scanLostPerS.map { " scan_lost_per_s=\($0)" } ?? "")
         case P.DETECT:
             let d = try P.parseDetect(p)
             let head = "window_end_ms=\(d.windowEndMs) roll=\(Double(d.rollX2) / 2) pitch=\(Double(d.pitchX2) / 2) roll_rate=\(d.rollRateDps) attitude=\(String(format: "0x%02x", d.attitudeFlags)) n=\(d.records.count)"

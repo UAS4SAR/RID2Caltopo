@@ -3,10 +3,95 @@
 #include <string.h>
 #include "bb_internal.h"
 
-static const uint8_t k_palette[8][3] = {   /* Okabe-Ito */
+static const uint8_t k_palette[BB_PALETTE][3] = {   /* Okabe-Ito, then 4 more distinct */
     { 230, 159, 0 }, { 86, 180, 233 }, { 0, 158, 115 }, { 240, 228, 66 },
     { 0, 114, 178 }, { 213, 94, 0 }, { 204, 121, 167 }, { 0, 0, 0 },
+    { 148, 103, 189 }, { 140, 86, 75 }, { 23, 190, 207 }, { 188, 189, 34 },
 };
+
+const uint8_t *bb_palette(uint8_t colour) { return k_palette[colour % BB_PALETTE]; }
+
+/* "Strongest here" from the trail within the fade window: the strongest point, averaged
+ * with points within 2 dB of it and 30 m of it (steadies a run of equal readings). */
+static void strongest_here(btrx_bearing_t *h, const bb_source_t *s, int64_t now_us, btrx_bearing_source_t *o) {
+    o->strongest_valid = false;
+    o->max_rssi_dbm = BTRX_BEARING_RSSI_NOT_HEARD;
+    int64_t oldest = now_us - (int64_t)((double)h->fade_total_s * 1e6);
+    int32_t best = -1;
+    for (int32_t i = 0; i < s->trail_n; i++) {
+        int32_t k = (s->trail_head + i) % BTRX_BEARING_TRAIL_MAX;
+        if (s->trail[k].t < oldest) continue;
+        if (best < 0 || s->trail[k].rssi >= s->trail[best].rssi) best = k;
+    }
+    if (best < 0) return;
+    o->max_rssi_dbm = s->trail[best].rssi;
+    double se = 0, sn = 0; int cnt = 0;
+    for (int32_t i = 0; i < s->trail_n; i++) {
+        int32_t k = (s->trail_head + i) % BTRX_BEARING_TRAIL_MAX;
+        if (s->trail[k].t < oldest || s->trail[k].rssi < s->trail[best].rssi - 2) continue;
+        if (hypotf(s->trail[k].e - s->trail[best].e, s->trail[k].n - s->trail[best].n) > 30) continue;
+        se += s->trail[k].e; sn += s->trail[k].n; cnt++;
+    }
+    o->strongest_valid = true;
+    o->strongest_t_us = s->trail[best].t;
+    bb_latlon(h, se / cnt, sn / cnt, &o->strongest_lat_deg, &o->strongest_lon_deg);
+}
+
+static void composite_rgba(uint8_t *rgba, size_t N, const uint8_t *alpha, const uint8_t rgb[3], float dim) {
+    for (size_t c = 0; c < N; c++) {
+        uint32_t a = alpha[c];
+        if (!a) continue;
+        if (dim < 1.0f) { a = (uint32_t)lrintf((float)a * dim); if (!a) continue; }
+        uint8_t *px = rgba + c * 4;
+        uint32_t ia = 255 - a;
+        px[0] = (uint8_t)((rgb[0] * a + px[0] * ia + 127) / 255);
+        px[1] = (uint8_t)((rgb[1] * a + px[1] * ia + 127) / 255);
+        px[2] = (uint8_t)((rgb[2] * a + px[2] * ia + 127) / 255);
+        px[3] = (uint8_t)((255 * a + px[3] * ia + 127) / 255);
+    }
+}
+
+/* Fine layer raster: the same sources, colours, mute and focus as the coarse one. */
+static void publish_fine(btrx_bearing_t *h, bb_snap_t *sn, const int32_t *draw_slot, int32_t nd, int64_t now_us) {
+    btrx_bearing_t *f = h->fine;
+    btrx_bearing_snapshot_t *pub = &sn->pub;
+    if (!f || !f->have_view || !sn->fine_rgba) return;
+    int32_t W = f->cfg.grid_cells;
+    size_t N = (size_t)W * (size_t)W;
+    memset(sn->fine_rgba, 0, N * 4);
+    bool any = false;
+    uint8_t *alpha = (uint8_t *)f->scr_s;       /* reuse: alpha bytes written after S is read */
+    for (int32_t d = 0; d < nd; d++) {
+        int32_t slot = draw_slot[d];
+        bb_source_t *cs = &f->sources[slot];
+        if (!cs->used) continue;
+        bool has = false;
+        for (int32_t i = 0; i < f->cfg.buckets_per_source && !has; i++) has = cs->buckets[i].used && cs->buckets[i].tile_head != BB_NONE;
+        if (!has) continue;
+        float eff, ys, bl;
+        bb_composite_source(f, cs, now_us, f->scr_e, f->scr_s, &eff, &ys, &bl);
+        bool lit = false;
+        for (size_t c = 0; c < N; c++) {
+            float a = h->cfg.alpha_max * fminf(1.0f, f->scr_s[c] / h->cfg.support_sat);
+            uint8_t v = a < h->cfg.alpha_visible ? 0 : (uint8_t)lrintf(a * 255.0f);
+            alpha[c] = v;                       /* c bytes in, 4c floats read: never overtakes */
+            if (v) lit = true;
+        }
+        if (!lit) continue;
+        any = true;
+        const bb_source_t *s = &h->sources[slot];
+        float dim = h->focus_key && s->key != h->focus_key ? h->cfg.focus_dim : 1.0f;
+        composite_rgba(sn->fine_rgba, N, alpha, bb_palette(s->colour), dim);
+    }
+    if (!any) return;
+    double cell = f->cfg.cell_m;
+    double west = f->vtx0 * BB_TILE * cell, south = f->vty0 * BB_TILE * cell;
+    pub->fine_valid = true;
+    pub->fine_width = W; pub->fine_height = W;
+    bb_latlon(h, west, south, &pub->fine_south_deg, &pub->fine_west_deg);
+    bb_latlon(h, west + W * cell, south + W * cell, &pub->fine_north_deg, &pub->fine_east_deg);
+    pub->fine_rgba = sn->fine_rgba;
+}
 
 void bb_view_update(btrx_bearing_t *h, double e, double n) {
     const double cell = h->cfg.cell_m, span = (double)h->cfg.grid_cells * cell;
@@ -77,6 +162,22 @@ void bb_publish(btrx_bearing_t *h, int64_t now_us) {
             if (a > peak) peak = a;
             alpha[c] = (uint8_t)lrintf(a * 255.0f);
         }
+        /* label point inside the shading: centroid of the cells within 90% of the peak */
+        o->label_valid = false;
+        if (peak > 0) {
+            uint8_t thr = (uint8_t)lrintf(peak * 0.9f * 255.0f);
+            double sx = 0, sy = 0, sw = 0;
+            for (size_t c = 0; c < N; c++) {
+                if (alpha[c] < thr) continue;
+                double wgt = alpha[c];
+                sx += wgt * ((double)(c % (size_t)W) + 0.5); sy += wgt * ((double)(W - 1 - (int32_t)(c / (size_t)W)) + 0.5);
+                sw += wgt;
+            }
+            if (sw > 0) {
+                o->label_valid = true;
+                bb_latlon(h, west + sx / sw * cell, south + sy / sw * cell, &o->label_lat_deg, &o->label_lon_deg);
+            }
+        }
         uint32_t in_window = 0;
         for (int32_t i = 0; i < h->cfg.buckets_per_source; i++)
             if (s->buckets[i].used && bb_fade_weight(h, &s->buckets[i], now_us) > 0) in_window += (uint32_t)s->buckets[i].n;
@@ -86,7 +187,7 @@ void bb_publish(btrx_bearing_t *h, int64_t now_us) {
         o->src_id = s->src_id;
         btrx_bearing_short_id(s->key, o->short_id);
         o->dev_class = (btrx_bearing_class_t)s->cls;
-        memcpy(o->rgb, k_palette[s->colour], 3);
+        memcpy(o->rgb, bb_palette(s->colour), 3);
         o->flags = s->flags;
         o->first_heard_us = s->first_us;
         o->last_heard_us = s->last_us;
@@ -98,9 +199,29 @@ void bb_publish(btrx_bearing_t *h, int64_t now_us) {
         o->alpha = alpha;
         if (in_window > 0) bb_estimate(h, h->scr_e, eff, yaw_span, baseline, &o->estimate);
         else { memset(&o->estimate, 0, sizeof o->estimate); o->estimate.second_lat_deg = o->estimate.second_lon_deg = NAN; }
+        /* suggested own aircraft: no estimate until the user decides (Nov 16) */
+        if (s->flags & BTRX_BEARING_SRC_OWN_SUSPECT) o->estimate.valid = false;
         s->est_valid = o->estimate.valid;
+        o->pinned = o->estimate.valid && 2.0f * o->estimate.axis_major_1s_m <= h->cfg.pin_max_axis_2s_m;
         o->latest_ray = s->ray;
+        o->last_rssi_dbm = s->last_rssi;
+        strongest_here(h, s, now_us, o);
+        if (h->focus_key && s->key == h->focus_key) {
+            int64_t oldest = now_us - (int64_t)((double)h->fade_total_s * 1e6);
+            int32_t nt = 0;
+            for (int32_t i = 0; i < s->trail_n; i++) {
+                int32_t q = (s->trail_head + i) % BTRX_BEARING_TRAIL_MAX;
+                if (s->trail[q].t < oldest) continue;
+                btrx_bearing_trail_point_t *tp = &sn->trail[nt++];
+                bb_latlon(h, s->trail[q].e, s->trail[q].n, &tp->lat_deg, &tp->lon_deg);
+                tp->t_us = s->trail[q].t;
+                tp->rssi_dbm = s->trail[q].rssi;
+            }
+            pub->trail = sn->trail;
+            pub->trail_count = nt;
+        }
     }
+    pub->focus_key = h->focus_key;
     pub->source_count = n_src;
 
     /* RGBA: unmuted, unignored sources "over" in order of last heard (most recent on top) */
@@ -112,20 +233,14 @@ void bb_publish(btrx_bearing_t *h, int64_t now_us) {
         for (int32_t j = i; j > 0 && h->sources[order[draw[j]]].heard_order < h->sources[order[draw[j - 1]]].heard_order; j--) {
             int32_t t = draw[j]; draw[j] = draw[j - 1]; draw[j - 1] = t;
         }
+    int32_t draw_slot[BTRX_BEARING_MAX_SOURCES];
     for (int32_t d = 0; d < nd; d++) {
         const btrx_bearing_source_t *o = &pub->sources[draw[d]];
-        const uint8_t *alpha = o->alpha;
-        for (size_t c = 0; c < N; c++) {
-            uint32_t a = alpha[c];
-            if (!a) continue;
-            uint8_t *px = sn->rgba + c * 4;
-            uint32_t ia = 255 - a;
-            px[0] = (uint8_t)((o->rgb[0] * a + px[0] * ia + 127) / 255);
-            px[1] = (uint8_t)((o->rgb[1] * a + px[1] * ia + 127) / 255);
-            px[2] = (uint8_t)((o->rgb[2] * a + px[2] * ia + 127) / 255);
-            px[3] = (uint8_t)((255 * a + px[3] * ia + 127) / 255);
-        }
+        draw_slot[d] = order[draw[d]];
+        float dim = h->focus_key && o->key != h->focus_key ? h->cfg.focus_dim : 1.0f;
+        composite_rgba(sn->rgba, N, o->alpha, o->rgb, dim);
     }
+    publish_fine(h, sn, draw_slot, nd, now_us);
 
     /* stats */
     h->snap_seq = pub->seq;
@@ -162,11 +277,25 @@ void btrx_bearing_snapshot_release(btrx_bearing_t *h, const btrx_bearing_snapsho
 
 btrx_bearing_status_t btrx_bearing_snapshot_copy(const btrx_bearing_snapshot_t *src,
         btrx_bearing_snapshot_t *dst, uint8_t *rgba, size_t rgba_size,
-        uint8_t *alpha, size_t alpha_size) {
+        uint8_t *alpha, size_t alpha_size, uint8_t *fine_rgba, size_t fine_size,
+        btrx_bearing_trail_point_t *trail, int32_t trail_max) {
     if (!src || !dst || !rgba || !alpha) return BTRX_BEARING_E_INVALID;
     size_t N = (size_t)src->width * (size_t)src->height;
     if (rgba_size < N * 4 || alpha_size < N * BTRX_BEARING_MAX_SOURCES) return BTRX_BEARING_E_INVALID;
     *dst = *src;
+    size_t FN = (size_t)src->fine_width * (size_t)src->fine_height * 4;
+    if (src->fine_valid && fine_rgba && fine_size >= FN) {
+        memcpy(fine_rgba, src->fine_rgba, FN);
+        dst->fine_rgba = fine_rgba;
+    } else {
+        dst->fine_valid = false;
+        dst->fine_rgba = NULL;
+    }
+    int32_t nt = src->trail_count;
+    if (!trail || nt > trail_max) nt = trail ? trail_max : 0;
+    if (nt > 0) memcpy(trail, src->trail + (src->trail_count - nt), sizeof *trail * (size_t)nt);
+    dst->trail = trail;
+    dst->trail_count = nt;
     memcpy(rgba, src->rgba, N * 4);
     dst->rgba = rgba;
     for (int32_t k = 0; k < src->source_count; k++) {

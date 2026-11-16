@@ -968,12 +968,26 @@ internal fun SplitMapPane(
     // BTRX bearing layer (Developer Tools > BTRX; docs/btrx/BEARING-LAYER-spec.md section 5).
     val btrxBearingOn by org.ncssar.rid2caltopo.btrx.BtrxManager.bearingOn.collectAsState()
     var btrxPanel by remember { mutableStateOf<Pair<List<Long>, androidx.compose.ui.unit.IntOffset>?>(null) }
+    // Pinned-source inspect card (Nov 16): the tapped source key, null = closed.
+    var btrxInspect by remember { mutableStateOf<Long?>(null) }
     val btrxOverlay = remember {
         BtrxBearingMapOverlay(
             density = context.resources.displayMetrics.density,
             sourcesAt = { lat, lon, r -> org.ncssar.rid2caltopo.btrx.BtrxManager.bearing.sourcesAt(lat, lon, r) },
-            onSourcesTapped = { keys, x, y -> btrxPanel = keys to androidx.compose.ui.unit.IntOffset(x.toInt(), y.toInt()) },
+            onSourcesTapped = { keys, x, y -> btrxInspect = null; btrxPanel = keys to androidx.compose.ui.unit.IntOffset(x.toInt(), y.toInt()) },
+            onPinnedTapped = { key -> btrxPanel = null; btrxInspect = key },
         )
+    }
+    // "Focus this source": the layer dims the others at its next tick; the map zooms to the source now.
+    val btrxFocus: (org.ncssar.rid2caltopo.btrx.BtrxBearingSource) -> Unit = { src ->
+        org.ncssar.rid2caltopo.btrx.BtrxManager.bearing.setFocus(src.key)
+        btrxPanel = null
+        BtrxBearingMapOverlay.focusBounds(src)?.let { box ->
+            currentMapView?.let { map ->
+                val pad = (48 * context.resources.displayMetrics.density).toInt()
+                if (map.width > 0 && map.height > 0) map.zoomToBoundingBox(box, true, pad)
+            }
+        }
     }
     val btrxDoubleTapOverlay = remember {
         object : Overlay() {
@@ -987,14 +1001,17 @@ internal fun SplitMapPane(
         if (!btrxBearingOn) {
             btrxOverlay.show(null, null)
             btrxPanel = null
+            btrxInspect = null
             currentMapView?.invalidate()
             return@LaunchedEffect
         }
         launch {
             // Snapshots change at most once a second (sooner after a mute); the bitmap is built off the main thread.
             org.ncssar.rid2caltopo.btrx.BtrxManager.bearing.snapshot.collect { snap ->
-                val bmp = snap?.let { withContext(Dispatchers.Default) { BtrxBearingMapOverlay.bitmapOf(it) } }
-                btrxOverlay.show(snap, bmp)
+                val bmps = snap?.let {
+                    withContext(Dispatchers.Default) { BtrxBearingMapOverlay.bitmapOf(it) to BtrxBearingMapOverlay.fineBitmapOf(it) }
+                }
+                btrxOverlay.show(snap, bmps?.first, bmps?.second)
                 val map = currentMapView
                 map?.invalidate()
                 if (snap != null) map?.post { org.ncssar.rid2caltopo.btrx.BtrxManager.bearing.noteRendered(snap.seq) }
@@ -3780,6 +3797,7 @@ internal fun SplitMapPane(
                     object : MapEventsReceiver {
                         override fun singleTapConfirmedHelper(p: GeoPoint?): Boolean {
                             btrxPanel = null
+                            btrxInspect = null
                             InfoWindow.closeAllInfoWindowsOn(mapView)
                             if (!isInsetMode) {
                                 onSingleTapFocus?.invoke()
@@ -4970,14 +4988,34 @@ internal fun SplitMapPane(
                 rows = keys,
                 onDismiss = { btrxPanel = null },
                 modifier = Modifier.align(Alignment.TopStart).offset { at },
+                onFocus = btrxFocus,
+            )
+        }
+        if (btrxBearingOn && !isInsetMode) {
+            btrxInspect?.let { key ->
+                org.ncssar.rid2caltopo.ui.BtrxPinnedInspectCard(
+                    key = key,
+                    onFocus = btrxFocus,
+                    onDismiss = { btrxInspect = null },
+                    modifier = Modifier.align(Alignment.BottomStart).padding(start = 8.dp, bottom = 72.dp),
+                )
+            }
+            org.ncssar.rid2caltopo.ui.BtrxOwnAircraftSuggestion(
+                modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 120.dp, start = 56.dp, end = 56.dp),
+            )
+            org.ncssar.rid2caltopo.ui.BtrxFocusChip(
+                onClear = { org.ncssar.rid2caltopo.btrx.BtrxManager.bearing.setFocus(0L) },
+                modifier = Modifier.align(Alignment.TopCenter).padding(top = 48.dp),
             )
         }
 
-        CameraFootprintHud(
+        CameraFootprintHudWithBtrxTarget(
             viewModel = viewModel,
             terrain = footprintTerrain,
             projectionClock = footprintProjection,
             modifier = Modifier.align(Alignment.TopStart),
+            inspectKey = btrxInspect,
+            bearingOn = btrxBearingOn,
         )
 
         mapBackgroundWorkStatus?.let { status ->
