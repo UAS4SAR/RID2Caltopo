@@ -24,6 +24,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.ParcelUuid
+import androidx.annotation.Keep
 import androidx.core.content.ContextCompat
 import java.util.UUID
 import java.util.concurrent.CountDownLatch
@@ -434,6 +435,21 @@ class BtrxBleLink(
             if (attMtu < BtrxClient.MIN_USABLE_MTU) log.warn("ERROR: ble: negotiated MTU $attMtu is below ${BtrxClient.MIN_USABLE_MTU}; btrx writes may not fit")
             completeOp()
         }
+        override fun onPhyUpdate(g: BluetoothGatt, txPhy: Int, rxPhy: Int, status: Int) = on {
+            log.debug(BtrxBleLinkTuning.phyText("phy update", txPhy, rxPhy, status))
+        }
+        override fun onPhyRead(g: BluetoothGatt, txPhy: Int, rxPhy: Int, status: Int) = on {
+            log.debug(BtrxBleLinkTuning.phyText("phy read", txPhy, rxPhy, status))
+        }
+        /**
+         * Hidden in the SDK (BluetoothGattCallback.onConnectionUpdated, @hide) but called on
+         * every connection-parameter change; no `override`, it matches by signature.
+         */
+        @Keep
+        @Suppress("unused")
+        fun onConnectionUpdated(g: BluetoothGatt, interval: Int, latency: Int, timeout: Int, status: Int) = on {
+            log.debug(BtrxBleLinkTuning.connectionUpdateText(interval, latency, timeout, status))
+        }
         override fun onServicesDiscovered(g: BluetoothGatt, status: Int) = on { onDiscovered(g, status) }
         override fun onDescriptorWrite(g: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) = on {
             completeOp()
@@ -469,10 +485,14 @@ class BtrxBleLink(
         patient = false
         log.info("ble: connected to ${device?.name ?: "Desk Pod"}")
         // The config dump and the Desk Pod's queued frames (up to 32) are read one FromRadio
-        // per round trip; a short connection interval cuts that from tens of seconds. Back
-        // to balanced once the Desk Pod has answered ROLE_GET.
-        val fast = runCatching { g.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH) }.getOrDefault(false)
-        log.info("ble: connection priority high ${if (fast) "requested" else "refused"}")
+        // per round trip; a short connection interval cuts that from tens of seconds. HIGH
+        // stays for the whole link and the PHY is pinned to 1M ([BtrxBleLinkTuning]).
+        val fast = runCatching { g.requestConnectionPriority(BtrxBleLinkTuning.CONNECTION_PRIORITY) }.getOrDefault(false)
+        log.debug("ble: connection priority high ${if (fast) "requested" else "refused"}")
+        val phy = runCatching {
+            g.setPreferredPhy(BtrxBleLinkTuning.PREFERRED_PHY_MASK, BtrxBleLinkTuning.PREFERRED_PHY_MASK, BtrxBleLinkTuning.PHY_OPTIONS)
+        }
+        log.debug("ble: preferred phy 1M ${if (phy.isSuccess) "requested" else "refused (${phy.exceptionOrNull()?.javaClass?.simpleName})"}")
         status(LinkPhase.CONFIGURING, "Connected; reading the Desk Pod's configuration.", device?.name)
         val q = BtrxGattQueue<Op>(start = { startOp(g, it) }, onStartFailed = { handler.post { sessionLost("Android refused a Bluetooth operation") } })
         queue = q
@@ -544,7 +564,9 @@ class BtrxBleLink(
         val r = c.roleCheck(retried)
         when (r.action) {
             BtrxClient.RoleWait.DONE -> gatt?.let { g ->
-                runCatching { g.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_BALANCED) }
+                // Priority stays HIGH (no BALANCED switch); log the PHY in effect once set up.
+                BtrxBleLinkTuning.priorityAfterRole?.let { p -> runCatching { g.requestConnectionPriority(p) } }
+                runCatching { g.readPhy() }
             }
             BtrxClient.RoleWait.WAIT -> handler.postDelayed({ checkRole(c, retried) }, r.delayMs)
             BtrxClient.RoleWait.RETRY -> {

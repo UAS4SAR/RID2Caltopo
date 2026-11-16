@@ -61,9 +61,11 @@ see section 7.
      backlog, not at connect. A backlog still draining 30 s after config complete is
      cut off (`connect backlog still draining 30 s after config_complete`) so ROLE_GET
      still goes out.
-   - Android only: `ble: connection priority high requested` right after connecting
-     (faster FromRadio reads while the config and backlog drain; it drops back to
-     balanced once the role is confirmed). On first use the app also checks the bond
+   - Android only: `ble: connection priority high requested` and `ble: preferred phy 1M
+     requested` right after connecting. Priority stays high for the whole link (no
+     switch to balanced) and the PHY is pinned to 1M; `ble: phy update`, `ble: phy read`
+     and `ble: connection parameters` lines log the link-layer changes. iOS has no
+     equivalent API. On first use the app also checks the bond
      state every second, so it goes on within about 1 s of the PIN being accepted
      instead of waiting for the 90 s bonding timeout.
 5. The panel shows **Role: Desk Pod** and **Firmware build: 0x0100 (supported)**.
