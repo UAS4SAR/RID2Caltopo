@@ -394,4 +394,29 @@ class BtrxBearingLayerTest {
         assertEquals("A", BtrxSteeringTarget.effective("C", setOf("A")))
         assertNull(BtrxSteeringTarget.effective("C", emptySet()))
     }
+
+    /** Nov 17: either answer closes the suggestion at once (ownAnswers) and sets the layer flags; it never comes back for that source. */
+    @Test fun ownSuggestionAnswersCloseAndStay() {
+        val e = FakeEngine()
+        val logs = mutableListOf<String>()
+        val l = BtrxBearingLayer(e, monoUs = { now }, wallMs = { wall }, log = { logs += it })
+        l.start(BtrxBearingSettings(), false, true)
+        val own = BtrxOwnSuggestionTest.src(7L, "QBXFvg", srcId = 50203, flags = BtrxBearingNative.SRC_OWN_SUSPECT)
+        val other = BtrxOwnSuggestionTest.src(8L, "Ab12Cd", srcId = 0, flags = BtrxBearingNative.SRC_OWN_SUSPECT)
+        assertEquals(own, BtrxOwnSuggestion.pick(listOf(own, other), l.ownAnswers.value))
+        l.answerOwnSuggestion(own, own = true)
+        assertEquals(Triple(listOf(7L), BtrxBearingNative.SRC_IGNORED, BtrxBearingNative.SRC_IGNORED), e.flags.last())
+        assertTrue(logs.last().startsWith("BBOWN QBXFvg answered own aircraft (id 50203)"))
+        // The same snapshot (flags not yet ignored) no longer shows it; the next suspect does.
+        assertEquals(other, BtrxOwnSuggestion.pick(listOf(own, other), l.ownAnswers.value))
+        l.answerOwnSuggestion(other, own = false)
+        assertEquals(Triple(listOf(8L), BtrxBearingNative.SRC_OWN_CLEARED or BtrxBearingNative.SRC_OWN_SUSPECT,
+            BtrxBearingNative.SRC_OWN_CLEARED), e.flags.last())
+        assertTrue(logs.last().startsWith("BBOWN Ab12Cd answered not mine"))
+        assertNull(BtrxOwnSuggestion.pick(listOf(own, other), l.ownAnswers.value))
+        // Across a layer restart (fresh native flags) and an address change with the same src_id.
+        l.stop(); l.start(BtrxBearingSettings(), false, true)
+        val rotated = own.copy(key = 99L)
+        assertNull(BtrxOwnSuggestion.pick(listOf(own, rotated, other), l.ownAnswers.value))
+    }
 }

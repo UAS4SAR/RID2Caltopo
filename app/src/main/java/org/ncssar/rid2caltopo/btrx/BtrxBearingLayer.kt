@@ -13,6 +13,7 @@ import kotlin.math.roundToInt
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import org.ncssar.rid2caltopo.btrx.BtrxProtocol as P
 
 /** Fade settings (spec section 2.4): Developer Tools > BTRX, saved in the app config. */
@@ -567,6 +568,26 @@ class BtrxBearingLayer(
         withHandle(Unit) { h -> engine.setFocus(h, key) }
     }
 
+    // Own-aircraft suggestion answers (Nov 17 watch test): "Own aircraft (saved)" went to the
+    // pod's saved list only, so the layer's source stayed own-suspect and not ignored and the
+    // card never closed. Answers are kept here, by address key and src_id, for the life of the
+    // app (across layer restarts), and the card reads them, so it closes at once and never
+    // comes back for that source. A StateFlow so the card hides before the next tick.
+    private val _ownAnswers = MutableStateFlow(BtrxOwnAnswers())
+    val ownAnswers: StateFlow<BtrxOwnAnswers> = _ownAnswers.asStateFlow()
+
+    /**
+     * UI thread: the own-aircraft suggestion answered. [own] = "Own aircraft": ignored on this
+     * device at once (the caller also saves it on the pod when the firmware keeps a list);
+     * otherwise "Not mine": the suspect flag cleared. A flag write and a set update; never
+     * waits on grid work.
+     */
+    fun answerOwnSuggestion(src: BtrxBearingSource, own: Boolean) {
+        _ownAnswers.update { it.plus(src.key, src.srcId) }
+        if (own) setIgnored(src.key, true) else clearOwnSuspect(src.key)
+        log("BBOWN ${src.shortId} answered ${if (own) "own aircraft" else "not mine"}" + if (src.srcId != 0) " (id ${src.srcId})" else "")
+    }
+
     /** UI thread: the own-aircraft suggestion answered "not on the drone". */
     fun clearOwnSuspect(key: Long) {
         withHandle(Unit) { h ->
@@ -618,6 +639,18 @@ object BtrxBearingFeed {
     @Volatile var sink: BtrxBearingLayer? = null
 }
 
+/** Own-aircraft suggestion answers, by address key and by src_id (an address that rotates keeps its src_id). */
+data class BtrxOwnAnswers(val keys: Set<Long> = emptySet(), val srcIds: Set<Int> = emptySet()) {
+    fun plus(key: Long, srcId: Int) = BtrxOwnAnswers(keys + key, if (srcId != 0) srcIds + srcId else srcIds)
+    fun answered(s: BtrxBearingSource): Boolean = s.key in keys || (s.srcId != 0 && s.srcId in srcIds)
+}
+
+/** Which source the own-aircraft card shows: the first suspect not ignored and not answered. Same as the iPad. */
+object BtrxOwnSuggestion {
+    fun pick(sources: List<BtrxBearingSource>, answers: BtrxOwnAnswers): BtrxBearingSource? =
+        sources.firstOrNull { it.ownSuspect && !it.ignored && !answers.answered(it) }
+}
+
 /** Panel and pane wording, identical to the iPad (BtrxBearingText in BtrxBearingLayer.swift). */
 object BtrxBearingText {
     const val PANEL_TITLE = "BTRX sources here"
@@ -636,17 +669,22 @@ object BtrxBearingText {
     const val UNIGNORE = "Stop ignoring"
     const val FOCUS = "Focus this source"
     const val CLEAR_FOCUS = "Clear focus"
-    const val OWN_SUGGEST_SAVE = "Own aircraft (saved)"
-    const val OWN_SUGGEST_KEEP = "Not on the drone"
+    const val OWN_SUGGEST_SAVE = "Own aircraft"
+    const val OWN_SUGGEST_KEEP = "Not mine"
+    const val OWN_SUGGEST_COLLAPSE = "Collapse"
     const val OWN_SUSPECT_TAG = "own aircraft?"
     const val STRONGEST_HERE = "strongest here"
     const val PINNED_TITLE = "BTRX source located"
     const val CLOSE = "Close"
 
-    /** Own-aircraft suggestion (Nov 16): strong while the drone moved; a suggestion only. */
-    fun ownSuggestion(s: BtrxBearingSource): String =
-        "${s.shortId} (${s.className}) looks like it rides on the drone: stronger than -40 dBm for a minute while the drone moved. " +
-            "No estimate is drawn for it until you decide."
+    /** Own-aircraft suggestion banner (Nov 17: one line; it was a three-line card over the map). */
+    fun ownSuggestion(s: BtrxBearingSource): String = "${s.shortId} (${s.className}) on the drone?"
+
+    /** The banner collapsed to a chip. */
+    fun ownSuggestionCollapsed(s: BtrxBearingSource): String = "${s.shortId} on drone?"
+
+    /** Why it is suggested (the banner's accessibility description). */
+    const val OWN_SUGGEST_WHY = "Stronger than -40 dBm for a minute while the drone moved. No estimate is drawn for it until you decide."
 
     /** Inspect card of a pinned source: one line per field. */
     fun inspectLines(s: BtrxBearingSource, nowUs: Long): List<String> {

@@ -684,6 +684,24 @@ public final class BtrxBearingLayer: @unchecked Sendable {
         withHandle(()) { h in _ = btrx_bearing_set_focus(h, key) }
     }
 
+    // Own-aircraft suggestion answers (Nov 17 watch test): "Own aircraft (saved)" went to the
+    // pod's saved list only, so the layer's source stayed own-suspect and not ignored and the
+    // card never closed. Answers are kept here, by address key and src_id, for the life of the
+    // app (across layer restarts), and the card reads them, so it closes at once and never
+    // comes back for that source. Same as Android.
+    private var _ownAnswers = BtrxOwnAnswers()
+    public var ownAnswers: BtrxOwnAnswers { stateLock.lock(); defer { stateLock.unlock() }; return _ownAnswers }
+
+    /// Main thread: the own-aircraft suggestion answered. `own` = "Own aircraft": ignored on this
+    /// device at once (the caller also saves it on the pod when the firmware keeps a list);
+    /// otherwise "Not mine": the suspect flag cleared. A flag write and a set update; never waits
+    /// on grid work.
+    public func answerOwnSuggestion(_ src: BtrxBearingSource, own: Bool) {
+        stateLock.lock(); _ownAnswers = _ownAnswers.plus(key: src.key, srcId: src.srcId); stateLock.unlock()
+        if own { setIgnored(src.key, ignored: true) } else { clearOwnSuspect(src.key) }
+        log("BBOWN \(src.shortID) answered \(own ? "own aircraft" : "not mine")" + (src.srcId != 0 ? " (id \(src.srcId))" : ""))
+    }
+
     /// Main thread: the own-aircraft suggestion answered "not on the drone".
     public func clearOwnSuspect(_ key: UInt64) {
         let cleared = UInt32(BTRX_BEARING_SRC_OWN_CLEARED)
@@ -715,6 +733,27 @@ public final class BtrxBearingLayer: @unchecked Sendable {
     public func nowUs() -> Int64 { monoUs() }
 }
 
+/// Own-aircraft suggestion answers, by address key and by src_id (an address that rotates keeps its src_id). Same as Android.
+public struct BtrxOwnAnswers: Equatable, Sendable {
+    public var keys: Set<UInt64> = []
+    public var srcIds: Set<Int> = []
+    public init(keys: Set<UInt64> = [], srcIds: Set<Int> = []) { self.keys = keys; self.srcIds = srcIds }
+    public func plus(key: UInt64, srcId: Int) -> BtrxOwnAnswers {
+        var out = self
+        out.keys.insert(key)
+        if srcId != 0 { out.srcIds.insert(srcId) }
+        return out
+    }
+    public func answered(_ s: BtrxBearingSource) -> Bool { keys.contains(s.key) || (s.srcId != 0 && srcIds.contains(s.srcId)) }
+}
+
+/// Which source the own-aircraft card shows: the first suspect not ignored and not answered. Same as Android.
+public enum BtrxOwnSuggestion {
+    public static func pick(_ sources: [BtrxBearingSource], answers: BtrxOwnAnswers) -> BtrxBearingSource? {
+        sources.first { $0.ownSuspect && !$0.ignored && !answers.answered($0) }
+    }
+}
+
 /// Panel and pane wording, identical to Android's BtrxBearingText.
 public enum BtrxBearingText {
     public static let panelTitle = "BTRX sources here"
@@ -733,18 +772,22 @@ public enum BtrxBearingText {
     public static let unignore = "Stop ignoring"
     public static let focus = "Focus this source"
     public static let clearFocus = "Clear focus"
-    public static let ownSuggestSave = "Own aircraft (saved)"
-    public static let ownSuggestKeep = "Not on the drone"
+    public static let ownSuggestSave = "Own aircraft"
+    public static let ownSuggestKeep = "Not mine"
+    public static let ownSuggestCollapse = "Collapse"
     public static let ownSuspectTag = "own aircraft?"
     public static let strongestHere = "strongest here"
     public static let pinnedTitle = "BTRX source located"
     public static let close = "Close"
 
-    /// Own-aircraft suggestion (Nov 16): strong while the drone moved; a suggestion only.
-    public static func ownSuggestion(_ s: BtrxBearingSource) -> String {
-        "\(s.shortID) (\(s.className)) looks like it rides on the drone: stronger than -40 dBm for a minute while the drone moved. " +
-            "No estimate is drawn for it until you decide."
-    }
+    /// Own-aircraft suggestion banner (Nov 17: one line; it was a three-line card over the map).
+    public static func ownSuggestion(_ s: BtrxBearingSource) -> String { "\(s.shortID) (\(s.className)) on the drone?" }
+
+    /// The banner collapsed to a chip.
+    public static func ownSuggestionCollapsed(_ s: BtrxBearingSource) -> String { "\(s.shortID) on drone?" }
+
+    /// Why it is suggested (the banner's accessibility description).
+    public static let ownSuggestWhy = "Stronger than -40 dBm for a minute while the drone moved. No estimate is drawn for it until you decide."
 
     /// Inspect card of a pinned source: one line per field. Same as Android.
     public static func inspectLines(_ s: BtrxBearingSource, nowUs: Int64) -> [String] {

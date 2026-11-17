@@ -55,6 +55,7 @@ public enum BtrxFrameLog {
                            e.excludedPerS, P.excludeFlagNames(e.excludeFlags))
                 } ?? "")
                 + (h.scanLostPerS.map { " scan_lost_per_s=\($0)" } ?? "")
+                + (h.power.map { powerFields($0) } ?? "")
         case P.DETECT:
             let d = try P.parseDetect(p)
             let head = "window_end_ms=\(d.windowEndMs) roll=\(Double(d.rollX2) / 2) pitch=\(Double(d.pitchX2) / 2) roll_rate=\(d.rollRateDps) attitude=\(String(format: "0x%02x", d.attitudeFlags)) n=\(d.records.count)"
@@ -89,5 +90,12 @@ public enum BtrxFrameLog {
         default:
             return p.isEmpty ? "" : "raw=\(P.hex(p))"
         }
+    }
+
+    /// HEALTH supply fields (build 0x010B), same text as Android.
+    public static func powerFields(_ w: BtrxProtocol.HealthPower) -> String {
+        String(format: " vdd_mv=%d vdd_min_mv=%d vddh_mv=%d vddh_min_mv=%d vbat_mv=%d power_flags=0x%02x(%@) boot_cause=%d(%@) vbus_drops=%d",
+               w.vddMv, w.vddMinMv, w.vddhMv, w.vddhMinMv, w.vbatMv, w.powerFlags, BtrxProtocol.powerFlagNames(w.powerFlags),
+               w.bootCause, BtrxProtocol.bootCauseName(w.bootCause), w.vbusDrops)
     }
 }

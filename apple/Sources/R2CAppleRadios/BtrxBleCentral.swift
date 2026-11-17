@@ -850,6 +850,15 @@ public final class BtrxDeskPodCenter: ObservableObject {
     public func setButtonPanelAvailable(_ available: Bool) { central.setButtonPanelAvailable(available) }
     /// "Own aircraft (saved)" / "Remove" on a source (STEER_MUTE op 3 / 4, build 0x0106).
     public func ignoreSourceSaved(_ srcId: Int) { central.ignoreSourceSaved(srcId) }
+    /// Own-aircraft suggestion answers, published so the banner closes at once (Nov 17).
+    @Published public private(set) var ownAnswers = BtrxOwnAnswers()
+    /// The own-aircraft suggestion answered: recorded in the layer (never shown again for this
+    /// source); "Own aircraft" is ignored here at once and saved on the pod when it keeps a list.
+    public func answerOwnSuggestion(_ src: BtrxBearingSource, own: Bool) {
+        bearing.answerOwnSuggestion(src, own: own)
+        ownAnswers = bearing.ownAnswers
+        if own && snapshot.savedIgnoreSupported && src.srcId != 0 { ignoreSourceSaved(src.srcId) }
+    }
     public func unignoreSourceSaved(_ srcId: Int) { central.unignoreSourceSaved(srcId) }
     public func cancelPairing() { central.cancelPairing() }
     public func clearPairingResult() { central.clearPairingResult() }

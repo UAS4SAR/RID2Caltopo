@@ -412,6 +412,17 @@ object BtrxProtocol {
          * second. Parsed by length: null for 44-byte (0x0106-0x0109) HEALTH, never assumed.
          */
         val scanLostPerS: Int? = null,
+        /** Offsets 46-58 (build 0x010B, btrx 9d8928f): supply fields. Parsed by length: null for shorter HEALTH. */
+        val power: HealthPower? = null,
+    )
+
+    /**
+     * HEALTH offsets 46-58 (build 0x010B, PROTOCOL.md "Supply fields"): vdd_mv, vdd_min_mv,
+     * vddh_mv, vddh_min_mv, vbat_mv (u16 LE), power_flags, boot_cause, vbus_drops (u8).
+     */
+    data class HealthPower(
+        val vddMv: Int, val vddMinMv: Int, val vddhMv: Int, val vddhMinMv: Int, val vbatMv: Int,
+        val powerFlags: Int, val bootCause: Int, val vbusDrops: Int,
     )
 
     /**
@@ -424,6 +435,26 @@ object BtrxProtocol {
     const val HEALTH_LOST_LEN = 34
     const val HEALTH_EXT_LEN = 44
     const val HEALTH_SCAN_LOST_LEN = 46
+    const val HEALTH_POWER_LEN = 59
+
+    // HEALTH power_flags (build 0x010B).
+    const val PWR_VBUS = 0x01
+    const val PWR_USB_READY = 0x02
+    const val PWR_BATTERY = 0x04
+    const val PWR_VDD_LOW = 0x08
+    const val PWR_POF = 0x10
+    const val PWR_VBUS_LOST = 0x20
+    const val PWR_PREV_POF = 0x40
+    const val PWR_PREV_VBUS_LOST = 0x80
+    private val POWER_FLAGS = listOf(
+        PWR_VBUS to "vbus", PWR_USB_READY to "usb_ready", PWR_BATTERY to "battery", PWR_VDD_LOW to "vdd_low",
+        PWR_POF to "pof", PWR_VBUS_LOST to "vbus_lost", PWR_PREV_POF to "prev_pof", PWR_PREV_VBUS_LOST to "prev_vbus_lost",
+    )
+    fun powerFlagNames(value: Int): String = flagNames(value, POWER_FLAGS)
+
+    // HEALTH boot_cause (build 0x010B).
+    private val BOOT_CAUSES = listOf("unknown", "power-on", "brown-out", "reset-pin", "watchdog", "soft-reset", "lockup", "wake")
+    fun bootCauseName(value: Int): String = BOOT_CAUSES.getOrNull(value) ?: value.toString()
 
     // HEALTH pair_source (build 0x0106).
     const val PAIR_SRC_NONE = 0
@@ -466,6 +497,8 @@ object BtrxProtocol {
             phoneLost = if (p.size >= HEALTH_LOST_LEN) u32(p, 30) else null,
             ext = if (p.size >= HEALTH_EXT_LEN) HealthExt(u32(p, 34), u8(p, 38), u16(p, 39), u16(p, 41), u8(p, 43)) else null,
             scanLostPerS = if (p.size >= HEALTH_SCAN_LOST_LEN) u16(p, 44) else null,
+            power = if (p.size >= HEALTH_POWER_LEN)
+                HealthPower(u16(p, 46), u16(p, 48), u16(p, 50), u16(p, 52), u16(p, 54), u8(p, 56), u8(p, 57), u8(p, 58)) else null,
         )
     }
 

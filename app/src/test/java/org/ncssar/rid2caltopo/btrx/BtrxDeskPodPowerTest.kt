@@ -180,6 +180,38 @@ class BtrxDeskPodPowerTest {
         assertNotNull(model.snapshot().deskRestart)
     }
 
+    /** 0x010B: the Desk Pod's 59-byte HEALTH supply fields reach the Desk Pod screen and the log (once per change). */
+    @Test
+    fun modelShowsTheDeskPodsHealthSupplyFields() {
+        val model = BtrxDeskPodModel(logger, clock = { now })
+        val first = FakeSender()
+        model.attach(first); model.onConfigured(desk)
+        fun health59(flags: Int, drops: Int) {
+            val h = ByteArray(P.HEALTH_POWER_LEN).also {
+                P.putU32(it, 0, 500); it[6] = 3
+                for ((o, v) in listOf(46 to 3301, 48 to 3290, 50 to 4180, 52 to 4012)) { it[o] = (v and 0xFF).toByte(); it[o + 1] = (v shr 8).toByte() }
+                it[56] = flags.toByte(); it[57] = 1; it[58] = drops.toByte()
+            }
+            model.onFrame(P.decodeFrame(P.encodeFrame(P.HEALTH, payload = h)), BtrxClient.RadioMeta(desk, desk, 0, 0f, now, false))
+        }
+        health59(0x03, 0)
+        val s = model.snapshot()
+        assertEquals(P.HealthPower(3301, 3290, 4180, 4012, 0, 0x03, 1, 0), s.deskHealthPower)
+        assertEquals(listOf(
+            "Desk Pod supply: VDD 3301 mV (min 3290 mV), VDDH 4180 mV (min 4012 mV), VBAT none seen",
+            "Desk Pod USB power: present, lost 0 times while running (flags vbus,usb_ready)",
+            "Desk Pod started by: power-on",
+        ), BtrxDeskPodText.deskPowerLines(s))
+        assertTrue(BtrxDeskPodText.healthLines(s).contains("Desk Pod started by: power-on"))
+        assertEquals(1, logs.count { it.startsWith("desk pod power: vdd_mv=3301") })
+        health59(0x03, 0)
+        assertEquals(1, logs.count { it.startsWith("desk pod power:") })     // unchanged: no new line
+        health59(0x22, 1)                                                     // USB power went away, board kept running
+        assertTrue(logs.last().endsWith("power_flags=0x22(usb_ready,vbus_lost) boot_cause=1(power-on) vbus_drops=1"))
+        assertEquals("Desk Pod USB power: ABSENT, lost 1 time while running (flags usb_ready,vbus_lost)",
+            BtrxDeskPodText.deskPowerLines(model.snapshot())[1])
+    }
+
     @Test
     fun modelKeepsTheDeskPodsDeviceMetrics() {
         val model = BtrxDeskPodModel(logger, clock = { now })

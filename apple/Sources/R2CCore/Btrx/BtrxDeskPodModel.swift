@@ -155,6 +155,8 @@ public final class BtrxDeskPodModel {
         public var droppedOtherPort = 0
         /// The Desk Pod's own HEALTH fields from build 0x0106 (reset reason etc.), or nil.
         public var deskHealthExt: BtrxProtocol.HealthExt?
+        /// The Desk Pod's own HEALTH supply fields (build 0x010B), or nil.
+        public var deskHealthPower: BtrxProtocol.HealthPower?
         /// Paired pod build 0x0106+: "Own aircraft (saved)" is offered; else the local toggle only.
         public var savedIgnoreSupported = false
         /// src ids the paired pod confirmed on its saved ignore list (FILTER_ACK ok=1).
@@ -234,6 +236,7 @@ public final class BtrxDeskPodModel {
     private var lastHealth: HealthReading?
     private var deskPhoneLost: UInt32?
     private var deskHealthExt: BtrxProtocol.HealthExt?
+    private var deskHealthPower: BtrxProtocol.HealthPower?
     private var savedIgnores = Set<Int>()
     private var pendingFilters: [PendingFilter] = []
     private var filterMessage: String?
@@ -297,6 +300,7 @@ public final class BtrxDeskPodModel {
         role = nil
         deskPhoneLost = nil
         deskHealthExt = nil
+        deskHealthPower = nil
         deskUptimeS = nil; deskHealthAtMs = 0
         droppedEncrypted = 0; droppedOtherPort = 0
         liveCounts = [:]; backlogCounts = [:]
@@ -395,6 +399,10 @@ public final class BtrxDeskPodModel {
                     let h = try BtrxProtocol.parseHealth(frame.payload)
                     if let lost = h.phoneLost { deskPhoneLost = lost }
                     if let e = h.ext { deskHealthExt = e }
+                    if let w = h.power {
+                        if let line = BtrxDeskPodText.deskSupplyChange(deskHealthPower, w) { log.debug(line) }
+                        deskHealthPower = w
+                    }
                     deskUptimeS = h.uptimeS
                     deskHealthBuild = h.buildHash
                     deskHealthAtMs = meta.arrivalMs
@@ -761,6 +769,7 @@ public final class BtrxDeskPodModel {
         s.steeringRollCorrection = steering.rollCorrection
         s.imuCal = imuCal.view(nowMs: now)
         s.deskHealthExt = deskHealthExt
+        s.deskHealthPower = deskHealthPower
         s.savedIgnoreSupported = savedIgnoreSupportedNow
         s.savedIgnores = savedIgnores.sorted()
         s.filterPending = pendingFilters
@@ -809,7 +818,7 @@ public final class BtrxDeskPodModel {
             return
         }
         guard let pod = pairedPod, let s = sender else { return }
-        log.info(String(format: "own aircraft (saved): STEER_MUTE %@ src=0x%04x to %@", BtrxProtocol.muteOpName(op), srcId, BtrxClient.nodeName(pod.node)))
+        log.debug(String(format: "own aircraft (saved): STEER_MUTE %@ src=0x%04x to %@", BtrxProtocol.muteOpName(op), srcId, BtrxClient.nodeName(pod.node)))
         s.sendFrame(to: pod.node, frame: BtrxProtocol.steerMuteFrame(seq: s.nextSeq(), podId: pod.podId, op: op, srcId: srcId))
         pendingFilters.removeAll { $0.srcId == srcId } // an expired one not yet ticked out
         pendingFilters.append(PendingFilter(op: op, srcId: srcId, sentMs: now))
@@ -829,7 +838,7 @@ public final class BtrxDeskPodModel {
         }
         let pend = pendingFilters.remove(at: idx)
         let id = BtrxDeskPodText.srcIdText(pend.srcId)
-        log.info(String(format: "own aircraft (saved): FILTER_ACK op=%d ok=%d list_crc=0x%04x stored=%d flags=0x%02x for src=0x%04x (%@)",
+        log.debug(String(format: "own aircraft (saved): FILTER_ACK op=%d ok=%d list_crc=0x%04x stored=%d flags=0x%02x for src=0x%04x (%@)",
                         ack.op, ack.ok, ack.listCrc, ack.stored, frameFlags, pend.srcId, ack.srcId != nil ? "by src_id" : "6-byte ack, oldest waiting"))
         let added = pend.op == P.MUTE_IGNORE
         if ack.ok == 1 {

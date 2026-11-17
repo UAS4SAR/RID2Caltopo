@@ -113,9 +113,36 @@ object BtrxDeskPodText {
             val down = r.downMs?.let { "; back about ${it / 1000} s after the link dropped" } ?: ""
             add("${r.text} ${ago(s.nowMs - r.atMs)} (uptime ${r.uptimeS} s$down)")
         }
+        s.deskHealthPower?.let { addAll(deskSupplyLines(it)) }
         s.deskDeviceMetrics?.let { m ->
             BtrxDeskPodPower.metricsLine(m)?.let { line -> add(line + (s.deskDeviceMetricsAtMs?.let { ", ${ago(s.nowMs - it)}" } ?: "")) }
         }
+    }
+
+    /**
+     * The Desk Pod's own HEALTH supply fields (build 0x010B, PROTOCOL.md "Supply fields"):
+     * rails, USB power, why it started and the warnings. Same lines on the iPad.
+     */
+    fun deskSupplyLines(w: P.HealthPower): List<String> = buildList {
+        fun mv(v: Int) = if (v == 0) "not read yet" else "$v mV"
+        add("Desk Pod supply: VDD ${mv(w.vddMv)} (min ${w.vddMinMv} mV), VDDH ${mv(w.vddhMv)} (min ${w.vddhMinMv} mV), " +
+            "VBAT " + (if (w.vbatMv == 0) "none seen" else "${w.vbatMv} mV"))
+        add("Desk Pod USB power: " + (if (w.powerFlags and P.PWR_VBUS != 0) "present" else "ABSENT") +
+            ", lost ${w.vbusDrops} time${if (w.vbusDrops == 1) "" else "s"} while running (flags ${P.powerFlagNames(w.powerFlags)})")
+        add("Desk Pod started by: ${P.bootCauseName(w.bootCause)}")
+        val warn = buildList {
+            if (w.powerFlags and P.PWR_VDD_LOW != 0) add("3.3 V rail below 3.0 V")
+            if (w.powerFlags and P.PWR_POF != 0) add("supply sagged (power-fail) since it started")
+            if (w.powerFlags and P.PWR_PREV_POF != 0) add("supply sagged in the run before")
+            if (w.powerFlags and P.PWR_PREV_VBUS_LOST != 0) add("USB power lost in the run before")
+        }
+        if (warn.isNotEmpty()) add("Desk Pod power warning: " + warn.joinToString("; "))
+    }
+
+    /** A debug log line when the Desk Pod's supply state changes (flags, drops, boot cause), else null. */
+    fun deskSupplyChange(old: P.HealthPower?, new: P.HealthPower): String? {
+        if (old != null && old.powerFlags == new.powerFlags && old.vbusDrops == new.vbusDrops && old.bootCause == new.bootCause) return null
+        return "desk pod power:" + BtrxFrameLog.powerFields(new)
     }
 
     /** The Desk Pod's pairing state, from DESK_PAIR (not HEALTH). */

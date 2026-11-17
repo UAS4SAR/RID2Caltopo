@@ -630,32 +630,50 @@ struct BtrxBearingPanel: View {
     }
 }
 
-/// "Save as own aircraft": on the pod by src_id when the firmware keeps a saved list,
-/// otherwise this device only. Same as Android's btrxSaveOwnAircraft.
+/// "Save as own aircraft": ignored on this device at once, and on the pod by src_id too when
+/// the firmware keeps a saved list. Nov 17: the pod save alone left the layer's source not
+/// ignored, so the suggestion card stayed up. Same as Android's btrxSaveOwnAircraft.
 @MainActor
 func btrxSaveOwnAircraft(_ center: BtrxDeskPodCenter, _ src: BtrxBearingSource) {
+    center.bearing.setIgnored(src.key, ignored: true)
     if center.snapshot.savedIgnoreSupported && src.srcId != 0 { center.ignoreSourceSaved(src.srcId) }
-    else { center.bearing.setIgnored(src.key, ignored: true) }
 }
 
 /// Own-aircraft suggestion (Nov 16 watch test): a source stronger than about -40 dBm for a
-/// minute while the drone moved. A suggestion only: nothing is muted until Ken answers.
-/// Same as Android.
+/// minute while the drone moved. A suggestion only: nothing is muted until Ken answers. A
+/// one-line banner ("QBXFvg (unknown) on the drone?  Own aircraft  Not mine  ×"); × collapses
+/// it to a chip, tap the chip to expand. Closes at once on either answer and never comes back
+/// for that source. Same as Android.
 struct BtrxOwnAircraftSuggestion: View {
     @ObservedObject var center: BtrxDeskPodCenter
+    @State private var collapsedKey: UInt64?
     var body: some View {
-        if center.bearingOn, let src = center.bearingSnapshot?.sources.first(where: { $0.ownSuspect && !$0.ignored }) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text(BtrxBearingText.ownSuggestion(src)).font(.footnote)
-                HStack(spacing: 8) {
-                    Button(BtrxBearingText.ownSuggestSave) { btrxSaveOwnAircraft(center, src) }.buttonStyle(.bordered)
-                    Button(BtrxBearingText.ownSuggestKeep) { center.bearing.clearOwnSuspect(src.key) }
+        if center.bearingOn, let sources = center.bearingSnapshot?.sources,
+           let src = BtrxOwnSuggestion.pick(sources, answers: center.ownAnswers) {
+            if collapsedKey == src.key {
+                Button { collapsedKey = nil } label: {
+                    Text(BtrxBearingText.ownSuggestionCollapsed(src)).font(.caption)
+                        .padding(.horizontal, 12).padding(.vertical, 6)
+                        .background(Color.black.opacity(0.85), in: Capsule()).foregroundStyle(.white)
+                }.buttonStyle(.plain)
+            } else {
+                HStack(spacing: 10) {
+                    Text(BtrxBearingText.ownSuggestion(src)).font(.caption).lineLimit(1).truncationMode(.middle)
+                        .frame(maxWidth: 220, alignment: .leading)
+                    Button(BtrxBearingText.ownSuggestSave) { center.answerOwnSuggestion(src, own: true) }
+                        .font(.caption.weight(.semibold)).foregroundStyle(Color(red: 0.54, green: 0.71, blue: 0.97))
+                    Button(BtrxBearingText.ownSuggestKeep) { center.answerOwnSuggestion(src, own: false) }
+                        .font(.caption).foregroundStyle(.white)
+                    Button { collapsedKey = src.key } label: { Image(systemName: "xmark").font(.caption) }
+                        .foregroundStyle(.white).accessibilityLabel(BtrxBearingText.ownSuggestCollapse)
                 }
+                .buttonStyle(.plain)
+                .padding(.leading, 12).padding(.trailing, 10).padding(.vertical, 8)
+                .foregroundStyle(.white)
+                .background(Color.black.opacity(0.85), in: Capsule())
+                .accessibilityElement(children: .contain)
+                .accessibilityHint(BtrxBearingText.ownSuggestWhy)
             }
-            .padding(10)
-            .frame(maxWidth: 520, alignment: .leading)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
-            .shadow(radius: 6)
         }
     }
 }

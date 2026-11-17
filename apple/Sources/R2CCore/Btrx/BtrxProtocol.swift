@@ -344,6 +344,20 @@ public enum BtrxProtocol {
         /// Offset 44, u16 LE (build 0x010A, btrx d74aaec): scan reports this board lost per
         /// second. Parsed by length: nil for 44-byte (0x0106-0x0109) HEALTH. Same as Android.
         public var scanLostPerS: Int? = nil
+        /// Offsets 46-58 (build 0x010B, btrx 9d8928f): supply fields. Parsed by length: nil for
+        /// shorter HEALTH. Same as Android.
+        public var power: HealthPower? = nil
+    }
+
+    /// HEALTH offsets 46-58 (build 0x010B, PROTOCOL.md "Supply fields"): vdd_mv, vdd_min_mv,
+    /// vddh_mv, vddh_min_mv, vbat_mv (u16 LE), power_flags, boot_cause, vbus_drops (u8).
+    public struct HealthPower: Sendable, Equatable {
+        public let vddMv: Int, vddMinMv: Int, vddhMv: Int, vddhMinMv: Int, vbatMv: Int
+        public let powerFlags: Int, bootCause: Int, vbusDrops: Int
+        public init(vddMv: Int, vddMinMv: Int, vddhMv: Int, vddhMinMv: Int, vbatMv: Int, powerFlags: Int, bootCause: Int, vbusDrops: Int) {
+            self.vddMv = vddMv; self.vddMinMv = vddMinMv; self.vddhMv = vddhMv; self.vddhMinMv = vddhMinMv; self.vbatMv = vbatMv
+            self.powerFlags = powerFlags; self.bootCause = bootCause; self.vbusDrops = vbusDrops
+        }
     }
 
     /// HEALTH fields from build 0x0106 (PROTOCOL.md HEALTH offsets 34-43).
@@ -366,6 +380,20 @@ public enum BtrxProtocol {
     public static let healthLostLen = 34
     public static let healthExtLen = 44
     public static let healthScanLostLen = 46
+    public static let healthPowerLen = 59
+
+    // HEALTH power_flags (build 0x010B). Same as Android.
+    public static let PWR_VBUS = 0x01, PWR_USB_READY = 0x02, PWR_BATTERY = 0x04, PWR_VDD_LOW = 0x08
+    public static let PWR_POF = 0x10, PWR_VBUS_LOST = 0x20, PWR_PREV_POF = 0x40, PWR_PREV_VBUS_LOST = 0x80
+    private static let powerFlags: [(Int, String)] = [
+        (PWR_VBUS, "vbus"), (PWR_USB_READY, "usb_ready"), (PWR_BATTERY, "battery"), (PWR_VDD_LOW, "vdd_low"),
+        (PWR_POF, "pof"), (PWR_VBUS_LOST, "vbus_lost"), (PWR_PREV_POF, "prev_pof"), (PWR_PREV_VBUS_LOST, "prev_vbus_lost"),
+    ]
+    public static func powerFlagNames(_ v: Int) -> String { flagNames(v, powerFlags) }
+
+    // HEALTH boot_cause (build 0x010B).
+    private static let bootCauses = ["unknown", "power-on", "brown-out", "reset-pin", "watchdog", "soft-reset", "lockup", "wake"]
+    public static func bootCauseName(_ v: Int) -> String { v >= 0 && v < bootCauses.count ? bootCauses[v] : String(v) }
 
     public static let pairSrcNone = 0, pairSrcNod = 1, pairSrcApp = 2
     public static func pairSourceName(_ src: Int) -> String {
@@ -405,7 +433,10 @@ public enum BtrxProtocol {
                       phoneLost: p.count >= healthLostLen ? u32(p, 30) : nil,
                       ext: p.count >= healthExtLen ? HealthExt(resetReason: u32(p, 34), pairSource: Int(p[38]), nodsIgnored: u16(p, 39),
                                                                excludedPerS: u16(p, 41), excludeFlags: Int(p[43])) : nil,
-                      scanLostPerS: p.count >= healthScanLostLen ? u16(p, 44) : nil)
+                      scanLostPerS: p.count >= healthScanLostLen ? u16(p, 44) : nil,
+                      power: p.count >= healthPowerLen
+                        ? HealthPower(vddMv: u16(p, 46), vddMinMv: u16(p, 48), vddhMv: u16(p, 50), vddhMinMv: u16(p, 52), vbatMv: u16(p, 54),
+                                      powerFlags: Int(p[56]), bootCause: Int(p[57]), vbusDrops: Int(p[58])) : nil)
     }
 
     /// TIME_PING payload (protocol.py pack_time): ping_seq, 0, t1, t2 = 0, t3 = 0, u16 0.

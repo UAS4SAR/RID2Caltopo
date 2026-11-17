@@ -61,7 +61,8 @@ object BtrxFrameLog {
                         e.resetReason, P.resetReasonNames(e.resetReason), P.pairSourceName(e.pairSource), e.nodsIgnored,
                         e.excludedPerS, P.excludeFlagNames(e.excludeFlags))
                 } ?: "") +
-                (it.scanLostPerS?.let { l -> " scan_lost_per_s=$l" } ?: "")
+                (it.scanLostPerS?.let { l -> " scan_lost_per_s=$l" } ?: "") +
+                (it.power?.let { w -> powerFields(w) } ?: "")
         }
         P.CONFIRM_REQ -> P.parseConfirmReq(p).let {
             "version=${it.version} action=${P.confirmActionName(it.action)} token=${it.token} timeout_s=${it.timeoutS} state=${P.confirmStateName(it.state)}"
@@ -94,4 +95,10 @@ object BtrxFrameLog {
         }
         else -> if (p.isEmpty()) "" else "raw=${P.hex(p)}"
     }
+
+    /** HEALTH supply fields (build 0x010B), same text on the iPad. */
+    fun powerFields(w: P.HealthPower): String =
+        " vdd_mv=%d vdd_min_mv=%d vddh_mv=%d vddh_min_mv=%d vbat_mv=%d power_flags=0x%02x(%s) boot_cause=%d(%s) vbus_drops=%d".format(
+            w.vddMv, w.vddMinMv, w.vddhMv, w.vddhMinMv, w.vbatMv, w.powerFlags, P.powerFlagNames(w.powerFlags),
+            w.bootCause, P.bootCauseName(w.bootCause), w.vbusDrops)
 }

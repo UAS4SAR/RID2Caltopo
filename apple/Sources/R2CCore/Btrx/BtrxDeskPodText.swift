@@ -222,6 +222,31 @@ public enum BtrxDeskPodText {
         return out
     }
 
+    /// The Desk Pod's own HEALTH supply fields (build 0x010B, PROTOCOL.md "Supply fields"):
+    /// rails, USB power, why it started and the warnings. Same lines as Android.
+    public static func deskSupplyLines(_ w: BtrxProtocol.HealthPower) -> [String] {
+        typealias P = BtrxProtocol
+        func mv(_ v: Int) -> String { v == 0 ? "not read yet" : "\(v) mV" }
+        var out = ["Desk Pod supply: VDD \(mv(w.vddMv)) (min \(w.vddMinMv) mV), VDDH \(mv(w.vddhMv)) (min \(w.vddhMinMv) mV), "
+            + "VBAT " + (w.vbatMv == 0 ? "none seen" : "\(w.vbatMv) mV")]
+        out.append("Desk Pod USB power: " + (w.powerFlags & P.PWR_VBUS != 0 ? "present" : "ABSENT")
+            + ", lost \(w.vbusDrops) time\(w.vbusDrops == 1 ? "" : "s") while running (flags \(P.powerFlagNames(w.powerFlags)))")
+        out.append("Desk Pod started by: \(P.bootCauseName(w.bootCause))")
+        var warn: [String] = []
+        if w.powerFlags & P.PWR_VDD_LOW != 0 { warn.append("3.3 V rail below 3.0 V") }
+        if w.powerFlags & P.PWR_POF != 0 { warn.append("supply sagged (power-fail) since it started") }
+        if w.powerFlags & P.PWR_PREV_POF != 0 { warn.append("supply sagged in the run before") }
+        if w.powerFlags & P.PWR_PREV_VBUS_LOST != 0 { warn.append("USB power lost in the run before") }
+        if !warn.isEmpty { out.append("Desk Pod power warning: " + warn.joined(separator: "; ")) }
+        return out
+    }
+
+    /// A debug log line when the Desk Pod's supply state changes (flags, drops, boot cause), else nil.
+    public static func deskSupplyChange(_ old: BtrxProtocol.HealthPower?, _ new: BtrxProtocol.HealthPower) -> String? {
+        if let o = old, o.powerFlags == new.powerFlags, o.vbusDrops == new.vbusDrops, o.bootCause == new.bootCause { return nil }
+        return "desk pod power:" + BtrxFrameLog.powerFields(new)
+    }
+
     /// Desk Pod power (Nov 17): went silent, restarted after a drop, and its standard
     /// DeviceMetrics when it sends them. Same lines as Android.
     public static func deskPowerLines(_ s: Model.Snapshot) -> [String] {
@@ -231,6 +256,7 @@ public enum BtrxDeskPodText {
             let down = r.downMs.map { "; back about \($0 / 1000) s after the link dropped" } ?? ""
             out.append("\(r.text) \(ago(s.nowMs - r.atMs)) (uptime \(r.uptimeS) s\(down))")
         }
+        if let w = s.deskHealthPower { out.append(contentsOf: deskSupplyLines(w)) }
         if let m = s.deskDeviceMetrics, let line = BtrxDeskPodPower.metricsLine(m) {
             out.append(line + (s.deskDeviceMetricsAtMs.map { ", \(ago(s.nowMs - $0))" } ?? ""))
         }

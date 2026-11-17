@@ -2,6 +2,7 @@ package org.ncssar.rid2caltopo.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -22,18 +23,24 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import kotlin.math.roundToInt
 import org.ncssar.rid2caltopo.btrx.BtrxBearingSettings
 import org.ncssar.rid2caltopo.btrx.BtrxBearingSource
 import org.ncssar.rid2caltopo.btrx.BtrxBearingText
 import org.ncssar.rid2caltopo.btrx.BtrxDeskPodText
+import org.ncssar.rid2caltopo.btrx.BtrxOwnSuggestion
 import org.ncssar.rid2caltopo.btrx.BtrxManager
 
 /**
@@ -203,30 +210,57 @@ fun BtrxBearingPanel(
 }
 
 /**
- * "Save as own aircraft": on the pod by src_id when the firmware keeps a saved list,
- * otherwise this device only. Shared by the suggestion card and the Developer Tools rows.
+ * "Save as own aircraft": ignored on this device at once, and on the pod by src_id too when
+ * the firmware keeps a saved list (the pod then stops reporting it). Shared by the suggestion
+ * banner and the Developer Tools rows. Nov 17: the pod save alone left the layer's source
+ * not ignored, so the suggestion card stayed up.
  */
 fun btrxSaveOwnAircraft(src: BtrxBearingSource) {
+    BtrxManager.bearing.setIgnored(src.key, true)
     val pod = BtrxManager.snapshot.value
     if (pod.savedIgnoreSupported && src.srcId != 0) BtrxManager.ignoreSourceSaved(src.srcId)
-    else BtrxManager.bearing.setIgnored(src.key, true)
+}
+
+/** The own-aircraft suggestion answered: recorded (never shown again for this source), then saved when it is ours. */
+fun btrxAnswerOwnAircraft(src: BtrxBearingSource, own: Boolean) {
+    BtrxManager.bearing.answerOwnSuggestion(src, own)
+    if (own) btrxSaveOwnAircraft(src)
 }
 
 /**
  * Own-aircraft suggestion (Nov 16 watch test): a source stronger than about -40 dBm for a
  * minute while the drone moved. A suggestion only: nothing is muted until Ken answers, and
- * the layer draws no estimate for it meanwhile. Hidden once saved, ignored or cleared.
+ * the layer draws no estimate for it meanwhile. A one-line banner ("QBXFvg (unknown) on the
+ * drone?  Own aircraft  Not mine  ×"); × collapses it to a chip, tap the chip to expand.
+ * Closes at once on either answer and never comes back for that source. Same as the iPad.
  */
 @Composable
 fun BtrxOwnAircraftSuggestion(modifier: Modifier = Modifier) {
     val snap by BtrxManager.bearing.snapshot.collectAsState()
-    val src = snap?.sources?.firstOrNull { it.ownSuspect && !it.ignored } ?: return
-    Surface(modifier.widthIn(max = 520.dp), shape = RoundedCornerShape(8.dp), tonalElevation = 6.dp, shadowElevation = 6.dp) {
-        Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text(BtrxBearingText.ownSuggestion(src), style = MaterialTheme.typography.bodySmall)
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = { btrxSaveOwnAircraft(src) }) { Text(BtrxBearingText.OWN_SUGGEST_SAVE) }
-                TextButton(onClick = { BtrxManager.bearing.clearOwnSuspect(src.key) }) { Text(BtrxBearingText.OWN_SUGGEST_KEEP) }
+    val answers by BtrxManager.bearing.ownAnswers.collectAsState()
+    val src = snap?.sources?.let { BtrxOwnSuggestion.pick(it, answers) } ?: return
+    var collapsed by rememberSaveable(src.key) { mutableStateOf(false) }
+    val bg = Color(0xE6202020)
+    if (collapsed) {
+        Surface(modifier.clickable { collapsed = false }, shape = RoundedCornerShape(16.dp), color = bg, contentColor = Color.White) {
+            Text(BtrxBearingText.ownSuggestionCollapsed(src), Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                style = MaterialTheme.typography.bodySmall)
+        }
+        return
+    }
+    Surface(modifier.semantics { contentDescription = BtrxBearingText.ownSuggestion(src) + " " + BtrxBearingText.OWN_SUGGEST_WHY },
+        shape = RoundedCornerShape(20.dp), color = bg, contentColor = Color.White) {
+        Row(Modifier.padding(start = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(BtrxBearingText.ownSuggestion(src), style = MaterialTheme.typography.bodySmall, maxLines = 1,
+                overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = 220.dp))
+            TextButton(onClick = { btrxAnswerOwnAircraft(src, own = true) }) {
+                Text(BtrxBearingText.OWN_SUGGEST_SAVE, color = Color(0xFF8AB4F8), style = MaterialTheme.typography.bodySmall)
+            }
+            TextButton(onClick = { btrxAnswerOwnAircraft(src, own = false) }) {
+                Text(BtrxBearingText.OWN_SUGGEST_KEEP, color = Color.White, style = MaterialTheme.typography.bodySmall)
+            }
+            TextButton(onClick = { collapsed = true }, modifier = Modifier.semantics { contentDescription = BtrxBearingText.OWN_SUGGEST_COLLAPSE }) {
+                Text("×", color = Color.White)
             }
         }
     }
