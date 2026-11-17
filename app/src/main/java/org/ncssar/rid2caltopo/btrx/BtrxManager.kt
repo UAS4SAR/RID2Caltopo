@@ -402,6 +402,12 @@ object BtrxManager {
     fun setButtonPanelAvailable(available: Boolean) = worker.execute { model.setButtonPanelAvailable(available); publish() }
     /** "Own aircraft (saved)" / "Remove" on a source (STEER_MUTE op 3 / 4, build 0x0106). */
     fun ignoreSourceSaved(srcId: Int) = worker.execute { model.ignoreSourceSaved(srcId); publish() }
+    /** "Ignore all except this" (Nov 17): the planned keys ignored here, the planned src_ids saved on the pod; on the worker. */
+    fun ignoreAllExcept(plan: BtrxIgnoreAllPlan) = worker.execute {
+        bearing.applyIgnoreAll(plan); model.ignoreAllExcept(plan.podSrcIds, plan.keepId, plan.count); publish()
+    }
+    /** "Restore ignored": undoes only what "Ignore all except this" ignored, here and on the pod; on the worker. */
+    fun restoreIgnoreAll() = worker.execute { bearing.restoreIgnoreAll(); model.restoreIgnoreAll(); publish() }
     fun unignoreSourceSaved(srcId: Int) = worker.execute { model.unignoreSourceSaved(srcId); publish() }
     fun confirmPod() = worker.execute { model.confirmPod(); publish() }
     fun cancelPairing() = worker.execute { model.cancelPairing(); publish() }

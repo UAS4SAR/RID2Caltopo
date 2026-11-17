@@ -165,6 +165,10 @@ public final class BtrxDeskPodModel {
         public var filterPending: [PendingFilter] = []
         /// The latest saved-ignore result, for the BTRX pane.
         public var filterMessage: String?
+        /// "Ignore all except this" on the pod (Nov 17): progress and what it added, or nil.
+        public var ignoreAll: IgnoreAllStatus?
+        /// Entries on the pod's saved ignore list, from the latest FILTER_ACK (nil = none seen yet).
+        public var podListStored: Int?
         /// DESK_PAIR source of the latest open (1 button, 2 phone/USB, 3 PAIR_OPEN).
         public var deskWindowSource = 0
         /// Desk Pod button confirmation (build 0x0108): the Confirm/Cancel panel, or nil.
@@ -240,6 +244,17 @@ public final class BtrxDeskPodModel {
     private var savedIgnores = Set<Int>()
     private var pendingFilters: [PendingFilter] = []
     private var filterMessage: String?
+
+    // "Ignore all except this" (Nov 17): op 3 for many src_ids, paced by maxPendingFilters. Same as Android.
+    private var bulkQueue: [(op: Int, srcId: Int)] = []   // not sent yet
+    private var bulkSent: [Int: Int] = [:]                // srcId -> op, sent, waiting for FILTER_ACK
+    private var bulkSaved: [Int] = []                     // src_ids this action got onto the pod; Restore removes only these
+    private var bulkRefused = 0
+    private var bulkOverLimit = 0
+    private var bulkRemoved = 0
+    private var bulkRestoring = false
+    private var bulkActive = false
+    private var podListStored: Int?
     /// The Desk Pod's own latest live HEALTH this session: uptime_s and arrival (logged when the link drops).
     private var deskUptimeS: UInt32?
     private var deskHealthAtMs: Int64 = 0
@@ -324,6 +339,7 @@ public final class BtrxDeskPodModel {
         if Self.activeSteps.contains(pairing.step) { fail(pairing.step, "The link to the Desk Pod was lost (\(reason)).") }
         if !pendingFilters.isEmpty { filterMessage = "No answer from the Drone Pod: the link to the Desk Pod was lost." }
         pendingFilters.removeAll()
+        bulkStop(forget: false, why: "the link to the Desk Pod was lost")
         imuCal.linkLost(reason: reason)
         buttonConfirm.linkLost(nowMs: clock(), reason: reason)
     }
@@ -343,6 +359,7 @@ public final class BtrxDeskPodModel {
         pairedPod = pod
         savedIgnores = pod == nil ? [] : Set(savedIgnoreIds.filter { (1...0xFFFF).contains($0) })
         pendingFilters.removeAll(); filterMessage = nil
+        bulkStop(forget: true, why: nil)
         quietWatchSinceMs = clock()
     }
 
@@ -369,6 +386,7 @@ public final class BtrxDeskPodModel {
             savedIgnores.removeAll(); onSavedIgnores([])
         }
         pendingFilters.removeAll(); filterMessage = nil
+        bulkStop(forget: true, why: "the Drone Pod was unpaired")
         pairedPod = nil; lastHealth = nil; otherPods.removeAll()
         podIdMismatches = 0; lastMismatchPodId = nil
         steering.reset()
@@ -562,6 +580,7 @@ public final class BtrxDeskPodModel {
             if pairedPod?.node != pod.node {
                 steering.reset()
                 if !savedIgnores.isEmpty { savedIgnores.removeAll(); onSavedIgnores([]) }
+                bulkStop(forget: true, why: "another Drone Pod was paired")
             }
             if pairedPod != pod { imuCal.reset() }
             pairedPod = pod
@@ -694,8 +713,10 @@ public final class BtrxDeskPodModel {
         for pf in pendingFilters where now - pf.sentMs > Self.filterAckTimeoutMs {
             log.warn(String(format: "own aircraft (saved): no FILTER_ACK for %@ src=0x%04x within %d s", BtrxProtocol.muteOpName(pf.op), pf.srcId, Int(Self.filterAckTimeoutMs / 1000)))
             filterMessage = "No answer from the Drone Pod for \(BtrxDeskPodText.srcIdText(pf.srcId)). Try again."
+            if let op = bulkSent.removeValue(forKey: pf.srcId), op == BtrxProtocol.MUTE_IGNORE { bulkRefused += 1 }
         }
         pendingFilters.removeAll { now - $0.sentMs > Self.filterAckTimeoutMs }
+        if bulkActive { pumpBulk() }
         if let r = imuCal.tick(nowMs: now) { sendImuCal(r) }
         buttonConfirm.tick(nowMs: now)
         if buttonConfirm.keepaliveDue(nowMs: now, enabled: buttonConfirmLinkNow == .on) {
@@ -774,6 +795,8 @@ public final class BtrxDeskPodModel {
         s.savedIgnores = savedIgnores.sorted()
         s.filterPending = pendingFilters
         s.filterMessage = filterMessage
+        s.ignoreAll = ignoreAllStatus
+        s.podListStored = podListStored
         s.deskWindowSource = window.source
         s.buttonConfirm = buttonConfirm.view(nowMs: now)
         s.buttonNotice = buttonConfirm.liveNotice(nowMs: now)
@@ -802,7 +825,8 @@ public final class BtrxDeskPodModel {
     /// "Remove": the pod takes the address behind `srcId` off its saved ignore list.
     public func unignoreSourceSaved(_ srcId: Int) { filterAction(op: BtrxProtocol.MUTE_UNIGNORE, srcId: srcId) }
 
-    private func filterAction(op: Int, srcId: Int) {
+    @discardableResult
+    private func filterAction(op: Int, srcId: Int) -> Bool {
         let now = clock()
         let busy = pendingFilters.contains { $0.srcId == srcId && now - $0.sentMs <= Self.filterAckTimeoutMs }
         var blocked: String?
@@ -815,14 +839,112 @@ public final class BtrxDeskPodModel {
         if let blocked {
             log.warn(String(format: "own aircraft (saved): %@ src=0x%04x not sent: %@", BtrxProtocol.muteOpName(op), srcId, blocked))
             filterMessage = blocked
-            return
+            return false
         }
-        guard let pod = pairedPod, let s = sender else { return }
+        guard let pod = pairedPod, let s = sender else { return false }
         log.debug(String(format: "own aircraft (saved): STEER_MUTE %@ src=0x%04x to %@", BtrxProtocol.muteOpName(op), srcId, BtrxClient.nodeName(pod.node)))
         s.sendFrame(to: pod.node, frame: BtrxProtocol.steerMuteFrame(seq: s.nextSeq(), podId: pod.podId, op: op, srcId: srcId))
         pendingFilters.removeAll { $0.srcId == srcId } // an expired one not yet ticked out
         pendingFilters.append(PendingFilter(op: op, srcId: srcId, sentMs: now))
         filterMessage = op == BtrxProtocol.MUTE_IGNORE ? "Saving on the Drone Pod…" : "Removing from the Drone Pod…"
+        return true
+    }
+
+    // MARK: "Ignore all except this" (Nov 17). Same as Android.
+
+    /// Progress of "Ignore all except this" / "Restore ignored" on the pod.
+    public struct IgnoreAllStatus: Sendable, Equatable {
+        public var saved: [Int], queued: Int, waiting: Int, refused: Int, overLimit: Int, removed: Int
+        public var restoring: Bool, active: Bool
+    }
+
+    private var ignoreAllStatus: IgnoreAllStatus? {
+        if !bulkActive && bulkSaved.isEmpty && bulkRefused == 0 && bulkOverLimit == 0 && bulkRemoved == 0 { return nil }
+        return IgnoreAllStatus(saved: bulkSaved, queued: bulkQueue.count, waiting: bulkSent.count, refused: bulkRefused,
+                               overLimit: bulkOverLimit, removed: bulkRemoved, restoring: bulkRestoring, active: bulkActive)
+    }
+
+    /// "Ignore all except this": op 3 for each of `srcIds` (strongest first; the app already
+    /// ignores all `localCount` here), at most `maxPendingFilters` waiting at a time, and no more
+    /// than the pod's list holds (`filterListMax`). The ids the pod takes are recorded so
+    /// `restoreIgnoreAll` removes only those.
+    public func ignoreAllExcept(_ srcIds: [Int], keepId: String, localCount: Int) {
+        var ids: [Int] = []
+        for id in srcIds where (1...0xFFFF).contains(id) && !savedIgnores.contains(id) && !bulkSaved.contains(id)
+            && bulkSent[id] == nil && !ids.contains(id) { ids.append(id) }
+        log.debug("ignore all except \(keepId): \(localCount) ignored in the app; STEER_MUTE ignore queued for \(ids.count) src_id(s) "
+            + "(pod list \(podListStored ?? savedIgnores.count) of \(Self.filterListMax))")
+        bulkQueue.removeAll { $0.op == BtrxProtocol.MUTE_IGNORE }
+        bulkRefused = 0; bulkOverLimit = 0; bulkRemoved = 0; bulkRestoring = false
+        bulkQueue += ids.map { (op: BtrxProtocol.MUTE_IGNORE, srcId: $0) }
+        bulkActive = !bulkQueue.isEmpty || !bulkSent.isEmpty
+        if bulkActive { pumpBulk() } else { finishBulk(force: true) }
+    }
+
+    /// "Restore ignored": op 4 for every src_id "Ignore all except this" got onto the pod (and any still waiting).
+    public func restoreIgnoreAll() {
+        let dropped = bulkQueue.filter { $0.op == BtrxProtocol.MUTE_IGNORE }.count
+        bulkQueue.removeAll { $0.op == BtrxProtocol.MUTE_IGNORE }
+        var ids = bulkSaved
+        for (id, op) in bulkSent.sorted(by: { $0.key < $1.key }) where op == BtrxProtocol.MUTE_IGNORE && !ids.contains(id) { ids.append(id) }
+        log.debug("restore ignored: STEER_MUTE stop ignoring queued for \(ids.count) src_id(s)" + (dropped > 0 ? "; \(dropped) not sent yet, dropped" : ""))
+        for id in ids where !bulkQueue.contains(where: { $0.srcId == id }) { bulkQueue.append((op: BtrxProtocol.MUTE_UNIGNORE, srcId: id)) }
+        bulkRefused = 0; bulkOverLimit = 0; bulkRemoved = 0; bulkRestoring = true
+        bulkActive = !bulkQueue.isEmpty || !bulkSent.isEmpty
+        if bulkActive { pumpBulk() } else { finishBulk(force: true) }
+    }
+
+    private var podListFull: Bool {
+        (podListStored ?? savedIgnores.count) + pendingFilters.filter { $0.op == BtrxProtocol.MUTE_IGNORE }.count >= Self.filterListMax
+    }
+
+    private func pumpBulk() {
+        var i = 0
+        while i < bulkQueue.count && pendingFilters.count < Self.maxPendingFilters {
+            let (op, id) = bulkQueue[i]
+            if pendingFilters.contains(where: { $0.srcId == id }) { i += 1; continue }
+            if op == BtrxProtocol.MUTE_IGNORE && podListFull {
+                let left = bulkQueue.filter { $0.op == BtrxProtocol.MUTE_IGNORE }.count
+                bulkOverLimit += left
+                bulkQueue.removeAll { $0.op == BtrxProtocol.MUTE_IGNORE }
+                log.debug("ignore all except: the Drone Pod's list is full (\(Self.filterListMax) entries); \(left) not sent")
+                i = 0
+                continue
+            }
+            bulkQueue.remove(at: i)
+            if filterAction(op: op, srcId: id) { bulkSent[id] = op }
+            else {
+                let left = bulkQueue.count + 1
+                if !bulkRestoring { bulkRefused += left }
+                log.warn("ignore all except: stopped, \(left) request(s) not sent: \(filterMessage ?? "")")
+                bulkQueue.removeAll()
+                break
+            }
+        }
+        finishBulk(force: false)
+    }
+
+    private func finishBulk(force: Bool) {
+        if !force && !(bulkActive && bulkQueue.isEmpty && bulkSent.isEmpty) { return }
+        bulkActive = false
+        let listMax = Self.filterListMax
+        let msg: String
+        if bulkRestoring {
+            msg = "Restore ignored: removed \(bulkRemoved) from the Drone Pod" + (bulkSaved.isEmpty ? "" : "; \(bulkSaved.count) still on its list") + "."
+        } else {
+            msg = "Ignore all except: \(bulkSaved.count) saved on the Drone Pod"
+                + (bulkRefused > 0 ? ", \(bulkRefused) refused (not heard by the pod in the last 60 s)" : "")
+                + (bulkOverLimit > 0 ? ", \(bulkOverLimit) left off (its list holds \(listMax))" : "")
+                + " (list \(podListStored ?? savedIgnores.count) of \(listMax))."
+        }
+        filterMessage = msg
+        log.debug(bulkRestoring ? "restore ignored: done: \(msg)" : "ignore all except: done: \(msg)")
+    }
+
+    private func bulkStop(forget: Bool, why: String?) {
+        if bulkActive, let why { log.warn("ignore all except: stopped, \(bulkQueue.count + bulkSent.count) request(s) dropped: \(why)") }
+        bulkQueue.removeAll(); bulkSent.removeAll(); bulkActive = false
+        if forget { bulkSaved.removeAll(); bulkRefused = 0; bulkOverLimit = 0; bulkRemoved = 0; bulkRestoring = false; podListStored = nil }
     }
 
     private func onFilterAck(_ ack: BtrxProtocol.FilterAck, frameFlags: Int) {
@@ -837,6 +959,7 @@ public final class BtrxDeskPodModel {
             return
         }
         let pend = pendingFilters.remove(at: idx)
+        podListStored = ack.stored
         let id = BtrxDeskPodText.srcIdText(pend.srcId)
         log.debug(String(format: "own aircraft (saved): FILTER_ACK op=%d ok=%d list_crc=0x%04x stored=%d flags=0x%02x for src=0x%04x (%@)",
                         ack.op, ack.ok, ack.listCrc, ack.stored, frameFlags, pend.srcId, ack.srcId != nil ? "by src_id" : "6-byte ack, oldest waiting"))
@@ -855,6 +978,12 @@ public final class BtrxDeskPodModel {
             // 0x0107: op 4 removes every saved entry ignored under that id; ok=0 means none was on the pod.
             if savedIgnores.remove(pend.srcId) != nil { onSavedIgnores(savedIgnores.sorted()) }
             filterMessage = "The Drone Pod had nothing saved under \(id); removed from this list."
+        }
+        if let op = bulkSent.removeValue(forKey: pend.srcId) {
+            if op == P.MUTE_IGNORE {
+                if ack.ok == 1 { if !bulkSaved.contains(pend.srcId) { bulkSaved.append(pend.srcId) } } else { bulkRefused += 1 }
+            } else if let k = bulkSaved.firstIndex(of: pend.srcId) { bulkSaved.remove(at: k); bulkRemoved += 1 }
+            pumpBulk()
         }
     }
 

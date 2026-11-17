@@ -134,4 +134,52 @@ final class BtrxOwnSuggestionTests: XCTestCase {
         try send(0x22, 1)
         XCTAssertTrue(log.debugs.last?.hasSuffix("power_flags=0x22(usb_ready,vbus_lost) boot_cause=1(power-on) vbus_drops=1") ?? false)
     }
+
+    // MARK: "Ignore all except this" planner and layer. Same cases as Android.
+
+    private func s2(_ key: UInt64, _ id: String, _ srcId: Int, _ rssi: Int?, _ heardUs: Int64, reports: Int = 10, flags: UInt32 = 0) -> BtrxBearingSource {
+        var s = BtrxBearingSource(index: 0, key: key, shortID: id, provisional: false, devClass: 0, rgb: 0x2196F3, flags: flags,
+                                  firstHeardUs: 0, lastHeardUs: heardUs, reportsIn: reports, reportsUsed: 1, reportsInWindow: 1,
+                                  peakAlpha: 0.6, estimate: nil, latestRay: nil, srcId: srcId)
+        s.maxRssiDbm = rssi
+        return s
+    }
+
+    func testIgnoreAllPlanKeepsSkipsAndOrdersByStrength() {
+        let now: Int64 = 100_000_000
+        let keep = s2(1, "Garmin", 50703, -60, now)
+        let list = [keep, s2(2, "Garmn2", 50703, -58, now), s2(3, "QBXFvg", 50203, -30, now, flags: UInt32(BTRX_BEARING_SRC_IGNORED)),
+                    s2(4, "Susp44", 4444, -35, now, flags: suspect), s2(5, "Saved5", 5555, -50, now), s2(6, "Weak66", 6666, -90, now),
+                    s2(7, "Strng7", 7777, -55, now), s2(8, "Stale8", 8888, -40, now - 55_000_000), s2(9, "NoId99", 0, -45, now),
+                    s2(10, "Tie100", 1000, -55, now, reports: 50)]
+        let p = BtrxIgnoreAllExcept.plan(list, nowUs: now, keep: keep, savedSrcIds: [5555], podStored: 1, podSupported: true)
+        XCTAssertEqual(p.localKeys, [8, 9, 10, 7, 6])
+        XCTAssertEqual(p.podSrcIds, [1000, 7777, 6666])
+        XCTAssertEqual(p.podRoom, 31); XCTAssertEqual(p.overLimit, 0)
+        XCTAssertEqual(BtrxBearingText.ignoreAllTitle(p.count), "Ignore 5 other sources?")
+        XCTAssertEqual(BtrxBearingText.ignoreAllTitle(1), "Ignore 1 other source?")
+        XCTAssertEqual(BtrxBearingText.ignoreAllDetail(p, podSupported: true),
+                       "Keeps Garmin. 3 strongest also saved on the Drone Pod (room for 31 of 32); the rest on this device only. \"Restore ignored\" undoes only these.")
+        let tight = BtrxIgnoreAllExcept.plan([keep, list[5], list[6], list[9]], nowUs: now, keep: keep, savedSrcIds: [], podStored: 31, podSupported: true)
+        XCTAssertEqual(tight.podSrcIds, [1000]); XCTAssertEqual(tight.overLimit, 2)
+        let old = BtrxIgnoreAllExcept.plan([keep, list[5]], nowUs: now, keep: keep, savedSrcIds: [], podStored: nil, podSupported: false)
+        XCTAssertTrue(old.podSrcIds.isEmpty); XCTAssertEqual(old.localKeys, [6])
+        XCTAssertEqual(BtrxIgnoreAllExcept.plan([keep], nowUs: now, keep: keep, savedSrcIds: [], podStored: nil, podSupported: true).count, 0)
+        XCTAssertEqual(BtrxBearingText.restoreLabel(5), "Restore ignored (5)")
+    }
+
+    func testIgnoreAllAppliesAndRestoresOnlyItsKeys() {
+        var logs: [String] = []
+        let layer = BtrxBearingLayer(monoUs: { 100_000_000 }, wallMs: { 1_790_000_000_000 }, log: { logs.append($0) },
+                                     incidentKey: { [UInt8](repeating: 7, count: 16) })
+        XCTAssertTrue(layer.start(settings: BtrxBearingSettings(), trace: false, linkUp: true))
+        layer.applyIgnoreAll(BtrxIgnoreAllPlan(keepKey: 1, keepId: "Garmin", localKeys: [8, 9, 10], podSrcIds: [1000], podRoom: 31, overLimit: 0))
+        XCTAssertEqual(layer.ignoredByAll, [8, 9, 10])
+        XCTAssertEqual(logs.last, "BBIGN all except Garmin: 3 ignored here, 1 to the Drone Pod (room 31, 0 over its list)")
+        XCTAssertEqual(layer.restoreIgnoreAll(), 3)
+        XCTAssertTrue(layer.ignoredByAll.isEmpty)
+        XCTAssertEqual(logs.last, "BBIGN restore: 3 no longer ignored here")
+        XCTAssertEqual(layer.restoreIgnoreAll(), 0)
+        layer.stop()
+    }
 }

@@ -1290,4 +1290,85 @@ final class BtrxDeskPodModelTests: XCTestCase {
         XCTAssertNil(model.snapshot().buttonConfirm)
         XCTAssertNotNil(model.snapshot().deskResetAtMs)
     }
+
+    // MARK: "Ignore all except this" (Nov 17). Same cases as Android.
+
+    private func sentMutes() -> [(Int, Int)] {
+        sender.sent.compactMap { try? P.decodeFrame($0.1) }.filter { $0.type == P.STEER_MUTE }
+            .map { (Int($0.payload[0]), Int($0.payload[1]) | Int($0.payload[2]) << 8) }
+    }
+
+    private func readyPod0109() {
+        useSavedListModel()
+        model.restorePairedPod(pod0106)
+        model.setLink(Model.LinkStatus(kind: .usb, phase: .ready))
+        podHealth(0x0109)
+        sender.sent.removeAll()
+    }
+
+    func testIgnoreAllExceptIsPacedRecordedAndRestored() {
+        readyPod0109()
+        model.ignoreSourceSaved(0x0100)
+        filterAck(op: P.FILTER_OP_ADD, ok: 1, stored: 1, srcId: 0x0100)
+        sender.sent.removeAll()
+        let ids = (1...10).map { 0x1000 + $0 }
+        model.ignoreAllExcept(ids + [0x0100], keepId: "QBXFvg", localCount: 27)
+        XCTAssertEqual(sentMutes().map(\.0), Array(repeating: P.MUTE_IGNORE, count: 4))
+        XCTAssertEqual(sentMutes().map(\.1), Array(ids.prefix(Model.maxPendingFilters)))
+        XCTAssertTrue(log.debugs.contains { $0.hasPrefix("ignore all except QBXFvg: 27 ignored in the app; STEER_MUTE ignore queued for 10 src_id(s)") })
+        var st = model.snapshot().ignoreAll!
+        XCTAssertEqual(st.queued, 6); XCTAssertEqual(st.waiting, 4); XCTAssertTrue(st.active)
+        var stored = 1
+        for id in ids {
+            if id == 0x1003 { filterAck(op: P.FILTER_OP_ADD, ok: 0, stored: stored, srcId: id) }
+            else { stored += 1; filterAck(op: P.FILTER_OP_ADD, ok: 1, stored: stored, srcId: id) }
+        }
+        XCTAssertEqual(sentMutes().count, 10)
+        st = model.snapshot().ignoreAll!
+        XCTAssertFalse(st.active)
+        XCTAssertEqual(st.saved, ids.filter { $0 != 0x1003 })
+        XCTAssertEqual(st.refused, 1)
+        XCTAssertEqual(model.snapshot().podListStored, 10)
+        XCTAssertTrue(model.snapshot().filterMessage!.hasPrefix("Ignore all except: 9 saved on the Drone Pod, 1 refused"))
+        sender.sent.removeAll()
+        model.restoreIgnoreAll()
+        let kept = ids.filter { $0 != 0x1003 }
+        XCTAssertEqual(sentMutes().map(\.1), Array(kept.prefix(4)))
+        for id in kept { stored -= 1; filterAck(op: P.FILTER_OP_REMOVE, ok: 1, stored: stored, srcId: id) }
+        XCTAssertEqual(sentMutes().map(\.1), kept)
+        XCTAssertTrue(sentMutes().allSatisfy { $0.0 == P.MUTE_UNIGNORE && $0.1 != 0x0100 })
+        XCTAssertEqual(model.snapshot().savedIgnores, [0x0100])
+        st = model.snapshot().ignoreAll!
+        XCTAssertTrue(st.saved.isEmpty); XCTAssertEqual(st.removed, 9); XCTAssertTrue(st.restoring)
+        XCTAssertEqual(model.snapshot().filterMessage, "Restore ignored: removed 9 from the Drone Pod.")
+    }
+
+    func testIgnoreAllExceptStopsAtThePodsListLimit() {
+        readyPod0109()
+        model.ignoreSourceSaved(0x0100)
+        filterAck(op: P.FILTER_OP_ADD, ok: 1, stored: 30, srcId: 0x0100)
+        sender.sent.removeAll()
+        model.ignoreAllExcept((1...6).map { 0x2000 + $0 }, keepId: "QBXFvg", localCount: 6)
+        XCTAssertEqual(sentMutes().map(\.1), [0x2001, 0x2002])
+        filterAck(op: P.FILTER_OP_ADD, ok: 1, stored: 31, srcId: 0x2001)
+        filterAck(op: P.FILTER_OP_ADD, ok: 1, stored: 32, srcId: 0x2002)
+        let st = model.snapshot().ignoreAll!
+        XCTAssertEqual(sentMutes().count, 2)
+        XCTAssertEqual(st.overLimit, 4)
+        XCTAssertFalse(st.active)
+        XCTAssertTrue(model.snapshot().filterMessage!.contains("4 left off (its list holds 32)"))
+        XCTAssertTrue(log.debugs.contains("ignore all except: the Drone Pod's list is full (32 entries); 4 not sent"))
+    }
+
+    func testIgnoreAllExceptTimeoutsAndLinkLoss() {
+        readyPod0109()
+        model.ignoreAllExcept((1...6).map { 0x3000 + $0 }, keepId: "QBXFvg", localCount: 6)
+        XCTAssertEqual(sentMutes().count, 4)
+        advance(Model.filterAckTimeoutMs + 1000)
+        XCTAssertEqual(sentMutes().count, 6)
+        XCTAssertEqual(model.snapshot().ignoreAll!.refused, 4)
+        model.detach(sender, reason: "test")
+        XCTAssertFalse(model.snapshot().ignoreAll!.active)
+        XCTAssertTrue(log.warns.contains { $0.hasPrefix("ignore all except: stopped, 2 request(s) dropped: the link to the Desk Pod was lost") })
+    }
 }

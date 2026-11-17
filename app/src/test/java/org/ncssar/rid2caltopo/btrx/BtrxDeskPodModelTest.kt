@@ -1349,4 +1349,90 @@ class BtrxDeskPodModelTest {
         assertNull(model.snapshot().buttonConfirm)
         assertNotNull(model.snapshot().deskResetAtMs)                    // until a pairing completes
     }
+
+    // ---- "Ignore all except this" (Nov 17) ----
+
+    private fun sentMutes() = sender.sent.map { P.decodeFrame(it.second) }.filter { it.type == P.STEER_MUTE }
+        .map { (it.payload[0].toInt() and 0xFF) to ((it.payload[1].toInt() and 0xFF) or ((it.payload[2].toInt() and 0xFF) shl 8)) }
+
+    private fun readyPod0109() {
+        model.restorePairedPod(pod0106)
+        model.setLink(BtrxDeskPodModel.LinkStatus(BtrxDeskPodModel.LinkKind.USB, BtrxDeskPodModel.LinkPhase.READY))
+        podHealth(0x0109)
+        sender.sent.clear()
+    }
+
+    /** Paced 4 at a time on 0x0109, records what the pod took, Restore removes only those. */
+    @Test
+    fun ignoreAllExceptIsPacedRecordedAndRestored() {
+        readyPod0109()
+        model.ignoreSourceSaved(0x0100)                       // saved before: Restore must leave it
+        filterAck(P.FILTER_OP_ADD, 1, 1, srcId = 0x0100)
+        sender.sent.clear()
+        val ids = (1..10).map { 0x1000 + it }
+        model.ignoreAllExcept(ids + 0x0100, "QBXFvg", 27)
+        assertEquals(ids.take(BtrxDeskPodModel.MAX_PENDING_FILTERS).map { P.MUTE_IGNORE to it }, sentMutes())
+        assertTrue(logs.any { it.startsWith("ignore all except QBXFvg: 27 ignored in the app; STEER_MUTE ignore queued for 10 src_id(s)") })
+        var st = model.snapshot().ignoreAll!!
+        assertEquals(6, st.queued); assertEquals(4, st.waiting); assertTrue(st.active)
+        // Acks free slots one by one; 0x1003 is refused (not heard in the last 60 s).
+        var stored = 1
+        for (id in ids) {
+            if (id == 0x1003) filterAck(P.FILTER_OP_ADD, 0, stored, srcId = id) else filterAck(P.FILTER_OP_ADD, 1, ++stored, srcId = id)
+        }
+        assertEquals(10, sentMutes().size)
+        st = model.snapshot().ignoreAll!!
+        assertFalse(st.active)
+        assertEquals(ids - 0x1003, st.saved)
+        assertEquals(1, st.refused)
+        assertEquals(10, model.snapshot().podListStored)
+        assertTrue(model.snapshot().filterMessage!!.startsWith("Ignore all except: 9 saved on the Drone Pod, 1 refused"))
+        assertTrue(logs.any { it.startsWith("ignore all except: done: Ignore all except: 9 saved") })
+        // Restore: op 4 only for the 9 it added, never 0x0100.
+        sender.sent.clear()
+        model.restoreIgnoreAll()
+        assertEquals((ids - 0x1003).take(4).map { P.MUTE_UNIGNORE to it }, sentMutes())
+        for (id in ids - 0x1003) filterAck(P.FILTER_OP_REMOVE, 1, --stored, srcId = id)
+        assertEquals((ids - 0x1003).map { P.MUTE_UNIGNORE to it }, sentMutes())
+        assertTrue(sentMutes().none { it.second == 0x0100 })
+        assertEquals(listOf(0x0100), model.snapshot().savedIgnores)
+        st = model.snapshot().ignoreAll!!
+        assertTrue(st.saved.isEmpty()); assertEquals(9, st.removed); assertTrue(st.restoring)
+        assertEquals("Restore ignored: removed 9 from the Drone Pod.", model.snapshot().filterMessage)
+    }
+
+    /** The pod's list holds 32: past that nothing more is sent, and the count left off is reported. */
+    @Test
+    fun ignoreAllExceptStopsAtThePodsListLimit() {
+        readyPod0109()
+        model.ignoreSourceSaved(0x0100)
+        filterAck(P.FILTER_OP_ADD, 1, 30, srcId = 0x0100)     // the pod already holds 30 (some set by FILTER_LIST)
+        sender.sent.clear()
+        val ids = (1..6).map { 0x2000 + it }
+        model.ignoreAllExcept(ids, "QBXFvg", 6)
+        assertEquals(listOf(0x2001, 0x2002), sentMutes().map { it.second })
+        filterAck(P.FILTER_OP_ADD, 1, 31, srcId = 0x2001)
+        filterAck(P.FILTER_OP_ADD, 1, 32, srcId = 0x2002)
+        val st = model.snapshot().ignoreAll!!
+        assertEquals(2, sentMutes().size)
+        assertEquals(4, st.overLimit)
+        assertFalse(st.active)
+        assertTrue(model.snapshot().filterMessage!!.contains("4 left off (its list holds 32)"))
+        assertTrue(logs.any { it == "ignore all except: the Drone Pod's list is full (32 entries); 4 not sent" })
+    }
+
+    /** No answer within 10 s counts as refused; a lost link stops the rest. */
+    @Test
+    fun ignoreAllExceptTimeoutsAndLinkLoss() {
+        readyPod0109()
+        model.ignoreAllExcept((1..6).map { 0x3000 + it }, "QBXFvg", 6)
+        assertEquals(4, sentMutes().size)
+        advance(BtrxDeskPodModel.FILTER_ACK_TIMEOUT_MS + 1000)
+        assertEquals(6, sentMutes().size)                      // the next two went out
+        assertEquals(4, model.snapshot().ignoreAll!!.refused)
+        model.setLink(BtrxDeskPodModel.LinkStatus(BtrxDeskPodModel.LinkKind.USB, BtrxDeskPodModel.LinkPhase.RETRY_WAIT))
+        model.detach(sender, "test")
+        assertFalse(model.snapshot().ignoreAll!!.active)
+        assertTrue(logs.any { it.startsWith("W ignore all except: stopped, 2 request(s) dropped: the link to the Desk Pod was lost") })
+    }
 }

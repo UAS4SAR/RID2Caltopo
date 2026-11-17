@@ -88,4 +88,43 @@ class BtrxOwnSuggestionTest {
         assertNull(BtrxDeskPodText.deskSupplyChange(w, w.copy(vddMv = 3299)))          // rails alone: no line
         assertTrue(BtrxDeskPodText.deskSupplyChange(w, w.copy(vbusDrops = 3)) != null)
     }
+
+    // ---- "Ignore all except this" planner ----
+
+    private fun s2(key: Long, id: String, srcId: Int, rssi: Int?, heardUs: Long, reports: Int = 10, flags: Int = 0) =
+        src(key, id, srcId, flags).copy(maxRssiDbm = rssi, lastHeardUs = heardUs, reportsIn = reports)
+
+    @Test fun ignoreAllPlanKeepsSkipsAndOrdersByStrength() {
+        val now = 100_000_000L
+        val keep = s2(1, "Garmin", 50703, -60, now)
+        val rotatedKeep = s2(2, "Garmn2", 50703, -58, now)                  // same src_id as the kept one
+        val own = s2(3, "QBXFvg", 50203, -30, now, flags = BtrxBearingNative.SRC_IGNORED)
+        val suspect = s2(4, "Susp44", 4444, -35, now, flags = BtrxBearingNative.SRC_OWN_SUSPECT)
+        val saved = s2(5, "Saved5", 5555, -50, now)
+        val weak = s2(6, "Weak66", 6666, -90, now)
+        val strong = s2(7, "Strng7", 7777, -55, now)
+        val stale = s2(8, "Stale8", 8888, -40, now - 55_000_000L)           // pod no longer holds it
+        val noId = s2(9, "NoId99", 0, -45, now)
+        val tie = s2(10, "Tie100", 1000, -55, now, reports = 50)             // same RSSI, more reports: first
+        val p = BtrxIgnoreAllExcept.plan(listOf(keep, rotatedKeep, own, suspect, saved, weak, strong, stale, noId, tie), now, keep,
+            savedSrcIds = listOf(5555), podStored = 1, podSupported = true)
+        assertEquals(listOf(8L, 9L, 10L, 7L, 6L), p.localKeys)
+        assertEquals(5, p.count)
+        assertEquals(listOf(1000, 7777, 6666), p.podSrcIds)
+        assertEquals(31, p.podRoom); assertEquals(0, p.overLimit)
+        assertEquals("Ignore 5 other sources?", BtrxBearingText.ignoreAllTitle(p.count))
+        assertEquals("Ignore 1 other source?", BtrxBearingText.ignoreAllTitle(1))
+        assertEquals("Keeps Garmin. 3 strongest also saved on the Drone Pod (room for 31 of 32); the rest on this device only. " +
+            "\"Restore ignored\" undoes only these.", BtrxBearingText.ignoreAllDetail(p, true))
+        // Little room on the pod: strongest first, the rest counted.
+        val tight = BtrxIgnoreAllExcept.plan(listOf(keep, weak, strong, tie), now, keep, emptyList(), podStored = 31, podSupported = true)
+        assertEquals(listOf(1000), tight.podSrcIds); assertEquals(2, tight.overLimit)
+        assertTrue(BtrxBearingText.ignoreAllDetail(tight, true).contains("; 2 more only on this device"))
+        // Older firmware: this device only.
+        val old = BtrxIgnoreAllExcept.plan(listOf(keep, weak), now, keep, emptyList(), null, podSupported = false)
+        assertTrue(old.podSrcIds.isEmpty()); assertEquals(listOf(6L), old.localKeys)
+        assertTrue(BtrxBearingText.ignoreAllDetail(old, false).contains("this device only"))
+        assertEquals(0, BtrxIgnoreAllExcept.plan(listOf(keep), now, keep, emptyList(), null, true).count)
+        assertEquals("Restore ignored (5)", BtrxBearingText.restoreLabel(5))
+    }
 }

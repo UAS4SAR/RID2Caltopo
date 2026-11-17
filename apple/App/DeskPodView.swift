@@ -692,8 +692,10 @@ struct BtrxPinnedInspectCard: View {
                     Text(BtrxBearingText.pinnedTitle).font(.headline)
                 }
                 ForEach(BtrxBearingText.inspectLines(src, nowUs: snap.tUs), id: \.self) { Text($0).font(.footnote) }
+                BtrxRestoreIgnoredButton(center: center)
                 HStack(spacing: 8) {
                     Button(BtrxBearingText.focus) { onFocus(src) }.buttonStyle(.bordered)
+                    BtrxIgnoreAllExceptButton(center: center, source: src)
                     Button(BtrxBearingText.close, action: onDismiss)
                 }
             }
@@ -705,20 +707,66 @@ struct BtrxPinnedInspectCard: View {
     }
 }
 
-/// Shown while a source is focused: its short ID and "Clear focus". Same as Android.
+/// Shown while a source is focused: its short ID, "Ignore all except this" and "Clear focus";
+/// and, focused or not, "Restore ignored (n)" while "Ignore all except this" has ignores to
+/// undo. Same as Android.
 struct BtrxFocusChip: View {
     @ObservedObject var center: BtrxDeskPodCenter
     var body: some View {
-        if center.bearingOn, let snap = center.bearingSnapshot, snap.focusKey != 0,
-           let src = snap.sources.first(where: { $0.key == snap.focusKey }) {
+        let snap = center.bearingOn ? center.bearingSnapshot : nil
+        let src = snap.flatMap { s in s.focusKey == 0 ? nil : s.sources.first(where: { $0.key == s.focusKey }) }
+        if center.bearingOn, src != nil || !center.ignoredByAll.isEmpty || (center.snapshot.ignoreAll?.saved.isEmpty == false) {
             HStack(spacing: 6) {
-                RoundedRectangle(cornerRadius: 2).fill(Color(rgb: src.rgb)).frame(width: 12, height: 12)
-                Text(src.shortID).font(.footnote)
-                Button(BtrxBearingText.clearFocus) { center.bearing.setFocus(0) }.font(.footnote)
+                if let src {
+                    RoundedRectangle(cornerRadius: 2).fill(Color(rgb: src.rgb)).frame(width: 12, height: 12)
+                    Text(src.shortID).font(.footnote)
+                    BtrxIgnoreAllExceptButton(center: center, source: src).font(.footnote)
+                    Button(BtrxBearingText.clearFocus) { center.bearing.setFocus(0) }.font(.footnote)
+                }
+                BtrxRestoreIgnoredButton(center: center).font(.footnote)
             }
             .foregroundStyle(.white)
             .padding(.horizontal, 10).padding(.vertical, 6)
             .background(Color(white: 0.125).opacity(0.9), in: Capsule())
+        }
+    }
+}
+
+/// "Ignore all except this" (Nov 17): asks first with the count ("Ignore 27 other sources?"),
+/// then ignores every other tracked source here and saves the strongest on the Drone Pod's
+/// list (op 3, within its 32 entries) on the BTRX queue. Disabled when there is nothing else
+/// to ignore. Same as Android.
+struct BtrxIgnoreAllExceptButton: View {
+    @ObservedObject var center: BtrxDeskPodCenter
+    let source: BtrxBearingSource
+    @State private var plan: BtrxIgnoreAllPlan?
+    var body: some View {
+        let preview = center.bearingSnapshot.map {
+            BtrxIgnoreAllExcept.plan($0.sources, nowUs: $0.tUs, keep: source, savedSrcIds: center.snapshot.savedIgnores,
+                                     podStored: center.snapshot.podListStored, podSupported: center.snapshot.savedIgnoreSupported)
+        }
+        Button(BtrxBearingText.ignoreAllExcept) { plan = preview }
+            .disabled((preview?.count ?? 0) == 0)
+            .alert(BtrxBearingText.ignoreAllTitle(plan?.count ?? 0), isPresented: Binding(get: { plan != nil }, set: { if !$0 { plan = nil } }),
+                   presenting: plan) { p in
+                Button(BtrxBearingText.ignoreAllConfirm, role: .destructive) { center.ignoreAllExcept(p); plan = nil }
+                Button(BtrxBearingText.cancel, role: .cancel) { plan = nil }
+            } message: { p in
+                Text(BtrxBearingText.ignoreAllDetail(p, podSupported: center.snapshot.savedIgnoreSupported))
+            }
+    }
+}
+
+/// "Restore ignored (n)": undoes only what "Ignore all except this" ignored, here and on the
+/// pod. Hidden when there is nothing to undo. Same as Android.
+struct BtrxRestoreIgnoredButton: View {
+    @ObservedObject var center: BtrxDeskPodCenter
+    var body: some View {
+        let onPod = center.snapshot.ignoreAll.map { $0.saved.count + $0.waiting } ?? 0
+        let n = max(center.ignoredByAll.count, onPod)
+        if n > 0 {
+            Button(BtrxBearingText.restoreLabel(n)) { center.restoreIgnoreAll() }
+                .foregroundStyle(Color(red: 0.54, green: 0.71, blue: 0.97))
         }
     }
 }

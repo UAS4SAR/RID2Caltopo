@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -40,6 +41,8 @@ import org.ncssar.rid2caltopo.btrx.BtrxBearingSettings
 import org.ncssar.rid2caltopo.btrx.BtrxBearingSource
 import org.ncssar.rid2caltopo.btrx.BtrxBearingText
 import org.ncssar.rid2caltopo.btrx.BtrxDeskPodText
+import org.ncssar.rid2caltopo.btrx.BtrxIgnoreAllExcept
+import org.ncssar.rid2caltopo.btrx.BtrxIgnoreAllPlan
 import org.ncssar.rid2caltopo.btrx.BtrxOwnSuggestion
 import org.ncssar.rid2caltopo.btrx.BtrxManager
 
@@ -284,27 +287,75 @@ fun BtrxPinnedInspectCard(
                 Text(BtrxBearingText.PINNED_TITLE, style = MaterialTheme.typography.titleMedium)
             }
             BtrxBearingText.inspectLines(src, s.tUs).forEach { Text(it, style = MaterialTheme.typography.bodySmall) }
+            BtrxRestoreIgnoredButton()
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(onClick = { onFocus(src) }) { Text(BtrxBearingText.FOCUS) }
+                BtrxIgnoreAllExceptButton(src)
                 TextButton(onClick = onDismiss) { Text(BtrxBearingText.CLOSE) }
             }
         }
     }
 }
 
-/** Shown while a source is focused: its short ID and "Clear focus". */
+/**
+ * Shown while a source is focused: its short ID, "Ignore all except this" and "Clear focus";
+ * and, focused or not, "Restore ignored (n)" while "Ignore all except this" has ignores to undo.
+ */
 @Composable
 fun BtrxFocusChip(onClear: () -> Unit, modifier: Modifier = Modifier) {
     val snap by BtrxManager.bearing.snapshot.collectAsState()
     val s = snap ?: return
-    if (s.focusKey == 0L) return
-    val src = s.sources.firstOrNull { it.key == s.focusKey } ?: return
+    val src = if (s.focusKey == 0L) null else s.sources.firstOrNull { it.key == s.focusKey }
+    val byAll by BtrxManager.bearing.ignoredByAll.collectAsState()
+    if (src == null && byAll.isEmpty()) return
     Surface(modifier, shape = RoundedCornerShape(16.dp), color = Color(0xE6202020), contentColor = Color.White) {
         Row(Modifier.padding(start = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-            Box(Modifier.size(12.dp).background(Color(0xFF000000.toInt() or src.rgb), RoundedCornerShape(2.dp)))
-            Text(" ${src.shortId}", style = MaterialTheme.typography.bodySmall)
-            TextButton(onClick = onClear) { Text(BtrxBearingText.CLEAR_FOCUS, color = Color.White, style = MaterialTheme.typography.bodySmall) }
+            if (src != null) {
+                Box(Modifier.size(12.dp).background(Color(0xFF000000.toInt() or src.rgb), RoundedCornerShape(2.dp)))
+                Text(" ${src.shortId}", style = MaterialTheme.typography.bodySmall)
+                BtrxIgnoreAllExceptButton(src, color = Color.White)
+                TextButton(onClick = onClear) { Text(BtrxBearingText.CLEAR_FOCUS, color = Color.White, style = MaterialTheme.typography.bodySmall) }
+            }
+            BtrxRestoreIgnoredButton(color = Color(0xFF8AB4F8))
         }
+    }
+}
+
+/**
+ * "Ignore all except this" (Nov 17): asks first with the count ("Ignore 27 other sources?"),
+ * then ignores every other tracked source here and saves the strongest on the Drone Pod's list
+ * (op 3, within its 32 entries) on the worker. Disabled when there is nothing else to ignore.
+ */
+@Composable
+fun BtrxIgnoreAllExceptButton(src: BtrxBearingSource, color: Color = Color.Unspecified) {
+    val snap by BtrxManager.bearing.snapshot.collectAsState()
+    val pod by BtrxManager.snapshot.collectAsState()
+    var plan by remember { mutableStateOf<BtrxIgnoreAllPlan?>(null) }
+    val s = snap ?: return
+    val preview = BtrxIgnoreAllExcept.plan(s.sources, s.tUs, src, pod.savedIgnores, pod.podListStored, pod.savedIgnoreSupported)
+    TextButton(onClick = { plan = preview }, enabled = preview.count > 0) {
+        Text(BtrxBearingText.IGNORE_ALL_EXCEPT, color = if (preview.count > 0) color else Color.Gray, style = MaterialTheme.typography.bodySmall)
+    }
+    plan?.let { p ->
+        AlertDialog(
+            onDismissRequest = { plan = null },
+            title = { Text(BtrxBearingText.ignoreAllTitle(p.count)) },
+            text = { Text(BtrxBearingText.ignoreAllDetail(p, pod.savedIgnoreSupported)) },
+            confirmButton = { TextButton(onClick = { plan = null; BtrxManager.ignoreAllExcept(p) }) { Text(BtrxBearingText.IGNORE_ALL_CONFIRM) } },
+            dismissButton = { TextButton(onClick = { plan = null }) { Text(BtrxBearingText.CANCEL) } },
+        )
+    }
+}
+
+/** "Restore ignored (n)": undoes only what "Ignore all except this" ignored, here and on the pod. Hidden when there is nothing to undo. */
+@Composable
+fun BtrxRestoreIgnoredButton(color: Color = Color.Unspecified) {
+    val byAll by BtrxManager.bearing.ignoredByAll.collectAsState()
+    val pod by BtrxManager.snapshot.collectAsState()
+    val onPod = pod.ignoreAll?.let { it.saved.size + it.waiting } ?: 0
+    if (byAll.isEmpty() && onPod == 0) return
+    TextButton(onClick = { BtrxManager.restoreIgnoreAll() }) {
+        Text(BtrxBearingText.restoreLabel(maxOf(byAll.size, onPod)), color = color, style = MaterialTheme.typography.bodySmall)
     }
 }
 

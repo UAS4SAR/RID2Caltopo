@@ -419,4 +419,23 @@ class BtrxBearingLayerTest {
         val rotated = own.copy(key = 99L)
         assertNull(BtrxOwnSuggestion.pick(listOf(own, rotated, other), l.ownAnswers.value))
     }
+
+    /** "Ignore all except this" ignores the planned keys in one write; Restore un-ignores only those. */
+    @Test fun ignoreAllAppliesAndRestoresOnlyItsKeys() {
+        val e = FakeEngine()
+        val logs = mutableListOf<String>()
+        val l = BtrxBearingLayer(e, monoUs = { now }, wallMs = { wall }, log = { logs += it })
+        l.start(BtrxBearingSettings(), false, true)
+        val plan = BtrxIgnoreAllPlan(1L, "Garmin", listOf(8L, 9L, 10L), listOf(1000), podRoom = 31, overLimit = 0)
+        l.applyIgnoreAll(plan)
+        assertEquals(Triple(listOf(8L, 9L, 10L), BtrxBearingNative.SRC_IGNORED, BtrxBearingNative.SRC_IGNORED), e.flags.last())
+        assertEquals(setOf(8L, 9L, 10L), l.ignoredByAll.value)
+        assertEquals("BBIGN all except Garmin: 3 ignored here, 1 to the Drone Pod (room 31, 0 over its list)", logs.last())
+        l.setIgnored(3L, true)                                  // own aircraft, not part of it
+        assertEquals(3, l.restoreIgnoreAll())
+        assertEquals(Triple(listOf(8L, 9L, 10L), BtrxBearingNative.SRC_IGNORED, 0), e.flags.last())
+        assertTrue(l.ignoredByAll.value.isEmpty())
+        assertEquals("BBIGN restore: 3 no longer ignored here", logs.last())
+        assertEquals(0, l.restoreIgnoreAll())
+    }
 }

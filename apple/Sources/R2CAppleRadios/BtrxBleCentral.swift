@@ -221,6 +221,10 @@ final class BtrxBleCentral: NSObject, @unchecked Sendable {
     func answerButtonConfirm(_ confirm: Bool) { queue.async { [self] in model.answerButtonConfirm(confirm); publish() } }
     func setButtonPanelAvailable(_ available: Bool) { queue.async { [self] in model.setButtonPanelAvailable(available); publish() } }
     func ignoreSourceSaved(_ srcId: Int) { queue.async { [self] in model.ignoreSourceSaved(srcId); publish() } }
+    func ignoreAllExcept(_ srcIds: [Int], keepId: String, localCount: Int) {
+        queue.async { [self] in model.ignoreAllExcept(srcIds, keepId: keepId, localCount: localCount); publish() }
+    }
+    func restoreIgnoreAll() { queue.async { [self] in model.restoreIgnoreAll(); publish() } }
     func unignoreSourceSaved(_ srcId: Int) { queue.async { [self] in model.unignoreSourceSaved(srcId); publish() } }
     func cancelPairing() { queue.async { [self] in model.cancelPairing(); publish() } }
     func clearPairingResult() { queue.async { [self] in model.clearPairingResult(); publish() } }
@@ -860,6 +864,21 @@ public final class BtrxDeskPodCenter: ObservableObject {
         if own && snapshot.savedIgnoreSupported && src.srcId != 0 { ignoreSourceSaved(src.srcId) }
     }
     public func unignoreSourceSaved(_ srcId: Int) { central.unignoreSourceSaved(srcId) }
+    /// Keys "Ignore all except this" ignored here, published so "Restore ignored" shows at once (Nov 17).
+    @Published public private(set) var ignoredByAll: Set<UInt64> = []
+    /// "Ignore all except this": the planned keys ignored here (a flag write), the planned src_ids
+    /// saved on the pod on the BTRX queue, paced by the model. Same as Android's BtrxManager.
+    public func ignoreAllExcept(_ plan: BtrxIgnoreAllPlan) {
+        bearing.applyIgnoreAll(plan)
+        ignoredByAll = bearing.ignoredByAll
+        central.ignoreAllExcept(plan.podSrcIds, keepId: plan.keepId, localCount: plan.count)
+    }
+    /// "Restore ignored": undoes only what "Ignore all except this" ignored, here and on the pod.
+    public func restoreIgnoreAll() {
+        bearing.restoreIgnoreAll()
+        ignoredByAll = bearing.ignoredByAll
+        central.restoreIgnoreAll()
+    }
     public func cancelPairing() { central.cancelPairing() }
     public func clearPairingResult() { central.clearPairingResult() }
     /// "Mute" on the stream-view steering overlay.

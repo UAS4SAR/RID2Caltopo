@@ -702,6 +702,32 @@ public final class BtrxBearingLayer: @unchecked Sendable {
         log("BBOWN \(src.shortID) answered \(own ? "own aircraft" : "not mine")" + (src.srcId != 0 ? " (id \(src.srcId))" : ""))
     }
 
+    // "Ignore all except this" (Nov 17): the keys it ignored here, so "Restore ignored" undoes
+    // only those. Same as Android.
+    private var _ignoredByAll = Set<UInt64>()
+    public var ignoredByAll: Set<UInt64> { stateLock.lock(); defer { stateLock.unlock() }; return _ignoredByAll }
+
+    /// "Ignore all except this": ignore every key in `plan` here (one flag write) and record them.
+    public func applyIgnoreAll(_ plan: BtrxIgnoreAllPlan) {
+        guard !plan.localKeys.isEmpty else { return }
+        let mask = UInt32(BTRX_BEARING_SRC_IGNORED)
+        withHandle(()) { h in _ = plan.localKeys.withUnsafeBufferPointer { btrx_bearing_set_source_flags(h, $0.baseAddress, $0.count, mask, mask) } }
+        stateLock.lock(); _ignoredByAll.formUnion(plan.localKeys); stateLock.unlock()
+        log("BBIGN all except \(plan.keepId): \(plan.localKeys.count) ignored here, \(plan.podSrcIds.count) to the Drone Pod "
+            + "(room \(plan.podRoom), \(plan.overLimit) over its list)")
+    }
+
+    /// "Restore ignored": stop ignoring only what "Ignore all except this" ignored here. Returns how many.
+    @discardableResult
+    public func restoreIgnoreAll() -> Int {
+        stateLock.lock(); let keys = Array(_ignoredByAll).sorted(); _ignoredByAll.removeAll(); stateLock.unlock()
+        guard !keys.isEmpty else { return 0 }
+        let mask = UInt32(BTRX_BEARING_SRC_IGNORED)
+        withHandle(()) { h in _ = keys.withUnsafeBufferPointer { btrx_bearing_set_source_flags(h, $0.baseAddress, $0.count, mask, 0) } }
+        log("BBIGN restore: \(keys.count) no longer ignored here")
+        return keys.count
+    }
+
     /// Main thread: the own-aircraft suggestion answered "not on the drone".
     public func clearOwnSuspect(_ key: UInt64) {
         let cleared = UInt32(BTRX_BEARING_SRC_OWN_CLEARED)
@@ -754,6 +780,49 @@ public enum BtrxOwnSuggestion {
     }
 }
 
+/// "Ignore all except this" (Nov 17): what one tap ignores. `localKeys` = every other tracked
+/// source, ignored on this device; `podSrcIds` = the ones also sent to the Drone Pod's saved
+/// list (op 3), strongest first, only those the pod heard in the last 50 s and only as many as
+/// its list has room for (`podRoom`). Same as Android.
+public struct BtrxIgnoreAllPlan: Sendable, Equatable {
+    public let keepKey: UInt64, keepId: String, localKeys: [UInt64], podSrcIds: [Int], podRoom: Int, overLimit: Int
+    public init(keepKey: UInt64, keepId: String, localKeys: [UInt64], podSrcIds: [Int], podRoom: Int, overLimit: Int) {
+        self.keepKey = keepKey; self.keepId = keepId; self.localKeys = localKeys; self.podSrcIds = podSrcIds
+        self.podRoom = podRoom; self.overLimit = overLimit
+    }
+    public var count: Int { localKeys.count }
+}
+
+public enum BtrxIgnoreAllExcept {
+    /// The pod saves only a source heard in the last 60 s; leave a margin for the relay.
+    public static let podHeardUs: Int64 = 50_000_000
+    public static let podListMax = 32
+
+    /// Never the kept source (nor another address with its src_id); skips sources already
+    /// ignored here (own aircraft), suspected own aircraft, and src_ids already on the pod's list.
+    public static func plan(_ sources: [BtrxBearingSource], nowUs: Int64, keep: BtrxBearingSource, savedSrcIds: [Int],
+                            podStored: Int?, podSupported: Bool) -> BtrxIgnoreAllPlan {
+        let saved = Set(savedSrcIds)
+        let others = sources.filter { s in
+            s.key != keep.key && !(keep.srcId != 0 && s.srcId == keep.srcId) && !s.ignored && !s.ownSuspect
+                && !(s.srcId != 0 && saved.contains(s.srcId))
+        }.enumerated().sorted { a, b in
+            let ra = a.element.maxRssiDbm ?? Int.min, rb = b.element.maxRssiDbm ?? Int.min
+            if ra != rb { return ra > rb }
+            if a.element.reportsIn != b.element.reportsIn { return a.element.reportsIn > b.element.reportsIn }
+            return a.offset < b.offset
+        }.map(\.element)
+        var eligible: [Int] = []
+        if podSupported {
+            for s in others where s.srcId != 0 && nowUs - s.lastHeardUs <= podHeardUs && !eligible.contains(s.srcId) { eligible.append(s.srcId) }
+        }
+        let room = max(0, podListMax - (podStored ?? saved.count))
+        let pod = Array(eligible.prefix(room))
+        return BtrxIgnoreAllPlan(keepKey: keep.key, keepId: keep.shortID, localKeys: others.map(\.key), podSrcIds: pod,
+                                 podRoom: room, overLimit: eligible.count - pod.count)
+    }
+}
+
 /// Panel and pane wording, identical to Android's BtrxBearingText.
 public enum BtrxBearingText {
     public static let panelTitle = "BTRX sources here"
@@ -775,6 +844,28 @@ public enum BtrxBearingText {
     public static let ownSuggestSave = "Own aircraft"
     public static let ownSuggestKeep = "Not mine"
     public static let ownSuggestCollapse = "Collapse"
+    public static let ignoreAllExcept = "Ignore all except this"
+    public static let restoreIgnored = "Restore ignored"
+    public static let ignoreAllConfirm = "Ignore"
+    public static let cancel = "Cancel"
+
+    /// The confirmation title: "Ignore 27 other sources?".
+    public static func ignoreAllTitle(_ n: Int) -> String { "Ignore \(n) other source\(n == 1 ? "" : "s")?" }
+
+    /// The confirmation body: what is kept, what goes to the pod and its list limit, and the undo.
+    public static func ignoreAllDetail(_ p: BtrxIgnoreAllPlan, podSupported: Bool) -> String {
+        let mid: String
+        if !podSupported { mid = "Ignored on this device only (the Drone Pod's firmware has no saved list)." }
+        else if p.podSrcIds.isEmpty { mid = "Ignored on this device only (none heard by the Drone Pod in the last 50 s, or its list is full)." }
+        else {
+            mid = "\(p.podSrcIds.count) strongest also saved on the Drone Pod (room for \(p.podRoom) of \(BtrxIgnoreAllExcept.podListMax))"
+                + (p.overLimit > 0 ? "; \(p.overLimit) more only on this device" : "") + "; the rest on this device only."
+        }
+        return "Keeps \(p.keepId). " + mid + " \"\(restoreIgnored)\" undoes only these."
+    }
+
+    /// "Restore ignored (27)".
+    public static func restoreLabel(_ n: Int) -> String { n > 0 ? "\(restoreIgnored) (\(n))" : restoreIgnored }
     public static let ownSuspectTag = "own aircraft?"
     public static let strongestHere = "strongest here"
     public static let pinnedTitle = "BTRX source located"

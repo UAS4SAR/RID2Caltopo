@@ -588,6 +588,32 @@ class BtrxBearingLayer(
         log("BBOWN ${src.shortId} answered ${if (own) "own aircraft" else "not mine"}" + if (src.srcId != 0) " (id ${src.srcId})" else "")
     }
 
+    // "Ignore all except this" (Nov 17): the keys it ignored here, so "Restore ignored" undoes
+    // only those. A StateFlow so the Restore button shows at once.
+    private val _ignoredByAll = MutableStateFlow<Set<Long>>(emptySet())
+    val ignoredByAll: StateFlow<Set<Long>> = _ignoredByAll.asStateFlow()
+
+    /** Worker: "Ignore all except this": ignore every key in [plan] here (one flag write) and record them. */
+    fun applyIgnoreAll(plan: BtrxIgnoreAllPlan) {
+        if (plan.localKeys.isEmpty()) return
+        withHandle(Unit) { h ->
+            engine.setSourceFlags(h, plan.localKeys.toLongArray(), BtrxBearingNative.SRC_IGNORED, BtrxBearingNative.SRC_IGNORED)
+        }
+        _ignoredByAll.update { it + plan.localKeys }
+        log("BBIGN all except ${plan.keepId}: ${plan.localKeys.size} ignored here, ${plan.podSrcIds.size} to the Drone Pod " +
+            "(room ${plan.podRoom}, ${plan.overLimit} over its list)")
+    }
+
+    /** Worker: "Restore ignored": stop ignoring only what "Ignore all except this" ignored here. Returns how many. */
+    fun restoreIgnoreAll(): Int {
+        val keys = _ignoredByAll.value
+        if (keys.isEmpty()) return 0
+        withHandle(Unit) { h -> engine.setSourceFlags(h, keys.toLongArray(), BtrxBearingNative.SRC_IGNORED, 0) }
+        _ignoredByAll.value = emptySet()
+        log("BBIGN restore: ${keys.size} no longer ignored here")
+        return keys.size
+    }
+
     /** UI thread: the own-aircraft suggestion answered "not on the drone". */
     fun clearOwnSuspect(key: Long) {
         withHandle(Unit) { h ->
@@ -651,6 +677,46 @@ object BtrxOwnSuggestion {
         sources.firstOrNull { it.ownSuspect && !it.ignored && !answers.answered(it) }
 }
 
+/**
+ * "Ignore all except this" (Nov 17): what one tap ignores. [localKeys] = every other tracked
+ * source, ignored on this device; [podSrcIds] = the ones also sent to the Drone Pod's saved
+ * list (op 3), strongest first, only those the pod heard in the last 50 s (it saves only a
+ * source in its live table) and only as many as its list has room for ([podRoom]).
+ */
+data class BtrxIgnoreAllPlan(
+    val keepKey: Long, val keepId: String, val localKeys: List<Long>, val podSrcIds: List<Int>,
+    val podRoom: Int, val overLimit: Int,
+) {
+    val count: Int get() = localKeys.size
+}
+
+object BtrxIgnoreAllExcept {
+    /** The pod saves only a source heard in the last 60 s; leave a margin for the relay. */
+    const val POD_HEARD_US = 50_000_000L
+    const val POD_LIST_MAX = 32
+
+    /**
+     * Never the kept source (nor another address with its src_id); skips sources already
+     * ignored here (own aircraft), suspected own aircraft, and src_ids already on the pod's
+     * list. The pods' own boards and the Desk Pod never reach the layer (the pod leaves them out).
+     */
+    fun plan(
+        sources: List<BtrxBearingSource>, nowUs: Long, keep: BtrxBearingSource, savedSrcIds: Collection<Int>,
+        podStored: Int?, podSupported: Boolean,
+    ): BtrxIgnoreAllPlan {
+        val saved = savedSrcIds.toSet()
+        val others = sources.filter { s ->
+            s.key != keep.key && !(keep.srcId != 0 && s.srcId == keep.srcId) && !s.ignored && !s.ownSuspect &&
+                !(s.srcId != 0 && s.srcId in saved)
+        }.sortedWith(compareByDescending<BtrxBearingSource> { it.maxRssiDbm ?: Int.MIN_VALUE }.thenByDescending { it.reportsIn })
+        val eligible = if (!podSupported) emptyList() else
+            others.filter { it.srcId != 0 && nowUs - it.lastHeardUs <= POD_HEARD_US }.map { it.srcId }.distinct()
+        val room = (POD_LIST_MAX - (podStored ?: saved.size)).coerceAtLeast(0)
+        val pod = eligible.take(room)
+        return BtrxIgnoreAllPlan(keep.key, keep.shortId, others.map { it.key }, pod, room, eligible.size - pod.size)
+    }
+}
+
 /** Panel and pane wording, identical to the iPad (BtrxBearingText in BtrxBearingLayer.swift). */
 object BtrxBearingText {
     const val PANEL_TITLE = "BTRX sources here"
@@ -672,6 +738,25 @@ object BtrxBearingText {
     const val OWN_SUGGEST_SAVE = "Own aircraft"
     const val OWN_SUGGEST_KEEP = "Not mine"
     const val OWN_SUGGEST_COLLAPSE = "Collapse"
+    const val IGNORE_ALL_EXCEPT = "Ignore all except this"
+    const val RESTORE_IGNORED = "Restore ignored"
+    const val IGNORE_ALL_CONFIRM = "Ignore"
+    const val CANCEL = "Cancel"
+
+    /** The confirmation title: "Ignore 27 other sources?". */
+    fun ignoreAllTitle(n: Int): String = "Ignore $n other source${if (n == 1) "" else "s"}?"
+
+    /** The confirmation body: what is kept, what goes to the pod and its list limit, and the undo. */
+    fun ignoreAllDetail(p: BtrxIgnoreAllPlan, podSupported: Boolean): String =
+        "Keeps ${p.keepId}. " + when {
+            !podSupported -> "Ignored on this device only (the Drone Pod's firmware has no saved list)."
+            p.podSrcIds.isEmpty() -> "Ignored on this device only (none heard by the Drone Pod in the last 50 s, or its list is full)."
+            else -> "${p.podSrcIds.size} strongest also saved on the Drone Pod (room for ${p.podRoom} of ${BtrxIgnoreAllExcept.POD_LIST_MAX})" +
+                (if (p.overLimit > 0) "; ${p.overLimit} more only on this device" else "") + "; the rest on this device only."
+        } + " \"$RESTORE_IGNORED\" undoes only these."
+
+    /** "Restore ignored (27)". */
+    fun restoreLabel(n: Int): String = if (n > 0) "$RESTORE_IGNORED ($n)" else RESTORE_IGNORED
     const val OWN_SUSPECT_TAG = "own aircraft?"
     const val STRONGEST_HERE = "strongest here"
     const val PINNED_TITLE = "BTRX source located"

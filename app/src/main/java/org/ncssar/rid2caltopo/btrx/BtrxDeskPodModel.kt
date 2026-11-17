@@ -174,6 +174,10 @@ class BtrxDeskPodModel(
         val filterPending: List<PendingFilter> = emptyList(),
         /** The latest saved-ignore result, for the BTRX pane. */
         val filterMessage: String? = null,
+        /** "Ignore all except this" on the pod (Nov 17): progress and what it added, or null. */
+        val ignoreAll: IgnoreAllStatus? = null,
+        /** Entries on the pod's saved ignore list, from the latest FILTER_ACK (null = none seen yet). */
+        val podListStored: Int? = null,
         /** DESK_PAIR source of the latest open (1 button, 2 phone/USB, 3 PAIR_OPEN). */
         val deskWindowSource: Int = 0,
         /** Desk Pod button confirmation (build 0x0108): the Confirm/Cancel panel, or null. */
@@ -232,6 +236,17 @@ class BtrxDeskPodModel(
     private val savedIgnores = sortedSetOf<Int>()
     private val pendingFilters = ArrayList<PendingFilter>()
     private var filterMessage: String? = null
+
+    // "Ignore all except this" (Nov 17): op 3 for many src_ids, paced by MAX_PENDING_FILTERS.
+    private val bulkQueue = ArrayList<Pair<Int, Int>>()   // (op, srcId) not sent yet
+    private val bulkSent = HashMap<Int, Int>()            // srcId -> op, sent, waiting for FILTER_ACK
+    private val bulkSaved = LinkedHashSet<Int>()          // src_ids this action got onto the pod; Restore removes only these
+    private var bulkRefused = 0
+    private var bulkOverLimit = 0
+    private var bulkRemoved = 0
+    private var bulkRestoring = false
+    private var bulkActive = false
+    private var podListStored: Int? = null
     /** The Desk Pod's own latest live HEALTH this session: uptime_s and arrival (logged when the link drops). */
     private var deskUptimeS: Long? = null
     private var deskHealthAtMs = 0L
@@ -296,6 +311,7 @@ class BtrxDeskPodModel(
             if (pairing.step in ACTIVE_STEPS) fail(pairing.step, "The link to the Desk Pod was lost ($reason).")
             if (pendingFilters.isNotEmpty()) filterMessage = "No answer from the Drone Pod: the link to the Desk Pod was lost."
             pendingFilters.clear()
+            bulkStopLocked(forget = false, why = "the link to the Desk Pod was lost")
             imuCal.linkLost(reason)
             buttonConfirm.linkLost(clock(), reason)
         }
@@ -320,6 +336,7 @@ class BtrxDeskPodModel(
         savedIgnores.clear()
         if (pod != null) savedIgnores += savedIgnoreIds.filter { it in 1..0xFFFF }
         pendingFilters.clear(); filterMessage = null
+        bulkStopLocked(forget = true, why = null)
         quietWatchSinceMs = clock()
     }
 
@@ -351,6 +368,7 @@ class BtrxDeskPodModel(
             savedIgnores.clear(); onSavedIgnores(emptyList())
         }
         pendingFilters.clear(); filterMessage = null
+        bulkStopLocked(forget = true, why = "the Drone Pod was unpaired")
         pairedPod = null; lastHealth = null; otherPods.clear()
         podIdMismatches = 0; lastMismatchPodId = null
         steering.reset()
@@ -556,6 +574,7 @@ class BtrxDeskPodModel(
             if (pairedPod?.node != pod.node) {
                 steering.reset()
                 if (savedIgnores.isNotEmpty()) { savedIgnores.clear(); onSavedIgnores(emptyList()) }
+                bulkStopLocked(forget = true, why = "another Drone Pod was paired")
             }
             if (pairedPod != pod) imuCal.reset()
             pairedPod = pod
@@ -717,6 +736,8 @@ class BtrxDeskPodModel(
             filterMessage = "No answer from the Drone Pod for ${BtrxDeskPodText.srcIdText(it.srcId)}. Try again."
         }
         pendingFilters.removeAll(expired)
+        expired.forEach { e -> bulkSent.remove(e.srcId)?.let { op -> if (op == P.MUTE_IGNORE) bulkRefused++ } }
+        if (bulkActive) pumpBulkLocked()
         buttonConfirm.tick(now)
         val local = localNode
         if (buttonConfirm.keepaliveDue(now, buttonConfirmLinkLocked() == ButtonConfirmLink.ON) && local != null) {
@@ -796,6 +817,8 @@ class BtrxDeskPodModel(
             savedIgnores = savedIgnores.toList(),
             filterPending = pendingFilters.toList(),
             filterMessage = filterMessage,
+            ignoreAll = ignoreAllStatusLocked(),
+            podListStored = podListStored,
             deskWindowSource = window.source,
             buttonConfirm = buttonConfirm.view(now),
             buttonNotice = buttonConfirm.liveNotice(now),
@@ -826,32 +849,135 @@ class BtrxDeskPodModel(
 
     private fun filterAction(op: Int, srcId: Int) {
         val sends = synchronized(this) {
-            val now = clock()
-            val pod = pairedPod
-            val busy = pendingFilters.any { it.srcId == srcId && now - it.sentMs <= FILTER_ACK_TIMEOUT_MS }
-            val blocked = when {
-                pod == null -> "No Drone Pod is paired."
-                !savedIgnoreSupportedLocked() -> "The Drone Pod's firmware does not save ignored sources (needs build 0x0106). Use Own aircraft on this device."
-                sender?.isReady != true -> "The Desk Pod is not connected."
-                srcId !in 1..0xFFFF -> "That source has no Drone Pod id yet."
-                busy -> "Waiting for the Drone Pod to answer the last change to ${BtrxDeskPodText.srcIdText(srcId)}."
-                pendingFilters.size >= MAX_PENDING_FILTERS -> "Waiting for the Drone Pod to answer earlier changes."
-                else -> null
-            }
-            if (blocked != null) {
-                log.warn("own aircraft (saved): ${P.muteOpName(op)} src=0x%04x not sent: %s".format(srcId, blocked))
-                filterMessage = blocked
-            } else {
-                pod!!
-                log.debug("own aircraft (saved): STEER_MUTE ${P.muteOpName(op)} src=0x%04x to %s".format(srcId, BtrxClient.nodeName(pod.node)))
-                outbox += pod.node to { seq -> P.steerMuteFrame(seq, pod.podId, op, srcId) }
-                pendingFilters.removeAll { it.srcId == srcId } // an expired one not yet ticked out
-                pendingFilters += PendingFilter(op, srcId, now)
-                filterMessage = if (op == P.MUTE_IGNORE) "Saving on the Drone Pod…" else "Removing from the Drone Pod…"
-            }
+            filterActionLocked(op, srcId)
             takeOutbox()
         }
         deliver(sends)
+    }
+
+    /** Sends one op 3 / 4 (or says why not in [filterMessage]); true when it went out. */
+    private fun filterActionLocked(op: Int, srcId: Int): Boolean {
+        val now = clock()
+        val pod = pairedPod
+        val busy = pendingFilters.any { it.srcId == srcId && now - it.sentMs <= FILTER_ACK_TIMEOUT_MS }
+        val blocked = when {
+            pod == null -> "No Drone Pod is paired."
+            !savedIgnoreSupportedLocked() -> "The Drone Pod's firmware does not save ignored sources (needs build 0x0106). Use Own aircraft on this device."
+            sender?.isReady != true -> "The Desk Pod is not connected."
+            srcId !in 1..0xFFFF -> "That source has no Drone Pod id yet."
+            busy -> "Waiting for the Drone Pod to answer the last change to ${BtrxDeskPodText.srcIdText(srcId)}."
+            pendingFilters.size >= MAX_PENDING_FILTERS -> "Waiting for the Drone Pod to answer earlier changes."
+            else -> null
+        }
+        if (blocked != null) {
+            log.warn("own aircraft (saved): ${P.muteOpName(op)} src=0x%04x not sent: %s".format(srcId, blocked))
+            filterMessage = blocked
+            return false
+        }
+        pod!!
+        log.debug("own aircraft (saved): STEER_MUTE ${P.muteOpName(op)} src=0x%04x to %s".format(srcId, BtrxClient.nodeName(pod.node)))
+        outbox += pod.node to { seq -> P.steerMuteFrame(seq, pod.podId, op, srcId) }
+        pendingFilters.removeAll { it.srcId == srcId } // an expired one not yet ticked out
+        pendingFilters += PendingFilter(op, srcId, now)
+        filterMessage = if (op == P.MUTE_IGNORE) "Saving on the Drone Pod…" else "Removing from the Drone Pod…"
+        return true
+    }
+
+    // ---- "Ignore all except this" (Nov 17) ----
+
+    /** Progress of "Ignore all except this" / "Restore ignored" on the pod. */
+    data class IgnoreAllStatus(
+        val saved: List<Int>, val queued: Int, val waiting: Int, val refused: Int, val overLimit: Int,
+        val removed: Int, val restoring: Boolean, val active: Boolean,
+    )
+
+    private fun ignoreAllStatusLocked(): IgnoreAllStatus? =
+        if (!bulkActive && bulkSaved.isEmpty() && bulkRefused == 0 && bulkOverLimit == 0 && bulkRemoved == 0) null
+        else IgnoreAllStatus(bulkSaved.toList(), bulkQueue.size, bulkSent.size, bulkRefused, bulkOverLimit, bulkRemoved, bulkRestoring, bulkActive)
+
+    /**
+     * "Ignore all except this": op 3 for each of [srcIds] (strongest first; the app already
+     * ignores all [localCount] here), at most [MAX_PENDING_FILTERS] waiting at a time, and no
+     * more than the pod's list holds ([FILTER_LIST_MAX]). The ids the pod takes are recorded
+     * so [restoreIgnoreAll] removes only those.
+     */
+    fun ignoreAllExcept(srcIds: List<Int>, keepId: String, localCount: Int) {
+        val sends = synchronized(this) {
+            val ids = srcIds.filter { it in 1..0xFFFF && it !in savedIgnores && it !in bulkSaved && it !in bulkSent }.distinct()
+            log.debug("ignore all except $keepId: $localCount ignored in the app; STEER_MUTE ignore queued for ${ids.size} src_id(s) " +
+                "(pod list ${podListStored ?: savedIgnores.size} of $FILTER_LIST_MAX)")
+            bulkQueue.removeAll { it.first == P.MUTE_IGNORE }
+            bulkRefused = 0; bulkOverLimit = 0; bulkRemoved = 0; bulkRestoring = false
+            ids.forEach { bulkQueue += P.MUTE_IGNORE to it }
+            bulkActive = bulkQueue.isNotEmpty() || bulkSent.isNotEmpty()
+            if (bulkActive) pumpBulkLocked() else finishBulkLocked(force = true)
+            takeOutbox()
+        }
+        deliver(sends)
+    }
+
+    /** "Restore ignored": op 4 for every src_id "Ignore all except this" got onto the pod (and any still waiting). */
+    fun restoreIgnoreAll() {
+        val sends = synchronized(this) {
+            val dropped = bulkQueue.count { it.first == P.MUTE_IGNORE }
+            bulkQueue.removeAll { it.first == P.MUTE_IGNORE }
+            val ids = (bulkSaved + bulkSent.filterValues { it == P.MUTE_IGNORE }.keys).distinct()
+            log.debug("restore ignored: STEER_MUTE stop ignoring queued for ${ids.size} src_id(s)" + if (dropped > 0) "; $dropped not sent yet, dropped" else "")
+            ids.forEach { id -> if (bulkQueue.none { it.second == id }) bulkQueue += P.MUTE_UNIGNORE to id }
+            bulkRefused = 0; bulkOverLimit = 0; bulkRemoved = 0; bulkRestoring = true
+            bulkActive = bulkQueue.isNotEmpty() || bulkSent.isNotEmpty()
+            if (bulkActive) pumpBulkLocked() else finishBulkLocked(force = true)
+            takeOutbox()
+        }
+        deliver(sends)
+    }
+
+    private fun podListFullLocked(): Boolean =
+        (podListStored ?: savedIgnores.size) + pendingFilters.count { it.op == P.MUTE_IGNORE } >= FILTER_LIST_MAX
+
+    private fun pumpBulkLocked() {
+        var i = 0
+        while (i < bulkQueue.size && pendingFilters.size < MAX_PENDING_FILTERS) {
+            val (op, id) = bulkQueue[i]
+            if (pendingFilters.any { it.srcId == id }) { i++; continue }
+            if (op == P.MUTE_IGNORE && podListFullLocked()) {
+                val left = bulkQueue.count { it.first == P.MUTE_IGNORE }
+                bulkOverLimit += left
+                bulkQueue.removeAll { it.first == P.MUTE_IGNORE }
+                log.debug("ignore all except: the Drone Pod's list is full ($FILTER_LIST_MAX entries); $left not sent")
+                i = 0
+                continue
+            }
+            bulkQueue.removeAt(i)
+            if (filterActionLocked(op, id)) bulkSent[id] = op
+            else {
+                val left = bulkQueue.size + 1
+                if (!bulkRestoring) bulkRefused += left
+                log.warn("ignore all except: stopped, $left request(s) not sent: $filterMessage")
+                bulkQueue.clear()
+                break
+            }
+        }
+        finishBulkLocked(force = false)
+    }
+
+    private fun finishBulkLocked(force: Boolean) {
+        if (!force && !(bulkActive && bulkQueue.isEmpty() && bulkSent.isEmpty())) return
+        bulkActive = false
+        val msg = if (bulkRestoring) "Restore ignored: removed $bulkRemoved from the Drone Pod" +
+                (if (bulkSaved.isNotEmpty()) "; ${bulkSaved.size} still on its list" else "") + "."
+            else "Ignore all except: ${bulkSaved.size} saved on the Drone Pod" +
+                (if (bulkRefused > 0) ", $bulkRefused refused (not heard by the pod in the last 60 s)" else "") +
+                (if (bulkOverLimit > 0) ", $bulkOverLimit left off (its list holds $FILTER_LIST_MAX)" else "") +
+                " (list ${podListStored ?: savedIgnores.size} of $FILTER_LIST_MAX)."
+        filterMessage = msg
+        log.debug(if (bulkRestoring) "restore ignored: done: $msg" else "ignore all except: done: $msg")
+    }
+
+    private fun bulkStopLocked(forget: Boolean, why: String?) {
+        if (bulkActive && why != null) log.warn("ignore all except: stopped, ${bulkQueue.size + bulkSent.size} request(s) dropped: $why")
+        bulkQueue.clear(); bulkSent.clear(); bulkActive = false
+        if (forget) { bulkSaved.clear(); bulkRefused = 0; bulkOverLimit = 0; bulkRemoved = 0; bulkRestoring = false; podListStored = null }
     }
 
     private fun onFilterAck(ack: P.FilterAck, frameFlags: Int) {
@@ -867,6 +993,7 @@ class BtrxDeskPodModel(
             return
         }
         pendingFilters.remove(pend)
+        podListStored = ack.stored
         val id = BtrxDeskPodText.srcIdText(pend.srcId)
         log.debug("own aircraft (saved): FILTER_ACK op=${ack.op} ok=${ack.ok} list_crc=0x%04x stored=${ack.stored} flags=0x%02x for src=0x%04x (%s)".format(
             ack.listCrc, frameFlags, pend.srcId, if (ack.srcId != null) "by src_id" else "6-byte ack, oldest waiting"))
@@ -888,6 +1015,11 @@ class BtrxDeskPodModel(
                 if (savedIgnores.remove(pend.srcId)) onSavedIgnores(savedIgnores.toList())
                 filterMessage = "The Drone Pod had nothing saved under $id; removed from this list."
             }
+        }
+        bulkSent.remove(pend.srcId)?.let { op ->
+            if (op == P.MUTE_IGNORE) { if (ack.ok == 1) bulkSaved += pend.srcId else bulkRefused++ }
+            else { if (bulkSaved.remove(pend.srcId)) bulkRemoved++ }
+            pumpBulkLocked()
         }
     }
 
