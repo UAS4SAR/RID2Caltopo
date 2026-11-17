@@ -8,7 +8,10 @@ import java.io.ByteArrayOutputStream
  * Only the fields below are written or read; every other field is skipped.
  *
  *   ToRadio   1 packet (MeshPacket), 3 want_config_id (uint32), 7 heartbeat (Heartbeat)
- *   FromRadio 2 packet, 3 my_info (MyNodeInfo: 1 my_node_num), 7 config_complete_id
+ *   FromRadio 2 packet, 3 my_info (MyNodeInfo: 1 my_node_num), 4 node_info (NodeInfo), 7 config_complete_id
+ *   NodeInfo  1 num, 6 device_metrics (DeviceMetrics)
+ *   Telemetry (TELEMETRY_APP, port 67) 2 device_metrics (DeviceMetrics)
+ *   DeviceMetrics 1 battery_level (uint32; 101 = powered, no battery), 2 voltage (float), 5 uptime_seconds
  *   MeshPacket 1 from (fixed32), 2 to (fixed32), 3 channel, 4 decoded (Data), 6 id (fixed32),
  *              8 rx_snr (float), 9 hop_limit (R2C sends 0), 10 want_ack (bool), 12 rx_rssi (int32)
  *   Data       1 portnum (enum), 2 payload (bytes)
@@ -20,6 +23,21 @@ object MeshtasticSerial {
     const val START2 = 0xC3
     const val MAX_PACKET = 512
     const val BROADCAST: Long = 0xFFFFFFFFL
+    /** Meshtastic PortNum.TELEMETRY_APP. */
+    const val TELEMETRY_APP_PORT = 67
+    /** DeviceMetrics.battery_level above 100: on external power (Meshtastic sends 101). */
+    const val BATTERY_POWERED = 101
+
+    /**
+     * Meshtastic's standard DeviceMetrics (only the fields R2C shows). Each is null when the
+     * node left it out; nothing here is computed by R2C.
+     */
+    data class DeviceMetrics(val batteryLevel: Int?, val voltage: Float?, val uptimeSeconds: Long?) {
+        val isEmpty: Boolean get() = batteryLevel == null && voltage == null && uptimeSeconds == null
+        /** "battery_level=101 voltage=4.98 uptime_s=120" for the session log; "-" for a field left out. */
+        fun logText(): String = "battery_level=${batteryLevel ?: "-"} voltage=${voltage?.let { "%.2f".format(java.util.Locale.US, it) } ?: "-"} " +
+            "uptime_s=${uptimeSeconds ?: "-"}"
+    }
 
     /** Wake bytes the reference client sends before its first frame. */
     fun wakeBytes(): ByteArray = ByteArray(32) { START2.toByte() }
@@ -63,6 +81,8 @@ object MeshtasticSerial {
     sealed class FromRadio {
         data class MyInfo(val nodeNum: Long) : FromRadio()
         data class ConfigComplete(val id: Long) : FromRadio()
+        /** A node record sent during the config handshake; [metrics] null when it carries none. */
+        data class NodeInfo(val nodeNum: Long, val metrics: DeviceMetrics?) : FromRadio()
         class Packet(
             val from: Long, val to: Long, val channel: Int, val id: Long,
             val rxSnr: Float, val rxRssi: Int, val hopLimit: Int,
@@ -100,6 +120,7 @@ object MeshtasticSerial {
                     }
                     result = FromRadio.MyInfo(node)
                 }
+                field == 4 && wire == 2 -> result = parseNodeInfo(r.lengthDelimited())
                 field == 7 && wire == 0 -> result = FromRadio.ConfigComplete(r.varint() and 0xFFFFFFFFL)
                 field == 1 -> r.skip(wire) // FromRadio.id
                 else -> {
@@ -109,6 +130,47 @@ object MeshtasticSerial {
             }
         }
         return result ?: FromRadio.Other(0)
+    }
+
+    private fun parseNodeInfo(buf: ByteArray): FromRadio.NodeInfo {
+        val r = ProtoReader(buf)
+        var num = 0L
+        var metrics: DeviceMetrics? = null
+        while (r.hasMore()) {
+            val (f, w) = r.tag()
+            when {
+                f == 1 && w == 0 -> num = r.varint() and 0xFFFFFFFFL
+                f == 6 && w == 2 -> metrics = parseDeviceMetrics(r.lengthDelimited())
+                else -> r.skip(w)
+            }
+        }
+        return FromRadio.NodeInfo(num, metrics?.takeUnless { it.isEmpty })
+    }
+
+    /** DeviceMetrics from a TELEMETRY_APP payload (Telemetry field 2), or null when it holds another kind. */
+    fun parseTelemetryDeviceMetrics(payload: ByteArray): DeviceMetrics? {
+        val r = ProtoReader(payload)
+        var metrics: DeviceMetrics? = null
+        while (r.hasMore()) {
+            val (f, w) = r.tag()
+            if (f == 2 && w == 2) metrics = parseDeviceMetrics(r.lengthDelimited()) else r.skip(w)
+        }
+        return metrics?.takeUnless { it.isEmpty }
+    }
+
+    private fun parseDeviceMetrics(buf: ByteArray): DeviceMetrics {
+        val r = ProtoReader(buf)
+        var level: Int? = null; var voltage: Float? = null; var uptime: Long? = null
+        while (r.hasMore()) {
+            val (f, w) = r.tag()
+            when {
+                f == 1 && w == 0 -> level = r.varint().toInt()
+                f == 2 && w == 5 -> voltage = java.lang.Float.intBitsToFloat(r.fixed32().toInt())
+                f == 5 && w == 0 -> uptime = r.varint() and 0xFFFFFFFFL
+                else -> r.skip(w)
+            }
+        }
+        return DeviceMetrics(level, voltage, uptime)
     }
 
     private fun parseMeshPacket(buf: ByteArray): FromRadio.Packet {
@@ -194,6 +256,7 @@ object MeshtasticSerial {
             tag(field, 5)
             for (i in 0 until 4) out.write(((v ushr (8 * i)) and 0xFF).toInt())
         }
+        fun float32(field: Int, v: Float) = fixed32(field, java.lang.Float.floatToRawIntBits(v).toLong() and 0xFFFFFFFFL)
         fun bytesField(field: Int, b: ByteArray) = apply { tag(field, 2); rawVarint(b.size.toLong()); out.write(b) }
         fun bytes(): ByteArray = out.toByteArray()
     }

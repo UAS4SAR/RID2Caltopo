@@ -174,6 +174,17 @@ public final class BtrxDeskPodModel {
         public var buttonConfirmLink: ButtonConfirmLink = .noLink
         /// When the Desk Pod reported a factory reset from its button (it comes back unpaired), until a pairing completes.
         public var deskResetAtMs: Int64?
+        /// The last session ended with the Desk Pod silent (Nov 17), and no session has started since.
+        public var deskSilent = false
+        /// Why that session ended.
+        public var deskSilentReason: String?
+        /// "Desk Pod restarted (power-on)" while fresh (the map chip), else nil.
+        public var deskRestartNotice: String?
+        /// The latest restart after a link drop, kept for the Desk Pod screen.
+        public var deskRestart: BtrxDeskPodPower.Restart?
+        /// The Desk Pod's own standard DeviceMetrics, when it sent any.
+        public var deskDeviceMetrics: MeshtasticPhoneAPI.DeviceMetrics?
+        public var deskDeviceMetricsAtMs: Int64?
         public init() {}
         /// An op 3 / 4 for `srcId` is waiting for its FILTER_ACK.
         public func filterPendingFor(_ srcId: Int) -> Bool { filterPending.contains { $0.srcId == srcId } }
@@ -250,6 +261,7 @@ public final class BtrxDeskPodModel {
     /// The Desk Pod's build from its own HEALTH, when no ROLE_REPORT gave it.
     private var deskHealthBuild: Int?
     private var deskResetAtMs: Int64?
+    private let power = BtrxDeskPodPower()
 
     /// Whether this app keeps the Desk Pod asking before its button acts (the keepalive). Same as Android.
     public enum ButtonConfirmLink: Sendable, Equatable {
@@ -292,12 +304,19 @@ public final class BtrxDeskPodModel {
         deskHealthBuild = nil
         buttonConfirm.newSession()
         quietWatchSinceMs = clock()
+        power.onSessionStarted()
+    }
+
+    /// The Desk Pod's own standard Meshtastic DeviceMetrics (node_info or TELEMETRY_APP).
+    public func onDeskDeviceMetrics(_ metrics: MeshtasticPhoneAPI.DeviceMetrics, source: String) {
+        power.onDeviceMetrics(metrics, source: source, nowMs: clock())
     }
 
     public func detach(_ sender: BtrxFrameSender, reason: String) {
         guard self.sender === sender else { return }
         self.sender = nil
         log.debug(linkDropLine(reason: reason, nowMs: clock()))
+        if let line = power.onDrop(reason: reason, nowMs: clock()) { log.warn(line) }
         if Self.activeSteps.contains(pairing.step) { fail(pairing.step, "The link to the Desk Pod was lost (\(reason)).") }
         if !pendingFilters.isEmpty { filterMessage = "No answer from the Drone Pod: the link to the Desk Pod was lost." }
         pendingFilters.removeAll()
@@ -379,6 +398,9 @@ public final class BtrxDeskPodModel {
                     deskUptimeS = h.uptimeS
                     deskHealthBuild = h.buildHash
                     deskHealthAtMs = meta.arrivalMs
+                    if let line = power.onDeskHealth(uptimeS: Int64(h.uptimeS), resetReason: h.ext?.resetReason, arrivalMs: meta.arrivalMs) {
+                        log.warn(line)
+                    }
                 }
             default: if meta.fromNode != localNode && acceptsPodTraffic(frame, meta) { try onPodTraffic(frame, meta) }
             }
@@ -749,6 +771,12 @@ public final class BtrxDeskPodModel {
         s.buttonLastNotice = buttonConfirm.notice
         s.buttonConfirmLink = buttonConfirmLinkNow
         s.deskResetAtMs = deskResetAtMs
+        s.deskSilent = power.silentSinceMs != nil
+        s.deskSilentReason = power.silentReason
+        s.deskRestartNotice = power.restartNotice(nowMs: now)
+        s.deskRestart = power.restart
+        s.deskDeviceMetrics = power.metrics
+        s.deskDeviceMetricsAtMs = power.metricsAtMs
         return s
     }
 

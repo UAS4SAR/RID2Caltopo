@@ -41,6 +41,9 @@ public protocol BtrxClientListener: AnyObject {
     func onVersionRefused(fromNode: UInt32, version: Int)
     /// A packet that is not a decoded btrx (port 256) packet was dropped; `encrypted`: the node could not decode it.
     func onPacketDropped(encrypted: Bool)
+    /// The Desk Pod's own standard Meshtastic DeviceMetrics (battery_level, voltage), from its
+    /// node_info in the handshake or a TELEMETRY_APP packet. `source`: "node_info" or "telemetry".
+    func onDeskDeviceMetrics(_ metrics: MeshtasticPhoneAPI.DeviceMetrics, source: String)
 }
 
 public extension BtrxClientListener {
@@ -49,6 +52,7 @@ public extension BtrxClientListener {
     func onFrame(_ frame: BtrxProtocol.Frame, meta: BtrxRadioMeta) {}
     func onVersionRefused(fromNode: UInt32, version: Int) {}
     func onPacketDropped(encrypted: Bool) {}
+    func onDeskDeviceMetrics(_ metrics: MeshtasticPhoneAPI.DeviceMetrics, source: String) {}
 }
 
 /// Desk Pod client: the Meshtastic phone-API handshake, send/receive on app port 256,
@@ -325,7 +329,49 @@ public final class BtrxClient: BtrxFrameSender {
         }
         var id = UInt32(truncatingIfNeeded: rng.next())
         if id == 0 { id = 1 }
+        logTx(to, frame)
         sendToRadio(MeshtasticPhoneAPI.toRadioPacket(to: to, packetId: id, portnum: BtrxProtocol.privateAppPort, payload: frame))
+    }
+
+    private var txLogged: [String: Int] = [:]
+    private var txLastMs: [String: Int64] = [:]
+    private var txSkipped: [String: Int] = [:]
+
+    /// Every btrx frame this app sends, at debug (reaches the session log; Nov 17: rule the app
+    /// in or out from the log alone). The 5 s CONFIRM_RSP keepalive and TIME_PING repeat, so
+    /// those two log the first ``txLogFirst`` of a session, then one per ``txLogIntervalMs``
+    /// with a count of the ones left out (those go to info). Same as Android.
+    private func logTx(_ to: UInt32, _ frame: [UInt8]) {
+        let decoded = try? BtrxProtocol.decodeFrame(frame)
+        let line = "tx to=\(Self.nodeName(to)) " + (decoded.map { BtrxFrameLog.format($0) } ?? "undecodable frame raw=\(BtrxProtocol.hex(frame))")
+        guard let key = decoded.flatMap(Self.txRepeatKey) else { log.debug(line); return }
+        let now = clock()
+        let logged = txLogged[key] ?? 0
+        if logged < Self.txLogFirst || txLastMs[key] == nil || now - txLastMs[key]! >= Self.txLogIntervalMs {
+            let skipped = txSkipped.removeValue(forKey: key) ?? 0
+            txLogged[key] = logged + 1
+            txLastMs[key] = now
+            log.debug(skipped > 0 ? "\(line) (+\(skipped) like it not logged since the last one)" : line)
+        } else {
+            txSkipped[key, default: 0] += 1
+            log.info(line)
+        }
+    }
+
+    /// Sent CONFIRM_RSP keepalives and TIME_PINGs: the first this many per session at debug...
+    public static let txLogFirst = 3
+    /// ...then one of each per this long (the 5 s keepalive would fill the session log).
+    public static let txLogIntervalMs: Int64 = 60_000
+
+    /// Sent frames that repeat on a timer share a rate limit; nil = log every one.
+    public static func txRepeatKey(_ frame: BtrxProtocol.Frame) -> String? {
+        switch frame.type {
+        case BtrxProtocol.TIME_PING: return "TIME_PING"
+        case BtrxProtocol.CONFIRM_RSP:
+            guard let r = try? BtrxProtocol.parseConfirmRsp(frame.payload), r.answer == BtrxProtocol.CFM_KEEPALIVE else { return nil }
+            return "CONFIRM_RSP keepalive"
+        default: return nil
+        }
     }
 
     public func nextSeq() -> Int {
@@ -373,6 +419,11 @@ public final class BtrxClient: BtrxFrameSender {
             firstDrainFrames = 0
             lastSerialRxMs = clock()
             readyMs = clock()
+        case .nodeInfo(let num, let metrics):
+            if let m = metrics, num == localNode {
+                log.debug("Desk Pod device metrics (node_info): \(m.logText())")
+                listener?.onDeskDeviceMetrics(m, source: "node_info")
+            }
         case .packet(let p): onPacket(p)
         case .other: break
         }
@@ -380,6 +431,11 @@ public final class BtrxClient: BtrxFrameSender {
 
     private func onPacket(_ packet: MeshtasticPhoneAPI.Packet) {
         guard packet.portnum == BtrxProtocol.privateAppPort, let payload = packet.payload else {
+            if packet.portnum == MeshtasticPhoneAPI.telemetryAppPort, let p = packet.payload, packet.from == localNode,
+               let m = (try? MeshtasticPhoneAPI.parseTelemetryDeviceMetrics(p)) ?? nil {
+                log.debug("Desk Pod device metrics (telemetry): \(m.logText())")
+                listener?.onDeskDeviceMetrics(m, source: "telemetry")
+            }
             onDropped(packet)
             return
         }

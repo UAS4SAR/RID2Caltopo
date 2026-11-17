@@ -731,6 +731,7 @@ extension BtrxBleCentral: BtrxClientListener {
     func onVersionRefused(fromNode: UInt32, version: Int) {}
 
     func onPacketDropped(encrypted: Bool) { model.onPacketDropped(encrypted: encrypted) }
+    func onDeskDeviceMetrics(_ metrics: MeshtasticPhoneAPI.DeviceMetrics, source: String) { model.onDeskDeviceMetrics(metrics, source: source) }
 }
 
 /// Main-actor face of the Desk Pod link for SwiftUI: the published snapshot, the
@@ -785,7 +786,8 @@ public final class BtrxDeskPodCenter: ObservableObject {
         let setUp = BtrxMapStatus.setUp(bluetoothLinkEnabled: bluetoothEnabled, deskPodRemembered: rememberedPeripheral != nil)
         let next = BtrxMapStatus.status(setUp: setUp, link: snapshot.link, bluetoothOff: setUp && central.bluetoothPoweredOff(),
                                         pausedForUSB: snapshot.bluetoothPausedForUSB,
-                                        dronePodReporting: BtrxMapStatus.dronePodReporting(secondsSinceReport: central.secondsSinceDronePodReport()))
+                                        dronePodReporting: BtrxMapStatus.dronePodReporting(secondsSinceReport: central.secondsSinceDronePodReport()),
+                                        deskPodSilent: snapshot.deskSilent, deskPodNotice: snapshot.deskRestartNotice)
         guard next != mapStatus else { return }
         mapStatus = next
         OperationalBridgePacketLog.write?("DEBUG", "Btrx", "map status: \(next?.text ?? "hidden")")

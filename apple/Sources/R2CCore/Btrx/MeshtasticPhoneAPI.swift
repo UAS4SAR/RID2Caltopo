@@ -5,7 +5,10 @@ import Foundation
 /// MeshtasticSerial.kt and MeshtasticBle; keep them matching.
 ///
 ///     ToRadio   1 packet (MeshPacket), 3 want_config_id (uint32), 7 heartbeat (Heartbeat)
-///     FromRadio 2 packet, 3 my_info (MyNodeInfo: 1 my_node_num), 7 config_complete_id
+///     FromRadio 2 packet, 3 my_info (MyNodeInfo: 1 my_node_num), 4 node_info (NodeInfo), 7 config_complete_id
+///     NodeInfo  1 num, 6 device_metrics (DeviceMetrics)
+///     Telemetry (TELEMETRY_APP, port 67) 2 device_metrics (DeviceMetrics)
+///     DeviceMetrics 1 battery_level (uint32; 101 = powered, no battery), 2 voltage (float), 5 uptime_seconds
 ///     MeshPacket 1 from (fixed32), 2 to (fixed32), 3 channel, 4 decoded (Data), 6 id (fixed32),
 ///                8 rx_snr (float), 9 hop_limit (R2C sends 0), 10 want_ack, 12 rx_rssi (int32)
 ///     Data       1 portnum (enum), 2 payload (bytes)
@@ -17,6 +20,27 @@ public enum MeshtasticPhoneAPI {
     public static let start2: UInt8 = 0xC3
     public static let maxPacket = 512
     public static let broadcast: UInt32 = 0xFFFF_FFFF
+    /// Meshtastic PortNum.TELEMETRY_APP.
+    public static let telemetryAppPort = 67
+    /// DeviceMetrics.battery_level above 100: on external power (Meshtastic sends 101).
+    public static let batteryPowered = 101
+
+    /// Meshtastic's standard DeviceMetrics (only the fields R2C shows). Each is nil when the
+    /// node left it out; nothing here is computed by R2C. Same as Android.
+    public struct DeviceMetrics: Equatable, Sendable {
+        public let batteryLevel: Int?
+        public let voltage: Float?
+        public let uptimeSeconds: UInt32?
+        public init(batteryLevel: Int?, voltage: Float?, uptimeSeconds: UInt32?) {
+            self.batteryLevel = batteryLevel; self.voltage = voltage; self.uptimeSeconds = uptimeSeconds
+        }
+        public var isEmpty: Bool { batteryLevel == nil && voltage == nil && uptimeSeconds == nil }
+        /// "battery_level=101 voltage=4.98 uptime_s=120" for the session log; "-" for a field left out.
+        public func logText() -> String {
+            "battery_level=\(batteryLevel.map(String.init) ?? "-") voltage=\(voltage.map { String(format: "%.2f", $0) } ?? "-") " +
+                "uptime_s=\(uptimeSeconds.map(String.init) ?? "-")"
+        }
+    }
 
     // Bluetooth phone API (meshtastic.org/docs/development/device/client-api).
     public static let serviceUUID = "6ba1b218-15a8-461f-9fa8-5dcae273eafd"
@@ -57,6 +81,8 @@ public enum MeshtasticPhoneAPI {
     public enum FromRadio: Equatable, Sendable {
         case myInfo(nodeNum: UInt32)
         case configComplete(id: UInt32)
+        /// A node record sent during the config handshake; `metrics` nil when it carries none.
+        case nodeInfo(nodeNum: UInt32, metrics: DeviceMetrics?)
         case packet(Packet)
         /// Node, config, channel, log and every other record R2C does not use.
         case other(field: Int)
@@ -98,6 +124,7 @@ public enum MeshtasticPhoneAPI {
                     if f == 1 && w == 0 { node = UInt32(truncatingIfNeeded: try info.varint()) } else { try info.skip(w) }
                 }
                 result = .myInfo(nodeNum: node)
+            case (4, 2): result = try parseNodeInfo(try r.lengthDelimited())
             case (7, 0): result = .configComplete(id: UInt32(truncatingIfNeeded: try r.varint()))
             case (1, _): try r.skip(wire)
             default:
@@ -106,6 +133,47 @@ public enum MeshtasticPhoneAPI {
             }
         }
         return result ?? .other(field: 0)
+    }
+
+    private static func parseNodeInfo(_ buf: [UInt8]) throws -> FromRadio {
+        let r = ProtoReader(buf)
+        var num: UInt32 = 0
+        var metrics: DeviceMetrics?
+        while r.hasMore {
+            let (f, w) = try r.tag()
+            switch (f, w) {
+            case (1, 0): num = UInt32(truncatingIfNeeded: try r.varint())
+            case (6, 2): metrics = try parseDeviceMetrics(try r.lengthDelimited())
+            default: try r.skip(w)
+            }
+        }
+        return .nodeInfo(nodeNum: num, metrics: metrics?.isEmpty == false ? metrics : nil)
+    }
+
+    /// DeviceMetrics from a TELEMETRY_APP payload (Telemetry field 2), or nil when it holds another kind.
+    public static func parseTelemetryDeviceMetrics(_ payload: [UInt8]) throws -> DeviceMetrics? {
+        let r = ProtoReader(payload)
+        var metrics: DeviceMetrics?
+        while r.hasMore {
+            let (f, w) = try r.tag()
+            if f == 2 && w == 2 { metrics = try parseDeviceMetrics(try r.lengthDelimited()) } else { try r.skip(w) }
+        }
+        return metrics?.isEmpty == false ? metrics : nil
+    }
+
+    private static func parseDeviceMetrics(_ buf: [UInt8]) throws -> DeviceMetrics {
+        let r = ProtoReader(buf)
+        var level: Int?, voltage: Float?, uptime: UInt32?
+        while r.hasMore {
+            let (f, w) = try r.tag()
+            switch (f, w) {
+            case (1, 0): level = Int(truncatingIfNeeded: try r.varint())
+            case (2, 5): voltage = Float(bitPattern: try r.fixed32())
+            case (5, 0): uptime = UInt32(truncatingIfNeeded: try r.varint())
+            default: try r.skip(w)
+            }
+        }
+        return DeviceMetrics(batteryLevel: level, voltage: voltage, uptimeSeconds: uptime)
     }
 
     private static func parseMeshPacket(_ buf: [UInt8]) throws -> Packet {
@@ -194,6 +262,7 @@ public enum MeshtasticPhoneAPI {
             for i in 0..<4 { out.append(UInt8((v >> (8 * UInt32(i))) & 0xFF)) }
             return self
         }
+        @discardableResult public func float32(_ field: Int, _ v: Float) -> ProtoWriter { fixed32(field, v.bitPattern) }
         @discardableResult public func bytesField(_ field: Int, _ b: [UInt8]) -> ProtoWriter {
             tag(field, 2); rawVarint(UInt64(b.count)); out += b; return self
         }

@@ -217,7 +217,23 @@ public enum BtrxDeskPodText {
         if let lost = s.deskPhoneLost { out.append(deskPhoneLostLine(lost)) }
         // Desk Pod HEALTH from byte 30: only phone_lost and reset_reason mean anything (38-43 are always 0).
         if let e = s.deskHealthExt { out.append("Desk Pod last reset: \(resetReasonText(e.resetReason))") }
+        out.append(contentsOf: deskPowerLines(s))
         out.append(deskWindowLine(s))
+        return out
+    }
+
+    /// Desk Pod power (Nov 17): went silent, restarted after a drop, and its standard
+    /// DeviceMetrics when it sends them. Same lines as Android.
+    public static func deskPowerLines(_ s: Model.Snapshot) -> [String] {
+        var out: [String] = []
+        if s.deskSilent { out.append(BtrxDeskPodPower.silent + (s.deskSilentReason.map { " (link lost: \($0))" } ?? "")) }
+        if let r = s.deskRestart {
+            let down = r.downMs.map { "; back about \($0 / 1000) s after the link dropped" } ?? ""
+            out.append("\(r.text) \(ago(s.nowMs - r.atMs)) (uptime \(r.uptimeS) s\(down))")
+        }
+        if let m = s.deskDeviceMetrics, let line = BtrxDeskPodPower.metricsLine(m) {
+            out.append(line + (s.deskDeviceMetricsAtMs.map { ", \(ago(s.nowMs - $0))" } ?? ""))
+        }
         return out
     }
 

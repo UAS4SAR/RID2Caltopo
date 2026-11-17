@@ -8,6 +8,7 @@ import Foundation
 public enum BtrxMapStatus {
     public static let active = "BTRX: Active"
     public static let activeNoReports = "BTRX: Active - No Drone Pod reports"
+    public static let activePrefix = "BTRX: Active - "
     public static let inactivePrefix = "BTRX: Inactive - "
     public static let btDown = "BT Down"
     public static let connecting = "Connecting"
@@ -18,6 +19,8 @@ public enum BtrxMapStatus {
     public static let linkOff = "Link off"
     public static let noPermission = "No permission"
     public static let unavailable = "Bluetooth unavailable"
+    /// The last Bluetooth session ended with the Desk Pod silent (Nov 17): most likely its power.
+    public static let deskPodSilent = BtrxDeskPodPower.silent
 
     /// No frame from the paired Drone Pod for this long while READY: the orange Active chip
     /// (Android DRONE_POD_REPORT_MS, 15 s).
@@ -51,15 +54,20 @@ public enum BtrxMapStatus {
 
     /// `dronePodReporting`: a Drone Pod report (`isDronePodReport`) in the last
     /// `dronePodReportSeconds`. `bluetoothOff`: the device's Bluetooth is turned off.
-    public static func status(setUp: Bool, link: BtrxDeskPodModel.LinkStatus, bluetoothOff: Bool, pausedForUSB: Bool, dronePodReporting: Bool) -> Status? {
+    /// `deskPodSilent`: the last Bluetooth session ended with the Desk Pod silent and none has
+    /// started since (`deskPodSilent` replaces "BT Down" / "Connecting"). `deskPodNotice`:
+    /// "Desk Pod restarted (power-on)" while fresh; orange "BTRX: Active - <notice>" while ready.
+    public static func status(setUp: Bool, link: BtrxDeskPodModel.LinkStatus, bluetoothOff: Bool, pausedForUSB: Bool, dronePodReporting: Bool,
+                              deskPodSilent silent: Bool = false, deskPodNotice: String? = nil) -> Status? {
         guard setUp else { return nil }
         if link.phase == .ready && !pausedForUSB {
+            if let notice = deskPodNotice { return Status(text: activePrefix + notice, active: true, warning: true) }
             return dronePodReporting ? Status(text: active, active: true) : Status(text: activeNoReports, active: true, warning: true)
         }
-        return Status(text: inactivePrefix + reason(link, bluetoothOff: bluetoothOff, pausedForUSB: pausedForUSB), active: false)
+        return Status(text: inactivePrefix + reason(link, bluetoothOff: bluetoothOff, pausedForUSB: pausedForUSB, silent: silent), active: false)
     }
 
-    private static func reason(_ link: BtrxDeskPodModel.LinkStatus, bluetoothOff: Bool, pausedForUSB: Bool) -> String {
+    private static func reason(_ link: BtrxDeskPodModel.LinkStatus, bluetoothOff: Bool, pausedForUSB: Bool, silent: Bool) -> String {
         if pausedForUSB || link.phase == .pausedForUSB { return pausedUSB }
         if link.kind == .usb { return connecting }
         switch link.phase {
@@ -71,6 +79,8 @@ public enum BtrxMapStatus {
         case .noPermission: return noPermission
         case .unavailable: return unavailable
         case .configuring: return connecting
+        // retryWait, scanning, bonding, connecting after the Desk Pod stopped answering.
+        case _ where silent && link.kind == .bluetooth: return deskPodSilent
         case .retryWait: return btDown
         // scanning, bonding, connecting: the first connect, or reconnecting after a drop.
         default: return link.failedAttempts > 0 ? btDown : connecting

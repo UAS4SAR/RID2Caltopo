@@ -63,6 +63,11 @@ class BtrxClient(
         fun onVersionRefused(fromNode: Long, version: Int) {}
         /** A packet that is not a decoded btrx (port 256) packet was dropped; [encrypted]: the node could not decode it. */
         fun onPacketDropped(encrypted: Boolean) {}
+        /**
+         * The Desk Pod's own standard Meshtastic DeviceMetrics (battery_level, voltage), from its
+         * node_info in the handshake or a TELEMETRY_APP packet. [source]: "node_info" or "telemetry".
+         */
+        fun onDeskDeviceMetrics(metrics: MeshtasticSerial.DeviceMetrics, source: String) {}
 
         // Pairing (DESK_PAIR from the Desk Pod itself, PAIR_REQ / PAIR_ACK from the starboard
         // board) is handled by BtrxDeskPodModel from onFrame. PAIR_CONFIRM assigns a non-zero
@@ -282,7 +287,37 @@ class BtrxClient(
             return
         }
         val id = (random.nextInt().toLong() and 0xFFFFFFFFL).let { if (it == 0L) 1L else it }
+        logTx(to, frame)
         sendToRadio(MeshtasticSerial.toRadioPacket(to, id, P.PRIVATE_APP_PORT, frame))
+    }
+
+    private val txLogged = HashMap<String, Int>()
+    private val txLastMs = HashMap<String, Long>()
+    private val txSkipped = HashMap<String, Int>()
+
+    /**
+     * Every btrx frame this app sends, at debug (reaches the session log; Nov 17: rule the app
+     * in or out from the log alone). The 5 s CONFIRM_RSP keepalive and TIME_PING repeat, so
+     * those two log the first [TX_LOG_FIRST] of a session, then one per [TX_LOG_INTERVAL_MS]
+     * with a count of the ones left out (those go to info).
+     */
+    private fun logTx(to: Long, frame: ByteArray) {
+        val decoded = runCatching { P.decodeFrame(frame) }.getOrNull()
+        val line = "tx to=${nodeName(to)} " + (decoded?.let { BtrxFrameLog.format(it) } ?: "undecodable frame raw=${P.hex(frame)}")
+        val key = decoded?.let { txRepeatKey(it) }
+        if (key == null) { log.debug(line); return }
+        val now = clock()
+        val logged = txLogged[key] ?: 0
+        val last = txLastMs[key]
+        if (logged < TX_LOG_FIRST || last == null || now - last >= TX_LOG_INTERVAL_MS) {
+            val skipped = txSkipped.remove(key) ?: 0
+            txLogged[key] = logged + 1
+            txLastMs[key] = now
+            log.debug(if (skipped > 0) "$line (+$skipped like it not logged since the last one)" else line)
+        } else {
+            txSkipped[key] = (txSkipped[key] ?: 0) + 1
+            log.info(line)
+        }
     }
 
     /** Lock-free on purpose (see [state]): callers may hold the model's lock. */
@@ -352,6 +387,13 @@ class BtrxClient(
                 lastSerialRxMs = clock()
                 readyMs = clock()
             }
+            is FromRadio.NodeInfo -> {
+                val m = msg.metrics
+                if (m != null && msg.nodeNum == localNode) {
+                    log.debug("Desk Pod device metrics (node_info): ${m.logText()}")
+                    listener.onDeskDeviceMetrics(m, "node_info")
+                }
+            }
             is FromRadio.Packet -> onPacket(msg)
             is FromRadio.Other -> Unit
         }
@@ -359,6 +401,13 @@ class BtrxClient(
 
     private fun onPacket(packet: FromRadio.Packet) {
         if (packet.portnum != P.PRIVATE_APP_PORT || packet.payload == null) {
+            if (packet.portnum == MeshtasticSerial.TELEMETRY_APP_PORT && packet.payload != null && packet.from == localNode) {
+                val m = runCatching { MeshtasticSerial.parseTelemetryDeviceMetrics(packet.payload) }.getOrNull()
+                if (m != null) {
+                    log.debug("Desk Pod device metrics (telemetry): ${m.logText()}")
+                    listener.onDeskDeviceMetrics(m, "telemetry")
+                }
+            }
             onDropped(packet)
             return
         }
@@ -482,6 +531,19 @@ class BtrxClient(
         val RATE_LOGGED = setOf(P.HEALTH, P.DETECT)
         const val RATE_LOG_FIRST = 3
         const val RATE_LOG_INTERVAL_MS = 10_000L
+        /** Sent CONFIRM_RSP keepalives and TIME_PINGs: the first this many per session at debug... */
+        const val TX_LOG_FIRST = 3
+        /** ...then one of each per this long (the 5 s keepalive would fill the session log). */
+        const val TX_LOG_INTERVAL_MS = 60_000L
+
+        /** Sent frames that repeat on a timer share a rate limit; null = log every one. */
+        fun txRepeatKey(frame: P.Frame): String? = when (frame.type) {
+            P.TIME_PING -> "TIME_PING"
+            P.CONFIRM_RSP -> runCatching { P.parseConfirmRsp(frame.payload) }.getOrNull()
+                ?.takeIf { it.answer == P.CFM_KEEPALIVE }?.let { "CONFIRM_RSP keepalive" }
+            else -> null
+        }
+
         /** Dropped (non-btrx) packets logged per session; all are counted. */
         const val DROPPED_LOG_LIMIT = 5
         val ALWAYS_LOGGED = setOf(P.STEER, P.PAIR_REQ, P.PAIR_ACK, P.DESK_PAIR, P.ROLE_REPORT, P.IMU_CAL_ACK, P.CONFIRM_REQ)

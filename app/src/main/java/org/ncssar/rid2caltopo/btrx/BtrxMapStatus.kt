@@ -14,6 +14,7 @@ import org.ncssar.rid2caltopo.btrx.BtrxDeskPodModel.LinkStatus
 object BtrxMapStatus {
     const val ACTIVE = "BTRX: Active"
     const val ACTIVE_NO_REPORTS = "BTRX: Active - No Drone Pod reports"
+    const val ACTIVE_PREFIX = "BTRX: Active - "
     const val INACTIVE_PREFIX = "BTRX: Inactive - "
     const val BT_DOWN = "BT Down"
     const val CONNECTING = "Connecting"
@@ -24,6 +25,8 @@ object BtrxMapStatus {
     const val LINK_OFF = "Link off"
     const val NO_PERMISSION = "No permission"
     const val UNAVAILABLE = "Bluetooth unavailable"
+    /** The last Bluetooth session ended with the Desk Pod silent (Nov 17): most likely its power. */
+    const val DESK_POD_SILENT = BtrxDeskPodPower.SILENT
 
     /** No frame from the paired Drone Pod for this long while READY: the orange Active chip (iPad: 15 s too). */
     const val DRONE_POD_REPORT_MS = 15_000L
@@ -52,16 +55,26 @@ object BtrxMapStatus {
     /**
      * [dronePodReporting]: a Drone Pod report ([isDronePodReport]) in the last
      * [DRONE_POD_REPORT_MS]. [bluetoothOff]: the tablet's Bluetooth is turned off.
+     * [deskPodSilent]: the last Bluetooth session ended with the Desk Pod silent and none has
+     * started since ([DESK_POD_SILENT] replaces "BT Down" / "Connecting"). [deskPodNotice]:
+     * "Desk Pod restarted (power-on)" while fresh; orange "BTRX: Active - <notice>" while READY.
      */
-    fun status(setUp: Boolean, link: LinkStatus, bluetoothOff: Boolean, pausedForUsb: Boolean, dronePodReporting: Boolean): Status? {
+    fun status(
+        setUp: Boolean, link: LinkStatus, bluetoothOff: Boolean, pausedForUsb: Boolean, dronePodReporting: Boolean,
+        deskPodSilent: Boolean = false, deskPodNotice: String? = null,
+    ): Status? {
         if (!setUp) return null
         if (link.phase == LinkPhase.READY && !pausedForUsb) {
-            return if (dronePodReporting) Status(ACTIVE, active = true) else Status(ACTIVE_NO_REPORTS, active = true, warning = true)
+            return when {
+                deskPodNotice != null -> Status(ACTIVE_PREFIX + deskPodNotice, active = true, warning = true)
+                dronePodReporting -> Status(ACTIVE, active = true)
+                else -> Status(ACTIVE_NO_REPORTS, active = true, warning = true)
+            }
         }
-        return Status(INACTIVE_PREFIX + reason(link, bluetoothOff, pausedForUsb), false)
+        return Status(INACTIVE_PREFIX + reason(link, bluetoothOff, pausedForUsb, deskPodSilent), false)
     }
 
-    private fun reason(link: LinkStatus, bluetoothOff: Boolean, pausedForUsb: Boolean): String = when {
+    private fun reason(link: LinkStatus, bluetoothOff: Boolean, pausedForUsb: Boolean, deskPodSilent: Boolean): String = when {
         pausedForUsb || link.phase == LinkPhase.PAUSED_FOR_USB -> PAUSED_USB
         link.kind == LinkKind.USB -> CONNECTING
         link.phase == LinkPhase.OFF -> LINK_OFF
@@ -69,6 +82,8 @@ object BtrxMapStatus {
         link.phase == LinkPhase.NO_PERMISSION -> NO_PERMISSION
         link.phase == LinkPhase.UNAVAILABLE -> UNAVAILABLE
         link.phase == LinkPhase.CONFIGURING -> CONNECTING
+        // RETRY_WAIT, SCANNING, BONDING, CONNECTING after the Desk Pod stopped answering.
+        deskPodSilent && link.kind == LinkKind.BLUETOOTH -> DESK_POD_SILENT
         link.phase == LinkPhase.RETRY_WAIT -> BT_DOWN
         // SCANNING, BONDING, CONNECTING: the first connect, or reconnecting after a drop.
         link.failedAttempts > 0 -> BT_DOWN

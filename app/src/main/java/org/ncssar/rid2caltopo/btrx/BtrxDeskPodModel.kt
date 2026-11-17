@@ -183,6 +183,17 @@ class BtrxDeskPodModel(
         val buttonConfirmLink: ButtonConfirmLink = ButtonConfirmLink.NO_LINK,
         /** When the Desk Pod reported a factory reset from its button (it comes back unpaired), until a pairing completes. */
         val deskResetAtMs: Long? = null,
+        /** The last session ended with the Desk Pod silent (Nov 17), and no session has started since. */
+        val deskSilent: Boolean = false,
+        /** Why that session ended. */
+        val deskSilentReason: String? = null,
+        /** "Desk Pod restarted (power-on)" while fresh (the map chip), else null. */
+        val deskRestartNotice: String? = null,
+        /** The latest restart after a link drop, kept for the Desk Pod screen. */
+        val deskRestart: BtrxDeskPodPower.Restart? = null,
+        /** The Desk Pod's own standard DeviceMetrics, when it sent any. */
+        val deskDeviceMetrics: MeshtasticSerial.DeviceMetrics? = null,
+        val deskDeviceMetricsAtMs: Long? = null,
     ) {
         val roleSupported: Boolean get() = role != null && P.buildSupported(role.buildHash)
         /** An op 3 / 4 for [srcId] is waiting for its FILTER_ACK. */
@@ -243,6 +254,7 @@ class BtrxDeskPodModel(
     /** The Desk Pod's build from its own HEALTH, when no ROLE_REPORT gave it. */
     private var deskHealthBuild: Int? = null
     private var deskResetAtMs: Long? = null
+    private val power = BtrxDeskPodPower()
 
     // ---- link ----
 
@@ -267,6 +279,7 @@ class BtrxDeskPodModel(
         deskHealthBuild = null
         buttonConfirm.newSession()
         quietWatchSinceMs = clock()
+        power.onSessionStarted()
     }
 
     /** The session ended. A pairing in progress fails: its frames would go nowhere. */
@@ -275,6 +288,7 @@ class BtrxDeskPodModel(
             if (this.sender !== sender) return
             this.sender = null
             log.debug(linkDropLine(reason, clock()))
+            power.onDrop(reason, clock())?.let { log.warn(it) }
             if (pairing.step in ACTIVE_STEPS) fail(pairing.step, "The link to the Desk Pod was lost ($reason).")
             if (pendingFilters.isNotEmpty()) filterMessage = "No answer from the Drone Pod: the link to the Desk Pod was lost."
             pendingFilters.clear()
@@ -345,6 +359,12 @@ class BtrxDeskPodModel(
     fun onConfigured(node: Long) { localNode = node }
 
     /** A non-btrx packet the client dropped (encrypted for another channel, or another port). */
+    /** The Desk Pod's own standard Meshtastic DeviceMetrics (node_info or TELEMETRY_APP). */
+    @Synchronized
+    fun onDeskDeviceMetrics(metrics: MeshtasticSerial.DeviceMetrics, source: String) {
+        power.onDeviceMetrics(metrics, source, clock())
+    }
+
     @Synchronized
     fun onPacketDropped(encrypted: Boolean) { if (encrypted) droppedEncrypted++ else droppedOtherPort++ }
 
@@ -380,6 +400,7 @@ class BtrxDeskPodModel(
                         deskUptimeS = h.uptimeS
                         deskHealthBuild = h.buildHash
                         deskHealthAtMs = meta.arrivalMs
+                        power.onDeskHealth(h.uptimeS, h.ext?.resetReason, meta.arrivalMs)?.let { log.warn(it) }
                     }
                 } else if (acceptsPodTraffic(frame, meta)) onPodTraffic(frame, meta)
                 else -> if (meta.fromNode != localNode && acceptsPodTraffic(frame, meta)) onPodTraffic(frame, meta)
@@ -772,6 +793,12 @@ class BtrxDeskPodModel(
             buttonLastNotice = buttonConfirm.notice,
             buttonConfirmLink = buttonConfirmLinkLocked(),
             deskResetAtMs = deskResetAtMs,
+            deskSilent = power.silentSinceMs != null,
+            deskSilentReason = power.silentReason,
+            deskRestartNotice = power.restartNotice(now),
+            deskRestart = power.restart,
+            deskDeviceMetrics = power.metrics,
+            deskDeviceMetricsAtMs = power.metricsAtMs,
         )
     }
 

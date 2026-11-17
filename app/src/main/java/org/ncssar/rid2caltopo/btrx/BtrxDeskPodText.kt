@@ -99,7 +99,23 @@ object BtrxDeskPodText {
         s.deskPhoneLost?.let { add(deskPhoneLostLine(it)) }
         // Desk Pod HEALTH from byte 30: only phone_lost and reset_reason mean anything (38-43 are always 0).
         s.deskHealthExt?.let { add("Desk Pod last reset: ${resetReasonText(it.resetReason)}") }
+        addAll(deskPowerLines(s))
         add(deskWindowLine(s))
+    }
+
+    /**
+     * Desk Pod power (Nov 17): went silent, restarted after a drop, and its standard
+     * DeviceMetrics when it sends them. Same lines on the iPad.
+     */
+    fun deskPowerLines(s: BtrxDeskPodModel.Snapshot): List<String> = buildList {
+        if (s.deskSilent) add(BtrxDeskPodPower.SILENT + (s.deskSilentReason?.let { " (link lost: $it)" } ?: ""))
+        s.deskRestart?.let { r ->
+            val down = r.downMs?.let { "; back about ${it / 1000} s after the link dropped" } ?: ""
+            add("${r.text} ${ago(s.nowMs - r.atMs)} (uptime ${r.uptimeS} s$down)")
+        }
+        s.deskDeviceMetrics?.let { m ->
+            BtrxDeskPodPower.metricsLine(m)?.let { line -> add(line + (s.deskDeviceMetricsAtMs?.let { ", ${ago(s.nowMs - it)}" } ?: "")) }
+        }
     }
 
     /** The Desk Pod's pairing state, from DESK_PAIR (not HEALTH). */

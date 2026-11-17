@@ -214,6 +214,8 @@ object BtrxManager {
         val next = BtrxMapStatus.status(
             setUp, snap.link, setUp && bluetoothOff(), snap.bluetoothPausedForUsb,
             BtrxMapStatus.dronePodReporting(lastDronePodReportMs, android.os.SystemClock.elapsedRealtime()),
+            deskPodSilent = snap.deskSilent,
+            deskPodNotice = snap.deskRestartNotice,
         )
         synchronized(mapStatusLock) {
             if (next == _mapStatus.value) return
@@ -252,6 +254,7 @@ object BtrxManager {
         }
         override fun onLocalRoleReport(report: BtrxProtocol.RoleReport) = model.onLocalRoleReport(report)
         override fun onPacketDropped(encrypted: Boolean) = model.onPacketDropped(encrypted)
+        override fun onDeskDeviceMetrics(metrics: MeshtasticSerial.DeviceMetrics, source: String) = model.onDeskDeviceMetrics(metrics, source)
         override fun onFrame(frame: BtrxProtocol.Frame, meta: BtrxClient.RadioMeta) {
             val origin = model.bearingOrigin(frame, meta)
             if (BtrxMapStatus.isDronePodReport(frame.type, meta.backlog, origin == BtrxDeskPodModel.BEARING_FROM_POD)) {
