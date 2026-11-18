@@ -1627,7 +1627,13 @@ struct RIDTrackMapView: View {
                 if !inset, let btrxCenter { BtrxOwnAircraftSuggestion(center: btrxCenter).padding(.bottom, 120).padding(.horizontal, 56) }
             }
             .overlay(alignment: .top) {
-                if !inset, let btrxCenter { BtrxFocusChip(center: btrxCenter).padding(.top, 48) }
+                VStack(spacing: 6) {
+                    // Compact: a live stream is not recorded because Capture Streams is off (Nov 18).
+                    if !inset { NotCapturingStreamBanner() }
+                    if !inset, let btrxCenter { BtrxFocusChip(center: btrxCenter) }
+                }
+                .padding(.top, 48)
+                .padding(.horizontal, 8)
             }
             // Only map-content taps expand a split pane. Settings controls must
             // not also change the layout and destroy their presenting view.

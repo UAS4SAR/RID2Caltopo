@@ -858,6 +858,7 @@ struct ContentView: View {
                     landRestrictions.update(location: locationProvider.lastLocation)
                 }
                 if !ProcessInfo.processInfo.arguments.contains("--manual-mediamtx") {
+                    CaptureStreamsCenter.shared.logLoad()
                     mediaMTX.start(captureStreams: captureStreams)
                 }
                 #if DEBUG
@@ -1153,9 +1154,11 @@ struct ContentView: View {
                 guard !AppleApplicationCleanupCenter.shared.isShutdownRequested else { return }
                 mediaMTX.restart(captureStreams: captureStreams)
             }
-            .onChange(of: captureStreams) { _, enabled in
+            .onChange(of: captureStreams) { old, enabled in
+                CaptureStreamsCenter.shared.changed(old: old, new: enabled)
                 guard !AppleApplicationCleanupCenter.shared.isShutdownRequested else { return }
-                mediaMTX.restart(captureStreams: enabled)
+                // Recording switches through the MediaMTX API; live video never restarts.
+                mediaMTX.updateCaptureEnabled(enabled)
             }
     }
 

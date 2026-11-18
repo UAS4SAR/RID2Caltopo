@@ -241,6 +241,9 @@ final class MediaMTXViewModel: ObservableObject {
                 // midnight. Today is always protected, and incomplete segments are
                 // protected for this recorder run via setRecorderRunning.
                 let capturesRecordings = captureStreams && recordingAllowed
+                // Logged at every start so a missed flight can be traced to the setting in force.
+                if captureStreams { AppleLog.info("MediaMTX", CaptureStreamsLog.serverStart(true)) }
+                else { AppleLog.warning("MediaMTX", CaptureStreamsLog.serverStart(false)) }
                 let configuration = try MediaMTXRuntimeConfiguration.build(
                     base: baseConfiguration,
                     captureStreams: captureStreams,
@@ -544,6 +547,15 @@ final class MediaMTXViewModel: ObservableObject {
             }
         }
         Task { await recordingReconciler.updateStorageBlocked(!allowed) }
+    }
+
+    /// Capture Streams changed: switch recording through the API without restarting the server.
+    func updateCaptureEnabled(_ enabled: Bool) {
+        AppleLog.info("MediaMTX", "Capture Streams \(enabled ? "ON" : "OFF"); updating recording via API (no restart)")
+        if isRunning, status.hasPrefix("Running") || status.hasPrefix("Capture paused") {
+            status = enabled && recordingAllowed ? "Running • capturing streams" : (enabled ? "Capture paused: storage limit" : "Running")
+        }
+        Task { await recordingReconciler.updateCaptureEnabled(enabled) }
     }
 
     /// Fallback when MediaMTX did not accept turning recording off.

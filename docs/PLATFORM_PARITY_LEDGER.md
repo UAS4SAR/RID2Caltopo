@@ -1715,3 +1715,29 @@ Both planners now expose independent Transit speed in the same ft/s or m/s units
 - Three Android and two Swift existing persistence/change-detection tests passed.
   Saved credentials, recording/sharing and operational files are unchanged.
 - Evidence: [build 416 validation](../release-notes/2.5.4/validation-416.md).
+
+## 2026-11-18 — Read-only archive and Capture Streams safeguards (2.6.0)
+
+- Field 2026-11-17/18 (Galaxy Tab S11 Ultra): Capture Streams was found off and a search
+  flight was not recorded; the next morning the SD card remounted read-only and the Flight
+  Storage pop-up flickered.
+- Shared logic, same names and strings: `ArchiveWritabilityTracker` (sticky read-only/I-O
+  verdict, rechecks only on remount, folder pick or at most every 5 minutes),
+  `ArchiveWritabilityText`, the "Not capturing stream" policy and Capture Streams log
+  lines. Android: `storage/ArchiveWritability*.kt`, `video/NotCapturingStreams.kt`.
+  Swift: `R2CCore/ArchiveWritability.swift`.
+- Both platforms: every Capture Streams change is logged with old value, new value and
+  source; the setting is logged at each media server start; turning it off in Settings asks
+  first; turning it on (Settings or the panel) switches recording through the MediaMTX API
+  without restarting live video; the compact "Not capturing stream: <drone>" panel offers
+  Confirm and Turn on Stream capture.
+- Android only (intentional):
+  - Removable SD card archive: the read-only alert ("Use tablet storage" / "Manage
+    Storage"), the red map chip and Flight Storage status line, and the automatic fallback
+    that keeps recordings and session logs in app storage and copies them once the archive
+    is writable. iOS flight storage is the app container (no removable volume), so the
+    tracker is shared but not wired to an alert.
+  - Settings backup/restore and import: a missing saved value loads ON, the backup agent
+    never backs up the blank default, and a restore/import that would turn capture off keeps
+    it ON with a notice. iOS keeps Capture Streams in UserDefaults (default ON) and its
+    settings transfer does not carry it.

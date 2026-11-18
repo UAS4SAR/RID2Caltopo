@@ -28,6 +28,7 @@ struct CaltopoSettingsView: View {
     @ObservedObject private var spokenWarnings = AppleSpokenWarningCenter.shared
     @ObservedObject private var profileLifecycle = AppleCaltopoProfileLifecycle.shared
     @AppStorage("video.captureStreams") private var captureStreams = true
+    @State private var confirmCaptureOff = false
     @AppStorage("video.restrictMediaServerAccess") private var restrictMediaServerAccess = true
     @AppStorage("video.remoteControlEnabled") private var remoteVideoControlEnabled = false
     @AppStorage(OperationalThumbnailRefreshInterval.storageKey)
@@ -334,8 +335,20 @@ struct CaltopoSettingsView: View {
                 Text("Accept controller RTMP streams while blocking direct media-server viewing from other devices. Playback and recording on this tablet and authorized R2C sharing remain available. Turn off only for trusted local viewers. Changing this setting restarts video.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
-                SettingsToggle("Capture Streams", isOn: draft.binding("captureStreams", $captureStreams))
-                Text("Initially enabled. Incoming streams are recorded as fMP4 under Files > RID2Caltopo > FlightStorage and may include controller-source audio. Turning capture off retains existing files. Changing this setting restarts the local media server.")
+                SettingsToggle("Capture Streams", isOn: Binding(
+                    get: { draft.binding("captureStreams", $captureStreams).wrappedValue },
+                    set: { enabled in
+                        // Turning capture off loses flight video; ask first.
+                        if enabled { draft.binding("captureStreams", $captureStreams).wrappedValue = true }
+                        else { confirmCaptureOff = true }
+                    }))
+                .alert(CaptureStreamsLog.confirmOffTitle, isPresented: $confirmCaptureOff) {
+                    Button("Turn off", role: .destructive) { draft.binding("captureStreams", $captureStreams).wrappedValue = false }
+                    Button("Keep on", role: .cancel) {}
+                } message: {
+                    Text(CaptureStreamsLog.confirmOffMessage)
+                }
+                Text("Initially enabled. Incoming streams are recorded as fMP4 under Files > RID2Caltopo > FlightStorage and may include controller-source audio. Turning capture off retains existing files and asks first. Live video keeps running when this changes.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                 SettingsToggle("Remote Video Control", isOn: draft.binding("remoteVideoControlEnabled", $remoteVideoControlEnabled))
@@ -714,6 +727,7 @@ private final class AppleDeveloperToolsManager: ObservableObject {
         await PersonalProbeModel.shared.clearPersistedLogin()
         await WKWebsiteDataStore.default().removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: .distantPast)
         if let bundleID = Bundle.main.bundleIdentifier {
+            await MainActor.run { if !CaptureStreamsCenter.current { CaptureStreamsCenter.shared.pendingSource = CaptureStreamsLog.reset } }
             UserDefaults.standard.removePersistentDomain(forName: bundleID)
         }
         _ = await Task.detached { SecItemDelete([kSecClass as String: kSecClassGenericPassword] as CFDictionary) }.value
