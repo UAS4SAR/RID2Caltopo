@@ -142,12 +142,14 @@ object AppConfigStore {
             }
             // Parsing/filtering can grow with the backup. Do it before taking
             // the cache lock, then fail rather than overwrite a newer edit.
-            val restored = SettingsBackupPolicy.restore(original, imported)
+            val result = SettingsBackupPolicy.restoreWithNotice(original, imported)
+            val restored = result.config
             synchronized(cacheLock) {
                 if (cachedConfig !== original || !AircraftOrganizationAccess.canEdit()) return false
                 cachedConfig = restored
                 enqueueConfigWrite(context, restored, "importConfigBytes")
             }
+            logCaptureRestore(context, original, restored, result.captureKeptOn, CaltopoClient.CAPTURE_SOURCE_IMPORT)
             true
         } catch (e: Exception) {
             CaltopoClient.CTWarn(TAG, "importConfigBytes(): unable to parse imported config.", e)
@@ -168,16 +170,32 @@ object AppConfigStore {
         val completed = java.util.concurrent.CompletableFuture<Unit>()
         persistenceExecutor.execute {
             try {
+                var keptOn = false
+                var before: AppConfig? = null
                 val restored = runBlocking {
                     context.applicationContext.appConfigDataStore.updateData { current ->
-                        SettingsBackupPolicy.restore(current, safe)
+                        before = current
+                        SettingsBackupPolicy.restoreWithNotice(current, safe).also { keptOn = it.captureKeptOn }.config
                     }
                 }
                 synchronized(cacheLock) { cachedConfig = restored }
+                before?.let { logCaptureRestore(context, it, restored, keptOn, CaltopoClient.CAPTURE_SOURCE_RESTORE) }
                 completed.complete(Unit)
             } catch (error: Throwable) { completed.completeExceptionally(error) }
         }
         completed.get()
+    }
+
+    /** Logs a restore/import's effect on Capture Streams; a kept-ON restore leaves a notice for the UI. */
+    private fun logCaptureRestore(context: Context, before: AppConfig, after: AppConfig, keptOn: Boolean, source: String) {
+        val old = SettingsBackupPolicy.captureStreamsEnabled(before)
+        val new = SettingsBackupPolicy.captureStreamsEnabled(after)
+        if (keptOn) {
+            CaltopoClient.CTWarn(TAG, "Capture Streams kept ON: $source would have turned it off (old=$old new=$new source=$source)")
+            CaptureStreamsNotice.record(context, source)
+        } else if (old != new) {
+            CaltopoClient.CTWarn(TAG, "Capture Streams changed old=$old new=$new source=$source")
+        }
     }
 
     @JvmStatic
@@ -419,7 +437,8 @@ object AppConfigStore {
         state.trackerFaaProxyUrl = config.trackerFaaProxyUrl
         state.trackerEnrollmentUrl = config.trackerEnrollmentUrl
         state.coordinateDisplayFormat = config.coordinateDisplayFormat.ifBlank { "decimal" }
-        state.captureVideoStreamsFlag = config.captureVideoStreams
+        state.captureVideoStreamsFlag = SettingsBackupPolicy.captureStreamsEnabled(config)
+        CaltopoClient.CTDebug(TAG, "Capture Streams loaded value=${state.captureVideoStreamsFlag} saved=${if (config.hasCaptureVideoStreams()) config.captureVideoStreams.toString() else "missing (defaults ON)"} source=${CaltopoClient.CAPTURE_SOURCE_LOAD}")
         state.usePeersFlag = config.usePeers
         state.standaloneR2cCoordinationEnabled = false // Legacy configs cannot enable standalone flight sharing.
         state.predictiveHeadEnabled = false // Retired; legacy true cannot reactivate projection.

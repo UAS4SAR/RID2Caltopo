@@ -221,7 +221,20 @@ public class MediaMTXService extends Service {
     private boolean settingsStopRequested;
     private boolean settingsWaitRegistered;
     private final java.util.ArrayList<Runnable> pendingSettingsCommands = new java.util.ArrayList<>();
+    /** Capture Streams changes switch recording through the API; live video never restarts. */
+    private final Runnable captureStreamsListener = () -> {
+        if (isServiceDestroying()) return;
+        boolean enabled = CaltopoClient.GetCaptureVideoStreamsFlag();
+        CTDebug(TAG, "Capture Streams " + (enabled ? "ON" : "OFF") + "; updating recording via API (no restart)");
+        recordingReconciler.updateCaptureEnabled(enabled);
+    };
+    private boolean captureStreamsListenerRegistered;
+
     private void observeStorageAfterSettings() {
+        if (!captureStreamsListenerRegistered) {
+            captureStreamsListenerRegistered = true;
+            CaltopoClient.AddCaptureStreamsListener(captureStreamsListener);
+        }
         FlightStorage.observe(getApplicationContext(), () -> {
             if (isServiceDestroying()) return;
             boolean blocked = FlightStorage.INSTANCE.getCaptureBlocked();
@@ -293,6 +306,8 @@ public class MediaMTXService extends Service {
         pendingSettingsCommands.clear();
         org.ncssar.rid2caltopo.video.StreamRegistry.onServerStopped();
         FlightStorage.stopObserving();
+        CaltopoClient.RemoveCaptureStreamsListener(captureStreamsListener);
+        captureStreamsListenerRegistered = false;
         synchronized (nativeControlLock) {
             serviceDestroying = true;
             pendingNativeControlAction = null;
@@ -500,6 +515,12 @@ public class MediaMTXService extends Service {
             File cfg = buildConfigAsset("mediamtx.yml", recordingRoot, captureEnabled, recordNow);
             if (isServiceDestroying()) return;
 
+            // Logged at every start so a missed flight can be traced to the setting in force.
+            if (captureEnabled) {
+                CTInfo(TAG, "Capture Streams setting at media server start: ON");
+            } else {
+                CaltopoClient.CTWarn(TAG, "Capture Streams setting at media server start: OFF (streams are not recorded)");
+            }
             CTDebug(TAG, "Starting MediaMTX Server... record=" + recordNow
                     + " storageBlocked=" + storage.getBlocked() + " recorderReady=" + recorderReady);
 

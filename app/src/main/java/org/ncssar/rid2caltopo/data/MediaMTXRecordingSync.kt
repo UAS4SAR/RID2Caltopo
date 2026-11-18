@@ -25,12 +25,21 @@ object MediaMTXRecordingSync {
 
     @JvmStatic
     fun getRecordingStagingDir(context: Context): File {
-        if (CaltopoClient.GetArchiveUri() == null ||
-            !org.ncssar.rid2caltopo.storage.OperationalStorage.tryRequireRecorderReady(context)
-        ) {
+        val durable = File(context.filesDir, "mediamtx-recordings")
+        if (CaltopoClient.GetArchiveUri() == null) {
             return org.ncssar.rid2caltopo.storage.TemporaryStorage.directory(context, "recording-staging")
         }
-        return File(context.filesDir, "mediamtx-recordings")
+        // A read-only or failing archive keeps recordings in durable tablet storage; they are
+        // copied to the archive folder once it can be written again.
+        if (!org.ncssar.rid2caltopo.app.ArchiveWritability.writable) return durable
+        val ready = try {
+            org.ncssar.rid2caltopo.storage.OperationalStorage.tryRequireRecorderReady(context)
+        } catch (error: Exception) {
+            if (org.ncssar.rid2caltopo.app.ArchiveWritability.noteFailure(error, "recorder preparation")) return durable
+            throw error
+        }
+        return if (ready) durable
+        else org.ncssar.rid2caltopo.storage.TemporaryStorage.directory(context, "recording-staging")
     }
 
     /**
@@ -125,6 +134,28 @@ object MediaMTXRecordingSync {
         }
     }
 
+    /**
+     * Archive writable again: merges and copies recordings kept in tablet storage while it was
+     * not. Skips fragments still being written (modified within [SETTLED_MS]).
+     */
+    @JvmStatic
+    fun syncSettledStagedRecordings(context: Context) {
+        val root = recordingStagingDirWithoutPreparing(context)
+        val now = System.currentTimeMillis()
+        val settled = settledRecordings(snapshotOrphanedRecordings(root), now)
+        if (settled.isEmpty()) return
+        CaltopoClient.CTDebug(TAG, "Copying ${settled.sumOf { it.fragments.size }} recording fragment(s) kept in tablet storage")
+        syncOrphanedRecordings(context, settled)
+    }
+
+    internal const val SETTLED_MS = 30_000L
+
+    internal fun settledRecordings(found: List<OrphanedRecording>, nowMs: Long): List<OrphanedRecording> =
+        found.mapNotNull { orphan ->
+            val done = orphan.fragments.filter { nowMs - it.lastModified() >= SETTLED_MS }
+            if (done.isEmpty()) null else OrphanedRecording(orphan.streamPath, done)
+        }
+
     private fun syncDirectoryTree(
         context: Context,
         root: File,
@@ -156,6 +187,12 @@ object MediaMTXRecordingSync {
             ?: sourceRoot.listFiles().orEmpty().toList())
             .filter { it.isFile && isMediaFragment(it) }.sortedBy { it.name }
         if (fragments.isEmpty()) return
+        if (CaltopoClient.GetArchiveUri() != null && !org.ncssar.rid2caltopo.app.ArchiveWritability.writable) {
+            // Archive folder is read-only/failing: keep the fragments in tablet storage. They are
+            // merged and copied by [syncSettledStagedRecordings] once the archive is writable again.
+            CaltopoClient.CTWarn(TAG, "Archive not writable; recording kept in tablet storage path=$streamPath fragments=${fragments.size} bytes=${fragments.sumOf { it.length() }}")
+            return
+        }
 
         // File-age heuristics must not expire a finalizer that is actually running.
         // The source days are fixed before remuxing; today remains protected separately.

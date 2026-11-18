@@ -155,20 +155,30 @@ internal object OperationalStorage {
         }
     }
 
+    private val prepareRetryQueued = java.util.concurrent.atomic.AtomicBoolean(false)
+    @Volatile private var prepareRetryAttempt = 0
+
+    /** 2 s, doubling per consecutive deferred retry, at most 5 minutes. */
+    internal fun prepareRetryDelayMs(attempt: Int): Long = (2_000L shl attempt.coerceIn(0, 8)).coerceAtMost(5 * 60_000L)
+
     private fun schedulePrepareRetry(context: Context) {
-        startup.execute {
-            try {
-                Thread.sleep(2_000L)
-            } catch (_: InterruptedException) {
-                Thread.currentThread().interrupt()
-                return@execute
-            }
-            if (state.value.ready) return@execute
+        // One queued retry at a time: every storage check used to queue another 2 s retry.
+        if (!prepareRetryQueued.compareAndSet(false, true)) return
+        val delayMs = prepareRetryDelayMs(prepareRetryAttempt++)
+        // The wait runs on a timer, not on [startup], so long back-offs never hold other setup work.
+        prepareRetryTimer.schedule({ startup.execute {
+            prepareRetryQueued.set(false)
+            if (state.value.ready) { prepareRetryAttempt = 0; return@execute }
+            // Read-only/failing archive: no retry loop. A remount, folder pick or periodic
+            // recheck clears the verdict and the next storage check prepares again.
+            if (!org.ncssar.rid2caltopo.app.ArchiveWritability.writable) return@execute
             awaitNonCached(context)
             if (state.value.ready) return@execute
             runCatching { prepare(context) }
                 .onFailure { error ->
-                    if (isTransientPrepareFailure(error)) {
+                    if (org.ncssar.rid2caltopo.app.ArchiveWritability.noteFailure(error, "archive prepare retry")) {
+                        return@onFailure
+                    } else if (isTransientPrepareFailure(error)) {
                         CaltopoClient.CTWarn(
                             "OperationalStorage",
                             "Archive prepare retry still deferred: ${error.message}",
@@ -179,7 +189,11 @@ internal object OperationalStorage {
                         CaltopoClient.CTWarn("OperationalStorage", "Archive prepare retry failed: ${error.message}")
                     }
                 }
-        }
+                .onSuccess { prepareRetryAttempt = 0 }
+        } }, delayMs, java.util.concurrent.TimeUnit.MILLISECONDS)
+    }
+    private val prepareRetryTimer = java.util.concurrent.Executors.newSingleThreadScheduledExecutor { r ->
+        Thread(r, "archive-prepare-retry").apply { isDaemon = true }
     }
     fun retry(context: Context) = start(context)
 
@@ -203,11 +217,14 @@ internal object OperationalStorage {
             announceUnavailable()
             return false
         }
+        if (!org.ncssar.rid2caltopo.app.ArchiveWritability.writable) return false
         return runCatching {
             requireReady(context)
             true
         }.getOrElse { error ->
-            if (isUnavailable(error)) {
+            if (org.ncssar.rid2caltopo.app.ArchiveWritability.noteFailure(error, "archive prepare")) {
+                false
+            } else if (isUnavailable(error)) {
                 announceUnavailable(error.message ?: ArchiveDirAvailability.CHOOSE_OR_RECONNECT)
                 false
             } else if (isTransientPrepareFailure(error)) {
@@ -323,6 +340,7 @@ internal object OperationalStorage {
                     try {
                         migrateAreaSources(context, value, area, ::checkSelection)
                     } catch (error: Exception) {
+                        if (org.ncssar.rid2caltopo.app.ArchiveWritability.noteFailure(error, "migrating ${area.id}")) throw error
                         if (!isTransientPrepareFailure(error)) throw error
                         CaltopoClient.CTWarn(
                             "OperationalStorage",
@@ -434,6 +452,7 @@ internal object OperationalStorage {
             try {
                 migrateAreaSources(context, working, area, ::checkSelection, announce = false)
             } catch (error: Exception) {
+                if (org.ncssar.rid2caltopo.app.ArchiveWritability.noteFailure(error, "migrating ${area.id}")) throw error
                 if (!isTransientPrepareFailure(error)) throw error
                 CaltopoClient.CTWarn(
                     "OperationalStorage",

@@ -84,18 +84,29 @@ object ManagedVideoSessionRecordingCatalog {
         cachedSnapshot(currentIncidentKey()).firstOrNull { it.sessionId == sessionId }
 
     /** One sequential refresh per caller; archive preparation and media parsing stay on IO. */
+    @Volatile private var lastPresence: List<ManagedVideoSessionRecording> = emptyList()
+    @Volatile private var lastPresenceWarning: String? = null
+
     suspend fun refreshForPresence(context: Context): List<ManagedVideoSessionRecording> = withContext(Dispatchers.IO) {
+        // Back off while the archive is read-only/failing: keep the last inventory instead of
+        // re-reading the card on every presence change. A recheck clears the verdict.
+        if (!org.ncssar.rid2caltopo.app.ArchiveWritability.writable) return@withContext lastPresence
         try {
             val recordings = snapshot(context)
-            if (recordings.isNotEmpty()) recordings else {
+            (if (recordings.isNotEmpty()) recordings else {
                 recoverCurrentIncidentFromArchive(context)
                 snapshot(context)
-            }
+            }).also { lastPresence = it; lastPresenceWarning = null }
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (error: Exception) {
-            CaltopoClient.CTWarn(TAG, "Recording inventory unavailable: ${error.message}")
-            emptyList()
+            org.ncssar.rid2caltopo.app.ArchiveWritability.noteFailure(error, "recording inventory")
+            val message = error.message.orEmpty()
+            if (lastPresenceWarning != message) {
+                lastPresenceWarning = message
+                CaltopoClient.CTWarn(TAG, "Recording inventory unavailable: $message")
+            }
+            lastPresence
         }
     }
 

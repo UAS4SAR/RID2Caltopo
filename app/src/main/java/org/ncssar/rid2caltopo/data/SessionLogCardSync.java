@@ -89,6 +89,70 @@ final class SessionLogCardSync {
         return stream;
     }
 
+    /** Key prefix for a log whose Archive Dir file could not be created yet (read-only card). */
+    static final String PENDING_PREFIX = "pending:";
+
+    /**
+     * Starts staging a session log whose Archive Dir file cannot be created now (the archive
+     * is read-only or failing). The card file {@code dayDir/name} is created on the first
+     * copy once the archive is writable again, or from the leftovers of a later run.
+     */
+    @NonNull
+    static OutputStream startDeferred(@NonNull Context context, @NonNull String dayDir, @NonNull String name)
+            throws IOException {
+        Context appContext = context.getApplicationContext() != null
+                ? context.getApplicationContext() : context;
+        String key = pendingKey(dayDir, name);
+        StagedCardLog log = StagedCardLog.create(stagingDir(appContext), name, key,
+                new DeferredCardTarget(appContext, dayDir, name));
+        OutputStream stream = log.openPrivateStream();
+        synchronized (lock) {
+            active = log;
+            activeKey = key;
+            activeContext = appContext;
+            if (tick == null) {
+                tick = executor.scheduleWithFixedDelay(SessionLogCardSync::periodicBatch,
+                        BATCH_INTERVAL_MSEC, BATCH_INTERVAL_MSEC, TimeUnit.MILLISECONDS);
+            }
+        }
+        scheduleLeftoverFlush(appContext);
+        return stream;
+    }
+
+    @NonNull
+    static String pendingKey(@NonNull String dayDir, @NonNull String name) {
+        return PENDING_PREFIX + dayDir + "/" + name;
+    }
+
+    /** Archive writable again: copy the active log and any leftovers now, in the background. */
+    static void catchUp(@NonNull Context context) {
+        final Context appContext = context.getApplicationContext() != null
+                ? context.getApplicationContext() : context;
+        try {
+            executor.execute(() -> {
+                Snapshot s = snapshot();
+                if (s != null) runBatch(s, System.currentTimeMillis());
+                flushLeftovers(appContext);
+            });
+        } catch (RuntimeException ignored) { }
+    }
+
+    @NonNull
+    static StagedCardLog.CardTarget targetFor(@NonNull Context context, @NonNull String key) {
+        if (key.startsWith(PENDING_PREFIX)) {
+            String path = key.substring(PENDING_PREFIX.length());
+            int slash = path.indexOf('/');
+            if (slash > 0 && slash < path.length() - 1) {
+                return new DeferredCardTarget(context, path.substring(0, slash), path.substring(slash + 1));
+            }
+        }
+        return new DocumentCardTarget(context, Uri.parse(key));
+    }
+
+    private static boolean archiveWritable() {
+        return org.ncssar.rid2caltopo.app.ArchiveWritability.getWritable();
+    }
+
     /** Copies pending log bytes to the card now (app stop). Does not wait. */
     static void requestBatch() {
         try {
@@ -122,6 +186,8 @@ final class SessionLogCardSync {
         Future<?> done;
         try {
             done = executor.submit(() -> {
+                // A read-only archive keeps the private copy; the next start catches it up.
+                if (!archiveWritable()) return;
                 runBatch(last, System.currentTimeMillis());
                 last.log.discardPrivateIfCaughtUp();
             });
@@ -153,11 +219,13 @@ final class SessionLogCardSync {
     private static void flushLeftovers(@NonNull Context context) {
         File dir = stagingDir(context);
         if (!dir.isDirectory()) return;
+        // Kept for later while the archive is read-only; catchUp() runs once it is writable.
+        if (!archiveWritable()) return;
         Snapshot s = snapshot();
         Set<String> exclude = s == null ? Collections.emptySet()
                 : Collections.singleton(s.log.privateFile().getName());
         StagedCardLog.LeftoverReport report = StagedCardLog.flushLeftovers(dir, exclude,
-                key -> new DocumentCardTarget(context, Uri.parse(key)),
+                key -> targetFor(context, key),
                 System.currentTimeMillis(), LEFTOVER_MAX_AGE_MSEC);
         if (!report.flushed.isEmpty() || !report.kept.isEmpty() || !report.expired.isEmpty()) {
             CaltopoClient.CTDebug(TAG, String.format(Locale.US,
@@ -171,6 +239,8 @@ final class SessionLogCardSync {
         if (s == null) return;
         long now = System.currentTimeMillis();
         if (s.log.pendingBytes() <= 0 || !s.log.shouldAttempt(now)) return;
+        // Back off while the archive is read-only/failing; bytes stay in app storage.
+        if (!archiveWritable()) return;
         runBatch(s, now);
     }
 
@@ -178,7 +248,12 @@ final class SessionLogCardSync {
         boolean wasFailing = s.log.isFailing();
         StagedCardLog.Result result = s.log.syncToCard(nowMsec);
         if (result == StagedCardLog.Result.APPENDED && s.context != null) {
-            org.ncssar.rid2caltopo.app.FlightStorage.appendCompleted(s.context, s.key,
+            String key = s.key;
+            if (key != null && key.startsWith(PENDING_PREFIX)) {
+                Uri resolved = DeferredCardTarget.resolvedUri(s.context, key);
+                key = resolved == null ? null : resolved.toString();
+            }
+            org.ncssar.rid2caltopo.app.FlightStorage.appendCompleted(s.context, key,
                     s.log.lastAppendedBytes());
         }
         boolean failing = s.log.isFailing();
@@ -205,6 +280,60 @@ final class SessionLogCardSync {
         final Context context;
         Snapshot(StagedCardLog log, String key, Context context) {
             this.log = log; this.key = key; this.context = context;
+        }
+    }
+
+    /**
+     * Archive Dir file created on first use: {@code <archive>/<dayDir>/<name>}. Used when the
+     * archive was read-only when the session started.
+     */
+    static final class DeferredCardTarget implements StagedCardLog.CardTarget {
+        private static final java.util.concurrent.ConcurrentHashMap<String, Uri> resolved =
+                new java.util.concurrent.ConcurrentHashMap<>();
+        private final Context context;
+        private final String dayDir;
+        private final String name;
+
+        DeferredCardTarget(@NonNull Context context, @NonNull String dayDir, @NonNull String name) {
+            this.context = context;
+            this.dayDir = dayDir;
+            this.name = name;
+        }
+
+        @Nullable
+        static Uri resolvedUri(@NonNull Context context, @NonNull String key) {
+            return resolved.get(key);
+        }
+
+        @NonNull
+        private Uri resolveOrCreate() throws IOException {
+            String key = pendingKey(dayDir, name);
+            Uri known = resolved.get(key);
+            if (known != null) return known;
+            if (!archiveWritable()) throw new IOException("Archive Dir is not writable yet");
+            DocumentFile archive = CaltopoClient.GetArchiveDir();
+            if (archive == null) throw new IOException("Archive Dir is unavailable");
+            DocumentFile day = archive.findFile(dayDir);
+            if (day == null) day = archive.createDirectory(dayDir);
+            if (day == null) throw new IOException("unable to create " + dayDir);
+            DocumentFile file = day.findFile(name);
+            if (file == null) file = DocumentFileCompat.createFileWithExactName(day, "text/plain", name);
+            if (file == null) throw new IOException("unable to create " + dayDir + "/" + name);
+            resolved.put(key, file.getUri());
+            CaltopoClient.CTDebug(TAG, "Session log kept in tablet storage now has its archive file " + dayDir + "/" + name);
+            return file.getUri();
+        }
+
+        @Override
+        public long length() throws IOException {
+            Uri uri = resolveOrCreate();
+            return new DocumentCardTarget(context, uri).length();
+        }
+
+        @NonNull
+        @Override
+        public OutputStream openAppend() throws IOException {
+            return new DocumentCardTarget(context, resolveOrCreate()).openAppend();
         }
     }
 

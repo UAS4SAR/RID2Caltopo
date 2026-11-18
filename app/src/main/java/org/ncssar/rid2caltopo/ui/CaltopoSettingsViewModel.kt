@@ -509,8 +509,8 @@ class CaltopoSettingsViewModel : ViewModel(), CaltopoClient.ClientSettingsListen
         _caltopoCredentialError.value = null
         isSaving = true
         try {
-        val restartMediaMtx = CaltopoClient.GetCaptureVideoStreamsFlag() != _captureIncomingVideo.value ||
-            MediaServerAccessPrefs.isRestricted(R2CApplication.getAppCtxt()) != _mediaServerRestricted.value
+        // Capture Streams is applied through the recording API (no restart). Only media access restarts video.
+        val restartMediaMtx = MediaServerAccessPrefs.isRestricted(R2CApplication.getAppCtxt()) != _mediaServerRestricted.value
         CaltopoClient.SetHomeOrgName(_organizationName.value.trim())
         CaltopoClient.SetConnectKey(_caltopoConnectKey.value.trim())
         CaltopoClient.SetTrackFolderName(_trackFolder.value.trim())
@@ -556,7 +556,7 @@ class CaltopoSettingsViewModel : ViewModel(), CaltopoClient.ClientSettingsListen
         _maxIdleTimeInMinutes.value.toLongOrNull()?.let { CaltopoClient.SetMaxIdleTimeInMinutes(it) }
         CaltopoClient.SetUsePeers(_usePeers.value)
         CaltopoClient.SetStandaloneR2cCoordinationEnabled(false)
-        CaltopoClient.SetCaptureVideoStreamsFlag(_captureIncomingVideo.value)
+        CaltopoClient.SetCaptureVideoStreamsFlag(_captureIncomingVideo.value, CaltopoClient.CAPTURE_SOURCE_SETTINGS)
         MediaServerAccessPrefs.setRestricted(R2CApplication.getAppCtxt(), _mediaServerRestricted.value)
         R2CApplication.getAppCtxt()?.let { context ->
             WifiRidScanPrefs.setEnabled(context, _wifiRidScanningEnabled.value)

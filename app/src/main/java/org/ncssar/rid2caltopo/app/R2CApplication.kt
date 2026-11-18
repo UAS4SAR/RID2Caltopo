@@ -50,6 +50,8 @@ class R2CApplication : Application() {
         }
         DeviceLocationMonitor.install(this)
         instance = this;
+        // Sticky archive writability: remount receiver and the 5-minute recheck (no disk I/O here).
+        ArchiveWritability.start(this)
         if (BuildConfig.DEBUG) {
             // Keep stack traces for regressions in UI callbacks, including SDK
             // callbacks that unexpectedly switch back to the main thread.

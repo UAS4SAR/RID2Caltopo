@@ -9,15 +9,14 @@ import java.io.File
 
 /** Data callbacks are binder workers; onCreate does no I/O. */
 class AppConfigBackupAgent : BackupAgent() {
-    private fun snapshot(): ByteArray {
-        val file = File(filesDir, "datastore/app_config.pb")
-        val config = if (file.isFile) file.inputStream().use { AppConfig.parseFrom(it) }
-            else AppConfig.getDefaultInstance()
-        return SettingsBackupPolicy.settingsOnly(config).toByteArray()
-    }
+    /**
+     * Settings to back up, or null when nothing has been saved yet. Never backs up the blank
+     * default instance: restoring it would turn Capture Streams (and other ON defaults) off.
+     */
+    private fun snapshot(): ByteArray? = snapshotOf(File(filesDir, "datastore/app_config.pb"))
 
     override fun onBackup(oldState: ParcelFileDescriptor?, data: BackupDataOutput, newState: ParcelFileDescriptor?) {
-        val bytes = snapshot()
+        val bytes = snapshot() ?: return
         data.writeEntityHeader("app_config:datastore/app_config.pb", -1)
         data.writeEntityHeader(KEY, bytes.size)
         data.writeEntityData(bytes, bytes.size)
@@ -37,9 +36,10 @@ class AppConfigBackupAgent : BackupAgent() {
     }
 
     override fun onFullBackup(data: FullBackupDataOutput) {
+        val bytes = snapshot() ?: return
         val file = File(filesDir, SETTINGS_PATH)
         file.parentFile?.mkdirs()
-        file.writeBytes(snapshot())
+        file.writeBytes(bytes)
         fullBackupFile(file, data)
     }
 
@@ -57,6 +57,15 @@ class AppConfigBackupAgent : BackupAgent() {
     }
 
     companion object {
+        /** Null when [file] is missing or empty, so the default instance is never backed up. */
+        @JvmStatic
+        internal fun snapshotOf(file: File): ByteArray? {
+            if (!file.isFile || file.length() == 0L) return null
+            val config = file.inputStream().use { AppConfig.parseFrom(it) }
+            if (config == AppConfig.getDefaultInstance()) return null
+            return SettingsBackupPolicy.settingsOnly(config).toByteArray()
+        }
+
         private const val KEY = "settings-v2"
         private const val MAX_BYTES = 16 * 1024 * 1024
         const val SETTINGS_PATH = "datastore/app_config_settings_backup.pb"

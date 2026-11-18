@@ -1104,6 +1104,14 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
         SessionLogCardSync.requestBatch();
     }
 
+    /** Archive writable again: copy session logs kept in tablet storage now, in the background. */
+    public static void CatchUpStagedSessionLogs(@NonNull Context context) {
+        SessionLogCardSync.catchUp(context);
+        if (DebugLogPath != null && "file".equals(DebugLogPath.getScheme())) {
+            CTDebug(TAG, "Session log copy to Archive Dir resumed.");
+        }
+    }
+
 
 
     public static void SubmitClue(
@@ -1993,12 +2001,43 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
         return false;
     }
 
+    /** Sources logged with every Capture Streams change. */
+    public static final String CAPTURE_SOURCE_SETTINGS = "Settings UI";
+    public static final String CAPTURE_SOURCE_PANEL = "Not capturing panel";
+    public static final String CAPTURE_SOURCE_RESTORE = "restore";
+    public static final String CAPTURE_SOURCE_IMPORT = "import";
+    public static final String CAPTURE_SOURCE_LOAD = "load";
+    public static final String CAPTURE_SOURCE_RESET = "reset";
+
+    private static final java.util.concurrent.CopyOnWriteArrayList<Runnable> CaptureStreamsListeners =
+            new java.util.concurrent.CopyOnWriteArrayList<>();
+
+    /** Runs after every Capture Streams change (any thread). The stream server applies it without restarting. */
+    public static void AddCaptureStreamsListener(@NonNull Runnable listener) {
+        CaptureStreamsListeners.add(listener);
+    }
+
+    public static void RemoveCaptureStreamsListener(@NonNull Runnable listener) {
+        CaptureStreamsListeners.remove(listener);
+    }
+
+    /** @deprecated pass a source so the change log says who changed it. */
+    @Deprecated
     public static void SetCaptureVideoStreamsFlag(boolean flag) {
+        SetCaptureVideoStreamsFlag(flag, "unspecified");
+    }
+
+    public static void SetCaptureVideoStreamsFlag(boolean flag, @NonNull String source) {
         ClientClassState ccs = GetState();
-        if (ccs.captureVideoStreamsFlag != flag) {
+        boolean old = ccs.captureVideoStreamsFlag;
+        if (old != flag) {
             ccs.captureVideoStreamsFlag = flag;
+            CTWarn(TAG, "Capture Streams changed old=" + old + " new=" + flag + " source=" + source);
             NotifySettingsChanged();
-            ArchiveState("captureVideoStreams changed to " + flag);
+            ArchiveState("captureVideoStreams changed to " + flag + " (" + source + ")");
+            for (Runnable listener : CaptureStreamsListeners) {
+                try { listener.run(); } catch (RuntimeException e) { CTError(TAG, "Capture Streams listener raised", e); }
+            }
         }
     }
 
@@ -2881,7 +2920,12 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
     }
 
     public static void ResetPersistedClientState() {
+        ClientClassState previous = Ccstate;
         Ccstate = new ClientClassState();
+        if (previous != null && previous.captureVideoStreamsFlag != Ccstate.captureVideoStreamsFlag) {
+            CTWarn(TAG, "Capture Streams changed old=" + previous.captureVideoStreamsFlag
+                    + " new=" + Ccstate.captureVideoStreamsFlag + " source=" + CAPTURE_SOURCE_RESET);
+        }
         AircraftOrganizationAccess.resetRuntimeState();
         CaltopoPersonalSession.resetRuntimeState();
         MapBrowserProfilePreference.INSTANCE.clear();
@@ -4134,8 +4178,15 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
         Context startCtxt = R2CApplication.getAppCtxt();
         // Leftover staged logs from a killed run are copied later, in the background.
         if (null != startCtxt) SessionLogCardSync.scheduleLeftoverFlush(startCtxt);
-        DocumentFile todaysArchiveDir = GetTodaysTrackDir();
+        boolean archiveWritable = org.ncssar.rid2caltopo.app.ArchiveWritability.getWritable();
+        DocumentFile todaysArchiveDir = archiveWritable ? GetTodaysTrackDir() : null;
         if (null == todaysArchiveDir) {
+            // A read-only/failing archive still gets a session log: it is kept in tablet
+            // storage and copied to the archive folder once it can be written again.
+            if (GetArchiveUri() != null && StartDeferredSessionLog(startCtxt,
+                    archiveWritable ? "today's folder could not be created" : "archive not writable")) {
+                return;
+            }
             CTError(TAG, "InitArchiveDir(): archive dir is mia.");
             return;
         }
@@ -4167,7 +4218,16 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
                         }
                     }
                 }
+                if (dataFilepath == null && DebugLogPath == null) {
+                    // createFile returns null on a read-only card: probe-free hint, the sticky
+                    // verdict is set only by a classified error or a recheck.
+                    if (StartDeferredSessionLog(ctxt, "log file could not be created")) return;
+                }
             } catch (Exception e) {
+                if (org.ncssar.rid2caltopo.app.ArchiveWritability.noteFailure(e, "session log start")
+                        && StartDeferredSessionLog(ctxt, "archive not writable")) {
+                    return;
+                }
                 CTError(TAG, "InitArchiveDir() raised: ", e);
             }
 
@@ -4186,6 +4246,37 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
             CheckUnreportedFiles();
         } catch (Exception e) {
             Log.e(TAG, "CTError: Not able to open DebugOutputStream: " + e);
+        }
+    }
+
+    /**
+     * Starts the session log in tablet storage with its archive file created later (archive
+     * read-only or failing). Returns false when no log could be started.
+     */
+    private static boolean StartDeferredSessionLog(@Nullable Context ctxt, @NonNull String why) {
+        if (ctxt == null || DebugLogPath != null) return DebugLogPath != null;
+        long now = System.currentTimeMillis();
+        String filepath = BuildDebugLogFilename(now);
+        String dayDir = "tracks-" + new SimpleDateFormat("ddMMMyyyy", Locale.US).format(new Date(now));
+        try {
+            synchronized (DebugLogLock) {
+                if (DebugLogPath != null) return true;
+                OutputStream stream = SessionLogCardSync.startDeferred(ctxt, dayDir, filepath);
+                if (DebugOutputStream instanceof DeferredLogOutputStream) {
+                    ((DeferredLogOutputStream) DebugOutputStream).attach(stream);
+                } else {
+                    DebugOutputStream = stream;
+                }
+                DebugLogPath = Uri.parse(SessionLogCardSync.pendingKey(dayDir, filepath));
+                DebugLogGeneration.incrementAndGet();
+            }
+            org.ncssar.rid2caltopo.app.FlightStorage.protect(dayDir, "diagnostic-log");
+            LogFilePath = dayDir + "/" + filepath + " (kept in tablet storage until the archive folder can be written)";
+            CTWarn(TAG, "Session log kept in tablet storage (" + why + "); copied to " + dayDir + "/" + filepath + " later.");
+            return true;
+        } catch (Exception e) {
+            CTError(TAG, "StartDeferredSessionLog() raised: ", e);
+            return false;
         }
     }
 

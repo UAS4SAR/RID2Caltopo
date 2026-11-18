@@ -96,7 +96,8 @@ internal suspend fun downloadS1mPieces(
         return true
     } catch (e: CancellationException) { throw e }
     catch (e: Exception) {
-        CaltopoClient.CTError("TerrainPrefetch", "S1M subset failed: ${e.message}")
+        if (!org.ncssar.rid2caltopo.app.ArchiveWritability.noteFailure(e, "terrain download"))
+            CaltopoClient.CTError("TerrainPrefetch", "S1M subset failed: ${e.message}")
         return false
     } finally { s1mPieceMutex.unlock() }
 }

@@ -1492,6 +1492,7 @@ fun MainScreen(
                 ArchiveDirSelectionResult.Selected -> {
                     archiveDirPromptSuppressed = false
                     archiveDirSelectionFailure = null
+                    org.ncssar.rid2caltopo.app.ArchiveWritability.requestRecheck(org.ncssar.rid2caltopo.storage.ArchiveRecheckTrigger.FOLDER_PICKED)
                 }
                 ArchiveDirSelectionResult.Cancelled -> {
                     archiveDirPromptSuppressed = true
@@ -1618,6 +1619,7 @@ fun MainScreen(
                                         )
                                     }
                                     if (result == ArchiveDirSelectionResult.Selected) {
+                                        org.ncssar.rid2caltopo.app.ArchiveWritability.requestRecheck(org.ncssar.rid2caltopo.storage.ArchiveRecheckTrigger.FOLDER_PICKED)
                                         pendingArchiveDirInitialUri = null
                                         pendingArchiveDirPermissionMissing = false
                                         archiveDirPromptSuppressed = false
@@ -2028,6 +2030,46 @@ fun MainScreen(
                 }) { Text(if (message.startsWith("Cleanup")) "Increase Allowance" else "Manage Storage") }
             },
             dismissButton = { TextButton(onClick = { org.ncssar.rid2caltopo.app.FlightStorage.pressure.value = null }) { Text("Later") } }
+        )
+    }
+
+    val archiveAlert by org.ncssar.rid2caltopo.app.ArchiveWritability.alert.collectAsStateWithLifecycle()
+    archiveAlert?.let { verdict ->
+        val fallback = remember(verdict) { org.ncssar.rid2caltopo.app.ArchiveWritability.tabletFallbackAvailable(context) }
+        ArchiveStorageAlertDialog(
+            verdict = verdict,
+            fallbackAvailable = fallback,
+            onUseTabletStorage = {
+                org.ncssar.rid2caltopo.app.ArchiveWritability.dismissAlert(verdict)
+                // Android's folder picker opens at this tablet's Documents folder.
+                val tabletDocuments = DocumentsContract.buildDocumentUri("com.android.externalstorage.documents", "primary:Documents")
+                if (onArchiveDirPickerStarted()) {
+                    archiveDirPickerOpen = true
+                    try {
+                        queryArchiveDirLauncher.launch(tabletDocuments)
+                    } catch (error: Exception) {
+                        onArchiveDirPickerFinished()
+                        archiveDirPickerOpen = false
+                        CTError(tag, "Unable to open archive directory picker:", error)
+                        showStorageManagement = true
+                    }
+                } else showStorageManagement = true
+            },
+            onManageStorage = {
+                org.ncssar.rid2caltopo.app.ArchiveWritability.dismissAlert(verdict)
+                showStorageManagement = true
+            },
+            onDismiss = { org.ncssar.rid2caltopo.app.ArchiveWritability.dismissAlert(verdict) },
+        )
+    }
+    val captureNotice by org.ncssar.rid2caltopo.data.CaptureStreamsNotice.pending.collectAsStateWithLifecycle()
+    LaunchedEffect(Unit) { withContext(Dispatchers.IO) { org.ncssar.rid2caltopo.data.CaptureStreamsNotice.load(context) } }
+    captureNotice?.let { notice ->
+        AlertDialog(
+            onDismissRequest = { org.ncssar.rid2caltopo.data.CaptureStreamsNotice.dismiss(context) },
+            title = { Text("Capture Streams kept ON") },
+            text = { Text(notice) },
+            confirmButton = { TextButton(onClick = { org.ncssar.rid2caltopo.data.CaptureStreamsNotice.dismiss(context) }) { Text("OK") } },
         )
     }
 

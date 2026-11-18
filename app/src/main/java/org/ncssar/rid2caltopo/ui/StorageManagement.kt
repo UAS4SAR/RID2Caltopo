@@ -157,13 +157,14 @@ internal fun StorageManagementDialog(
                 Text(archiveLabel, modifier = Modifier.testTag("manage-storage-archive").semantics { contentDescription = "Archive Location" })
             }
             StorageActionButton(onClick = { other = true }) { Text("Other") }
+            ArchiveStorageStatusLine()
             flight?.let {
                 if (it.preparingWorkingCopies) Text("Flight files sized. Working copies are still being prepared; usage will refresh when preparation finishes.", style = MaterialTheme.typography.bodySmall)
                 if (it.archiveReady) {
                     Text("Storage free now: ${archiveFree?.let(MapCacheSettings::formatDecimalGb) ?: "Unavailable"}")
                     StorageAllowanceRows(StorageAllocation(archiveFree, mapBytes ?: 0, cacheMaximum, it.used, flightMaximum))
                 }
-                else Text("Archive storage is not connected.", style = MaterialTheme.typography.bodySmall)
+                else if (!it.archiveNotWritable) Text("Archive storage is not connected.", style = MaterialTheme.typography.bodySmall)
                 Text("Includes ${MapCacheSettings.formatDecimalGb(it.auxiliary)} of local clue files and recording working copies.", style = MaterialTheme.typography.bodySmall)
                 if (it.blocked) Text(it.message)
             }

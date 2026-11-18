@@ -496,11 +496,29 @@ fun CaltopoSettingsScreen(
                     onCheckedChange = settingsViewModel::onMediaServerRestrictedChanged
                 )
                 Text("Accept controller RTMP streams while blocking direct media-server viewing from other devices. Playback and recording on this tablet and authorized R2C sharing remain available. Turn off only for trusted local viewers. Changing this setting restarts video.")
+                var confirmCaptureOff by remember { mutableStateOf(false) }
                 LabeledSwitch(
                     label = "Capture Streams",
                     checked = captureIncomingVideo,
-                    onCheckedChange = settingsViewModel::onCaptureIncomingVideoChanged
+                    onCheckedChange = { enabled ->
+                        // Turning capture off loses flight video; ask first.
+                        if (enabled) settingsViewModel.onCaptureIncomingVideoChanged(true) else confirmCaptureOff = true
+                    }
                 )
+                if (confirmCaptureOff) {
+                    AlertDialog(
+                        onDismissRequest = { confirmCaptureOff = false },
+                        title = { Text(CAPTURE_OFF_TITLE) },
+                        text = { Text(CAPTURE_OFF_MESSAGE) },
+                        confirmButton = {
+                            TextButton(onClick = {
+                                confirmCaptureOff = false
+                                settingsViewModel.onCaptureIncomingVideoChanged(false)
+                            }) { Text("Turn off") }
+                        },
+                        dismissButton = { TextButton(onClick = { confirmCaptureOff = false }) { Text("Keep on") } },
+                    )
+                }
                 LabeledSwitch(
                     label = "Remote Video Control",
                     checked = remoteVideoControlEnabled,
@@ -1050,3 +1068,7 @@ private fun UnitSettingField(label: String, native: String, units: DisplayUnits,
         enabled = enabled, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
         modifier = Modifier.fillMaxWidth().semantics { contentDescription = "$label (${if (miles) units.distanceUnit else units.lengthUnit})" })
 }
+
+internal const val CAPTURE_OFF_TITLE = "Turn off Capture Streams?"
+internal const val CAPTURE_OFF_MESSAGE =
+    "Live video still works, but incoming drone streams will not be recorded on this tablet until you turn capture back on."

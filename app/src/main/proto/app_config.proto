@@ -124,7 +124,8 @@ message AppConfig {
   bool go_live_flag = 24;
 
   string coordinate_display_format = 30;
-  bool capture_video_streams = 31;
+  // optional: a value missing from the saved file loads as ON (2026-11-18 S11U lost capture).
+  optional bool capture_video_streams = 31;
   bool use_peers = 32;
   bool predictive_head_enabled = 33;
   int64 proximity_alert_spacing_feet = 34;

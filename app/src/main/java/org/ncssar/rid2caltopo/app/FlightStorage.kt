@@ -135,12 +135,17 @@ object FlightStorage {
     @JvmStatic fun observe(context: Context, callback: Runnable) {
         synchronized(stateLock) { listener = callback }
         worker.execute {
-            if (CaltopoClient.GetArchiveUri() != null) runCatching { OperationalStorage.requireRecorderReady(context) }.getOrElse { return@execute }
+            if (CaltopoClient.GetArchiveUri() != null && ArchiveWritability.writable) runCatching { OperationalStorage.requireRecorderReady(context) }.getOrElse {
+                // A read-only card still records to tablet storage; anything else stops here as before.
+                if (!ArchiveWritability.noteFailure(it, "recorder preparation")) return@execute
+            }
             val recorder = FlightStorageFileMonitor(listOf(File(context.filesDir, "mediamtx-recordings"))) { file ->
-                if (file.isFile && file.path.startsWith(File(context.filesDir, "mediamtx-recordings").path + "/") && file.extension.lowercase() in setOf("mp4", "fmp4")) {
+                if (ArchiveWritability.writable && file.isFile && file.path.startsWith(File(context.filesDir, "mediamtx-recordings").path + "/") && file.extension.lowercase() in setOf("mp4", "fmp4")) {
                     runCatching { org.ncssar.rid2caltopo.storage.OperationalStorage.retainGrowingRecording(file) }
                         .onSuccess { recordingArchiveWriteFailed = false }
                         .onFailure {
+                            // Read-only/I-O: the sticky verdict takes over; recording continues in tablet storage.
+                            if (ArchiveWritability.noteFailure(it, "recording checkpoint")) return@onFailure
                             recordingArchiveWriteFailed = true; captureBlocked = true
                             pressure.value = FlightStorageIssue.ARCHIVE_WRITE.message
                             CaltopoClient.CTError("FlightStorage", "Recording checkpoint could not be retained", it as? Exception ?: Exception(it))
@@ -154,7 +159,9 @@ object FlightStorage {
             }
             // The recorder watcher is already checkpointing on its own executor while
             // other operational roots finish migration and projection preparation.
-            if (CaltopoClient.GetArchiveUri() != null) runCatching { OperationalStorage.requireReady(context) }.getOrElse { return@execute }
+            if (CaltopoClient.GetArchiveUri() != null && ArchiveWritability.writable) runCatching { OperationalStorage.requireReady(context) }.getOrElse {
+                if (!ArchiveWritability.noteFailure(it, "archive preparation")) return@execute
+            }
             val candidate = FlightStorageFileMonitor(auxiliaryRoots(context).filterNot { it.name == "mediamtx-recordings" }) { file ->
                 fileChanged(context, file.path, file.length())
             }
@@ -196,7 +203,7 @@ object FlightStorage {
         val newDay = lastSweepDay != todayArchiveDirectoryName()
         // Cleanup cannot run through an unprepared projection. Pause capture at the
         // existing allowance/reserve boundary while bulk startup is still in progress.
-        if (!OperationalStorage.ready() && !captureBlocked && needsDemandCheck(context)) {
+        if (ArchiveWritability.writable && !OperationalStorage.ready() && !captureBlocked && needsDemandCheck(context)) {
             captureBlocked = true
             val low = sweepAvailable?.let { it - (estimatedUsed - sweepUsed) < RESERVE } == true
             val issue = if (low) FlightStorageIssue.DEVICE_LOW else FlightStorageIssue.ALLOWANCE
@@ -257,7 +264,7 @@ object FlightStorage {
             if (run) {
                 try {
                     maintain(context)
-                    synchronized(stateLock) { transientCheckAttempt = 0 }
+                    synchronized(stateLock) { transientCheckAttempt = 0; lastPressureShown = null }
                 } catch (error: Exception) {
                     if (isTransientStorageCheckFailure(error)) {
                         val attempt = synchronized(stateLock) { transientCheckAttempt++ }
@@ -273,9 +280,13 @@ object FlightStorage {
                                 requestCheck(context, true)
                             }, delayMs, java.util.concurrent.TimeUnit.MILLISECONDS)
                         }
+                    } else if (ArchiveWritability.noteFailure(error, "flight storage check")) {
+                        // Sticky verdict: one alert per state change, no pop-up per failed check.
+                        // Recording continues to tablet storage unless that is low too.
+                        applyNotWritable(context)
                     } else {
                         captureBlocked = true
-                        pressure.value = "Storage could not be checked. Restore archive access or free device space in Manage Storage."
+                        showPressureOnce(CHECK_FAILED_MESSAGE)
                         CaltopoClient.CTError("FlightStorage", "Demand cleanup failed", error)
                     }
                 }
@@ -285,11 +296,45 @@ object FlightStorage {
         }
     }
     private const val RESERVE = 1_000_000_000L
+    private const val CHECK_FAILED_MESSAGE = "Storage could not be checked. Restore archive access or free device space in Manage Storage."
+    /** The last failure message shown, so repeated failed checks do not re-open the pop-up. */
+    private var lastPressureShown: String? = null
+    private fun showPressureOnce(message: String) {
+        val show = synchronized(stateLock) {
+            if (lastPressureShown == message) false else { lastPressureShown = message; true }
+        }
+        if (show) pressure.value = message
+    }
+
+    /** App-private (tablet) storage has room above the reserve for recordings and logs. */
+    @JvmStatic fun tabletFallbackAvailable(context: Context): Boolean = context.filesDir.usableSpace >= RESERVE
+
+    /**
+     * Archive not writable: recording continues to tablet storage within the reserve. Only
+     * low tablet storage blocks capture; the read-only alert comes from [ArchiveWritability].
+     */
+    private fun applyNotWritable(context: Context): Snapshot {
+        val deviceAvailable = context.filesDir.usableSpace
+        val issue = if (deviceAvailable < RESERVE) FlightStorageIssue.DEVICE_LOW else null
+        return synchronized(stateLock) {
+            val wasBlocked = captureBlocked
+            captureBlocked = issue != null
+            if (issue != null && (!wasBlocked || lastIssue != issue)) pressure.value = issue.message
+            lastIssue = issue
+            initialized = true
+            val result = Snapshot(lastRead?.used ?: estimatedUsed, lastRead?.auxiliary ?: 0L, emptyList(), issue,
+                archiveReady = false, deviceAvailable = deviceAvailable, archiveNotWritable = true)
+            lastRead = result; lastReadAt = android.os.SystemClock.elapsedRealtime()
+            result
+        }
+    }
     private const val ESTIMATED_USED_KEY = "estimated_used_bytes"
     @Volatile var captureBlocked = false; private set
     data class Snapshot(val used: Long, val auxiliary: Long, val failures: List<String>,
                         val issue: FlightStorageIssue?, val archiveReady: Boolean, val deviceAvailable: Long,
-                        val preparingWorkingCopies: Boolean = false) {
+                        val preparingWorkingCopies: Boolean = false,
+                        /** Archive folder is read-only or failing; recordings and logs stay in tablet storage. */
+                        val archiveNotWritable: Boolean = false) {
         val blocked: Boolean get() = issue != null
         val allowanceInsufficient: Boolean get() = issue == FlightStorageIssue.ALLOWANCE
         val message: String get() = issue?.message.orEmpty()
@@ -560,6 +605,13 @@ object FlightStorage {
         val used = known ?: prefs(context).getLong(ESTIMATED_USED_KEY, 0L)
         val archiveUriPresent = CaltopoClient.GetArchiveUri() != null
         val deviceAvailable = context.filesDir.usableSpace
+        if (archiveUriPresent && !ArchiveWritability.writable) {
+            // The sticky verdict stands: the estimate never clears it, and recording goes to tablet storage.
+            val issue = if (deviceAvailable < RESERVE) FlightStorageIssue.DEVICE_LOW else null
+            synchronized(stateLock) { if (!initialized) captureBlocked = issue != null }
+            CaltopoClient.CTDebug("FlightStorage", "Recording start estimate archive=not-writable deviceAvailable=$deviceAvailable issue=${issue?.name ?: "none"}")
+            return Snapshot(used, 0L, emptyList(), issue, false, deviceAvailable, preparingWorkingCopies = true, archiveNotWritable = true)
+        }
         val estimated = recordingStartIssue(archiveUriPresent, used, maximumBytes(context), deviceAvailable, recordingArchiveWriteFailed)
         // Once a scan has run its verdict stands until the next one clears it.
         val scanned = synchronized(stateLock) { if (initialized && captureBlocked) lastIssue ?: FlightStorageIssue.ALLOWANCE else null }
@@ -628,6 +680,8 @@ object FlightStorage {
         scanOnWorker(context, purge, reserving)
     }
     private fun scanOnWorker(context: Context, purge: Boolean, reserving: Long, cancelled: () -> Unit = {}, seedEstimate: Boolean = false): Snapshot {
+        // Read-only/failing archive: no archive walk, no purge, and canWrite() cannot clear the verdict.
+        if (CaltopoClient.GetArchiveUri() != null && !ArchiveWritability.writable) return applyNotWritable(context)
         val started = android.os.SystemClock.elapsedRealtime()
         val preparing = CaltopoClient.GetArchiveUri() != null && !OperationalStorage.ready()
         val archive = CaltopoClient.GetArchiveDir()
@@ -696,6 +750,7 @@ object FlightStorage {
             if (issue?.shouldNotify == true) {
                 if (!wasBlocked || lastIssue != issue) pressure.value = result.message
             } else pressure.value = null
+            lastPressureShown = null
             lastIssue = issue
         }
         CaltopoClient.CTDebug("FlightStorage", "Sized flights purge=$purge days=${folders.size} files=${folders.sumOf { it.fileSizes.size }} preparing=$preparing reason=${if (purge) "stale" else "cold"} elapsedMs=${android.os.SystemClock.elapsedRealtime() - started}")
@@ -711,7 +766,8 @@ object FlightStorage {
     }
     private inline fun <T> storageIo(context: Context, action: () -> T): T {
         check(android.os.Looper.myLooper() != android.os.Looper.getMainLooper()) { "Flight storage must run on a worker" }
-        org.ncssar.rid2caltopo.storage.OperationalStorage.tryRequireReady(context)
+        // No prepare/migration attempts against a read-only archive (back off until a recheck clears it).
+        if (ArchiveWritability.writable) org.ncssar.rid2caltopo.storage.OperationalStorage.tryRequireReady(context)
         return lock.withLock(action)
     }
     private fun availableBytes(context: Context, archive: DocumentFile?): Long? = try {

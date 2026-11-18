@@ -424,6 +424,7 @@ fun StreamsScreen(
             if (!fullScreenChrome.showExitChip) {
                 Row(Modifier.fillMaxWidth().horizontalScroll(headerScrollState).padding(horizontal = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                     org.ncssar.rid2caltopo.ui.BtrxMapStatusChip()
+                    if (externalContentMode == null) org.ncssar.rid2caltopo.ui.ArchiveStorageMapChip()
                     ResumeProximityAlertButton(onSettings = { onProximitySettingsTap?.invoke() })
                     NotamStatusChip(state = notamUiState, airspaceState = airspaceUiState, onClick = { showNotamPanel = true }, outerPadding = PaddingValues(0.dp))
                     LandRestrictionStatusChip(state = landRestrictionUiState, onClick = { showLandRestrictionPanel = true }, outerPadding = PaddingValues(0.dp))
@@ -451,6 +452,11 @@ fun StreamsScreen(
                     }
                     StreamsMapStatusButton(mapName = mapName, onClick = onMapStatusTap, compact = true)
                 }
+            }
+
+            if (externalContentMode == null && showNavigation) {
+                // Compact strip (not an overlay): a live stream is not recorded because Capture Streams is off.
+                org.ncssar.rid2caltopo.ui.NotCapturingStreamPanelHost()
             }
 
             if (!remoteVideoStatus.isNullOrBlank()) {

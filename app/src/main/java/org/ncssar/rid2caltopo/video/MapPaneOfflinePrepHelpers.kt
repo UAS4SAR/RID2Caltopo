@@ -431,6 +431,8 @@ internal suspend fun autoDownloadBestDemForLocation(
     return complete
 }
 
+private val terrainSkipLogged = java.util.concurrent.atomic.AtomicBoolean(false)
+
 internal suspend fun downloadAutomaticDem(
     download: DemDownload,
     context: Context,
@@ -439,6 +441,12 @@ internal suspend fun downloadAutomaticDem(
     onProgress: (Long, Long?) -> Unit = { _, _ -> },
     onCall: (okhttp3.Call, Boolean) -> Unit = { _, _ -> },
 ): Boolean {
+    // Terrain lives in the archive's cache folder: skip prefetch while it is read-only/failing.
+    if (CaltopoClient.GetArchiveUri() != null && !org.ncssar.rid2caltopo.app.ArchiveWritability.writable) {
+        if (terrainSkipLogged.compareAndSet(false, true)) CTDebug("TerrainPrefetch", "Archive not writable; terrain download skipped until it is")
+        return false
+    }
+    terrainSkipLogged.set(false)
     if (download.url.contains("/S1M/")) {
         return downloadS1mPieces(download, context, client, service, onProgress, onCall)
     }
