@@ -1753,9 +1753,12 @@ Both planners now expose independent Transit speed in the same ft/s or m/s units
   the 2026-11-18 A5 crash, a sticky restart ran a headless low-latency Bluetooth scan and
   Desk Pod reconnects. If Android kills the app mid-session, monitoring stays off until the
   operator reopens it (Ken's choice). `AppIdleAlarmReceiver` cancels itself and does no work
-  without a session. The scanner holds the `location` service type only while Wi-Fi Remote
-  ID scanning is on (Bluetooth-only: `connectedDevice`); toggling Wi-Fi scanning
-  re-promotes the service. Android 15 dataSync limit: `MediaMTXService.onTimeout` stops
+  without a session. The scanner holds the `location` service type only while a scan that
+  needs it is on, and toggling Wi-Fi scanning re-promotes the service. Bluetooth RID still
+  needs it: `BLUETOOTH_SCAN` is declared without `neverForLocation`, so BLE results need
+  location access, which a background service has only with the `location` type. Dropping
+  it for Bluetooth-only scanning waits on a separate `neverForLocation` decision so that
+  locked-screen Bluetooth monitoring keeps working. Android 15 dataSync limit: `MediaMTXService.onTimeout` stops
   the relay (recording stops, the segment closes and staged recordings sync in `onDestroy`)
   and reopening the app restarts it; `CaltopoPersonalAuthService.onTimeout` stops.
 - iOS: no Bluetooth restoration, significant-change or region monitoring, so nothing

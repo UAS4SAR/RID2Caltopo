@@ -27,15 +27,25 @@ class ServiceLifecyclePolicyTest {
     }
 
     @Test
-    fun locationTypeOnlyWhileWifiRidScanningIsOn() {
+    fun locationTypeOnlyWhileAScanThatNeedsItIsOn() {
         val connected = ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
         val location = ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
-        assertEquals(connected, ServiceLifecyclePolicy.scanningForegroundTypes(false, true))
-        assertEquals(connected, ServiceLifecyclePolicy.scanningForegroundTypes(false, false))
-        assertEquals(connected, ServiceLifecyclePolicy.scanningForegroundTypes(true, false))
-        assertEquals(connected or location, ServiceLifecyclePolicy.scanningForegroundTypes(true, true))
+        // Bluetooth results that do not need location (neverForLocation declared).
+        assertEquals(connected, ServiceLifecyclePolicy.scanningForegroundTypes(false, true, false))
+        assertEquals(connected, ServiceLifecyclePolicy.scanningForegroundTypes(true, false, false))
+        assertEquals(connected or location, ServiceLifecyclePolicy.scanningForegroundTypes(true, true, false))
+        // Bluetooth results that need location keep locked-screen Bluetooth RID working.
+        assertEquals(connected or location, ServiceLifecyclePolicy.scanningForegroundTypes(false, true, true))
+        assertEquals(connected, ServiceLifecyclePolicy.scanningForegroundTypes(false, false, true))
         assertEquals("connectedDevice", ServiceLifecyclePolicy.describeForegroundTypes(connected))
         assertEquals("connectedDevice|location", ServiceLifecyclePolicy.describeForegroundTypes(connected or location))
+    }
+
+    @Test
+    fun bluetoothLocationNeedMatchesTheManifest() {
+        val manifest = File("src/main/AndroidManifest.xml").readText()
+        val scan = Regex("""<uses-permission[^>]*android\.permission\.BLUETOOTH_SCAN"[^>]*>""").find(manifest)!!.value
+        assertEquals(!scan.contains("neverForLocation"), ServiceLifecyclePolicy.BLUETOOTH_SCAN_NEEDS_LOCATION)
     }
 
     @Test

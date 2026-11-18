@@ -144,8 +144,8 @@ public class ScanningService extends Service {
     }
 
     /**
-     * The location service type is held only while Wi-Fi RID scanning is on. Toggling the
-     * setting (always from the visible app) re-promotes the service with the new types.
+     * The location service type is held only while a scan that needs it is on. Toggling Wi-Fi
+     * RID scanning (always from the visible app) re-promotes the service with the new types.
      */
     private void refreshForegroundTypes() {
         if (!foregroundStarted) return;
@@ -496,8 +496,9 @@ public class ScanningService extends Service {
 
     private boolean startForegroundSafely(Notification notification) {
         try {
-            // Wi-Fi beacon/NAN results need fine location while the display is off; Bluetooth
-            // RID does not. Hold the location type only while Wi-Fi RID scanning is on.
+            // Wi-Fi beacon/NAN results, and Bluetooth results while BLUETOOTH_SCAN lacks
+            // neverForLocation, need location access with the display off. See
+            // ServiceLifecyclePolicy.scanningForegroundTypes.
             int serviceTypes = desiredForegroundTypes();
             ServiceCompat.startForeground(this, NOTIFICATION_ID, notification,
                     serviceTypes);

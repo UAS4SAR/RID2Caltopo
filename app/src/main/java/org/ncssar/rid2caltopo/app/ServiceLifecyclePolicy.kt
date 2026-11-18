@@ -32,13 +32,30 @@ object ServiceLifecyclePolicy {
         scanningServiceRunning || uiPresent
 
     /**
-     * Wi-Fi Remote ID (beacon/NAN) results need location while the display is off; Bluetooth
-     * Remote ID does not. Ask for the location service type only while Wi-Fi scanning is on.
+     * True while the manifest declares BLUETOOTH_SCAN without `neverForLocation`. Android then
+     * delivers BLE scan results only to an app with location access, and with while-in-use
+     * permission a service in the background has that access only with the `location` type.
+     * Dropping the type would stop Bluetooth Remote ID with the display off, which breaks
+     * locked-screen monitoring during a session. ServiceLifecyclePolicyTest ties this to the
+     * manifest: adding `neverForLocation` (a separate decision; Android then filters some
+     * beacons) is what lets Bluetooth-only scanning run as `connectedDevice` alone.
+     */
+    const val BLUETOOTH_SCAN_NEEDS_LOCATION = true
+
+    /**
+     * Wi-Fi Remote ID (beacon/NAN) and, while [BLUETOOTH_SCAN_NEEDS_LOCATION], Bluetooth Remote
+     * ID need location access with the display off. The location type is held only while a
+     * scan that needs it is on; otherwise the scanner runs as `connectedDevice` only.
      */
     @JvmStatic
-    fun scanningForegroundTypes(wifiRidScanningEnabled: Boolean, fineLocationGranted: Boolean): Int {
+    @JvmOverloads
+    fun scanningForegroundTypes(
+        wifiRidScanningEnabled: Boolean,
+        fineLocationGranted: Boolean,
+        bluetoothScanNeedsLocation: Boolean = BLUETOOTH_SCAN_NEEDS_LOCATION,
+    ): Int {
         var types = ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
-        if (wifiRidScanningEnabled && fineLocationGranted) {
+        if (fineLocationGranted && (wifiRidScanningEnabled || bluetoothScanNeedsLocation)) {
             types = types or ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
         }
         return types
