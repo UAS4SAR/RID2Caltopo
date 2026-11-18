@@ -26,6 +26,8 @@ final class AppleApplicationCleanupCenter {
     private var idleLastUserInteractionAt: Date?
     private var idleLastProtectedActivityAt: Date?
     private var idleProtectedActivityActive = false
+    /// Offline downloads and local mapping work; any held lease suspends the idle timeout.
+    private var idleDeferrals = IdleDeferralSet()
     private var maximumIdleMinutes = 0
     /// When true (or unknown), background may suspend before the idle deadline fires.
     private var mayBeSuspendedBeforeTimeout = true
@@ -86,9 +88,43 @@ final class AppleApplicationCleanupCenter {
         if idleTimeoutTask == nil { scheduleIdleTimeoutCheck() }
     }
 
+    /// Offline map download (tiles, terrain, AOL): one on/off source.
     func setIdleShutdownDeferral(active: Bool, at date: Date = Date()) {
-        idleProtectedActivityActive = active
-        idleLastProtectedActivityAt = maxDate(idleLastProtectedActivityAt, date)
+        idleDeferrals.set("offline-map", active: active, at: date)
+        applyIdleDeferrals(at: date)
+    }
+
+    /// Busy work that must not be interrupted by the idle timeout (local mapping: import,
+    /// Pilot 2 transfer, reconstruction, GeoTIFF export, original-photo preparation).
+    /// End the returned lease exactly once when the work finishes, fails or is cancelled.
+    func beginIdleShutdownDeferral(_ source: String, at date: Date = Date()) -> IdleDeferralSet.Token {
+        let token = idleDeferrals.begin(source, at: date)
+        AppleLog.info("Lifecycle", "Idle timeout paused: \(source) started (busy: \(idleDeferrals.activeSources.joined(separator: ",")))")
+        applyIdleDeferrals(at: date)
+        return token
+    }
+
+    func endIdleShutdownDeferral(_ token: IdleDeferralSet.Token?, at date: Date = Date()) {
+        guard let token, idleDeferrals.end(token, at: date) else { return }
+        AppleLog.info(
+            "Lifecycle",
+            idleDeferrals.active
+                ? "\(token.source) finished; idle timeout stays paused (busy: \(idleDeferrals.activeSources.joined(separator: ",")))"
+                : "\(token.source) finished; idle countdown restarts"
+        )
+        applyIdleDeferrals(at: date)
+    }
+
+    /// Runs `work` with the idle timeout paused; the lease ends when it returns or throws.
+    func whileIdleShutdownDeferred<T>(_ source: String, _ work: () async throws -> T) async rethrows -> T {
+        let token = beginIdleShutdownDeferral(source)
+        defer { endIdleShutdownDeferral(token) }
+        return try await work()
+    }
+
+    private func applyIdleDeferrals(at date: Date) {
+        idleProtectedActivityActive = idleDeferrals.active
+        idleLastProtectedActivityAt = maxDate(idleLastProtectedActivityAt, idleDeferrals.lastActivityAt ?? date)
         scheduleIdleTimeoutCheck()
     }
 

@@ -33,6 +33,11 @@ internal class MappingWorkTracker(private val now:()->Long=System::currentTimeMi
         val actions=synchronized(this){leases.values.filter{explicitExit||!it.survivesTaskRemoval}.map{it.onCancel}}
         actions.forEach{runCatching{it()}}
     }
+    /** Holds a lease for exactly the duration of [block]; ends it on success, failure or cancellation. */
+    suspend fun <T> withLease(onCancel:()->Unit,block:suspend ()->T):T {
+        val token=begin(onCancel)
+        try { return block() } finally { finish(token) }
+    }
     internal fun resetForTesting(){synchronized(this){leases.clear();current.value=MappingWorkState()}}
 }
 
@@ -46,6 +51,7 @@ object MappingWorkRuntime {
     internal fun begin(onCancel:()->Unit):String=tracker.begin(onCancel)
     internal fun begin(onCancel:()->Unit,survivesTaskRemoval:Boolean):String=tracker.begin(onCancel,survivesTaskRemoval)
     internal fun finish(token:String)=tracker.finish(token)
+    internal suspend fun <T> withLease(onCancel:()->Unit,block:suspend ()->T):T=tracker.withLease(onCancel,block)
     @JvmStatic fun cancelActive()=tracker.cancelActive()
     fun onActivityFinished(explicitExit:Boolean)=tracker.cancelActive(explicitExit)
     internal fun resetForTesting()=tracker.resetForTesting()

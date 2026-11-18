@@ -259,7 +259,7 @@ struct AppleMappingLayerInspector:View {
                     exportWorker=worker
                     exportTask=Task { @MainActor in
                         defer {exportTask=nil;exportWorker=nil}
-                        do {let result=try await worker.value;try Task.checkCancellation();geoTiff=result}
+                        do {let result=try await AppleApplicationCleanupCenter.shared.whileIdleShutdownDeferred("mapping.geotiff"){try await worker.value};try Task.checkCancellation();geoTiff=result}
                         catch is CancellationError {} catch {if !Task.isCancelled {fileError=error.localizedDescription}}
                     }
                 }.disabled(exportTask != nil || geoTiff != nil)

@@ -3,6 +3,7 @@ package org.ncssar.rid2caltopo.mapping
 import android.graphics.BitmapFactory
 import java.io.File
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
@@ -10,7 +11,13 @@ import org.json.JSONObject
 
 object MappingGeoTiffExport {
     data class Result(val file: File, val zoom: Int, val byteCount: Long, val reducedDetail: Boolean)
-    suspend fun export(root: File, minZoom: Int, maxZoom: Int, limitForCalTopo: Boolean = false): Result = withContext(Dispatchers.IO) {
+    /** Local map image processing counts as busy: the idle timeout is suspended until the export ends. */
+    suspend fun export(root: File, minZoom: Int, maxZoom: Int, limitForCalTopo: Boolean = false): Result {
+        val job = currentCoroutineContext()[Job]
+        return MappingWorkRuntime.withLease(onCancel = { job?.cancel() }) { exportImages(root, minZoom, maxZoom, limitForCalTopo) }
+    }
+
+    private suspend fun exportImages(root: File, minZoom: Int, maxZoom: Int, limitForCalTopo: Boolean): Result = withContext(Dispatchers.IO) {
         val job=currentCoroutineContext()
         job.ensureActive()
         val destination=File(root,"map.tif")

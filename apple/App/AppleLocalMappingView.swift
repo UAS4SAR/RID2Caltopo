@@ -24,6 +24,8 @@ import R2CMapping
     private var cancellation=MappingCancellation()
     private let libraryCache = LibraryIndexCache()
     private var busyMissionID: String?
+    /// Import and reconstruction pause the idle timeout until finish() (success, failure or cancel).
+    private var idleLease: IdleDeferralSet.Token?
     private func store() throws -> MappingMissionStore {try MappingMissionStore(root:MappingMissionStore.applicationRoot())}
     func refresh(incident: String,newest: Bool,force: Bool = false) {
         if loading { return }
@@ -107,6 +109,7 @@ import R2CMapping
     func importFiles(_ urls:[URL],id:String,incident:String) {
         guard !busy else{return};busy=true;busyMissionID=id;error=nil;jobTitle=entries.first{$0.id==id}?.title ?? "";jobHeading="Importing original photos";let started=Date();cancellation=MappingCancellation();let cancel=cancellation
         UIApplication.shared.isIdleTimerDisabled=true
+        idleLease=AppleApplicationCleanupCenter.shared.beginIdleShutdownDeferral("mapping.import")
         queue.async {
             do {let store=try MappingMissionStore(root:MappingMissionStore.applicationRoot());var digests:[String]=[]
                 for (i,url) in urls.enumerated(){try cancel.check();let original=try store.importOriginal(url,missionID:id){stage in
@@ -124,6 +127,7 @@ import R2CMapping
         busy=true;busyMissionID=id;error=nil;ready=nil;cancellation=MappingCancellation();let cancel=cancellation
         AppleLog.info("Mapping", "Reconstruction started mission=\(id.prefix(8)) selectedPhotos=\(selectedDigests?.count ?? -1)")
         progress=MappingProgressSnapshot(stage:"Preparing local map",fraction:0,startedAt:Date());UIApplication.shared.isIdleTimerDisabled=true
+        idleLease=AppleApplicationCleanupCenter.shared.beginIdleShutdownDeferral("mapping.reconstruction")
         queue.async {
             do {let result=try MappingReconstruction.run(store:MappingMissionStore(root:MappingMissionStore.applicationRoot()),missionID:id,selectedDigests:selectedDigests,cancellation:cancel){value in Task{@MainActor in self.progress=value}}
                 let data=try Data(contentsOf:result.appendingPathComponent("layer.json")),layer=try MappingLayer.decode(data,incidentID:incident)
@@ -186,7 +190,8 @@ import R2CMapping
         }
     }
     func cancel(){cancellation.cancel()}
-    private func finish(){busy=false;busyMissionID=nil;progress=nil;UIApplication.shared.isIdleTimerDisabled=AppleMappingTransferModel.shared.active}
+    private func finish(){busy=false;busyMissionID=nil;progress=nil;UIApplication.shared.isIdleTimerDisabled=AppleMappingTransferModel.shared.active
+        AppleApplicationCleanupCenter.shared.endIdleShutdownDeferral(idleLease);idleLease=nil}
 }
 
 /// Index cache shared with the mapping IO queue; never touch from MainActor for filesystem work.
@@ -635,6 +640,8 @@ private struct AppleSurfaceWebView:UIViewRepresentable{
     private var draining:[String:PilotCloudServer]=[:]
     var active:Bool{server != nil || starting}
     private var checkingCompleted=false
+    /// A Pilot 2 photo transfer pauses the idle timeout from start until stop() (Android DjiCloudManager parity).
+    private var idleLease: IdleDeferralSet.Token?
     func start(_ id:String,host:String?){
         guard draining[id]==nil, !deleting.contains(id) else{status="This mission’s previous connection is closing. Retry the deletion before reconnecting.";return}
         if missionID==id && self.host==host && (server != nil || starting){return}
@@ -642,6 +649,7 @@ private struct AppleSurfaceWebView:UIViewRepresentable{
         guard let host else{status="No Wi-Fi or Ethernet address is available. Connect this device and the controller to the same LAN; the connection will start automatically.";return}
         status="Starting Pilot 2 connection…"
         starting = true
+        idleLease = AppleApplicationCleanupCenter.shared.beginIdleShutdownDeferral("mapping.pilot2-transfer")
         UIApplication.shared.isIdleTimerDisabled = true
         let state = connectionState
         Task {
@@ -726,6 +734,7 @@ private struct AppleSurfaceWebView:UIViewRepresentable{
         connectionQueue.enqueue { state.server?.close() }
         server = nil; missionID = nil; host = nil; url = ""; code = ""; flags = [:]
         UIApplication.shared.isIdleTimerDisabled = AppleLocalMappingModel.shared.busy
+        AppleApplicationCleanupCenter.shared.endIdleShutdownDeferral(idleLease); idleLease = nil
     }
 }
 struct AppleMappingTransferView:View {
@@ -864,7 +873,7 @@ struct AppleMappingDeviceAcceptanceModifier: ViewModifier {
         guard !started else{return};started=true;UIApplication.shared.isIdleTimerDisabled=true
         do {
             let input=directory.appendingPathComponent("input")
-            let info=try await Task.detached{()->(String,String,Int) in
+            let info=try await AppleApplicationCleanupCenter.shared.whileIdleShutdownDeferred("mapping.import"){try await Task.detached{()->(String,String,Int) in
                 let store=try MappingMissionStore(root:MappingMissionStore.applicationRoot())
                 if let argument=ProcessInfo.processInfo.arguments.first(where:{$0.hasPrefix("--mapping-existing-mission=")}) {
                     let id=String(argument.dropFirst("--mapping-existing-mission=".count)),folder=try store.directory(id)
@@ -885,7 +894,7 @@ struct AppleMappingDeviceAcceptanceModifier: ViewModifier {
                 }
                 try store.completeSelection(digests,missionID:id)
                 return(id,incident,digests.count)
-            }.value
+            }.value}
             record(["stage":"imported","mission":info.0,"photos":info.2]);status="Reconstructing existing MapTest photos"
             let model=AppleLocalMappingModel.shared
             let existingResult=ProcessInfo.processInfo.arguments.first(where:{$0.hasPrefix("--mapping-view-existing-result=")}).map{String($0.dropFirst("--mapping-view-existing-result=".count))}
@@ -998,7 +1007,9 @@ struct AppleMappingOriginalPhotosView: View {
         let cancel = cancellation
         Task {
             do {
-                let urls = try await Task.detached(priority: .userInitiated) { try MappingOriginalAccess.prepare(photos, cancellation: cancel) }.value
+                let urls = try await AppleApplicationCleanupCenter.shared.whileIdleShutdownDeferred("mapping.original-photos") {
+                    try await Task.detached(priority: .userInitiated) { try MappingOriginalAccess.prepare(photos, cancellation: cancel) }.value
+                }
                 try cancel.check()
                 if view { preview = urls.first } else { share = MappingOriginalShareSelection(urls: urls) }
             } catch is CancellationError {} catch { self.error = error.localizedDescription }

@@ -1787,3 +1787,21 @@ Both planners now expose independent Transit speed in the same ft/s or m/s units
   `@MainActor`), and there is no removable card. For the same rule, a recordings folder that
   cannot be created now starts the media server with recording paused on a temporary folder
   (`RecordingRootChoice`) instead of failing the start.
+
+## 2026-11-18 — Map work pauses the idle timeout on both platforms (2.6.0, build 446)
+
+- Ken, 2026-11-18: "I would expect that downloading map tiles or processing local map images
+  would count as being busy. It would be a bad thing if either of those activities were
+  interrupted due to an idle timer."
+- Rule (both platforms): while any download or mapping lease is held the maximum-idle timeout
+  is suspended; when the last one finishes, fails or is cancelled the full countdown restarts
+  from that moment. Leases are counted, so one job ending never un-pauses another.
+- iOS (new): `IdleDeferralSet` (R2CCore) backs `AppleApplicationCleanupCenter`. Offline map
+  download keeps its on/off source; new leases cover original-photo import, Pilot 2 photo
+  transfer (start → stop), reconstruction (start → finish on success, failure or cancel),
+  GeoTIFF export, original-photo preview/share preparation and the device acceptance import.
+- Android: offline download (`MapOfflinePrepRuntime`), Pilot 2 transfer (`DjiCloudManager`),
+  transfer (`MappingTransferManager`), reconstruction (`MappingProcessingManager`) and the
+  mapping/3D viewer screens were already covered. Gap fixed: GeoTIFF export now holds a
+  `MappingWorkRuntime` lease (cancelled by an explicit Quit, like the other leases). Original
+  photo share hands out existing files and does no processing.

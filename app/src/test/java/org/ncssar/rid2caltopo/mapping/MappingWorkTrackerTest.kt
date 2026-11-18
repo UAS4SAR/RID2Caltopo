@@ -66,4 +66,41 @@ class MappingWorkTrackerTest {
         assertEquals(1,processingCancelled)
     }
 
+    // Ken, Nov 18 2026: processing local map images counts as busy; an idle timeout must not interrupt it.
+    @Test fun leaseCoversBlockAndRestartsCountdownAfterSuccessOrFailure() {
+        var now=10_000L;val tracker=MappingWorkTracker(now={now})
+        val value=kotlinx.coroutines.runBlocking {
+            tracker.withLease(onCancel={}) {
+                assertTrue(tracker.state.value.active)
+                now=10_000_000L
+                assertEquals(ApplicationIdleTimeoutPolicy.SUSPENDED,idleRemaining(tracker.state.value,now))
+                now=10_005_000L;42
+            }
+        }
+        assertEquals(42,value)
+        assertFalse(tracker.state.value.active)
+        assertEquals(10_005_000L,tracker.state.value.lastActivityAtMsec)
+        assertEquals(120_000L,idleRemaining(tracker.state.value,now))
+        val failure=runCatching { kotlinx.coroutines.runBlocking {
+            tracker.withLease(onCancel={}) { now=10_100_000L;throw IllegalStateException("tile decode failed") }
+        } }
+        assertTrue(failure.exceptionOrNull() is IllegalStateException)
+        assertFalse(tracker.state.value.active)
+        assertEquals(10_100_000L,tracker.state.value.lastActivityAtMsec)
+    }
+
+    @Test fun explicitExitCancelsLeasedExport() {
+        val tracker=MappingWorkTracker(now={1L});var cancelled=0
+        kotlinx.coroutines.runBlocking { tracker.withLease(onCancel={cancelled++}) { tracker.cancelActive(explicitExit=true) } }
+        assertEquals(1,cancelled)
+        assertFalse(tracker.state.value.active)
+    }
+
+    @Test fun geoTiffExportHoldsMappingWorkLease() {
+        val path="src/main/java/org/ncssar/rid2caltopo/mapping/MappingGeoTiffExport.kt"
+        val source=listOf(java.io.File(path),java.io.File("app/$path")).first{it.exists()}.readText()
+        val export=source.substringAfter("suspend fun export(").substringBefore("private suspend fun exportImages(")
+        assertTrue("GeoTIFF export must pause the idle timeout",export.contains("MappingWorkRuntime.withLease("))
+        assertTrue(export.contains("exportImages("))
+    }
 }
