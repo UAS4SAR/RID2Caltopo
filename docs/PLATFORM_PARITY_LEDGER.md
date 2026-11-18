@@ -1742,6 +1742,30 @@ Both planners now expose independent Transit speed in the same ft/s or m/s units
     it ON with a notice. iOS keeps Capture Streams in UserDefaults (default ON) and its
     settings transfer does not carry it.
 
+## 2026-11-18 — Nothing outlives the session (2.6.0, build 446)
+
+- Ken, 2026-11-18: "When the user terminates the app, I don't want it continuing to use
+  resources." Losing focus or locking the display mid-session stays valid on both platforms:
+  locked-screen monitoring, spoken warnings and the video relay continue until Quit, a
+  Recents/window swipe, back-out or the idle timeout.
+- Android: `ScanningService` never asks Android to restart it (`START_NOT_STICKY`
+  everywhere); a start with no intent and no app UI stops at once. Field evidence: after
+  the 2026-11-18 A5 crash, a sticky restart ran a headless low-latency Bluetooth scan and
+  Desk Pod reconnects. If Android kills the app mid-session, monitoring stays off until the
+  operator reopens it (Ken's choice). `AppIdleAlarmReceiver` cancels itself and does no work
+  without a session. The scanner holds the `location` service type only while Wi-Fi Remote
+  ID scanning is on (Bluetooth-only: `connectedDevice`); toggling Wi-Fi scanning
+  re-promotes the service. Android 15 dataSync limit: `MediaMTXService.onTimeout` stops
+  the relay (recording stops, the segment closes and staged recordings sync in `onDestroy`)
+  and reopening the app restarts it; `CaltopoPersonalAuthService.onTimeout` stops.
+- iOS: no Bluetooth restoration, significant-change or region monitoring, so nothing
+  relaunches the app (unchanged). Prewarmed and background launches are logged
+  (`launch=prewarm|background|foreground`) and do no startup storage work; cleanup of
+  abandoned temporary files, legacy folders, backup flags and the mapping-storage check run
+  on first activation. `CLBackgroundActivitySession` is held from session start to full
+  cleanup alongside the existing background-location flags (behavior unchanged).
+- Install pre-check: `tools/device_install/install_precheck.py`.
+
 ## 2026-11-18 — Storage failures never stop the app or live video (2.6.0, build 446)
 
 - Field 2026-11-18 (Galaxy Tab A5 Pro): after an SD card swap, app-private folders still
