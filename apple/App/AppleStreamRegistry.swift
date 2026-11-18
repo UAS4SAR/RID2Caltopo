@@ -3,6 +3,7 @@ import AVKit
 import Combine
 import MapKit
 import R2CCore
+import R2CMapping
 import SwiftUI
 import UIKit
 
@@ -1392,6 +1393,11 @@ struct RegisteredDroneDesignatorsView: View {
 
 @MainActor
 final class RID2CaltopoAppDelegate: NSObject, UIApplicationDelegate {
+    /// iOS removes ActivePrewarm once launch completes, so capture it with the delegate.
+    private let activePrewarm = ProcessInfo.processInfo.environment["ActivePrewarm"]
+    private var startupWork = DeferredStartupWork()
+    private var launchLog: Task<Void, Never>?
+
     func application(
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
@@ -1399,29 +1405,24 @@ final class RID2CaltopoAppDelegate: NSObject, UIApplicationDelegate {
         // Open the session log for every launch, foreground or background,
         // before any UI (terms gate, ContentView) exists.
         let launchOptionKeys = (launchOptions ?? [:]).keys.map(\.rawValue)
-        Task { @MainActor in
-            await AppleDiagnosticsCenter.startAtLaunch(launchOptionKeys: launchOptionKeys)
+        let launchKind = LaunchKind.classify(
+            activePrewarm: activePrewarm,
+            applicationStateIsBackground: application.applicationState == .background
+        )
+        launchLog = Task { @MainActor in
+            await AppleDiagnosticsCenter.startAtLaunch(launchOptionKeys: launchOptionKeys, launchKind: launchKind)
         }
         AppleUserInteractionObserver.install()
-        Task.detached(priority: .utility) { await AppleCredentialBackupProtection.shared.apply() }
+        // Startup storage work (backup flags, abandoned temporary files, legacy folders, the
+        // mapping-storage check) waits for the first active scene. A prewarmed or background
+        // process that is never opened does no file work (Nov 18 2026).
         // queue: .main — avoid forming a MainActor-isolated observer delivered on an
         // arbitrary posting thread (queue: nil) if isolation inheritance traps.
-        NotificationCenter.default.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { _ in
+        NotificationCenter.default.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
             Task.detached(priority: .utility) { await AppleCredentialBackupProtection.shared.apply() }
+            MainActor.assumeIsolated { self?.runStartupStorageWorkOnFirstActivation() }
         }
-        // Safety net: raw AOL lidar work only lives while Download Map stays open; remove any left by a killed app.
-        Task.detached(priority: .background) {
-            do { try TemporaryWorkspace.cleanAbandoned() }
-            catch { AppleLog.warning("Storage", "Abandoned temporary files could not be fully cleared") }
-            let removed = OperationalSurfaceSourceReuse.deleteWorkDirectories(in: FileManager.default.temporaryDirectory)
-            let fm = FileManager.default
-            let caches = fm.urls(for: .cachesDirectory, in: .userDomainMask).first!
-            let legacy = ["RID2Caltopo/MapShares", "RID2Caltopo/OriginalPhotoShares", "RID2Caltopo/GeoTIFF", "RID2Caltopo/CapturedVideo", "ClueShares"]
-                .map { fm.temporaryDirectory.appendingPathComponent($0) }
-                + [caches.appendingPathComponent("RID2Caltopo/Exports")]
-            for url in legacy where fm.fileExists(atPath: url.path) { try? fm.removeItem(at: url) }
-            if removed > 0 { AppleLog.info("MapOffline", "Removed \(removed) leftover AOL work folder(s)") }
-        }
+        if application.applicationState == .active { runStartupStorageWorkOnFirstActivation() }
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(primarySceneDidDisconnect(_:)),
@@ -1432,6 +1433,30 @@ final class RID2CaltopoAppDelegate: NSObject, UIApplicationDelegate {
             AppleApplicationCleanupCenter.shared.checkIdleDeadlineNow()
         }
         return true
+    }
+
+    private func runStartupStorageWorkOnFirstActivation() {
+        guard startupWork.appBecameActive() else { return }
+        let launchLog = self.launchLog
+        Task.detached(priority: .background) {
+            await launchLog?.value
+            AppleLog.info("Lifecycle", "First activation: running startup storage cleanup")
+            // Safety net: raw AOL lidar work only lives while Download Map stays open; remove any left by a killed app.
+            do { try TemporaryWorkspace.cleanAbandoned() }
+            catch { AppleLog.warning("Storage", "Abandoned temporary files could not be fully cleared") }
+            let removed = OperationalSurfaceSourceReuse.deleteWorkDirectories(in: FileManager.default.temporaryDirectory)
+            let fm = FileManager.default
+            let caches = fm.urls(for: .cachesDirectory, in: .userDomainMask).first!
+            let legacy = ["RID2Caltopo/MapShares", "RID2Caltopo/OriginalPhotoShares", "RID2Caltopo/GeoTIFF", "RID2Caltopo/CapturedVideo", "ClueShares"]
+                .map { fm.temporaryDirectory.appendingPathComponent($0) }
+                + [caches.appendingPathComponent("RID2Caltopo/Exports")]
+            for url in legacy where fm.fileExists(atPath: url.path) { try? fm.removeItem(at: url) }
+            if removed > 0 { AppleLog.info("MapOffline", "Removed \(removed) leftover AOL work folder(s)") }
+            // Exactly one Mapping storage outcome line per process, after the session log is open.
+            let support = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+            let (_, line) = MappingStorageMigration.evaluate(supportRoot: support)
+            MappingStorageMigration.emitOnce(line) { AppleLog.info("MappingStorage", $0) }
+        }
     }
 
     @objc

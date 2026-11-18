@@ -1,4 +1,5 @@
 import CoreLocation
+import R2CCore
 import Foundation
 import Combine
 
@@ -92,6 +93,13 @@ final class AppleLocationProvider: NSObject, ObservableObject, @preconcurrency C
     /// updates continue after the display locks, which keeps RID scanning, video
     /// ingest, and spoken advisories running. Not tied to an incident map.
     private var backgroundOperationEnabled = false
+    /// Apple's session-scoped background location (iOS 17+): held from session start until full
+    /// cleanup, alongside allowsBackgroundLocationUpdates, so locked-screen monitoring is unchanged
+    /// and nothing outlives the session (Nov 18 2026).
+    private lazy var backgroundActivity = SessionScopedLease<CLBackgroundActivitySession>(
+        make: { CLBackgroundActivitySession() },
+        release: { $0.invalidate() }
+    )
 
     // A Wi-Fi-only iPad can temporarily have no live Core Location fix even
     // though Location Services remain authorized. Prefer the device's recent
@@ -132,6 +140,9 @@ final class AppleLocationProvider: NSObject, ObservableObject, @preconcurrency C
         started = true
         backgroundOperationEnabled = true
         if let manager { applyBackgroundMonitoringConfiguration(to: manager) }
+        if backgroundActivity.begin() {
+            AppleLog.info("Location", "Background activity session started for this monitoring session")
+        }
         AppleLog.info("Location", "Background operation enabled for this session")
         startGeneration &+= 1
         let generation = startGeneration, availability = self.availability
@@ -161,6 +172,9 @@ final class AppleLocationProvider: NSObject, ObservableObject, @preconcurrency C
         clearLocationUse(removePersistedFix: false)
         backgroundOperationEnabled = false
         if let manager { applyBackgroundMonitoringConfiguration(to: manager) }
+        if backgroundActivity.end() {
+            AppleLog.info("Location", "Background activity session ended")
+        }
         AppleLog.info("Location", "Background operation disabled")
     }
 

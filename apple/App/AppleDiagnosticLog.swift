@@ -295,7 +295,7 @@ final class AppleDiagnosticsCenter: ObservableObject {
     /// delegate. Before this the file was only created from ContentView's
     /// `.task`, so background relaunches (Bluetooth/location restoration) and
     /// any launch that stopped at the terms gate wrote no log at all.
-    static func startAtLaunch(launchOptionKeys: [String]) async {
+    static func startAtLaunch(launchOptionKeys: [String], launchKind: LaunchKind = .foreground) async {
         AppleLog.installBridgePacketLogSink()
         let state: String
         switch UIApplication.shared.applicationState {
@@ -309,16 +309,17 @@ final class AppleDiagnosticsCenter: ObservableObject {
             AppleLog.info(
                 "App",
                 "Process launched pid=\(ProcessInfo.processInfo.processIdentifier) state=\(state) " +
+                    "launch=\(launchKind.rawValue) " +
                     "options=[\(launchOptionKeys.sorted().joined(separator: ","))] log=\(url.lastPathComponent)"
             )
-            // After the session log is open: exactly one Mapping storage outcome line.
-            await Task.detached(priority: .utility) {
-                let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-                let (_, line) = MappingStorageMigration.evaluate(supportRoot: support)
-                MappingStorageMigration.emitOnce(line) { AppleLog.info("MappingStorage", $0) }
-            }.value
+            if launchKind.defersStartupStorageWork {
+                AppleLog.info(
+                    "Lifecycle",
+                    "Launched without the operator (\(launchKind.rawValue)); startup storage work waits until the app is first opened"
+                )
+            }
         } catch {
-            NSLog("RID2Caltopo: diagnostic log failed to open at launch: \(error)")
+            NSLog("RID2Caltopo: diagnostic log failed to open at launch (\(launchKind.rawValue)): \(error)")
         }
     }
 
