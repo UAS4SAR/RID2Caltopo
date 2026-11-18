@@ -23,6 +23,15 @@ public final class AppIdleAlarmReceiver extends BroadcastReceiver {
 
     @Override
     public void onReceive(Context context, Intent intent) {
+        // An alarm left over from a process that died mid-session must not run idle work in a
+        // fresh, headless process. Only an open session (scanner running or app UI present)
+        // needs the idle check; otherwise cancel and do nothing (Ken, Nov 18 2026).
+        if (!ServiceLifecyclePolicy.idleAlarmShouldCheck(
+                ScanningService.IsRunning(), R2CActivity.getR2CActivity() != null)) {
+            android.util.Log.i("AppIdleAlarm", "No active session; idle alarm cancelled without work.");
+            cancel(context);
+            return;
+        }
         if (SettingsStartup.isReady()) CaltopoClient.CheckIdle();
         else {
             // Reschedule without holding a broadcast alive or inspecting unloaded settings.

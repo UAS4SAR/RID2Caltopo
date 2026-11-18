@@ -618,6 +618,32 @@ public class MediaMTXService extends Service {
         return null;
     }
 
+    /**
+     * Android 15+: dataSync foreground services get 6 hours in the background per 24 hours.
+     * At the limit the service must stop within seconds. Stopping runs onDestroy(), which stops
+     * recording through the reconciler, stops the native server (closing the fMP4 segment) and
+     * syncs staged recordings off the main thread. Reopening the app starts the relay again.
+     */
+    @Override
+    public void onTimeout(int startId, int fgsType) {
+        CTError(TAG, "onTimeout(type=" + fgsType + "): " + ServiceLifecyclePolicy.MEDIA_TIME_LIMIT_REASON);
+        stoppedByTimeLimit = true;
+        MediaMTXStatus.onServerExited(ServiceLifecyclePolicy.MEDIA_TIME_LIMIT_REASON);
+        stopForegroundSafely();
+        stopSelf();
+    }
+
+    /** Set when Android's background time limit stopped the relay; cleared by the next start. */
+    private static volatile boolean stoppedByTimeLimit = false;
+
+    /** The visible app restarts a relay that Android stopped at its background time limit. */
+    public static void restartAfterTimeLimitIfNeeded(Context context) {
+        if (!stoppedByTimeLimit || serviceRunning) return;
+        CTInfo(TAG, "Restarting the video relay stopped at Android's background time limit.");
+        stoppedByTimeLimit = false;
+        requestStart(context);
+    }
+
     // No onTaskRemoved(): this service is stopWithTask="true", so Android stops it on a Recents
     // swipe without calling onTaskRemoved(). ScanningService (stopWithTask="false") owns the
     // swipe-away shutdown and stops this service when that shutdown ends.

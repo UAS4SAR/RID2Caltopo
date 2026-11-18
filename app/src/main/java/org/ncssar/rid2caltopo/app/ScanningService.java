@@ -71,6 +71,8 @@ public class ScanningService extends Service {
     private boolean scanning = false;
     private boolean foregroundStarted = false;
     private boolean foregroundStartBlocked = false;
+    /** Foreground service types last granted to startForeground (0 when not in the foreground). */
+    private int foregroundTypes = 0;
     private final Handler lifecycleHandler = new Handler(Looper.getMainLooper());
     private boolean externalDisplayConnected = false;
     private final Runnable incidentMapBackgroundDisconnect = new Runnable() {
@@ -138,6 +140,32 @@ public class ScanningService extends Service {
         } else {
             CTDebug(TAG, "Wi-Fi RID scanning remains " + (enabled ? "enabled." : "disabled."));
         }
+        refreshForegroundTypes();
+    }
+
+    /**
+     * The location service type is held only while Wi-Fi RID scanning is on. Toggling the
+     * setting (always from the visible app) re-promotes the service with the new types.
+     */
+    private void refreshForegroundTypes() {
+        if (!foregroundStarted) return;
+        int wanted = desiredForegroundTypes();
+        if (wanted == foregroundTypes) return;
+        CTDebug(TAG, "Foreground service types " + ServiceLifecyclePolicy.describeForegroundTypes(foregroundTypes)
+                + " -> " + ServiceLifecyclePolicy.describeForegroundTypes(wanted));
+        int previous = foregroundTypes;
+        if (!startForegroundSafely(buildForegroundNotification())) {
+            // The rejected call leaves the service in the foreground with its previous types.
+            foregroundStarted = true;
+            foregroundTypes = previous;
+            CTWarn(TAG, "Foreground service types could not be changed; keeping the running service.");
+        }
+    }
+
+    private int desiredForegroundTypes() {
+        boolean fineLocation = ContextCompat.checkSelfPermission(this, android.Manifest.permission.ACCESS_FINE_LOCATION)
+                == PackageManager.PERMISSION_GRANTED;
+        return ServiceLifecyclePolicy.scanningForegroundTypes(WifiRidScanPrefs.isEnabled(this), fineLocation);
     }
 
     private void applyBluetoothRidTestPreference() {
@@ -249,6 +277,16 @@ public class ScanningService extends Service {
             stopSelf();
             return START_NOT_STICKY;
         }
+        if (ServiceLifecyclePolicy.shouldStopUnrequestedStart(intent != null, R2CActivity.getR2CActivity() != null)) {
+            // A system restart with no app UI: the session ended when the process died. Stay off
+            // until the operator reopens the app (Ken, Nov 18 2026).
+            CTWarn(TAG, "onStartCommand(): restart without a request and no app UI; staying stopped until the app is reopened.");
+            settingsServiceStopped = true;
+            pendingSettingsCommands.clear();
+            stopForegroundSafely();
+            stopSelf();
+            return START_NOT_STICKY;
+        }
         if (intent != null && ACTION_STOP_SERVICE.equals(intent.getAction())) {
             settingsServiceStopped = true;
             pendingSettingsCommands.clear();
@@ -274,17 +312,17 @@ public class ScanningService extends Service {
                     stopSelf();
                 });
             }
-            return START_STICKY;
+            return START_NOT_STICKY;
         }
 
         if (intent != null && ACTION_REFRESH_WIFI_RID_SCANNING.equals(intent.getAction())) {
             if (scanning) applyWifiRidScanningPreference();
-            return START_STICKY;
+            return START_NOT_STICKY;
         }
 
         if (intent != null && ACTION_REFRESH_BLUETOOTH_RID_TEST.equals(intent.getAction())) {
             if (scanning) applyBluetoothRidTestPreference();
-            return START_STICKY;
+            return START_NOT_STICKY;
         }
 
         if (intent != null && ACTION_DISPLAY_STATE.equals(intent.getAction())) {
@@ -306,13 +344,15 @@ public class ScanningService extends Service {
                             INCIDENT_MAP_BACKGROUND_DISCONNECT_DELAY_MS);
                 }
             }
-            return START_STICKY;
+            return START_NOT_STICKY;
         }
 
         if (null == AppContext) {
             AppContext = R2CApplication.getAppCtxt();
             if (null == AppContext) {
-                return START_REDELIVER_INTENT;
+                CTError(TAG, "onStartCommand(): no application context; stopping. The app restarts scanning when reopened.");
+                stopSelf();
+                return START_NOT_STICKY;
             }
         }
         CTDebug(TAG, String.format(Locale.US, "onStartCommand(): AppContext:0x%x", AppContext.hashCode()));
@@ -322,7 +362,7 @@ public class ScanningService extends Service {
             return START_NOT_STICKY;
         }
         startScanning();
-        return START_STICKY;
+        return START_NOT_STICKY;
     }
 
     /**
@@ -456,16 +496,14 @@ public class ScanningService extends Service {
 
     private boolean startForegroundSafely(Notification notification) {
         try {
-            // Wi-Fi beacon scan results require fine location permission. Keep
-            // the existing service type until background reception is qualified.
-            int serviceTypes = ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE;
-            if (ContextCompat.checkSelfPermission(this, android.Manifest.permission.ACCESS_FINE_LOCATION)
-                    == PackageManager.PERMISSION_GRANTED) {
-                serviceTypes |= ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION;
-            }
+            // Wi-Fi beacon/NAN results need fine location while the display is off; Bluetooth
+            // RID does not. Hold the location type only while Wi-Fi RID scanning is on.
+            int serviceTypes = desiredForegroundTypes();
             ServiceCompat.startForeground(this, NOTIFICATION_ID, notification,
                     serviceTypes);
             foregroundStarted = true;
+            foregroundTypes = serviceTypes;
+            CTDebug(TAG, "Foreground service types: " + ServiceLifecyclePolicy.describeForegroundTypes(serviceTypes));
             return true;
         } catch (ForegroundServiceStartNotAllowedException e) {
             CTError(TAG, "Android blocked ScanningService foreground start", e);
@@ -486,6 +524,7 @@ public class ScanningService extends Service {
             CTDebug(TAG, "stopForeground() ignored: " + e.getMessage());
         } finally {
             foregroundStarted = false;
+            foregroundTypes = 0;
         }
     }
 }

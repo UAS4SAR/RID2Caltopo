@@ -1284,6 +1284,8 @@ class R2CActivity :
     }
 
     private fun resumeReadyActivity() {
+        // Android 15 stops dataSync services after 6 background hours; reopening resumes video.
+        MediaMTXService.restartAfterTimeLimitIfNeeded(applicationContext)
         CaltopoPersonalSession.refreshLoginProtection(this)
         org.ncssar.rid2caltopo.data.PlayAppUpdateCheck.check(this)
         val returnedFromTrackerReauthentication = trackerReauthenticationBrowserOpen

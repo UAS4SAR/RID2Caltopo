@@ -36,6 +36,12 @@ class CaltopoPersonalAuthService : Service() {
         return START_NOT_STICKY
     }
 
+    /** Android 15+ dataSync time limit: the sign-in wait ends; the operator can start it again. */
+    override fun onTimeout(startId: Int, fgsType: Int) {
+        android.util.Log.i("CaltopoPersonalAuth", "foreground service time limit reached; stopping")
+        stopSelf()
+    }
+
     private fun startInForeground() {
         val manager = getSystemService(NotificationManager::class.java)
         manager.createNotificationChannel(
