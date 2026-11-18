@@ -49,3 +49,40 @@ object ArchiveWritabilityText {
 
     private fun shortTime(ms: Long): String = DateFormat.getTimeInstance(DateFormat.SHORT).format(Date(ms))
 }
+
+/** Wording for retained state that sits on a card that is no longer in the tablet. */
+internal object MissingPreviousStorageText {
+    const val OK = "OK"
+    const val MANAGE_STORAGE = ArchiveWritabilityText.MANAGE_STORAGE
+
+    private fun card(notice: MissingPreviousStorageNotice): String =
+        notice.volume?.let { "the previous SD card ($it)" } ?: "the previous storage"
+
+    fun title(notice: MissingPreviousStorageNotice): String =
+        if (notice.problem == ArchiveStateProblem.PREVIOUS_ARCHIVE_REQUIRED) "Previous archive folder is missing" else "Previous SD card is missing"
+
+    fun message(notice: MissingPreviousStorageNotice): String {
+        val what = describe(notice.areas)
+        return "Some saved app data ($what) is on ${card(notice)}, which is not in this tablet. " +
+            "Nothing was deleted or moved. Live video still works; new recordings are staged in temporary " +
+            "tablet storage while this lasts. Reinsert that card to pick up where you left off, " +
+            "or open $MANAGE_STORAGE to choose another archive folder."
+    }
+
+    /** One line for Flight Storage. */
+    fun status(notice: MissingPreviousStorageNotice): String =
+        "Saved app data (${describe(notice.areas)}) is on ${card(notice)}, which is not in this tablet. Nothing was deleted."
+
+    fun describe(areas: Set<String>): String {
+        val names = areas.map { id ->
+            when (id) {
+                "unfinished-recordings", "recording-work", "recording-originals", "recordings" -> "unfinished recordings"
+                "queue-state" -> "pending uploads and flight state"
+                "missions", "layers", "processing", "map-statistics" -> "mapping data"
+                "map-archives" -> "offline maps"
+                else -> id.replace('-', ' ')
+            }
+        }.distinct()
+        return names.ifEmpty { listOf("operational data") }.joinToString(", ")
+    }
+}

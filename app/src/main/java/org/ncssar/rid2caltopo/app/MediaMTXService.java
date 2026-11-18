@@ -65,6 +65,20 @@ public class MediaMTXService extends Service {
                 thread.setDaemon(true);
                 return thread;
             });
+    /**
+     * Background storage work must never take the app down: an uncaught exception on an executor
+     * thread kills the whole process (and with it live video). Log it and carry on.
+     */
+    static Runnable guardedStorageJob(String what, Runnable job) {
+        return org.ncssar.rid2caltopo.storage.StorageJobGuard.guard(TAG, what, () -> {
+            try {
+                job.run();
+            } catch (RuntimeException error) {
+                CaltopoClient.CTError(TAG, what + " failed; continuing without it", error);
+            }
+        });
+    }
+
     private static final ExecutorService recordingControlExecutor =
             Executors.newSingleThreadExecutor(runnable -> {
                 Thread thread = new Thread(runnable, "mediamtx-recording-control");
@@ -322,7 +336,7 @@ public class MediaMTXService extends Service {
             MediaMTXNative.stop();
             // Android 14+ enforces a short foreground-service shutdown timeout. Keep the
             // potentially slow recording copy off the main thread and serialized after stop.
-            MediaMTXRecordingSync.syncAll(appContext, null);
+            guardedStorageJob("Recording sync at service stop", () -> MediaMTXRecordingSync.syncAll(appContext, null)).run();
         });
         nativeControlExecutor.shutdown();
         super.onDestroy();
@@ -422,13 +436,13 @@ public class MediaMTXService extends Service {
                     org.ncssar.rid2caltopo.data.RecordingFinalizationActivity.Lease finalizing =
                             org.ncssar.rid2caltopo.data.RecordingFinalizationActivity.shared.begin(completed.getPath());
                     try {
-                        recordingSyncExecutor.execute(() -> {
+                        recordingSyncExecutor.execute(guardedStorageJob("Completed recording sync", () -> {
                             try {
                                 MediaMTXRecordingSync.syncAll(appContext, completed.getPath(), completed.getFilePath());
                             } finally {
                                 finalizing.close();
                             }
-                        });
+                        }));
                     } catch (RuntimeException error) {
                         finalizing.close();
                         throw error;
@@ -543,13 +557,15 @@ public class MediaMTXService extends Service {
             // (then recording can go on), and normalize leftovers.
             FlightStorage.requestRecordingStartCheck(appContext);
             if (!recorderReady) {
-                recordingSyncExecutor.execute(() ->
-                        recordingReconciler.updateRecorderRoot(MediaMTXRecordingSync.getRecordingStagingDir(appContext)));
+                // Retained state on a missing or failing card must not crash start-up: fall back to
+                // temporary staging (recordingStagingDirOrTemporary never throws).
+                recordingSyncExecutor.execute(guardedStorageJob("Recorder preparation", () ->
+                        recordingReconciler.updateRecorderRoot(MediaMTXRecordingSync.recordingStagingDirOrTemporary(appContext))));
             }
             if (!orphans.isEmpty()) {
                 CTDebug(TAG, "Syncing " + orphans.size() + " orphaned recording path(s) after server start");
-                recordingSyncExecutor.execute(() ->
-                        MediaMTXRecordingSync.syncOrphanedRecordings(appContext, orphans));
+                recordingSyncExecutor.execute(guardedStorageJob("Orphaned recording sync", () ->
+                        MediaMTXRecordingSync.syncOrphanedRecordings(appContext, orphans)));
             }
         } catch (InterruptedIOException e) {
             if (!isServiceDestroying()) {

@@ -252,3 +252,24 @@ public enum CaptureStreamsLog {
     public static let confirmOffTitle = "Turn off Capture Streams?"
     public static let confirmOffMessage = "Live video still works, but incoming drone streams will not be recorded on this tablet until you turn capture back on."
 }
+
+/// Where the media server writes recordings. A recordings folder that cannot be created must not
+/// stop live video (Android 2026-11-18: storage failures on a worker killed the app). The server
+/// then starts with recording paused on a temporary folder, and the reason is logged.
+public struct RecordingRootChoice: Equatable, Sendable {
+    public var root: URL
+    /// False when the durable folder failed: live video runs, recording stays paused.
+    public var recordable: Bool
+    public var warning: String?
+
+    public static func resolve(durable: () throws -> URL, temporary: URL) -> RecordingRootChoice {
+        do {
+            return RecordingRootChoice(root: try durable(), recordable: true, warning: nil)
+        } catch {
+            return RecordingRootChoice(
+                root: temporary, recordable: false,
+                warning: "Recordings folder unavailable (\(error.localizedDescription)); live video continues, recording paused"
+            )
+        }
+    }
+}

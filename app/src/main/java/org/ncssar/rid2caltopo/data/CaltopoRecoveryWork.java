@@ -30,11 +30,16 @@ final class CaltopoRecoveryWork {
     /** @deprecated Prefer {@link #archiveWorker}; retained for tests that drain the archive lane. */
     static final ExecutorService worker = archiveWorker;
 
-    static void execute(Runnable task) { archiveWorker.execute(task); }
+    static void execute(Runnable task) { archiveWorker.execute(guard("archive lane", task)); }
 
-    static void executeStart(Runnable task) { startWorker.execute(task); }
+    static void executeStart(Runnable task) { startWorker.execute(guard("start lane", task)); }
 
-    static void executeArchive(Runnable task) { archiveWorker.execute(task); }
+    static void executeArchive(Runnable task) { archiveWorker.execute(guard("archive lane", task)); }
+
+    /** Storage on a missing or failing card must not kill the app from a flight lane. */
+    private static Runnable guard(String lane, Runnable task) {
+        return org.ncssar.rid2caltopo.storage.StorageJobGuard.guard("CaltopoRecoveryWork", "Flight " + lane + " task", task);
+    }
 
     /** At most one waiting checkpoint per flight on the archive lane. */
     static void checkpoint(Object key, Runnable task) {
@@ -52,10 +57,10 @@ final class CaltopoRecoveryWork {
             Object key,
             Runnable task) {
         if (pending.put(key, task) == null) {
-            executor.execute(() -> {
+            executor.execute(guard("checkpoint", () -> {
                 Runnable latest = pending.remove(key);
                 if (latest != null) latest.run();
-            });
+            }));
         }
     }
 

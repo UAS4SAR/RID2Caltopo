@@ -75,6 +75,7 @@ object ArchiveWritability {
     fun reshowAlert() {
         val current = tracker.verdict
         if (!current.writable) _alert.value = current
+        org.ncssar.rid2caltopo.storage.MissingPreviousStorage.reshowAlert()
     }
 
     /** Tablet (app-private) storage still has room above the Flight Storage reserve. */
@@ -86,6 +87,7 @@ object ArchiveWritability {
         if (!started.compareAndSet(false, true)) return
         val app = context.applicationContext ?: context
         appContext = app
+        org.ncssar.rid2caltopo.storage.MissingPreviousStorage.log = { CaltopoClient.CTWarn("MissingPreviousStorage", it) }
         val filter = IntentFilter().apply {
             // A removed card is handled by the archive-required flow; only a remount clears the verdict.
             addAction(Intent.ACTION_MEDIA_MOUNTED)
@@ -96,12 +98,28 @@ object ArchiveWritability {
                 override fun onReceive(context: Context, intent: Intent) {
                     CaltopoClient.CTDebug(TAG, "Storage ${intent.action?.substringAfterLast('.')} ${intent.data}; rechecking archive")
                     requestRecheck(ArchiveRecheckTrigger.REMOUNT)
+                    clearMissingPreviousIfMounted(context)
                 }
             }, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
         }.onFailure { CaltopoClient.CTWarn(TAG, "Storage mount receiver unavailable: ${it.message}") }
         executor.scheduleWithFixedDelay({
             if (tracker.recheckDue(ArchiveRecheckTrigger.PERIODIC)) recheckNow(ArchiveRecheckTrigger.PERIODIC)
         }, PERIODIC_TICK_MS, PERIODIC_TICK_MS, TimeUnit.MILLISECONDS)
+    }
+
+    /** A missing previous card that is mounted again: forget it and let storage prepare again. */
+    private fun clearMissingPreviousIfMounted(context: Context) {
+        val volume = org.ncssar.rid2caltopo.storage.MissingPreviousStorage.notice.value?.volume ?: return
+        val mounted = runCatching {
+            context.getSystemService(StorageManager::class.java)?.storageVolumes?.any {
+                it.uuid.equals(volume, ignoreCase = true) && it.state == Environment.MEDIA_MOUNTED
+            } == true
+        }.getOrDefault(false)
+        if (!mounted) return
+        CaltopoClient.CTDebug(TAG, "Previous card $volume is back; preparing retained storage again")
+        org.ncssar.rid2caltopo.storage.MissingPreviousStorage.clear()
+        runCatching { org.ncssar.rid2caltopo.storage.OperationalStorage.retry(context) }
+            .onFailure { CaltopoClient.CTWarn(TAG, "Retained storage retry failed: ${it.message}") }
     }
 
     /** Remount and folder pick always probe; periodic probes run at most every 5 minutes. */

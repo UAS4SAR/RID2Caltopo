@@ -68,6 +68,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableFloatStateOf
@@ -302,8 +303,9 @@ fun StreamsScreen(
         }
     }
 
-    val isServerRunning = MediaMTXStatus.isServerRunning
-    val serverExitReason = MediaMTXStatus.serverExitReason
+    val mediaMtxState by MediaMTXStatus.state.collectAsState()
+    val isServerRunning = mediaMtxState.isServerRunning
+    val serverExitReason = mediaMtxState.serverExitReason
     val controllerNetwork = rememberControllerNetwork()
     val controllerEndpoints = controllerNetwork.endpoints
     val serverStatus = when {
@@ -1988,12 +1990,13 @@ internal fun StreamPerformanceDialog(viewModel: StreamsViewModel, streamDesignat
     RegisteredDroneDesignatorsDialogs(showDesignators, onDismiss = { showDesignators = false })
     var now by remember { mutableLongStateOf(android.os.SystemClock.elapsedRealtime()) }
     LaunchedEffect(Unit) { while (true) { delay(1000); now = android.os.SystemClock.elapsedRealtime() } }
+    val mediaMtx by MediaMTXStatus.state.collectAsState()
     AlertDialog(onDismissRequest = onDismiss, title = { Text("Streams Server") }, text = {
         Column(Modifier.verticalScroll(rememberScrollState())) {
             Text("Network: ${network.ssid}")
             ControllerEndpointInstructions(endpoints = network.endpoints, onDesignatorsClick = { showDesignators = true })
-            Text("MediaMTX: ${MediaMTXStatus.version}")
-            Text(if (MediaMTXStatus.isServerRunning) "Running · ${(now - MediaMTXStatus.startedAtMs).coerceAtLeast(0) / 1000}s" else "Stopped: ${MediaMTXStatus.serverExitReason}")
+            Text("MediaMTX: ${mediaMtx.version}")
+            Text(if (mediaMtx.isServerRunning) "Running · ${(now - mediaMtx.startedAtMs).coerceAtLeast(0) / 1000}s" else "Stopped: ${mediaMtx.serverExitReason}")
             TextButton(onClick = { reset = true }) { Text("Reset Streams Server") }
             Text(viewModel.performancePanelText(streamDesignator), fontSize = 14.sp)
         }

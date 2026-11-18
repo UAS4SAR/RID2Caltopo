@@ -158,6 +158,7 @@ internal fun StorageManagementDialog(
             }
             StorageActionButton(onClick = { other = true }) { Text("Other") }
             ArchiveStorageStatusLine()
+            MissingPreviousStorageStatusLine()
             flight?.let {
                 if (it.preparingWorkingCopies) Text("Flight files sized. Working copies are still being prepared; usage will refresh when preparation finishes.", style = MaterialTheme.typography.bodySmall)
                 if (it.archiveReady) {

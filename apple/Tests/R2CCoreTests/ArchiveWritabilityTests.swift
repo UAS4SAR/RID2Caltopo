@@ -88,4 +88,16 @@ final class ArchiveWritabilityTests: XCTestCase {
         XCTAssertFalse(CaptureStreamsLog.loaded(stored: false))
         XCTAssertEqual(CaptureStreamsLog.serverStart(false), "Capture Streams setting at media server start: OFF (streams are not recorded)")
     }
+
+    func testRecordingRootFailureKeepsLiveVideoWithRecordingPaused() {
+        struct Failure: Error {}
+        let temporary = URL(fileURLWithPath: "/tmp/r2c-staging", isDirectory: true)
+        let failed = RecordingRootChoice.resolve(durable: { throw Failure() }, temporary: temporary)
+        XCTAssertEqual(failed.root, temporary)
+        XCTAssertFalse(failed.recordable)
+        XCTAssertTrue(failed.warning?.contains("live video continues") ?? false)
+        let durable = URL(fileURLWithPath: "/tmp/r2c-durable", isDirectory: true)
+        let ok = RecordingRootChoice.resolve(durable: { durable }, temporary: temporary)
+        XCTAssertEqual(ok, RecordingRootChoice(root: durable, recordable: true, warning: nil))
+    }
 }

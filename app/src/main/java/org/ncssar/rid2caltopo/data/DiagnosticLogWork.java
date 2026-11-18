@@ -23,7 +23,9 @@ final class DiagnosticLogWork {
             if (size > MAX_PENDING_CHARACTERS - current) return;
             if (pending.compareAndSet(current, current + size)) break;
         }
-        writer.execute(() -> { try { task.run(); } finally { pending.addAndGet(-size); } });
+        // Log writes go to the archive card; a failing card must not take the app down with them.
+        writer.execute(org.ncssar.rid2caltopo.storage.StorageJobGuard.guard("DiagnosticLogWork", "Log write",
+                () -> { try { task.run(); } finally { pending.addAndGet(-size); } }));
     }
     static void finish(Runnable task) {
         if (Thread.currentThread() == writerThread) { task.run(); return; }

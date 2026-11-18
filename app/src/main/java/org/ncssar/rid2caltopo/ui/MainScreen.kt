@@ -2034,13 +2034,20 @@ fun MainScreen(
     }
 
     val archiveAlert by org.ncssar.rid2caltopo.app.ArchiveWritability.alert.collectAsStateWithLifecycle()
-    archiveAlert?.let { verdict ->
-        val fallback = remember(verdict) { org.ncssar.rid2caltopo.app.ArchiveWritability.tabletFallbackAvailable(context) }
+    val missingStorageAlert by org.ncssar.rid2caltopo.storage.MissingPreviousStorage.alert.collectAsStateWithLifecycle()
+    if (archiveAlert != null || missingStorageAlert != null) {
+        val verdict = archiveAlert
+        val fallback = remember(verdict) { verdict != null && org.ncssar.rid2caltopo.app.ArchiveWritability.tabletFallbackAvailable(context) }
+        val dismissArchiveAlerts = {
+            verdict?.let { org.ncssar.rid2caltopo.app.ArchiveWritability.dismissAlert(it) }
+            org.ncssar.rid2caltopo.storage.MissingPreviousStorage.dismissAlert()
+        }
         ArchiveStorageAlertDialog(
             verdict = verdict,
             fallbackAvailable = fallback,
+            missing = missingStorageAlert,
             onUseTabletStorage = {
-                org.ncssar.rid2caltopo.app.ArchiveWritability.dismissAlert(verdict)
+                dismissArchiveAlerts()
                 // Android's folder picker opens at this tablet's Documents folder.
                 val tabletDocuments = DocumentsContract.buildDocumentUri("com.android.externalstorage.documents", "primary:Documents")
                 if (onArchiveDirPickerStarted()) {
@@ -2056,10 +2063,10 @@ fun MainScreen(
                 } else showStorageManagement = true
             },
             onManageStorage = {
-                org.ncssar.rid2caltopo.app.ArchiveWritability.dismissAlert(verdict)
+                dismissArchiveAlerts()
                 showStorageManagement = true
             },
-            onDismiss = { org.ncssar.rid2caltopo.app.ArchiveWritability.dismissAlert(verdict) },
+            onDismiss = { dismissArchiveAlerts() },
         )
     }
     val captureNotice by org.ncssar.rid2caltopo.data.CaptureStreamsNotice.pending.collectAsStateWithLifecycle()

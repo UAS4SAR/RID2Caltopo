@@ -597,7 +597,7 @@ internal object OperationalStorage {
     }
     private fun checkQueue(current: PreparedQueue) {
         check(selectionGeneration.get() == current.generation) { "Archive Dir changed; restart the app before saving operational state." }
-        check(preparedQueue === current) { "Operational state is no longer available." }
+        if (preparedQueue !== current) throw ArchiveDirAvailability.preparationFailedElsewhere("Operational state")
     }
     private fun prepareQueue(context: Context, archive: DocumentFile? = null, selectedUri: String? = null): PreparedQueue {
         worker()
@@ -611,7 +611,7 @@ internal object OperationalStorage {
         if (!queuePrepare.tryLock()) {
             queuePrepare.lock()
             queuePrepare.unlock()
-            return synchronized(queueGate) { preparedQueue ?: error("Operational state is no longer available.") }
+            return synchronized(queueGate) { preparedQueue ?: throw ArchiveDirAvailability.preparationFailedElsewhere("Operational state") }
         }
         try {
             synchronized(queueGate) {
@@ -684,7 +684,7 @@ internal object OperationalStorage {
         if (!recorderPrepare.tryLock()) {
             recorderPrepare.lock()
             recorderPrepare.unlock()
-            return synchronized(recorderGate) { preparedRecorder ?: error("Recorder state is no longer available.") }
+            return synchronized(recorderGate) { preparedRecorder ?: throw ArchiveDirAvailability.preparationFailedElsewhere("Recorder state") }
         }
         try {
             synchronized(recorderGate) {
@@ -792,8 +792,8 @@ internal object OperationalStorage {
         for (source in area.sources) {
             val link = Files.isSymbolicLink(source.toPath())
             val projection = if (link) projectedRoot(context, area, source) else null
-            if (link && !source.exists() && projection == null) error("Reconnect the storage holding ${area.id}; its original files were retained.")
-            if (projection != null && !source.exists() && projection.parent.fileName.toString() != work.name) error("Reconnect the previous Archive Dir before moving ${area.id} to another archive.")
+            if (link && !source.exists() && projection == null) throw missingPrevious(ArchiveDirAvailability.previousStorageMissing(area.id, linkTarget(source)))
+            if (projection != null && !source.exists() && projection.parent.fileName.toString() != work.name) throw missingPrevious(ArchiveDirAvailability.previousArchiveRequired(area.id, linkTarget(source)))
             if (!source.exists()) continue
             val projected = projection != null
             // Uncommitted CPU scratch is disposable. Published checkpoints already
@@ -885,9 +885,9 @@ internal object OperationalStorage {
             checkSelection()
             val link = Files.isSymbolicLink(source.toPath())
             val projection = if (link) projectedRoot(context, area, source) else null
-            if (link && !source.exists() && projection == null) error("Reconnect the storage holding ${area.id}; its original files were retained.")
+            if (link && !source.exists() && projection == null) throw missingPrevious(ArchiveDirAvailability.previousStorageMissing(area.id, linkTarget(source)))
             if (projection != null && !source.exists() && projection.parent.fileName.toString() != value.work.name) {
-                error("Reconnect the previous Archive Dir before moving ${area.id} to another archive.")
+                throw missingPrevious(ArchiveDirAvailability.previousArchiveRequired(area.id, linkTarget(source)))
             }
             if (!source.exists()) continue
             val projected = projection != null
@@ -1378,6 +1378,13 @@ internal object OperationalStorage {
         }
         if (!alias.exists()) check(alias.mkdirs()) { "Cannot create durable clues directory." }
         return alias
+    }
+    private fun linkTarget(source: File): String? = runCatching { Os.readlink(source.path) }.getOrNull()
+
+    /** Records the missing card for the archive-storage alert; nothing is deleted or moved. */
+    private fun missingPrevious(error: ArchiveStateUnavailableException): ArchiveStateUnavailableException {
+        MissingPreviousStorage.note(error)
+        return error
     }
     private fun unavailable(message: String): ArchiveDirUnavailableException {
         announceUnavailable(message)
@@ -2203,7 +2210,7 @@ internal object OperationalStorage {
         if (!cluesPrepare.tryLock()) {
             cluesPrepare.lock()
             cluesPrepare.unlock()
-            return synchronized(cluesGate) { preparedClues ?: error("Clue storage is no longer available.") }
+            return synchronized(cluesGate) { preparedClues ?: throw ArchiveDirAvailability.preparationFailedElsewhere("Clue storage") }
         }
         try {
             synchronized(cluesGate) {

@@ -1741,3 +1741,22 @@ Both planners now expose independent Transit speed in the same ft/s or m/s units
     never backs up the blank default, and a restore/import that would turn capture off keeps
     it ON with a notice. iOS keeps Capture Streams in UserDefaults (default ON) and its
     settings transfer does not carry it.
+
+## 2026-11-18 — Storage failures never stop the app or live video (2.6.0, build 446)
+
+- Field 2026-11-18 (Galaxy Tab A5 Pro): after an SD card swap, app-private folders still
+  linked to the old card (4A21-0000). Every launch crashed: recorder preparation threw
+  "Reconnect the storage holding unfinished-recordings" on the `mediamtx-recording-sync`
+  worker, and the restarted process then hit a Compose snapshot read of `MediaMTXStatus`.
+- Android: "Reconnect the storage holding …", "Reconnect the previous Archive Dir …" and
+  "… is no longer available" are a typed `ArchiveStateUnavailableException` (a soft
+  unavailable error, same messages). Storage jobs on plain executors are wrapped by
+  `StorageJobGuard` (MediaMTX recording sync, flight recovery lanes, diagnostic log writer,
+  recording start check); recorder preparation falls back to temporary staging.
+  `MediaMTXStatus` is a `StateFlow`. Retained state on a card that is not in the tablet
+  raises one alert (merged into the archive-storage alert) with a map chip and Flight
+  Storage line; nothing is deleted or moved, and remounting that card clears it.
+- iOS: no unguarded equivalent (start-up storage errors are caught, status objects are
+  `@MainActor`), and there is no removable card. For the same rule, a recordings folder that
+  cannot be created now starts the media server with recording paused on a temporary folder
+  (`RecordingRootChoice`) instead of failing the start.

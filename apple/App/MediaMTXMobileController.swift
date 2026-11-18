@@ -229,13 +229,17 @@ final class MediaMTXViewModel: ObservableObject {
                     status = "Configuration missing"
                     return
                 }
-                let (baseConfiguration, recordingRoot) = try await Task.detached(priority: .userInitiated) {
-                    (try Data(contentsOf: url), try Self.capturedStreamsDirectory())
+                let (baseConfiguration, rootChoice) = try await Task.detached(priority: .userInitiated) {
+                    (try Data(contentsOf: url), RecordingRootChoice.resolve(
+                        durable: { try Self.capturedStreamsDirectory() },
+                        temporary: FileManager.default.temporaryDirectory.appendingPathComponent("RID2Caltopo-recording-staging", isDirectory: true)))
                 }.value
+                let recordingRoot = rootChoice.root
+                if let warning = rootChoice.warning { AppleLog.error("MediaMTX", warning) }
                 // Retention cleanup is housekeeping: the listener opens on the known
                 // estimate and the sweep runs afterwards; recording follows via the API.
                 let storage = AppleFlightStorage.recordingStartEstimate()
-                recordingAllowed = !storage.blocked
+                recordingAllowed = !storage.blocked && rootChoice.recordable
                 reportStoragePressure(storage)
                 // No day-level "recorder" owner: it pinned the start day after
                 // midnight. Today is always protected, and incomplete segments are

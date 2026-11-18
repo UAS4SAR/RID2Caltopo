@@ -643,7 +643,7 @@ object FlightStorage {
 
     /** Background archive sizing after the server starts; notifies the [observe] listener. */
     @JvmStatic fun requestRecordingStartCheck(context: Context) {
-        startCheck.execute {
+        startCheck.execute(org.ncssar.rid2caltopo.storage.StorageJobGuard.guard("FlightStorage", "Recording start check") {
             try {
                 storageMetadata(context) { lock.withLock { scanOnWorker(context, false, 0, seedEstimate = true) } }
             } catch (error: Exception) {
@@ -651,7 +651,7 @@ object FlightStorage {
             }
             synchronized(stateLock) { listener }?.run()
             requestCheck(context)
-        }
+        })
     }
     fun peekSnapshot(): Snapshot? = synchronized(stateLock) { lastRead }
     fun snapshot(context: Context, cancelled: () -> Unit = {}): Snapshot = storageMetadata(context) {

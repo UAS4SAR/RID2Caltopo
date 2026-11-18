@@ -1,36 +1,46 @@
 package org.ncssar.rid2caltopo.data
 
-import android.os.Handler
-import android.os.Looper
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.setValue
-import androidx.compose.runtime.mutableStateOf
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.update
 
-object MediaMTXStatus {
-
-    /** True while the MediaMTX server process is running. */
-    var isServerRunning by mutableStateOf(false)
-        private set
-
+/** One consistent view of the MediaMTX server for the UI. */
+data class MediaMTXServerState(
+    val isServerRunning: Boolean = false,
     /** Non-empty only after onServerExited(); cleared on next onServerStarted(). */
-    var serverExitReason by mutableStateOf("")
-        private set
+    val serverExitReason: String = "",
+    val version: String = "Unavailable",
+    val startedAtMs: Long = 0L,
+)
 
-    var version by mutableStateOf("Unavailable")
-        private set
-    var startedAtMs by mutableStateOf(0L)
-        private set
+/**
+ * MediaMTX server status. A [StateFlow], not Compose snapshot state: it is written from service
+ * and native-callback threads, and Compose state created or written there could be read by a
+ * composition snapshot taken earlier ("Reading a state that was created after the snapshot was
+ * taken"), which crashed the app on 2026-11-18. Compose collects [state].
+ */
+object MediaMTXStatus {
+    private val _state = MutableStateFlow(MediaMTXServerState())
+    @JvmStatic val state: StateFlow<MediaMTXServerState> = _state
+
+    val isServerRunning: Boolean get() = _state.value.isServerRunning
+    val serverExitReason: String get() = _state.value.serverExitReason
+    val version: String get() = _state.value.version
+    val startedAtMs: Long get() = _state.value.startedAtMs
+
+    @JvmStatic
     fun onServerStarted(version: String) {
-        this.version = version
-        startedAtMs = android.os.SystemClock.elapsedRealtime()
-        isServerRunning = true
-        serverExitReason = ""
+        _state.value = MediaMTXServerState(
+            isServerRunning = true,
+            serverExitReason = "",
+            version = version,
+            startedAtMs = android.os.SystemClock.elapsedRealtime(),
+        )
     }
 
     @JvmStatic
     fun onServerExited(exitDescription: String) {
-        isServerRunning = false
-        serverExitReason = exitDescription
+        _state.update { it.copy(isServerRunning = false, serverExitReason = exitDescription) }
     }
 
     @JvmStatic

@@ -27,7 +27,8 @@ class MediaMTXListenerFirstStartupTest {
         val afterListener = start.substringAfter("MediaMTXNative.start(")
         assertTrue(afterListener.contains("FlightStorage.requestRecordingStartCheck("))
         assertTrue(afterListener.contains("recordingSyncExecutor.execute"))
-        assertTrue(afterListener.contains("getRecordingStagingDir(appContext)"))
+        // Field 2026-11-18: recorder preparation threw on this worker and killed the app.
+        assertTrue(afterListener.contains("recordingStagingDirOrTemporary(appContext)"))
     }
 
     @Test fun storageChangesToggleRecordingThroughTheApiNotARestart() {

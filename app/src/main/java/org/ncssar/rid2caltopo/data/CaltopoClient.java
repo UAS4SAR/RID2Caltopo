@@ -4166,7 +4166,7 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
     public static void InitArchiveDir() {
         android.os.Looper main = android.os.Looper.getMainLooper();
         if (main != null && android.os.Looper.myLooper() == main) {
-            DiagnosticLogWork.writer.execute(CaltopoClient::InitArchiveDir);
+            DiagnosticLogWork.writer.execute(org.ncssar.rid2caltopo.storage.StorageJobGuard.guard(TAG, "InitArchiveDir", CaltopoClient::InitArchiveDir));
             return;
         }
         synchronized (InitArchiveDirLock) {

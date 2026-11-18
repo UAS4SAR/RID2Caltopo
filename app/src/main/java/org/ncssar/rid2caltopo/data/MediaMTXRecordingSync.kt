@@ -43,6 +43,19 @@ object MediaMTXRecordingSync {
     }
 
     /**
+     * [getRecordingStagingDir] for callers on worker threads that must not fail: any error
+     * (retained state on a missing card, a failed concurrent preparation, …) is logged and
+     * recording stages in temporary storage instead.
+     */
+    @JvmStatic
+    fun recordingStagingDirOrTemporary(context: Context): File = try {
+        getRecordingStagingDir(context)
+    } catch (error: Exception) {
+        CaltopoClient.CTWarn(TAG, "Recorder preparation failed; staging recordings in temporary storage: ${error.message}")
+        org.ncssar.rid2caltopo.storage.TemporaryStorage.directory(context, "recording-staging")
+    }
+
+    /**
      * The staging root [getRecordingStagingDir] will choose, without preparing recorder
      * state in Archive Dir. Used to write the MediaMTX config before the listener opens;
      * recording itself is only switched on once the recorder is ready.
