@@ -25,6 +25,7 @@ public struct TrackerReconnectPolicy: Sendable, Equatable {
     public static let helloAckLegacyTimeoutMilliseconds: Int64 = 10_000
     public static let heartbeatAckTimeoutMilliseconds: Int64 = 10_000
     public static let legacyImmediateAckRetryDefaultsKey = "tracker.legacyImmediateAckRetry"
+    public static let reconnectJitterDefaultsKey = "tracker.reconnectJitterEnabled"
 
     public enum RetryKind: Equatable, Sendable {
         case connectFailure
@@ -46,7 +47,9 @@ public struct TrackerReconnectPolicy: Sendable, Equatable {
 
     public mutating func takeRetryDelayMilliseconds(
         kind: RetryKind,
-        legacyImmediateAckRetry: Bool
+        legacyImmediateAckRetry: Bool,
+        jitterEnabled: Bool = false,
+        randomUnit: Double = 0
     ) -> Int64 {
         let selected = selectDelay(
             kind: kind,
@@ -54,7 +57,29 @@ public struct TrackerReconnectPolicy: Sendable, Equatable {
             commit: true
         )
         nextDelayMilliseconds = selected.next
-        return selected.delay
+        guard selected.delay > 0, jitterEnabled else { return selected.delay }
+        return Self.equalJitterMilliseconds(selected.delay, randomUnit: randomUnit)
+    }
+
+    /// Equal jitter of one ladder step. `randomUnit` is clamped to 0...1.
+    /// The result runs from half the step through the full step, and is never
+    /// above 10 seconds. A zero delay stays zero.
+    public static func equalJitterMilliseconds(_ delayMilliseconds: Int64, randomUnit: Double) -> Int64 {
+        let capped = min(max(delayMilliseconds, 0), maxDelayMilliseconds)
+        let half = capped / 2
+        let span = capped - half
+        let unit = min(max(randomUnit, 0), 1)
+        var jitter = Int64((unit * Double(span + 1)).rounded(.down))
+        if jitter > span { jitter = span }
+        if jitter < 0 { jitter = 0 }
+        return half + jitter
+    }
+
+    /// Absent storage keeps jitter on. `UserDefaults.bool` would treat a
+    /// missing key as off.
+    public static func reconnectJitterEnabled(in defaults: UserDefaults) -> Bool {
+        guard defaults.object(forKey: reconnectJitterDefaultsKey) != nil else { return true }
+        return defaults.bool(forKey: reconnectJitterDefaultsKey)
     }
 
     public mutating func onTransportOpened(legacyImmediateAckRetry: Bool) {
