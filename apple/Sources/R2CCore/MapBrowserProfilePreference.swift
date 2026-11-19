@@ -41,6 +41,38 @@ public struct MapBrowserProfilePreference {
         defaults.set(false, forKey: Self.legacyUsesPersonalKey)
     }
 
+    /// Team credentials can open maps only when they are configured and the Tracker has not
+    /// refused team access for this organization device. Same rule as Android.
+    public static func teamUsable(teamCredentialsPresent: Bool, teamAccessRefused: Bool) -> Bool {
+        teamCredentialsPresent && !teamAccessRefused
+    }
+
+    /// Credential selection at launch: personal whenever no Teams credentials are configured
+    /// (Ken, 2026-11-19: 2.5.7 selected an empty team on a fresh install). Same as Android.
+    public static func initialUsesPersonal(stored: Bool, teamCredentialsPresent: Bool) -> Bool {
+        stored || !teamCredentialsPresent
+    }
+
+    /// Profile the Map Browser opens with. Personal whenever team credentials cannot work, even
+    /// without a stored personal credential: the caller then offers personal sign-in instead of
+    /// selecting "Team: No Teams credentials". Otherwise `resolveRestoredProfileID`, with an
+    /// empty result also becoming personal. Same as Android `resolveOpenProfileId`.
+    public static func resolveOpenProfileID(
+        lastSelectedProfileID: String,
+        personalCredentialAvailable: Bool,
+        defaultTeamProfileID: String,
+        knownTeamProfileIDs: [String] = [],
+        teamUsable: Bool
+    ) -> String {
+        guard teamUsable else { return personalProfileID }
+        let restored = resolveRestoredProfileID(
+            lastSelectedProfileID: lastSelectedProfileID,
+            personalCredentialAvailable: personalCredentialAvailable,
+            defaultTeamProfileID: defaultTeamProfileID,
+            knownTeamProfileIDs: knownTeamProfileIDs)
+        return restored.isEmpty ? personalProfileID : restored
+    }
+
     /// Personal restores only when a stored credential is available; otherwise the team default.
     public static func resolveRestoredProfileID(
         lastSelectedProfileID: String,

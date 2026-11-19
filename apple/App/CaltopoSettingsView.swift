@@ -1066,6 +1066,18 @@ struct CaltopoTeamMapBrowser: View {
             !settings.credentialSecret.isEmpty
     }
 
+    /// Team can be picked only when credentials are configured and the Tracker has not refused it.
+    private var teamSelectable: Bool {
+        MapBrowserProfilePreference.teamUsable(
+            teamCredentialsPresent: credentialsReady,
+            teamAccessRefused: TrackerStartupGate.shared.teamAccessBlockReason != nil)
+    }
+
+    private func teamMenuLabel(_ label: String) -> String {
+        let base = settings.personalLoginMode == .credentials ? "Team: \(label)" : label
+        return TrackerStartupGate.shared.teamAccessBlockReason != nil ? base + " (not authorized by Tracker)" : base
+    }
+
     private var currentItems: [CaltopoTeamMapNode] {
         navigationStack.last ?? (settings.usesPersonalCredentials ? settings.personalMaps : settings.teamMaps)
     }
@@ -1092,6 +1104,10 @@ struct CaltopoTeamMapBrowser: View {
         }
         let activeTeam = profiles.activeProfileID
         let knownTeams = profiles.availableProfiles.map(\.id)
+        // No Teams credentials configured: never select an empty team (2.5.7 showed
+        // "Credentials: Team: No Teams credentials" on a fresh install).
+        let teamUsable = MapBrowserProfilePreference.teamUsable(
+            teamCredentialsPresent: credentialsReady, teamAccessRefused: false)
         if settings.personalLoginMode == .credentials {
             let personalAvailable = await Task.detached(priority: .utility) {
                 CaltopoPersonalAccountConnection.shared.reconnect(host: "caltopo.com") != nil
@@ -1099,11 +1115,14 @@ struct CaltopoTeamMapBrowser: View {
             let target = settings.restoreRememberedBrowseProfile(
                 personalCredentialAvailable: personalAvailable,
                 activeTeamProfileID: activeTeam,
-                knownTeamProfileIDs: knownTeams
+                knownTeamProfileIDs: knownTeams,
+                teamUsable: teamUsable
             )
             if target == MapBrowserProfilePreference.personalProfileID {
                 if personalAvailable {
                     await settings.loadCredentialPersonalMaps()
+                } else if !teamUsable {
+                    settings.requirePersonalSignIn()
                 } else {
                     settings.fallBackFromMissingPersonalCredential(activeTeamProfileID: activeTeam)
                     await settings.loadTeamMaps()
@@ -1113,6 +1132,7 @@ struct CaltopoTeamMapBrowser: View {
             await settings.loadTeamMaps()
             return
         }
+        if !teamUsable && !settings.usesPersonalCredentials { settings.usesPersonalCredentials = true }
         if settings.usesPersonalCredentials {
             let loaded = await settings.loadPersonalMaps()
             guard settings.usesPersonalCredentials else { return }
@@ -1198,9 +1218,15 @@ struct CaltopoTeamMapBrowser: View {
                             Button("Edit personal account", systemImage: "pencil") { showWebsite = true }
                         }
                         ForEach(profiles.availableProfiles) { profile in
-                            Button(settings.personalLoginMode == .credentials ? "Team: \(profile.credentialLabel)" : profile.credentialLabel) {
+                            Button(teamMenuLabel(profile.credentialLabel)) {
                                 onCredentialSelect?(profile.id)
                             }
+                            .disabled(!teamSelectable)
+                        }
+                        if profiles.availableProfiles.isEmpty || !credentialsReady {
+                            // Shown, not selectable: says why Team is unavailable.
+                            Button("Team: No Teams credentials configured") {}
+                                .disabled(true)
                         }
                     } label: {
                         Label("Credentials: \(settings.usesPersonalCredentials ? "Personal: " + (settings.storedPersonalMenuName ?? settings.personalUsername) : (settings.personalLoginMode == .credentials ? "Team: " : "") + profiles.activeCredentialLabel)", systemImage: "person.crop.circle.badge.checkmark")

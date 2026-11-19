@@ -492,6 +492,11 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
         } else {
             CaltopoClient.GetActiveCaltopoProfileId().orEmpty()
         }
+        val teamUsable = MapBrowserProfilePreference.teamUsable(
+            teamCredentialsPresent = hasCredentials || mapBrowserProfiles.isNotEmpty(),
+            teamAccessRefused = org.ncssar.rid2caltopo.data.TrackerStartupGate.teamAccessRefused())
+        // Header taps without Teams credentials already open the personal sign-in dialog
+        // (StandAloneOptionsDialog), so only a remembered selection is restored here.
         val target = MapBrowserProfilePreference.resolveRestoredProfileId(
             lastSelectedProfileId = last,
             // Availability is confirmed by openStored(); treat a remembered personal
@@ -503,8 +508,10 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
         if (target == MapBrowserProfilePreference.PERSONAL_PROFILE_ID &&
             current != MapBrowserProfilePreference.PERSONAL_PROFILE_ID
         ) {
-            android.util.Log.i("CaltopoPersonalAuth", "selection restore remembered personal")
-            loadStoredPersonalCatalog(restoreRemembered = true)
+            android.util.Log.i("CaltopoPersonalAuth", "selection restore personal teamUsable=$teamUsable")
+            // Without usable team credentials there is nothing to fall back to: a missing
+            // personal credential opens the sign-in prompt instead.
+            loadStoredPersonalCatalog(restoreRemembered = teamUsable)
         }
     }
 

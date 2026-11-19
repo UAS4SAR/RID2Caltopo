@@ -245,6 +245,12 @@ struct ContentView: View {
                             ? "checkmark.circle.fill" : "circle")
                     }
                 }
+                // Team cannot be picked when it cannot work (Tracker refused this org device).
+                .disabled(TrackerStartupGate.shared.teamAccessBlockReason != nil)
+            }
+            if profileLifecycle.availableProfiles.isEmpty {
+                Button("Team: No Teams credentials configured") {}
+                    .disabled(true)
             }
         } label: {
             VStack(alignment: centered ? .center : .leading, spacing: 1) {

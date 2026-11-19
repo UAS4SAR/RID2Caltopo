@@ -183,8 +183,13 @@ fun CaltopoHybridBrowser(
                 androidx.compose.material3.TextButton(onClick = { credentialsExpanded = true }, enabled = !personalBusy) {
                     val credentialsMode = CaltopoPersonalAccountConnection.loginMode == CaltopoPersonalLoginMode.CREDENTIALS
                     val teamLabel = profileOptions.firstOrNull { it.profileId == selectedProfileId }?.label ?: "No Teams credentials"
+                    // No usable Teams credentials: Personal is the selection, never an empty team.
+                    val teamUsable = MapBrowserProfilePreference.teamUsable(
+                        teamCredentialsPresent = profileOptions.isNotEmpty(),
+                        teamAccessRefused = TrackerStartupGate.teamAccessRefused())
                     val current = if (personalBusy || CaltopoPersonalSession.catalogLoading) "Loading personal maps…"
                         else if (CaltopoPersonalSession.browsingPersonal) "Personal: ${CaltopoPersonalSession.username.ifBlank { storedPersonalName ?: "account" }}"
+                        else if (!teamUsable) CaltopoPersonalAccountConnection.personalMenuLabel(storedPersonalName ?: CaltopoPersonalSession.username)
                         else if (credentialsMode) "Team: $teamLabel"
                         else teamLabel
                     Text(if (personalBusy) current else "Credentials: $current")
@@ -219,14 +224,22 @@ fun CaltopoHybridBrowser(
                             onClick = { credentialsExpanded = false; editPersonal() }
                         )
                     }
+                    val teamRefused = TrackerStartupGate.teamAccessRefused()
                     profileOptions.forEach { option ->
-                        val label = if (CaltopoPersonalAccountConnection.loginMode == CaltopoPersonalLoginMode.CREDENTIALS) {
+                        val base = if (CaltopoPersonalAccountConnection.loginMode == CaltopoPersonalLoginMode.CREDENTIALS) {
                             CaltopoPersonalAccountConnection.teamMenuLabel(option.label)
                         } else option.label
-                        androidx.compose.material3.DropdownMenuItem(text = { Text(label) }, onClick = {
+                        val label = if (teamRefused) "$base (not authorized by Tracker)" else base
+                        // Team cannot be picked when it cannot work (Tracker refused this org device).
+                        androidx.compose.material3.DropdownMenuItem(text = { Text(label) }, enabled = !teamRefused, onClick = {
                             credentialsExpanded = false
                             onUIEvent(UIEvent.BrowseProfileSelected(option.profileId))
                         })
+                    }
+                    if (profileOptions.isEmpty()) {
+                        // Shown, not selectable: says why Team is unavailable.
+                        androidx.compose.material3.DropdownMenuItem(
+                            text = { Text("Team: No Teams credentials configured") }, enabled = false, onClick = {})
                     }
                 }
             }

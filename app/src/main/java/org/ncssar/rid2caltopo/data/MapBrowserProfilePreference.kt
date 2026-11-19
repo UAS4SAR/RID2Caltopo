@@ -73,6 +73,35 @@ object MapBrowserProfilePreference {
         return defaultTeamProfileId
     }
 
+    /**
+     * Team credentials can open maps only when they are configured and the Tracker has not
+     * refused team access for this organization device. Same rule as iOS.
+     */
+    fun teamUsable(teamCredentialsPresent: Boolean, teamAccessRefused: Boolean): Boolean =
+        teamCredentialsPresent && !teamAccessRefused
+
+    /** Credential selection at launch: personal whenever no Teams credentials are configured. Same as iOS. */
+    fun initialUsesPersonal(stored: Boolean, teamCredentialsPresent: Boolean): Boolean =
+        stored || !teamCredentialsPresent
+
+    /**
+     * Profile the Map Browser opens with. Personal whenever team credentials cannot work, even
+     * without a stored personal credential: the caller then offers personal sign-in instead of
+     * selecting "Team: No Teams credentials". Otherwise [resolveRestoredProfileId], with an
+     * empty result also becoming personal. Same as iOS `resolveOpenProfileID`.
+     */
+    fun resolveOpenProfileId(
+        lastSelectedProfileId: String,
+        personalCredentialAvailable: Boolean,
+        defaultTeamProfileId: String,
+        knownTeamProfileIds: Collection<String> = emptyList(),
+        teamUsable: Boolean
+    ): String {
+        if (!teamUsable) return PERSONAL_PROFILE_ID
+        return resolveRestoredProfileId(lastSelectedProfileId, personalCredentialAvailable, defaultTeamProfileId, knownTeamProfileIds)
+            .ifEmpty { PERSONAL_PROFILE_ID }
+    }
+
     private fun preferences() =
         R2CApplication.getAppCtxt()?.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 }

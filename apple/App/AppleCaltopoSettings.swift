@@ -72,14 +72,16 @@ final class AppleCaltopoSettings: ObservableObject {
     func restoreRememberedBrowseProfile(
         personalCredentialAvailable: Bool,
         activeTeamProfileID: String,
-        knownTeamProfileIDs: [String]
+        knownTeamProfileIDs: [String],
+        teamUsable: Bool = true
     ) -> String {
         let preference = MapBrowserProfilePreference(defaults: defaults)
-        let target = MapBrowserProfilePreference.resolveRestoredProfileID(
+        let target = MapBrowserProfilePreference.resolveOpenProfileID(
             lastSelectedProfileID: preference.lastSelectedProfileID(),
             personalCredentialAvailable: personalCredentialAvailable,
             defaultTeamProfileID: activeTeamProfileID,
-            knownTeamProfileIDs: knownTeamProfileIDs
+            knownTeamProfileIDs: knownTeamProfileIDs,
+            teamUsable: teamUsable
         )
         if target == MapBrowserProfilePreference.personalProfileID {
             if !usesPersonalCredentials { usesPersonalCredentials = true }
@@ -191,6 +193,25 @@ final class AppleCaltopoSettings: ObservableObject {
         CaltopoPersonalAccountConnection.shared.use(AppleCaltopoPersonalAccountKeychain())
         CaltopoPersonalAccountConnection.shared.setFeatureEnabled(personalLoginMode == .credentials)
         refreshPersonalCredentialSummary()
+        // No Teams credentials configured: personal is the selection (not persisted, so a later
+        // explicit team choice still wins once credentials exist).
+        usesPersonalCredentials = MapBrowserProfilePreference.initialUsesPersonal(
+            stored: usesPersonalCredentials, teamCredentialsPresent: teamCredentialsPresent)
+    }
+
+    /// Team ID, credential ID and secret are all configured.
+    var teamCredentialsPresent: Bool {
+        !teamID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+            !credentialID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+            !credentialSecret.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// Team credentials cannot work (none configured, or the Tracker refused this org device):
+    /// keep Personal selected and offer the personal account sign-in (Credentials).
+    func requirePersonalSignIn() {
+        if !usesPersonalCredentials { usesPersonalCredentials = true }
+        personalMapsStatus = "Sign in with your personal CalTopo account to choose a map. Teams credentials are optional."
+        showSyncAccountPrompt = true
     }
 
     /// Catalog title only. A previously stored "account: title" prefix is not shown.

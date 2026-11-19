@@ -1850,3 +1850,31 @@ Both planners now expose independent Transit speed in the same ft/s or m/s units
 - Android only: the Remote ID scan's periodic restart is deferred for a busy Desk Pod link
   only once that link has been READY this session (`BtrxRadioCoordinator.forgetSession` on
   link off / forget). iOS has no periodic Remote ID restart deferral.
+
+## 2026-11-19 — Personal is the credential selection when Teams credentials cannot work (2.6.0, build 446)
+
+- Ken, 2026-11-19: App Store 2.5.7 (436) on the Mac mini (Designed for iPad) showed
+  "Credentials: Team: No Teams credentials" when connecting to a map, with no Teams
+  credentials configured.
+- Cause (iOS, present in 2.5.7 and HEAD before this fix): opening the map browser selected
+  Personal, but with no stored personal credential `resolveRestoredProfileID` fell back to the
+  default team profile even when that was empty, `restoreRememberedBrowseProfile` then cleared
+  the Personal selection and the browser loaded team maps with no credentials. A fresh install
+  also started with Team selected (`caltopo.usesPersonalCredentials` defaulted to false).
+  Release builds ship no built-in team credentials on either platform; this is not a
+  release-only difference.
+- Both platforms (shared rules in `MapBrowserProfilePreference`, fixture
+  `test-fixtures/caltopo/credential-selection.tsv` read by Android and iOS tests):
+  - `teamUsable`: Teams credentials configured and the Tracker has not refused team access.
+  - `resolveOpenProfileId`: Personal whenever team is not usable, and never an empty profile.
+    A missing personal credential then opens the personal sign-in prompt (Credentials).
+  - `initialUsesPersonal`: Personal is the launch selection with no Teams credentials (iOS
+    `AppleCaltopoSettings`; Android already opened the personal sign-in dialog without them).
+  - Team entries are disabled with "(not authorized by Tracker)" when the Tracker refused team
+    access; with none configured the menu shows a disabled "Team: No Teams credentials
+    configured" line. Android's map browser header shows the personal label instead of
+    "Team: No Teams credentials".
+  - Android: a header tap without Teams credentials already opened the personal sign-in
+    dialog (StandAloneOptionsDialog); a remembered personal selection whose credential is
+    missing now opens the sign-in prompt instead of falling back to an empty team when no
+    team is usable.
