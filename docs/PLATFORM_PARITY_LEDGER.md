@@ -1805,3 +1805,27 @@ Both planners now expose independent Transit speed in the same ft/s or m/s units
   mapping/3D viewer screens were already covered. Gap fixed: GeoTIFF export now holds a
   `MappingWorkRuntime` lease (cancelled by an explicit Quit, like the other leases). Original
   photo share hands out existing files and does no processing.
+
+## 2026-11-18 — A swapped SD card is not an error (2.6.0, build 446)
+
+- Ken, 2026-11-18: the A5 kept showing "Previous SD card missing" after he moved card
+  4A21-0000 to the S11U, put a smaller card (2C5D-1669) in the A5 and re-selected the archive
+  folder in Manage Storage.
+- Cause (A5 read-only diagnosis): the active archive folder on 2C5D-1669 was writable, but 15
+  app-private links (queue-state, recordings, mapping, map archives, caches) still pointed at
+  the working copy on 4A21-0000. Storage preparation stopped at the first one, so archive
+  storage never became ready that session, and the notice was cleared only when the old card
+  was reinserted, never on a folder pick. A leftover session log also still targeted
+  4A21-0000:DroneTrax/tracks-17Nov2026.
+- Android fix: with the active archive writable, a link to this app's working copy on an
+  unmounted card is dropped and rebuilt on the active archive. Only the link (the pointer) is
+  removed; nothing on any card is deleted. User work that stayed on the old card (recordings,
+  mapping, clues, review notes, offline maps) is remembered in app-private storage and shown
+  as a quiet Manage Storage note with Forget. Reinserting the card copies it into the active
+  archive folder (never overwriting). Folder pick clears the notice at once and retries
+  storage preparation. The map chip and pop-up are now only for the active archive folder
+  (new "SD card is missing" wording when its card is removed). Leftover session logs for a
+  swapped card go to the same day folder in the active archive.
+- iOS: the archive is the app's Documents folder; there is no removable archive card, so the
+  swap state cannot occur. The shared `ArchiveWritabilityText` gains the same `missing`
+  wording so both tables match.

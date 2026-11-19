@@ -376,6 +376,8 @@ internal object OperationalStorage {
                     state.value = Status(ready = true, message = "Retained operational data is in Archive Dir.")
                 }
                 flushDeferredRetains()
+                MissingPreviousStorage.clear()
+                if (DetachedPreviousStorage.entries().isNotEmpty()) startup.execute { runCatching { recoverDetached(context, value) } }
                 val heavy = selected.filter { it.id in heavyAreas }
                 if (heavy.isNotEmpty()) {
                     startup.execute {
@@ -792,7 +794,10 @@ internal object OperationalStorage {
         for (source in area.sources) {
             val link = Files.isSymbolicLink(source.toPath())
             val projection = if (link) projectedRoot(context, area, source) else null
-            if (link && !source.exists() && projection == null) throw missingPrevious(ArchiveDirAvailability.previousStorageMissing(area.id, linkTarget(source)))
+            if (link && !source.exists() && projection == null) {
+                if (detachFromRemovedCard(context, area, source)) continue
+                throw missingPrevious(ArchiveDirAvailability.previousStorageMissing(area.id, linkTarget(source)))
+            }
             if (projection != null && !source.exists() && projection.parent.fileName.toString() != work.name) throw missingPrevious(ArchiveDirAvailability.previousArchiveRequired(area.id, linkTarget(source)))
             if (!source.exists()) continue
             val projected = projection != null
@@ -885,7 +890,10 @@ internal object OperationalStorage {
             checkSelection()
             val link = Files.isSymbolicLink(source.toPath())
             val projection = if (link) projectedRoot(context, area, source) else null
-            if (link && !source.exists() && projection == null) throw missingPrevious(ArchiveDirAvailability.previousStorageMissing(area.id, linkTarget(source)))
+            if (link && !source.exists() && projection == null) {
+                if (detachFromRemovedCard(context, area, source)) continue
+                throw missingPrevious(ArchiveDirAvailability.previousStorageMissing(area.id, linkTarget(source)))
+            }
             if (projection != null && !source.exists() && projection.parent.fileName.toString() != value.work.name) {
                 throw missingPrevious(ArchiveDirAvailability.previousArchiveRequired(area.id, linkTarget(source)))
             }
@@ -1381,7 +1389,55 @@ internal object OperationalStorage {
     }
     private fun linkTarget(source: File): String? = runCatching { Os.readlink(source.path) }.getOrNull()
 
-    /** Records the missing card for the archive-storage alert; nothing is deleted or moved. */
+    /**
+     * Callers reach this only after the active Archive Dir was found readable and writable. A
+     * link to this app's working copy on a card that is no longer mounted is the operator's
+     * card swap, not an error: drop that link (the pointer only; nothing on any card is
+     * deleted), remember what stayed on the card, and let projection rebuild it on the active
+     * archive. Returns false for any other dangling link, which keeps the old safe stop.
+     */
+    private fun detachFromRemovedCard(context: Context, area: Area, source: File): Boolean {
+        val target = linkTarget(source)
+        val volume = DetachedPreviousStorage.detachableVolume(area.id, target) { removableVolumeMounted(context, it) } ?: return false
+        DetachedPreviousStorage.attach(context)
+        // Persist the recovery pointer first; if the process exits before the link swap, a
+        // repeated prepare is harmless. The reverse order could lose the pointer on a crash.
+        DetachedPreviousStorage.detached(DetachedArea(volume, area.id, target!!))
+        Files.delete(source.toPath())
+        CaltopoClient.CTInfo("OperationalStorage", "Card $volume was swapped out; ${area.id} now uses the active archive folder (files on $volume left untouched)")
+        return true
+    }
+
+    fun removableVolumeMounted(context: Context, volume: String): Boolean = runCatching {
+        context.getSystemService(android.os.storage.StorageManager::class.java)?.storageVolumes?.any {
+            it.uuid.equals(volume, ignoreCase = true) && it.state == android.os.Environment.MEDIA_MOUNTED
+        } == true
+    }.getOrDefault(true)
+
+    /** Copies work that stayed on a swapped-out card into the active archive once it is back. Never deletes card files. */
+    private fun recoverDetached(context: Context, value: Store) {
+        DetachedPreviousStorage.attach(context)
+        for (entry in DetachedPreviousStorage.entries()) {
+            val directory = File(entry.target)
+            if (!directory.isDirectory) continue
+            val area = value.areas.firstOrNull { it.id == entry.areaId } ?: continue
+            runCatching {
+                copySource(value, area, directory, directory, replace = false, ancestry = emptySet(), projection = directory.canonicalFile.toPath())
+            }.onSuccess {
+                DetachedPreviousStorage.recovered(entry)
+                CaltopoClient.CTInfo("OperationalStorage", "Copied ${entry.areaId} from card ${entry.volume} into the active archive folder; card files left in place")
+            }.onFailure { error ->
+                CaltopoClient.CTWarn("OperationalStorage", "Could not copy ${entry.areaId} from card ${entry.volume}: ${error.message}")
+            }
+        }
+    }
+
+    /** A swapped-out card was reinserted: copy what stayed on it, if storage is ready. */
+    fun recoverDetachedNow(context: Context) {
+        runCatching { startup.execute { synchronized(gate) { store }?.let { recoverDetached(context.applicationContext, it) } } }
+    }
+
+    /** Records the missing card for the Manage Storage status line; nothing is deleted or moved. */
     private fun missingPrevious(error: ArchiveStateUnavailableException): ArchiveStateUnavailableException {
         MissingPreviousStorage.note(error)
         return error

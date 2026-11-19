@@ -40,31 +40,26 @@ class MissingPreviousStorageTest {
         assertNull(ArchiveDirAvailability.removableVolumeOf(null))
     }
 
-    @Test fun oneAlertPerMissingCardAndLaterFailuresOnlyAddAreas() {
+    // Ken, 2026-11-18: a deliberately swapped card is not an error. Unreachable retained state
+    // is a quiet Manage Storage line only: no pop-up, no map chip, nothing to re-open.
+    @Test fun failuresOnlyAddAreasAndNeverRaiseAPopUp() {
         val link = "/storage/4A21-0000/Android/data/p/cache/operational-work/709c66c989b07197/"
         MissingPreviousStorage.note(ArchiveDirAvailability.previousStorageMissing("queue-state", link + "queue-state"))
-        val first = MissingPreviousStorage.alert.value
-        assertNotNull(first)
-        assertEquals("4A21-0000", first!!.volume)
-        MissingPreviousStorage.dismissAlert()
-
+        assertNull(MissingPreviousStorage.alert.value)
+        assertEquals("4A21-0000", MissingPreviousStorage.notice.value!!.volume)
         repeat(5) { MissingPreviousStorage.note(ArchiveDirAvailability.previousStorageMissing("unfinished-recordings", link + "unfinished-recordings")) }
-        assertNull("failed checks must not re-open the alert", MissingPreviousStorage.alert.value)
         assertEquals(setOf("queue-state", "unfinished-recordings"), MissingPreviousStorage.notice.value!!.areas)
-
         MissingPreviousStorage.reshowAlert()
-        assertEquals(setOf("queue-state", "unfinished-recordings"), MissingPreviousStorage.alert.value!!.areas)
+        assertNull(MissingPreviousStorage.alert.value)
     }
 
-    @Test fun racesDoNotRaiseTheAlertAndClearAllowsANewOne() {
+    @Test fun racesAreIgnoredAndClearRemovesTheNoticeImmediately() {
         MissingPreviousStorage.note(ArchiveDirAvailability.preparationFailedElsewhere("Recorder state"))
         assertNull(MissingPreviousStorage.notice.value)
         MissingPreviousStorage.note(ArchiveDirAvailability.previousStorageMissing("queue-state", "/storage/4A21-0000/a/queue-state"))
-        MissingPreviousStorage.dismissAlert()
+        assertNotNull(MissingPreviousStorage.notice.value)
         MissingPreviousStorage.clear()
-        assertNull(MissingPreviousStorage.notice.value)
-        MissingPreviousStorage.note(ArchiveDirAvailability.previousStorageMissing("queue-state", "/storage/4A21-0000/a/queue-state"))
-        assertNotNull("a later loss after the card came back alerts again", MissingPreviousStorage.alert.value)
+        assertNull("a folder pick or ready storage clears it without a restart", MissingPreviousStorage.notice.value)
     }
 
     @Test fun alertWordingNamesTheCardAndPromisesNoDeletion() {

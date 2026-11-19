@@ -1,7 +1,8 @@
 import Foundation
 
 /// Why the archive (flight storage) cannot be written. Matches Android `ArchiveWriteProblem`.
-public enum ArchiveWriteProblem: String, Sendable { case readOnly, ioError, notWritable }
+/// `missing`: the active archive folder's volume is not attached. Matches Android `MISSING`.
+public enum ArchiveWriteProblem: String, Sendable { case readOnly, ioError, notWritable, missing }
 
 /// The only events that may clear a "not writable" verdict. Matches Android `ArchiveRecheckTrigger`.
 public enum ArchiveRecheckTrigger: String, Sendable { case remount, folderPicked, periodic }
@@ -158,6 +159,7 @@ public enum ArchiveWritabilityText {
         switch v.problem {
         case .readOnly: return "is read-only (likely failing)"
         case .ioError: return "has I/O errors (likely failing)"
+        case .missing: return "with the archive folder is not in this tablet"
         default: return "cannot be written"
         }
     }
@@ -166,6 +168,7 @@ public enum ArchiveWritabilityText {
         switch v.problem {
         case .readOnly: return "read-only"
         case .ioError: return "I/O errors"
+        case .missing: return "missing"
         default: return "not writable"
         }
     }
@@ -175,9 +178,18 @@ public enum ArchiveWritabilityText {
     }
 
     public static func alertMessage(_ v: ArchiveWritabilityVerdict, fallbackAvailable: Bool) -> String {
-        "\(subject(v)) \(condition(v)). " + (fallbackAvailable
+        if v.problem == .missing { return missingMessage(fallbackAvailable: fallbackAvailable) }
+        return "\(subject(v)) \(condition(v)). " + (fallbackAvailable
             ? "Recording to it is paused; live video still works. New recordings and logs are kept in tablet storage and copied to your archive folder once it can be written again. Choose \"\(useTabletStorage)\" to move the archive folder to this tablet."
             : "Recording is paused; live video still works. Tablet storage is also low, so nothing is recorded until you free space or choose another folder in \(manageStorage).")
+    }
+
+    /// The card holding the active archive folder was removed. A swapped-out previous card is
+    /// not an error and never reaches this text (Ken, 2026-11-18).
+    static func missingMessage(fallbackAvailable: Bool) -> String {
+        "The SD card with your archive folder is not in this tablet. " + (fallbackAvailable
+            ? "Live video still works, and new recordings and logs are kept in tablet storage until it can be written. Reinsert that card, or choose another archive folder in \(manageStorage) (or \"\(useTabletStorage)\")."
+            : "Live video still works. Tablet storage is also low, so nothing is recorded until you reinsert that card or choose another archive folder in \(manageStorage).")
     }
 
     public static func chip(_ v: ArchiveWritabilityVerdict, fallbackAvailable: Bool) -> String {

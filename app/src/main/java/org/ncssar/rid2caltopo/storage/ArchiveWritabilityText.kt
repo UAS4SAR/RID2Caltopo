@@ -13,12 +13,14 @@ object ArchiveWritabilityText {
     private fun condition(verdict: ArchiveWritabilityVerdict): String = when (verdict.problem) {
         ArchiveWriteProblem.READ_ONLY -> "is read-only (likely failing)"
         ArchiveWriteProblem.IO_ERROR -> "has I/O errors (likely failing)"
+        ArchiveWriteProblem.MISSING -> "with the archive folder is not in this tablet"
         else -> "cannot be written"
     }
 
     private fun shortCondition(verdict: ArchiveWritabilityVerdict): String = when (verdict.problem) {
         ArchiveWriteProblem.READ_ONLY -> "read-only"
         ArchiveWriteProblem.IO_ERROR -> "I/O errors"
+        ArchiveWriteProblem.MISSING -> "missing"
         else -> "not writable"
     }
 
@@ -26,13 +28,25 @@ object ArchiveWritabilityText {
 
     /** [fallbackAvailable]: tablet storage has room above the reserve, so recordings and logs continue there. */
     fun alertMessage(verdict: ArchiveWritabilityVerdict, fallbackAvailable: Boolean): String =
-        "${subject(verdict)} ${condition(verdict)}. " + if (fallbackAvailable) {
+        if (verdict.problem == ArchiveWriteProblem.MISSING) missingMessage(fallbackAvailable)
+        else "${subject(verdict)} ${condition(verdict)}. " + if (fallbackAvailable) {
             "Recording to it is paused; live video still works. New recordings and logs are kept in tablet storage " +
                 "and copied to your archive folder once it can be written again. " +
                 "Choose \"$USE_TABLET_STORAGE\" to move the archive folder to this tablet."
         } else {
             "Recording is paused; live video still works. Tablet storage is also low, so nothing is recorded " +
                 "until you free space or choose another folder in $MANAGE_STORAGE."
+        }
+
+    /** The card holding the active archive folder was removed: reinsert it or pick another folder. */
+    private fun missingMessage(fallbackAvailable: Boolean): String =
+        "The SD card with your archive folder is not in this tablet. " + if (fallbackAvailable) {
+            "Live video still works, and new recordings and logs are kept in tablet storage until it can be written. " +
+                "Reinsert that card, or choose another archive folder in $MANAGE_STORAGE " +
+                "(or \"$USE_TABLET_STORAGE\")."
+        } else {
+            "Live video still works. Tablet storage is also low, so nothing is recorded until you reinsert " +
+                "that card or choose another archive folder in $MANAGE_STORAGE."
         }
 
     /** One line for the map chip. */

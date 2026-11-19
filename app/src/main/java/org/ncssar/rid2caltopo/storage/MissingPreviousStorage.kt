@@ -13,19 +13,21 @@ internal data class MissingPreviousStorageNotice(
 )
 
 /**
- * Remembers which previous card holds retained state that could not be reached. One alert per
- * missing card per app run: further failed checks only add area names, they never re-open it.
- * Nothing here deletes, moves or re-links retained files; the operator decides.
+ * Remembers retained state on a previous card that could not be reached and was not simply
+ * swapped out (a card swap is handled by [DetachedPreviousStorage] and never lands here).
+ * Shown only as a quiet line in Manage Storage: no map chip and no pop-up, because the active
+ * archive folder is fine (Ken, 2026-11-18). A missing active archive is reported by
+ * ArchiveWritability instead. Nothing here deletes, moves or re-links retained files.
  */
 internal object MissingPreviousStorage {
     private val _notice = MutableStateFlow<MissingPreviousStorageNotice?>(null)
     val notice: StateFlow<MissingPreviousStorageNotice?> = _notice
 
     private val _alert = MutableStateFlow<MissingPreviousStorageNotice?>(null)
-    /** Pending alert, set once when a missing card is first seen. */
+    /** Never raised any more; kept so the shared archive alert keeps one shape. */
     val alert: StateFlow<MissingPreviousStorageNotice?> = _alert
 
-    private val alerted = mutableSetOf<String>()
+    private val logged = mutableSetOf<String>()
     @Volatile var log: (String) -> Unit = {}
 
     fun note(error: ArchiveStateUnavailableException) {
@@ -40,25 +42,21 @@ internal object MissingPreviousStorage {
         val next = MissingPreviousStorageNotice(volume, current?.takeIf { it.volume == volume }?.problem ?: problem, areas)
         if (next == current) return
         _notice.value = next
-        val key = volume ?: "unknown"
-        if (alerted.add(key)) {
+        if (logged.add(volume ?: "unknown")) {
             log("Retained ${areas.joinToString()} is on storage that is not present (${volume ?: "unknown card"}); files left in place")
-            _alert.value = next
-        } else if (_alert.value != null) {
-            _alert.value = next
         }
     }
 
     fun dismissAlert() { _alert.value = null }
 
-    /** The map chip re-opens the alert on request; failed checks never do. */
-    fun reshowAlert() { _notice.value?.let { _alert.value = it } }
+    /** The map chip no longer shows this notice, so there is nothing to re-open. */
+    fun reshowAlert() {}
 
-    /** The card came back, or another archive was chosen: forget it so a later loss alerts again. */
+    /** The card came back, another archive was chosen, or storage became ready. Clears at once. */
     @Synchronized
     fun clear() {
         _notice.value = null
         _alert.value = null
-        alerted.clear()
+        logged.clear()
     }
 }

@@ -34,4 +34,18 @@ class ArchiveWritabilityTextTest {
         assertTrue(status.startsWith("Archive storage has I/O errors (likely failing) since 7:01 AM."))
         assertTrue(status.contains("every 5 minutes"))
     }
+
+    // The chip and alert are for the active archive folder only: its card is not in the tablet.
+    @Test fun activeArchiveCardMissingSaysReinsertOrChooseAnother() {
+        val missing = card.copy(problem = ArchiveWriteProblem.MISSING)
+        assertEquals("SD card is missing", ArchiveWritabilityText.alertTitle(missing))
+        assertEquals("SD card missing · saving to tablet", ArchiveWritabilityText.chip(missing, true))
+        val message = ArchiveWritabilityText.alertMessage(missing, fallbackAvailable = true)
+        assertTrue(message, message.startsWith("The SD card with your archive folder is not in this tablet."))
+        assertTrue(message, message.contains("Reinsert that card, or choose another archive folder in Manage Storage"))
+        assertFalse(message, message.contains("previous", ignoreCase = true))
+        assertTrue(ArchiveWritabilityText.alertMessage(missing, false).contains("Tablet storage is also low"))
+        assertEquals(ArchiveWriteProblem.MISSING,
+            ArchiveWritabilityTracker.classify(java.io.IOException(ArchiveWritabilityTracker.missingCardMessage("2C5D-1669"))))
+    }
 }

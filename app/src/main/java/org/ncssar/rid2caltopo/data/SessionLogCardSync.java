@@ -146,7 +146,31 @@ final class SessionLogCardSync {
                 return new DeferredCardTarget(context, path.substring(0, slash), path.substring(slash + 1));
             }
         }
+        String retargeted = retargetFromRemovedCard(context, key);
+        if (retargeted != null) return targetFor(context, retargeted);
         return new DocumentCardTarget(context, Uri.parse(key));
+    }
+
+    /**
+     * A leftover log whose archive file was on a card that has since been swapped out goes to
+     * the same day folder in the active archive folder instead of waiting for that card.
+     */
+    @androidx.annotation.Nullable
+    private static String retargetFromRemovedCard(@NonNull Context context, @NonNull String key) {
+        try {
+            Uri active = CaltopoClient.GetArchiveUri();
+            String activeVolume = null;
+            if (active != null && "com.android.externalstorage.documents".equals(active.getAuthority())) {
+                activeVolume = android.provider.DocumentsContract.getTreeDocumentId(active).split(":", 2)[0];
+            }
+            String retargeted = org.ncssar.rid2caltopo.storage.DetachedPreviousStorage.INSTANCE.retargetSessionLogKey(
+                    key, activeVolume,
+                    volume -> org.ncssar.rid2caltopo.storage.OperationalStorage.INSTANCE.removableVolumeMounted(context, volume));
+            if (retargeted != null) CaltopoClient.CTDebug(TAG, "Leftover session log's card is gone; copying it to " + retargeted.substring(PENDING_PREFIX.length()) + " in the active archive folder");
+            return retargeted;
+        } catch (RuntimeException e) {
+            return null;
+        }
     }
 
     private static boolean archiveWritable() {

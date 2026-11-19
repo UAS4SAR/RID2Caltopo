@@ -33,6 +33,8 @@ import org.ncssar.rid2caltopo.storage.ArchiveWritabilityVerdict
 import org.ncssar.rid2caltopo.storage.ArchiveWriteProblem
 import org.ncssar.rid2caltopo.storage.ArchiveStateProblem
 import org.ncssar.rid2caltopo.storage.MissingPreviousStorage
+import org.ncssar.rid2caltopo.storage.DetachedPreviousStorageText
+import org.ncssar.rid2caltopo.storage.DetachedPreviousStorage
 import org.ncssar.rid2caltopo.storage.MissingPreviousStorageNotice
 import org.ncssar.rid2caltopo.storage.MissingPreviousStorageText
 import org.ncssar.rid2caltopo.video.NotCapturingStream
@@ -98,30 +100,19 @@ internal fun ArchiveStorageAlertDialog(
     )
 }
 
-/** Steady map status while the archive is not writable or a previous card is missing. Tapping re-opens the alert. */
+/**
+ * Steady map status, shown only while the active archive folder cannot be written (including
+ * when its card is not in the tablet). A swapped-out previous card is not an error. Tapping
+ * re-opens the alert.
+ */
 @Composable
 fun ArchiveStorageMapChip(onClick: () -> Unit = { ArchiveWritability.reshowAlert() }) {
     val verdict by ArchiveWritability.state.collectAsStateWithLifecycle()
-    val missing by MissingPreviousStorage.notice.collectAsStateWithLifecycle()
-    if (verdict.writable) {
-        missing?.let { notice ->
-            AssistChip(
-                onClick = onClick,
-                label = { Text(missingChipText(notice), maxLines = 1, softWrap = false, overflow = TextOverflow.Clip) },
-                colors = AssistChipDefaults.assistChipColors(containerColor = Color(0xFFE65100), labelColor = Color.White),
-                modifier = Modifier.padding(PaddingValues(0.dp)),
-            )
-        }
-        return
-    }
+    if (verdict.writable) return
     val context = LocalContext.current
     val fallback = remember(verdict) { ArchiveWritability.tabletFallbackAvailable(context) }
     ArchiveStorageChip(verdict, fallback, onClick)
 }
-
-internal fun missingChipText(notice: MissingPreviousStorageNotice): String =
-    if (notice.problem == ArchiveStateProblem.PREVIOUS_ARCHIVE_REQUIRED) "Previous archive folder missing"
-    else "Previous SD card missing" + (notice.volume?.let { " ($it)" } ?: "")
 
 @Composable
 fun ArchiveStorageChip(verdict: ArchiveWritabilityVerdict, fallbackAvailable: Boolean, onClick: () -> Unit) {
@@ -147,16 +138,25 @@ fun ArchiveStorageStatusLine() {
     )
 }
 
-/** Flight Storage line while retained state is on a card that is not in the tablet. */
+/** Quiet Flight Storage lines: data left on a swapped-out card (with Forget), or retained state that could not be reached. */
 @Composable
 fun MissingPreviousStorageStatusLine() {
+    val context = LocalContext.current
+    remember { DetachedPreviousStorage.attach(context.applicationContext) }
+    val detached by DetachedPreviousStorage.notes.collectAsStateWithLifecycle()
     val missing by MissingPreviousStorage.notice.collectAsStateWithLifecycle()
+    for (note in detached) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                DetachedPreviousStorageText.note(note),
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.weight(1f),
+            )
+            TextButton(onClick = { DetachedPreviousStorage.forget(note.volume) }) { Text(DetachedPreviousStorageText.FORGET) }
+        }
+    }
     val notice = missing ?: return
-    Text(
-        MissingPreviousStorageText.status(notice),
-        color = MaterialTheme.colorScheme.error,
-        style = MaterialTheme.typography.bodySmall,
-    )
+    Text(MissingPreviousStorageText.status(notice), style = MaterialTheme.typography.bodySmall)
 }
 
 /** Compact strip above the map: live stream, Capture Streams off. */

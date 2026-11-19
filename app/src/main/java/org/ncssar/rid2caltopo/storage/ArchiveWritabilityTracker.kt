@@ -3,7 +3,8 @@ package org.ncssar.rid2caltopo.storage
 import java.util.concurrent.CopyOnWriteArrayList
 
 /** Why the archive folder cannot be written. */
-enum class ArchiveWriteProblem { READ_ONLY, IO_ERROR, NOT_WRITABLE }
+/** MISSING: the active archive folder is on a card that is not in the tablet. */
+enum class ArchiveWriteProblem { READ_ONLY, IO_ERROR, NOT_WRITABLE, MISSING }
 
 /** The only events allowed to clear a "not writable" verdict. */
 enum class ArchiveRecheckTrigger { REMOUNT, FOLDER_PICKED, PERIODIC }
@@ -121,6 +122,9 @@ class ArchiveWritabilityTracker(
     companion object {
         const val RECHECK_INTERVAL_MS = 5 * 60_000L
         private val EIO = Regex("\\bEIO\\b")
+        private const val MISSING_CARD = "is not in this tablet"
+
+        fun missingCardMessage(volume: String): String = "Archive SD card $volume $MISSING_CARD"
 
         /** Read-only or I/O failure anywhere in the cause chain; null for anything else. */
         fun classify(error: Throwable?): ArchiveWriteProblem? {
@@ -134,6 +138,7 @@ class ArchiveWritabilityTracker(
                 if (EIO.containsMatchIn(text) || text.contains("I/O error", ignoreCase = true)) {
                     return ArchiveWriteProblem.IO_ERROR
                 }
+                if (text.contains(MISSING_CARD)) return ArchiveWriteProblem.MISSING
                 if (current.cause === current) break
                 current = current.cause
             }

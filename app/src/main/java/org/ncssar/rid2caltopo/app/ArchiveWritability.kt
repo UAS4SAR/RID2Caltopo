@@ -88,9 +88,14 @@ object ArchiveWritability {
         val app = context.applicationContext ?: context
         appContext = app
         org.ncssar.rid2caltopo.storage.MissingPreviousStorage.log = { CaltopoClient.CTWarn("MissingPreviousStorage", it) }
+        org.ncssar.rid2caltopo.storage.DetachedPreviousStorage.attach(app)
         val filter = IntentFilter().apply {
-            // A removed card is handled by the archive-required flow; only a remount clears the verdict.
+            // Probe only the active archive folder on a mount or removal. A swapped-out old
+            // card is never an error; only losing the active archive's card raises the chip.
             addAction(Intent.ACTION_MEDIA_MOUNTED)
+            addAction(Intent.ACTION_MEDIA_UNMOUNTED)
+            addAction(Intent.ACTION_MEDIA_REMOVED)
+            addAction(Intent.ACTION_MEDIA_BAD_REMOVAL)
             addDataScheme("file")
         }
         runCatching {
@@ -109,6 +114,12 @@ object ArchiveWritability {
 
     /** A missing previous card that is mounted again: forget it and let storage prepare again. */
     private fun clearMissingPreviousIfMounted(context: Context) {
+        // A swapped-out card came back: copy what stayed on it into the active archive.
+        val detached = org.ncssar.rid2caltopo.storage.DetachedPreviousStorage.entries()
+        if (detached.any { org.ncssar.rid2caltopo.storage.OperationalStorage.removableVolumeMounted(context, it.volume) }) {
+            CaltopoClient.CTDebug(TAG, "Swapped-out card is back; copying what stayed on it into the archive folder")
+            org.ncssar.rid2caltopo.storage.OperationalStorage.recoverDetachedNow(context)
+        }
         val volume = org.ncssar.rid2caltopo.storage.MissingPreviousStorage.notice.value?.volume ?: return
         val mounted = runCatching {
             context.getSystemService(StorageManager::class.java)?.storageVolumes?.any {
@@ -126,6 +137,21 @@ object ArchiveWritability {
     @JvmStatic
     fun requestRecheck(trigger: ArchiveRecheckTrigger) {
         runCatching { executor.execute { recheckNow(trigger) } }
+        if (trigger == ArchiveRecheckTrigger.FOLDER_PICKED) folderPicked()
+    }
+
+    /**
+     * A folder was picked in Manage Storage or the prompt: an old card is no longer the
+     * operator's concern. Clear the previous-storage notice at once and prepare storage on the
+     * active folder again, which retargets any links that still point at a removed card.
+     */
+    private fun folderPicked() {
+        org.ncssar.rid2caltopo.storage.MissingPreviousStorage.clear()
+        val context = appContext ?: R2CApplication.getAppCtxt() ?: return
+        if (!org.ncssar.rid2caltopo.storage.OperationalStorage.ready()) {
+            runCatching { org.ncssar.rid2caltopo.storage.OperationalStorage.retry(context) }
+                .onFailure { CaltopoClient.CTWarn(TAG, "Storage retry after folder pick failed: ${it.message}") }
+        }
     }
 
     private fun recheckNow(trigger: ArchiveRecheckTrigger) {
@@ -136,9 +162,17 @@ object ArchiveWritability {
 
     /** Creates, writes and deletes a small file in the archive root. Throws when that fails. */
     private fun probe(context: Context) {
-        val uri = CaltopoClient.GetArchiveUri() ?: return
-        if (volumeState(context, uri) == Environment.MEDIA_MOUNTED_READ_ONLY) {
+        // GetArchiveUri may clear an inaccessible selection. Its hint still identifies the
+        // folder the operator told us to use, so a genuinely missing active card is reported.
+        val uri = CaltopoClient.GetArchiveUri() ?: CaltopoClient.GetArchiveUriSelectionHint() ?: return
+        val state = volumeState(context, uri)
+        if (state == Environment.MEDIA_MOUNTED_READ_ONLY) {
             throw IOException("Archive volume is mounted read-only (EROFS)")
+        }
+        val id = volumeId(uri)
+        if (uri.authority == "com.android.externalstorage.documents" && id != null && id != "primary" &&
+            state != Environment.MEDIA_MOUNTED) {
+            throw IOException(ArchiveWritabilityTracker.missingCardMessage(id))
         }
         val root = DocumentFile.fromTreeUri(context, uri) ?: throw IOException("Archive Dir is unavailable")
         if (!root.isDirectory) throw IOException("Archive Dir is unavailable")
