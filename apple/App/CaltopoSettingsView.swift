@@ -758,6 +758,8 @@ private struct AppleDeveloperToolsView: View {
     @State private var showingResetConfirmation = false
     @AppStorage(TrackerReconnectPolicy.legacyImmediateAckRetryDefaultsKey)
     private var legacyImmediateAckRetry = false
+    @AppStorage(TrackerReconnectPolicy.reconnectJitterDefaultsKey)
+    private var reconnectJitterEnabled = true
     @Environment(\.btrxDeskPod) private var deskPod
     @State private var showDeskPod = false
 
@@ -821,6 +823,10 @@ private struct AppleDeveloperToolsView: View {
                 }
                 Toggle("Immediate ack retry (legacy)", isOn: $legacyImmediateAckRetry)
                 Text("Off is the default on iPhone, iPad, and Mac. A late hello_ack stays on the open socket for 30 seconds, then reconnects on the 2/4/8/10 second ladder. That ladder resets only after hello_ack. On closes at 10 seconds and redials immediately, which is the 2.5.8 Android retry storm. Websocket messages are unchanged.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                Toggle("Reconnect jitter", isOn: $reconnectJitterEnabled)
+                Text("On is the default. Each reconnect waits a random time from half of the current 2/4/8/10 second step up to that step, and never more than 10 seconds. The first redial after a tracker restart is spread across 1–2 seconds instead of every device waiting exactly 2 seconds.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                 Toggle(

@@ -38,6 +38,7 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadLocalRandom;
 
 import okhttp3.MediaType;
 import okhttp3.Request;
@@ -204,6 +205,8 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
     private volatile boolean hardFailureNotified;
     @NonNull private final TrackerReconnectPolicy reconnectPolicy = new TrackerReconnectPolicy();
     @Nullable private static volatile Boolean legacyImmediateAckRetryOverrideForTesting;
+    @Nullable private static volatile Boolean reconnectJitterEnabledOverrideForTesting;
+    @Nullable private static volatile Double reconnectJitterUnitOverrideForTesting;
     private volatile long helloSeqSentAtMs;
     private volatile long helloAckAtMs;
     private volatile long heartbeatSeqCounter;
@@ -1307,7 +1310,11 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
                     delayMs));
             return;
         }
-        delayMs = reconnectPolicy.takeRetryDelay(kind, legacyImmediateAckRetry);
+        delayMs = reconnectPolicy.takeRetryDelay(
+                kind,
+                legacyImmediateAckRetry,
+                reconnectJitterEnabled(),
+                reconnectJitterUnit());
         targetAtMs = scheduledAtMs + delayMs;
         reconnectPending = true;
         lastReconnectCause = cause;
@@ -3064,10 +3071,27 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
         legacyImmediateAckRetryOverrideForTesting = enabled;
     }
 
+    static void setReconnectJitterForTesting(@Nullable Boolean enabled, @Nullable Double unit) {
+        reconnectJitterEnabledOverrideForTesting = enabled;
+        reconnectJitterUnitOverrideForTesting = unit;
+    }
+
     private static boolean legacyImmediateAckRetryEnabled() {
         Boolean override = legacyImmediateAckRetryOverrideForTesting;
         if (override != null) return override;
         return TrackerReconnectPrefs.current();
+    }
+
+    private static boolean reconnectJitterEnabled() {
+        Boolean override = reconnectJitterEnabledOverrideForTesting;
+        if (override != null) return override;
+        return TrackerReconnectPrefs.reconnectJitterEnabled();
+    }
+
+    private static double reconnectJitterUnit() {
+        Double override = reconnectJitterUnitOverrideForTesting;
+        if (override != null) return override;
+        return ThreadLocalRandom.current().nextDouble();
     }
 
     void setHardFailureListenerForTesting(@Nullable HardFailureListener listener) {
@@ -3111,6 +3135,8 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
         INSTANCE.keepHeartbeatSuppressedForTesting = false;
         INSTANCE.suppressReconnectTimerForTesting = false;
         legacyImmediateAckRetryOverrideForTesting = null;
+        reconnectJitterEnabledOverrideForTesting = null;
+        reconnectJitterUnitOverrideForTesting = null;
         INSTANCE.reconnectPolicy.reset();
         INSTANCE.lastOutboundJsonForTesting = null;
         INSTANCE.lastWaypointRemoteIdForTesting = null;

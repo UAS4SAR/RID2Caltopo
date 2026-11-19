@@ -3114,14 +3114,17 @@ final class AppleTrackerCoordinator: ObservableObject {
     private func scheduleReconnect(kind: TrackerReconnectPolicy.RetryKind) {
         guard coordinationRequired, reconnectTask == nil else { return }
         let legacyImmediateAckRetry = legacyImmediateAckRetryEnabled()
+        let jitterEnabled = TrackerReconnectPolicy.reconnectJitterEnabled(in: defaults)
         let delayMs = reconnectPolicy.takeRetryDelayMilliseconds(
             kind: kind,
-            legacyImmediateAckRetry: legacyImmediateAckRetry
+            legacyImmediateAckRetry: legacyImmediateAckRetry,
+            jitterEnabled: jitterEnabled,
+            randomUnit: Double.random(in: 0..<1)
         )
         let delay = Duration.milliseconds(delayMs)
         AppleLog.info(
             "TrackerPeer",
-            "Reconnecting in \(delayMs) ms kind=\(kind == .ackTimeout ? "ackTimeout" : "connectFailure") legacyImmediateAckRetry=\(legacyImmediateAckRetry) nextDelayMs=\(reconnectPolicy.nextDelayMilliseconds)"
+            "Reconnecting in \(delayMs) ms kind=\(kind == .ackTimeout ? "ackTimeout" : "connectFailure") legacyImmediateAckRetry=\(legacyImmediateAckRetry) jitter=\(jitterEnabled) nextDelayMs=\(reconnectPolicy.nextDelayMilliseconds)"
         )
         reconnectTask = Task { [weak self] in
             try? await Task.sleep(for: delay)

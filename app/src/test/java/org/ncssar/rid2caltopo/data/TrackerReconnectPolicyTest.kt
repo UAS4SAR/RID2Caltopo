@@ -92,6 +92,34 @@ class TrackerReconnectPolicyTest {
         assertEquals(2_000L, policy.takeRetryDelay(TrackerReconnectPolicy.RetryKind.CONNECT_FAILURE, false))
         assertEquals(4_000L, policy.peekDelayMs(TrackerReconnectPolicy.RetryKind.CONNECT_FAILURE, false))
     }
+
+    @Test
+    fun equalJitterStaysInsideHalfTheStepAndTheTenSecondCap() {
+        assertEquals(1_000L, TrackerReconnectPolicy.equalJitterMs(2_000L, 0.0))
+        assertEquals(2_000L, TrackerReconnectPolicy.equalJitterMs(2_000L, 1.0))
+        assertEquals(1_500L, TrackerReconnectPolicy.equalJitterMs(2_000L, 0.5))
+        assertEquals(5_000L, TrackerReconnectPolicy.equalJitterMs(10_000L, 0.0))
+        assertEquals(10_000L, TrackerReconnectPolicy.equalJitterMs(10_000L, 1.0))
+        assertEquals(10_000L, TrackerReconnectPolicy.equalJitterMs(20_000L, 1.0))
+        assertEquals(0L, TrackerReconnectPolicy.equalJitterMs(0L, 1.0))
+    }
+
+    @Test
+    fun jitterChangesTheWaitWithoutChangingTheNextLadderStep() {
+        assertEquals(1_000L, policy.takeRetryDelay(
+            TrackerReconnectPolicy.RetryKind.CONNECT_FAILURE, false, true, 0.0))
+        assertEquals(4_000L, policy.peekDelayMs(TrackerReconnectPolicy.RetryKind.CONNECT_FAILURE, false))
+        assertEquals(4_000L, policy.takeRetryDelay(
+            TrackerReconnectPolicy.RetryKind.ACK_TIMEOUT, false, true, 1.0))
+        assertEquals(8_000L, policy.peekDelayMs(TrackerReconnectPolicy.RetryKind.ACK_TIMEOUT, false))
+    }
+
+    @Test
+    fun legacyImmediateRetryIsNotJittered() {
+        assertEquals(0L, policy.takeRetryDelay(
+            TrackerReconnectPolicy.RetryKind.ACK_TIMEOUT, true, true, 0.0))
+        assertEquals(2_000L, policy.peekDelayMs(TrackerReconnectPolicy.RetryKind.CONNECT_FAILURE, false))
+    }
 }
 
 class TrackerReconnectPrefsTest {
@@ -100,5 +128,12 @@ class TrackerReconnectPrefsTest {
         assertFalse(TrackerReconnectPrefs.resolveLegacyImmediateAckRetry(null))
         assertFalse(TrackerReconnectPrefs.resolveLegacyImmediateAckRetry(false))
         assertTrue(TrackerReconnectPrefs.resolveLegacyImmediateAckRetry(true))
+    }
+
+    @Test
+    fun missingStorageKeepsReconnectJitterOn() {
+        assertTrue(TrackerReconnectPrefs.resolveReconnectJitterEnabled(null))
+        assertTrue(TrackerReconnectPrefs.resolveReconnectJitterEnabled(true))
+        assertFalse(TrackerReconnectPrefs.resolveReconnectJitterEnabled(false))
     }
 }

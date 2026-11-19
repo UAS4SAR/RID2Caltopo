@@ -46,7 +46,42 @@ public final class TrackerReconnectPolicy {
     }
 
     public synchronized long takeRetryDelay(RetryKind kind, boolean legacyImmediateAckRetry) {
-        return selectDelay(kind, legacyImmediateAckRetry, true);
+        return takeRetryDelay(kind, legacyImmediateAckRetry, false, 0d);
+    }
+
+    /**
+     * Same ladder as {@link #takeRetryDelay(RetryKind, boolean)}. When jitter
+     * is on, the returned wait is equal jitter of that step: half the step
+     * plus a uniform draw of the other half. The stored next step stays the
+     * unjittered ladder value, and the result is never above 10 seconds.
+     * A legacy immediate ack retry stays at 0.
+     */
+    public synchronized long takeRetryDelay(
+            RetryKind kind,
+            boolean legacyImmediateAckRetry,
+            boolean jitterEnabled,
+            double randomUnit) {
+        long delayMs = selectDelay(kind, legacyImmediateAckRetry, true);
+        if (delayMs <= 0L || !jitterEnabled) return delayMs;
+        return equalJitterMs(delayMs, randomUnit);
+    }
+
+    /**
+     * Equal jitter of one ladder step. {@code randomUnit} is clamped to
+     * 0..1. The result is from half the step through the full step, inclusive,
+     * and is capped at {@link #MAX_DELAY_MS}.
+     */
+    public static long equalJitterMs(long delayMs, double randomUnit) {
+        long cappedMs = Math.min(Math.max(delayMs, 0L), MAX_DELAY_MS);
+        long halfMs = cappedMs / 2L;
+        long spanMs = cappedMs - halfMs;
+        double unit = randomUnit;
+        if (unit < 0d) unit = 0d;
+        if (unit > 1d) unit = 1d;
+        long jitterMs = (long) Math.floor(unit * (spanMs + 1L));
+        if (jitterMs > spanMs) jitterMs = spanMs;
+        if (jitterMs < 0L) jitterMs = 0L;
+        return halfMs + jitterMs;
     }
 
     public synchronized void onTransportOpened(boolean legacyImmediateAckRetry) {
