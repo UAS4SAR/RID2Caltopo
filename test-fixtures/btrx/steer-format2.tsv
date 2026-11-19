@@ -1,0 +1,22 @@
+# STEER extension format 2 (firmware 0x010C) shared vectors.
+# Read by tools/btrx_bearing_test, Android BtrxProtocolTest, and iOS BtrxSteerGyroYawTests.
+# Canonical prefix (27 bytes): steer_seq=7 flags=0x11 window_end_ms=123456 age_ms=50 src_id=0x1234
+# rssi=-60/-63/-55 hits=9/8 cid=0x004C class=1 addr_type=1 mac LSB A0..A5 roll_x2=4 pitch_x2=-2.
+# Canonical yaw block: yaw_x10=123 yaw_fixed_x10=124 bias_z_mdps=-345 t_off_ms=-20 turns=1 yflags=0x03.
+# name	hex	extras	ext_format	truncated	has_yaw	yaw_x10	yaw_fixed_x10	bias_z_mdps	t_off_ms	turns	yflags	notes
+fmt0_27	071140e2010032003412c4c1c909084c000101a0a1a2a3a4a504fe	0	0	0	0	-	-	-	-	-	-	27-byte older firmware, no extension
+fmt1_0extra	071140e2010032003412c4c1c909084c000101a0a1a2a3a4a504fe10	0	1	0	0	-	-	-	-	-	-	format 1, count 0, 28 bytes
+fmt1_1extra	071140e2010032003412c4c1c909084c000101a0a1a2a3a4a504fe112000bab8f113	1	1	0	0	-	-	-	-	-	-	format 1, one extra, 34 bytes
+fmt1_2extra	071140e2010032003412c4c1c909084c000101a0a1a2a3a4a504fe122000bab8f1132100b9b70013	2	1	0	0	-	-	-	-	-	-	format 1, two extras, 40 bytes
+fmt2_0extra	071140e2010032003412c4c1c909084c000101a0a1a2a3a4a504fe207b007c00a7feecff0103	0	2	0	1	123	124	-345	-20	1	0x03	format 2, no extras, yaw at 28-37
+fmt2_1extra	071140e2010032003412c4c1c909084c000101a0a1a2a3a4a504fe212000bab8f1137b007c00a7feecff0103	1	2	0	1	123	124	-345	-20	1	0x03	format 2, one extra, yaw at 34-43
+fmt2_2extra	071140e2010032003412c4c1c909084c000101a0a1a2a3a4a504fe222000bab8f1137b007c00a72100b9b70013feecff0103	2	2	0	1	123	124	-345	-20	1	0x03	format 2, two extras, yaw split across record tails
+fmt2_0extra_toff_unknown	071140e2010032003412c4c1c909084c000101a0a1a2a3a4a504fe207b007c00a7fe00800103	0	2	0	1	123	124	-345	-32768	1	0x03	format 2, t_off_ms=-32768 (cable clock not ready)
+fmt2_0extra_no_target	071040e2010032003412c4c1c909084c000101a0a1a2a3a4a504fe207b007c00a7feecff0103	0	2	0	1	123	124	-345	-20	1	0x03	format 2, nothing heard (flag bit 0 clear), yaw still present
+fmt2_0extra_len28	071140e2010032003412c4c1c909084c000101a0a1a2a3a4a504fe20	0	2	0	0	-	-	-	-	-	-	format 2, count 0, len 28: no yaw
+fmt2_0extra_len37	071140e2010032003412c4c1c909084c000101a0a1a2a3a4a504fe207b007c00a7feecff01	0	2	0	0	-	-	-	-	-	-	format 2, count 0, len 37: no yaw
+fmt2_0extra_len39	071140e2010032003412c4c1c909084c000101a0a1a2a3a4a504fe207b007c00a7feecff010300	0	2	0	0	-	-	-	-	-	-	format 2, count 0, len 39: no yaw
+fmt2_1extra_len34	071140e2010032003412c4c1c909084c000101a0a1a2a3a4a504fe212000bab8f113	1	2	0	0	-	-	-	-	-	-	format 2, one extra, len 34 (rec_len 6): records only, no yaw
+fmt2_2extra_len40	071140e2010032003412c4c1c909084c000101a0a1a2a3a4a504fe222000bab8f1132100b9b70013	2	2	0	0	-	-	-	-	-	-	format 2, two extras, len 40 (rec_len 6): records only, no yaw
+fmt2_2extra_len44	071140e2010032003412c4c1c909084c000101a0a1a2a3a4a504fe222000bab8f11300002100b9b700130000	2	2	0	0	-	-	-	-	-	-	format 2, two extras, len 44 (rec_len 8): records only, no yaw (legacy future-format test)
+fmt2_count3	071140e2010032003412c4c1c909084c000101a0a1a2a3a4a504fe232000bab8f1132100b9b70013000000000000	0	2	1	0	-	-	-	-	-	-	format 2, count 3: truncated, first 27 only, no yaw

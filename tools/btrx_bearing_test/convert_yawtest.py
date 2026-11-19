@@ -60,8 +60,13 @@ def steer_lines(path):
                     int(field(rest, "peak", "-128")), int(field(rest, "hits_port", "0")), int(field(rest, "hits_stbd", "0")),
                     int(field(rest, "age_ms", "0")), 1 if flags & 0x02 else 0, 1 if flags & 0x04 else 0,
                     KINDS.get(field(rest, "kind", "unknown"), 0), int(cid, 16)))
-            out.append((t, "BBv1 R %d %d %d %d %d %d %d 0 0 %d %s" % (
-                t, we, int(seq), flags, roll, pitch, 1 if backlog else 0, len(entries), " ".join(entries))))
+            # ext_format is taken from the log when present (format 2 from firmware 0x010C).
+            # Older logs have no field; do not assume format 1. The BBv1 R line stores the
+            # number as-is; replay does not require it to be 1.
+            fmt = int(field(rest, "ext_format", "0"))
+            trunc = 1 if field(rest, "ext_truncated", "0") in ("1", "true") else 0
+            out.append((t, "BBv1 R %d %d %d %d %d %d %d %d %d %d %s" % (
+                t, we, int(seq), flags, roll, pitch, 1 if backlog else 0, fmt, trunc, len(entries), " ".join(entries))))
     return out
 
 

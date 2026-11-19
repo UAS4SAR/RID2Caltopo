@@ -7,6 +7,7 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Test
+import java.io.File
 import org.ncssar.rid2caltopo.btrx.BtrxProtocol as P
 
 /**
@@ -717,6 +718,7 @@ class BtrxProtocolTest {
         val f2 = steer40(2, format = 2, len = 44)
         f2[28] = 7; f2[36] = 8; f2[29] = 0; f2[37] = 0
         assertEquals(listOf(7, 8), P.parseSteer(f2).extras.map { it.srcId })
+        assertNull(P.parseSteer(f2).yaw)
     }
 
     @Test fun timePingPayloadMatchesPackTime() {
@@ -726,5 +728,56 @@ class BtrxProtocolTest {
         assertEquals(P.TIME_PING, f.type)
         assertEquals(0x11223344L, f.podId)
         assertEquals(1000L, P.parseTime(f.payload).t1)
+    }
+
+    private fun steerFormat2Fixture(): File =
+        sequenceOf(File("test-fixtures/btrx/steer-format2.tsv"), File("../test-fixtures/btrx/steer-format2.tsv"))
+            .first { it.isFile }
+
+    @Test fun steerFormat2SharedVectors() {
+        val rows = steerFormat2Fixture().readLines().filter { it.isNotEmpty() && !it.startsWith("#") }
+        assertEquals(16, rows.size)
+        for (line in rows) {
+            val c = line.split("	")
+            val name = c[0]
+            val s = P.parseSteer(h(c[1]))
+            assertEquals("$name extras", c[2].toInt(), s.extras.size)
+            assertEquals("$name ext_format", c[3].toInt(), s.extFormat)
+            assertEquals("$name truncated", c[4] == "1", s.extTruncated)
+            if (c[5] == "1") {
+                val y = s.yaw
+                assertTrue("$name has_yaw", y != null)
+                require(y != null)
+                assertEquals("$name yaw_x10", c[6].toInt(), y.yawX10)
+                assertEquals("$name yaw_fixed", c[7].toInt(), y.yawFixedX10)
+                assertEquals("$name bias", c[8].toInt(), y.biasZMdps)
+                assertEquals("$name t_off", c[9].toInt(), y.tOffMs)
+                assertEquals("$name turns", c[10].toInt(), y.turns)
+                val expectFlags = if (c[11].startsWith("0x") || c[11].startsWith("0X")) c[11].substring(2).toInt(16) else c[11].toInt()
+                assertEquals("$name yflags", expectFlags, y.yflags)
+            } else {
+                assertNull("$name no yaw", s.yaw)
+            }
+        }
+    }
+
+    @Test fun steerYawLogLineIsMachineReadable() {
+        val row = steerFormat2Fixture().readLines().first { it.startsWith("fmt2_0extra	") }
+        val s = P.parseSteer(h(row.split("	")[1]))
+        val fields = BtrxYawLog.steerFields(s)
+        assertTrue(fields, fields.contains("yaw_x10=123") && fields.contains("yaw_fixed_x10=124") &&
+            fields.contains("turns=1") && fields.contains("bias_z_mdps=-345") &&
+            fields.contains("t_off_ms=-20") && fields.contains("sample_ms=123436") && fields.contains("yflags=0x03"))
+        val line = BtrxFrameLog.describe(P.STEER, h(row.split("	")[1]))
+        assertTrue(line, line.contains("ext_format=2") && line.contains("yaw_x10=123") && line.contains("sample_ms=123436"))
+        val gyro = BtrxYawLog.steerLine(1_700_000_000_000L, s, backlog = false)!!
+        assertTrue(gyro, gyro.startsWith("Btrx gyro_yaw arrival_ms=1700000000000") && gyro.contains("window_end_ms=123456"))
+        val unknown = P.parseSteer(h(steerFormat2Fixture().readLines().first { it.startsWith("fmt2_0extra_toff_unknown	") }.split("	")[1]))
+        assertEquals("-", unknown.yaw!!.sampleMs(unknown.windowEndMs)?.toString() ?: "-")
+        assertTrue(BtrxYawLog.steerFields(unknown).contains("sample_ms=-"))
+        // format 1 is unchanged and does not grow the log line with yaw fields
+        val f1 = steerFormat2Fixture().readLines().first { it.startsWith("fmt1_2extra	") }
+        val line1 = BtrxFrameLog.describe(P.STEER, h(f1.split("	")[1]))
+        assertTrue(line1, line1.contains("ext_format=1") && !line1.contains("yaw_x10="))
     }
 }

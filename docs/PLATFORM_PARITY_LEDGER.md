@@ -12,6 +12,30 @@ Project-only engineering record; do not package in the app, copy into store meta
 
 ## Cumulative release history
 
+### Unreleased — BTRX STEER gyro yaw, format 2 (November 19, 2026)
+
+- Both (nothing goes to CalTopo; not in release notes): parse STEER extension
+  format 2 (firmware 0x010C, btrx 0b604f8) in `bb_steer.c`, `BtrxProtocol.kt`
+  and `BtrxProtocol.swift`. Format 1 (28+6n bytes) is unchanged; the pod falls
+  back to it when the yaw is more than 1 s old. Shared vectors in
+  `test-fixtures/btrx/steer-format2.tsv` (16 cases: 0/1/2 extras, t_off_ms
+  unknown, wrong lengths, format 1).
+- Session / BTRX logs: every STEER that carries yaw appends machine-readable
+  `ext_format=2 yaw_x10=… yaw_fixed_x10=… turns=… bias_z_mdps=… t_off_ms=…
+  sample_ms=… yflags=0x…` fields, plus a `Btrx gyro_yaw …` line (arrival,
+  window_end, sample time, bias, turns, flags, and the latest SEI sample if
+  one has been seen). `Btrx sei_yaw t_ms=… yaw_true_deg=… stream=…` lines are
+  written at up to 10 Hz from DJI SEI true-north yaw.
+- Analysis: `tools/btrx_yaw_drift.py` interpolates SEI yaw to each pod sample
+  time, unwraps both, subtracts the first offset, and writes CSV + PNG (drift
+  slope in deg/min on the longest still/hover stretch; per-turn jumps for gyro
+  scale error). `convert_yawtest.py` and the BBv1 R-line replay pass
+  `ext_format` through and do not assume it is 1.
+- Evidence: host C tests 436 checks, 0 failures (Release and ASan/UBSan);
+  Android unit tests 2,747 (1 skipped, 0 failed); Swift 566 XCTest + 884
+  swift-testing, 0 failed; iOS Simulator Debug build succeeded (not
+  installed). Version not bumped. Local only, not pushed.
+
 ### Unreleased — BTRX bearing map layer (November 13, 2026)
 
 - Both, Developer Tools > BTRX > "Bearing map layer" only (nothing goes to

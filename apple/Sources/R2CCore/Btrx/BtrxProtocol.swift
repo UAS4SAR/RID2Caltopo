@@ -49,6 +49,10 @@ public enum BtrxProtocol {
     /// keepalive goes only to a Desk Pod reporting 0x0108 or later. Same as Android.
     public static let buildButtonConfirm = 0x0108
     public static func buttonConfirmSupported(_ buildHash: Int?) -> Bool { (buildHash ?? 0) >= buildButtonConfirm }
+    /// Build 0x010C (btrx 0b604f8): STEER extension format 2 carries a 10-byte gyro yaw
+    /// block. Format 1 (28+6n bytes) is unchanged; the pod falls back to it when the yaw
+    /// is more than 1 s old. Parsing is by format and length, not by this constant.
+    public static let buildGyroYaw = 0x010C
 
     public static let HELLO = 0x01, HELLO_ACK = 0x02, PAIR_REQ = 0x10, PAIR_CONFIRM = 0x11, PAIR_ACK = 0x12
     public static let B_CFG = 0x13, GESTURE = 0x14, DESK_PAIR = 0x15, PAIR_OPEN = 0x16,
@@ -516,12 +520,14 @@ public enum BtrxProtocol {
         public let extFormat: Int
         /// The extension was present but unreadable: only bytes 0-26 were used.
         public let extTruncated: Bool
+        /// Format 2 gyro yaw (firmware 0x010C); nil when the format is not 2 or the length does not fit.
+        public let yaw: GyroYaw?
 
         public init(steerSeq: Int, flags: Int, windowEndMs: UInt32, ageMs: Int, srcId: Int, rssiPort: Int, rssiStbd: Int,
                     peakRssi: Int, hitsPort: Int, hitsStbd: Int, companyId: Int, devClass: Int, addrType: Int,
                     macLsbFirst: [UInt8], rollX2: Int, pitchX2: Int,
-                    extras: [SteerExtra] = [], extFormat: Int = 0, extTruncated: Bool = false) {
-            self.extras = extras; self.extFormat = extFormat; self.extTruncated = extTruncated
+                    extras: [SteerExtra] = [], extFormat: Int = 0, extTruncated: Bool = false, yaw: GyroYaw? = nil) {
+            self.extras = extras; self.extFormat = extFormat; self.extTruncated = extTruncated; self.yaw = yaw
             self.steerSeq = steerSeq; self.flags = flags; self.windowEndMs = windowEndMs; self.ageMs = ageMs; self.srcId = srcId
             self.rssiPort = rssiPort; self.rssiStbd = rssiStbd; self.peakRssi = peakRssi; self.hitsPort = hitsPort; self.hitsStbd = hitsStbd
             self.companyId = companyId; self.devClass = devClass; self.addrType = addrType; self.macLsbFirst = macLsbFirst
@@ -555,15 +561,63 @@ public enum BtrxProtocol {
 
     public static let steerExtraLen = 6
     public static let steerMaxExtras = 2
+    public static let steerYawLen = 10
+    /// t_off_ms in a format-2 yaw block: cable clock sync not ready.
+    public static let yawTOffUnknown = -32768
+    public static let YAW_F_RUNNING = 0x01, YAW_F_BIAS = 0x02, YAW_F_STILL = 0x04
+    public static let YAW_F_REG = 0x08, YAW_F_LOST = 0x10, YAW_EPOCH_SHIFT = 5
+
+    /// 10-byte STEER format-2 gyro yaw (PROTOCOL.md "Gyro yaw"), little-endian.
+    /// Yaw grows as the nose turns right (DJI sense). Unwrapped = turns * 360 + yawX10 / 10.
+    public struct GyroYaw: Sendable, Equatable {
+        public let yawX10: Int, yawFixedX10: Int, biasZMdps: Int
+        public let tOffMs: Int, turns: Int, yflags: Int
+        public var sampleReady: Bool { tOffMs != BtrxProtocol.yawTOffUnknown }
+        /// window_end_ms + t_off_ms on pod A's clock; nil when `tOffMs` is unknown.
+        public func sampleMs(_ windowEndMs: UInt32) -> Int64? {
+            sampleReady ? Int64(windowEndMs) + Int64(tOffMs) : nil
+        }
+        public var unwrappedDeg: Double { Double(turns) * 360.0 + Double(yawX10) / 10.0 }
+        public var epoch: Int { (yflags >> BtrxProtocol.YAW_EPOCH_SHIFT) & 0x07 }
+        public init(yawX10: Int, yawFixedX10: Int, biasZMdps: Int, tOffMs: Int, turns: Int, yflags: Int) {
+            self.yawX10 = yawX10; self.yawFixedX10 = yawFixedX10; self.biasZMdps = biasZMdps
+            self.tOffMs = tOffMs; self.turns = turns; self.yflags = yflags
+        }
+    }
+
+    /// Format 2 yaw: count 0 and len 38, or record tails summing to exactly 10 bytes
+    /// (rec_len 16 with one extra, 11 with two). Any other length means no yaw.
+    public static func extractSteerYaw(_ p: [UInt8], format: Int, count: Int) -> GyroYaw? {
+        guard format == 2 else { return nil }
+        var yaw = [UInt8](repeating: 0, count: steerYawLen)
+        if count == 0 {
+            guard p.count == steerLen + 1 + steerYawLen else { return nil }
+            yaw = Array(p[(steerLen + 1)..<(steerLen + 1 + steerYawLen)])
+        } else {
+            guard count <= steerMaxExtras else { return nil }
+            let recLen = (p.count - (steerLen + 1)) / count
+            guard recLen >= steerExtraLen, (recLen - steerExtraLen) * count == steerYawLen else { return nil }
+            let tail = recLen - steerExtraLen
+            var o = 0
+            for i in 0..<count {
+                let start = steerLen + 1 + i * recLen + steerExtraLen
+                yaw.replaceSubrange(o..<(o + tail), with: p[start..<(start + tail)])
+                o += tail
+            }
+        }
+        return GyroYaw(yawX10: u16(yaw, 0), yawFixedX10: u16(yaw, 2), biasZMdps: i16(yaw, 4),
+                       tOffMs: i16(yaw, 6), turns: i8(yaw, 8), yflags: Int(yaw[9]))
+    }
 
     public static func parseSteer(_ p: [UInt8]) throws -> Steer {
         try need(p, steerLen, "STEER")
         var extras: [SteerExtra] = []
         var format = 0
         var truncated = false
+        var count = 0
         if p.count > steerLen {
             let ext = Int(p[steerLen])
-            let count = ext & 0x0F
+            count = ext & 0x0F
             format = ext >> 4
             // Same rules as btrx_bearing_parse_steer: extras only with a target and format >= 1.
             if Int(p[1]) & STEER_F_TARGET != 0 && format != 0 && count > 0 {
@@ -581,10 +635,11 @@ public enum BtrxProtocol {
                 }
             }
         }
+        let yaw = (format == 2 && !truncated) ? extractSteerYaw(p, format: format, count: count) : nil
         return Steer(steerSeq: Int(p[0]), flags: Int(p[1]), windowEndMs: u32(p, 2), ageMs: u16(p, 6), srcId: u16(p, 8),
                      rssiPort: i8(p, 10), rssiStbd: i8(p, 11), peakRssi: i8(p, 12), hitsPort: Int(p[13]), hitsStbd: Int(p[14]),
                      companyId: u16(p, 15), devClass: Int(p[17]), addrType: Int(p[18]), macLsbFirst: Array(p[19..<25]),
-                     rollX2: i8(p, 25), pitchX2: i8(p, 26), extras: extras, extFormat: format, extTruncated: truncated)
+                     rollX2: i8(p, 25), pitchX2: i8(p, 26), extras: extras, extFormat: format, extTruncated: truncated, yaw: yaw)
     }
 
     /// STEER encoder (protocol.py pack_steer), for tests and the bench simulator.

@@ -4,7 +4,43 @@
 #include "bb_internal.h"
 
 static uint16_t u16le(const uint8_t *p) { return (uint16_t)(p[0] | (p[1] << 8)); }
+static int16_t i16le(const uint8_t *p) { return (int16_t)u16le(p); }
 static uint32_t u32le(const uint8_t *p) { return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24); }
+
+bool btrx_bearing_yaw_sample_ms(uint32_t window_end_ms, int16_t t_off_ms, int64_t *out) {
+    if (!out || t_off_ms == BTRX_BEARING_YAW_T_OFF_UNKNOWN) return false;
+    *out = (int64_t)window_end_ms + (int64_t)t_off_ms;
+    return true;
+}
+
+/* Assemble the 10-byte format-2 yaw block. count 0: bytes 28-37 and len must be 38.
+ * count 1 or 2: record tails must sum to exactly 10 (rec_len 16 or 11). */
+static bool gather_yaw(const uint8_t *p, size_t len, uint8_t count, uint8_t yaw[10]) {
+    if (count == 0) {
+        if (len != 38) return false;
+        memcpy(yaw, p + 28, 10);
+        return true;
+    }
+    if (count > 2 || len < 28) return false;
+    size_t rec = (len - 28) / count;
+    if (rec < 6 || (rec - 6) * (size_t)count != 10) return false;
+    size_t tail = rec - 6, o = 0;
+    for (uint8_t k = 0; k < count; k++) {
+        memcpy(yaw + o, p + 28 + (size_t)k * rec + 6, tail);
+        o += tail;
+    }
+    return true;
+}
+
+static void fill_yaw(const uint8_t y[10], btrx_bearing_report_t *out) {
+    out->has_yaw = true;
+    out->yaw_x10 = u16le(y);
+    out->yaw_fixed_x10 = u16le(y + 2);
+    out->bias_z_mdps = i16le(y + 4);
+    out->t_off_ms = i16le(y + 6);
+    out->turns = (int8_t)y[8];
+    out->yflags = y[9];
+}
 
 btrx_bearing_status_t btrx_bearing_parse_steer(const btrx_bearing_t *h,
         const uint8_t *p, size_t len, int64_t arrival_us, bool backlog,
@@ -43,26 +79,36 @@ btrx_bearing_status_t btrx_bearing_parse_steer(const btrx_bearing_t *h,
     uint8_t ext = p[27];
     uint8_t count = ext & 0x0F, format = (uint8_t)(ext >> 4);
     out->ext_format = format;
-    if (!target || format == 0 || count == 0) return BTRX_BEARING_OK;
-    size_t rec = count > 0 ? (len - 28) / count : 0;
-    if (count > 2 || rec < 6) { out->truncated = true; return BTRX_BEARING_OK; }
-    for (uint8_t k = 0; k < count; k++) {
-        const uint8_t *r = p + 28 + (size_t)k * rec;
-        btrx_bearing_report_source_t *s = &out->src[out->source_count++];
-        s->rank = (uint8_t)(k + 1);
-        s->src_id = u16le(r);
-        s->addr_key = 0;
-        s->rssi_port = (int8_t)r[2];
-        s->rssi_stbd = (int8_t)r[3];
-        s->hits_port = r[4] & 0x0F;
-        s->hits_stbd = (uint8_t)(r[4] >> 4);
-        s->is_new = (r[5] & 0x01) != 0;
-        s->linked = (r[5] & 0x02) != 0;
-        s->pod_dev_class = (uint8_t)((r[5] >> 2) & 0x07);
-        s->peak_rssi = BTRX_BEARING_RSSI_NOT_HEARD;
-        s->age_ms = 0xFFFF;
-        s->company_id = 0;
-        s->addr_type = 0;
+    if (target && format != 0 && count > 0) {
+        size_t rec = (len - 28) / count;
+        if (count > 2 || rec < 6) {
+            out->truncated = true;
+        } else {
+            for (uint8_t k = 0; k < count; k++) {
+                const uint8_t *r = p + 28 + (size_t)k * rec;
+                btrx_bearing_report_source_t *s = &out->src[out->source_count++];
+                s->rank = (uint8_t)(k + 1);
+                s->src_id = u16le(r);
+                s->addr_key = 0;
+                s->rssi_port = (int8_t)r[2];
+                s->rssi_stbd = (int8_t)r[3];
+                s->hits_port = r[4] & 0x0F;
+                s->hits_stbd = (uint8_t)(r[4] >> 4);
+                s->is_new = (r[5] & 0x01) != 0;
+                s->linked = (r[5] & 0x02) != 0;
+                s->pod_dev_class = (uint8_t)((r[5] >> 2) & 0x07);
+                s->peak_rssi = BTRX_BEARING_RSSI_NOT_HEARD;
+                s->age_ms = 0xFFFF;
+                s->company_id = 0;
+                s->addr_type = 0;
+            }
+        }
+    }
+    /* Format 2 yaw: independent of a target. A length that does not fit means no yaw
+     * (records, if readable, are still kept). A truncated extension has no yaw. */
+    if (format == 2 && !out->truncated) {
+        uint8_t y[10];
+        if (gather_yaw(p, len, count, y)) fill_yaw(y, out);
     }
     return BTRX_BEARING_OK;
 }

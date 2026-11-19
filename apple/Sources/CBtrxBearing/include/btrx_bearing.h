@@ -176,7 +176,17 @@ typedef struct {
     uint8_t addr_type;               /* primary only */
 } btrx_bearing_report_source_t;
 
-/* One STEER (0x73): 27-byte (older firmware) or 28/34/40-byte (build 0x0103). */
+/* Gyro yaw (STEER extension format 2, firmware 0x010C). t_off_ms == this means sample time unknown. */
+#define BTRX_BEARING_YAW_T_OFF_UNKNOWN ((int16_t)-32768)
+#define BTRX_BEARING_YAW_F_RUNNING  0x01u
+#define BTRX_BEARING_YAW_F_BIAS     0x02u
+#define BTRX_BEARING_YAW_F_STILL    0x04u
+#define BTRX_BEARING_YAW_F_REG      0x08u  /* register samples (FIFO not working) */
+#define BTRX_BEARING_YAW_F_LOST     0x10u  /* samples lost since the last report */
+#define BTRX_BEARING_YAW_EPOCH_SHIFT 5
+
+/* One STEER (0x73): 27-byte (older firmware), 28/34/40-byte format 1 (build 0x0103),
+ * or 38/44/50-byte format 2 with a 10-byte gyro yaw block (build 0x010C). */
 typedef struct {
     int64_t arrival_us;              /* T2: host BLE/USB arrival */
     int64_t push_us;                 /* T3: host time of push_report (0 = use arrival_us) */
@@ -189,6 +199,12 @@ typedef struct {
     bool truncated;                  /* extension unreadable: bytes 0-26 used only */
     uint8_t source_count;            /* 0 (nothing heard) .. BTRX_BEARING_MAX_REPORT_SOURCES */
     btrx_bearing_report_source_t src[BTRX_BEARING_MAX_REPORT_SOURCES]; /* frame order */
+    /* Format 2 gyro yaw; has_yaw is false when the format is not 2 or the length does not fit. */
+    bool has_yaw;
+    uint16_t yaw_x10, yaw_fixed_x10; /* 0.1 deg, 0-3599; relative to the bias-settled zero */
+    int16_t bias_z_mdps, t_off_ms;   /* t_off: yaw sample = window_end_ms + t_off; UNKNOWN = not ready */
+    int8_t turns;                    /* unwrapped = turns * 360 + yaw_x10 / 10 degrees */
+    uint8_t yflags;                  /* running, bias, still, reg, lost; bits 5-7 epoch */
 } btrx_bearing_report_t;
 
 /* Parse a STEER payload by the section 4.1 rules. Pure apart from reading the
@@ -197,6 +213,8 @@ typedef struct {
 btrx_bearing_status_t btrx_bearing_parse_steer(const btrx_bearing_t *h,
         const uint8_t *payload, size_t len, int64_t arrival_us, bool backlog,
         btrx_bearing_report_t *out);
+/* window_end_ms + t_off_ms as int64. Returns false when t_off is UNKNOWN. */
+bool btrx_bearing_yaw_sample_ms(uint32_t window_end_ms, int16_t t_off_ms, int64_t *out);
 
 /* HEALTH (0x80) fields the layer uses: 30 bytes (older firmware, lost unknown), 34, or 44
  * (build 0x0106: reset_reason etc. at 34..43, read by the app, not the layer). Longer is fine. */

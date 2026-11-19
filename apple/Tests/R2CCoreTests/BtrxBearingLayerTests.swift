@@ -317,6 +317,7 @@ final class BtrxBearingLayerTests: XCTestCase {
         var f2 = steer40(2, format: 2, len: 44)
         f2[28] = 7; f2[36] = 8; f2[29] = 0; f2[37] = 0
         XCTAssertEqual(try P.parseSteer(f2).extras.map(\.srcId), [7, 8])
+        XCTAssertNil(try P.parseSteer(f2).yaw)
     }
 
     func testTimePingPayloadMatchesPackTime() throws {

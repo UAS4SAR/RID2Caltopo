@@ -447,7 +447,12 @@ class BtrxClient(
         if (frame.type in ALWAYS_LOGGED) log.debug("rx $radio ${BtrxFrameLog.format(frame)}")
         else if (frame.type in RATE_LOGGED) logRateLimited(frame.type, now, "rx $radio ${BtrxFrameLog.format(frame)}")
         else log.info("rx $radio ${BtrxFrameLog.format(frame)}")
-        if (frame.type == P.STEER) logSteerFlagChange(packet.from, frame)
+        if (frame.type == P.STEER) {
+            logSteerFlagChange(packet.from, frame)
+            runCatching { P.parseSteer(frame.payload) }.getOrNull()?.let { st ->
+                BtrxYawLog.steerLine(meta.arrivalMs, st, meta.backlog)?.let { log.debug(it) }
+            }
+        }
         if (frame.type == P.ROLE_REPORT && packet.from == localNode && backlog) {
             log.info("stale ROLE_REPORT in the connect backlog ignored; waiting for the answer to this session's ROLE_GET")
         } else if (frame.type == P.ROLE_REPORT && packet.from == localNode) {

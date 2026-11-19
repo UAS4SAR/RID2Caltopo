@@ -472,7 +472,13 @@ public final class BtrxClient: BtrxFrameSender {
         if Self.alwaysLogged.contains(frame.type) { log.debug("rx \(radio) \(BtrxFrameLog.format(frame))") }
         else if Self.rateLogged.contains(frame.type) { logRateLimited(frame.type, now, "rx \(radio) \(BtrxFrameLog.format(frame))") }
         else { log.info("rx \(radio) \(BtrxFrameLog.format(frame))") }
-        if frame.type == BtrxProtocol.STEER { logSteerFlagChange(packet.from, frame) }
+        if frame.type == BtrxProtocol.STEER {
+            logSteerFlagChange(packet.from, frame)
+            if let st = try? BtrxProtocol.parseSteer(frame.payload),
+               let line = BtrxYawLog.steerLine(arrivalMs: meta.arrivalMs, st, backlog: meta.backlog) {
+                log.debug(line)
+            }
+        }
         if frame.type == BtrxProtocol.ROLE_REPORT && packet.from == localNode && backlog {
             log.info("stale ROLE_REPORT in the connect backlog ignored; waiting for the answer to this session's ROLE_GET")
         } else if frame.type == BtrxProtocol.ROLE_REPORT && packet.from == localNode, let report = try? BtrxProtocol.parseRoleReport(frame.payload) {

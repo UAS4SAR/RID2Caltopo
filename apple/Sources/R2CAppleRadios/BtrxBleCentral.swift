@@ -5,6 +5,11 @@ import R2CCore
 
 /// Writes btrx log lines to the app's diagnostic log (AppleLog installs the writer).
 final class BtrxAppleLogger: BtrxLogger, @unchecked Sendable {
+    init() {
+        BtrxYawLog.sink = { message in
+            OperationalBridgePacketLog.write?("DEBUG", "Btrx", message)
+        }
+    }
     func info(_ message: String) { OperationalBridgePacketLog.write?("INFO", "Btrx", message) }
     func warn(_ message: String) { OperationalBridgePacketLog.write?("WARN", "Btrx", message) }
     func debug(_ message: String) { OperationalBridgePacketLog.write?("DEBUG", "Btrx", message) }

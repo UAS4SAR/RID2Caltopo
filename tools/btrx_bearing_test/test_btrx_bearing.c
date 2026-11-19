@@ -1569,12 +1569,111 @@ static void test_stats_without_view(void) {
     btrx_bearing_destroy(h);
 }
 
+/* Shared test-fixtures/btrx/steer-format2.tsv: format 2 yaw and format 1 unchanged. */
+#ifndef BTRX_STEER_FORMAT2_FIXTURE
+#define BTRX_STEER_FORMAT2_FIXTURE "test-fixtures/btrx/steer-format2.tsv"
+#endif
+
+static int hex_nibble(int c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+static int parse_hex(const char *s, uint8_t *out, int cap) {
+    int n = 0;
+    for (const char *p = s; *p; p += 2, n++) {
+        int a = hex_nibble((unsigned char)p[0]), b = hex_nibble((unsigned char)p[1]);
+        if (a < 0 || b < 0 || n >= cap) return -1;
+        out[n] = (uint8_t)((a << 4) | b);
+    }
+    return n;
+}
+
+static FILE *open_steer_format2(void) {
+    const char *cands[] = {
+        BTRX_STEER_FORMAT2_FIXTURE,
+        "test-fixtures/btrx/steer-format2.tsv",
+        "../test-fixtures/btrx/steer-format2.tsv",
+        "../../test-fixtures/btrx/steer-format2.tsv",
+        "../../../test-fixtures/btrx/steer-format2.tsv",
+        NULL
+    };
+    for (int i = 0; cands[i]; i++) {
+        FILE *f = fopen(cands[i], "r");
+        if (f) return f;
+    }
+    return NULL;
+}
+
+static void test_steer_format2(void) {
+    printf("steer format 2\n");
+    FILE *f = open_steer_format2();
+    CHECK(f != NULL, "open steer-format2.tsv");
+    if (!f) return;
+    btrx_bearing_t *h = mk(NULL);
+    char line[2048];
+    int rows = 0;
+    while (fgets(line, sizeof line, f)) {
+        if (line[0] == '#' || line[0] == '\n' || line[0] == '\0') continue;
+        char *nl = strchr(line, '\n'); if (nl) *nl = 0;
+        char *save = NULL;
+        char *name = strtok_r(line, "\t", &save);
+        char *hex = strtok_r(NULL, "\t", &save);
+        char *extras_s = strtok_r(NULL, "\t", &save);
+        char *fmt_s = strtok_r(NULL, "\t", &save);
+        char *trunc_s = strtok_r(NULL, "\t", &save);
+        char *has_s = strtok_r(NULL, "\t", &save);
+        char *yx_s = strtok_r(NULL, "\t", &save);
+        char *yf_s = strtok_r(NULL, "\t", &save);
+        char *bias_s = strtok_r(NULL, "\t", &save);
+        char *toff_s = strtok_r(NULL, "\t", &save);
+        char *turns_s = strtok_r(NULL, "\t", &save);
+        char *yflags_s = strtok_r(NULL, "\t", &save);
+        CHECK(name && hex && extras_s && fmt_s && trunc_s && has_s, "columns %s", name ? name : "?");
+        if (!hex) continue;
+        uint8_t buf[128];
+        int n = parse_hex(hex, buf, (int)sizeof buf);
+        CHECK(n > 0, "%s: hex", name);
+        btrx_bearing_report_t r;
+        CHECK(btrx_bearing_parse_steer(h, buf, (size_t)n, 0, false, &r) == 0, "%s: parse", name);
+        int extras = atoi(extras_s), fmt = atoi(fmt_s), trunc = atoi(trunc_s), has = atoi(has_s);
+        int expect_sources = extras + ((buf[1] & 0x01) ? 1 : 0);
+        if (trunc) expect_sources = (buf[1] & 0x01) ? 1 : 0;
+        CHECK(r.ext_format == (uint8_t)fmt, "%s: ext_format %u vs %d", name, r.ext_format, fmt);
+        CHECK(r.truncated == (trunc != 0), "%s: truncated", name);
+        CHECK(r.source_count == (uint8_t)expect_sources, "%s: source_count %u vs %d", name, r.source_count, expect_sources);
+        CHECK(r.has_yaw == (has != 0), "%s: has_yaw", name);
+        if (has) {
+            CHECK(r.yaw_x10 == (uint16_t)atoi(yx_s), "%s: yaw_x10", name);
+            CHECK(r.yaw_fixed_x10 == (uint16_t)atoi(yf_s), "%s: yaw_fixed_x10", name);
+            CHECK(r.bias_z_mdps == (int16_t)atoi(bias_s), "%s: bias", name);
+            CHECK(r.t_off_ms == (int16_t)atoi(toff_s), "%s: t_off", name);
+            CHECK(r.turns == (int8_t)atoi(turns_s), "%s: turns", name);
+            CHECK(r.yflags == (uint8_t)strtol(yflags_s, NULL, 0), "%s: yflags", name);
+            int64_t sample = 0;
+            bool ready = btrx_bearing_yaw_sample_ms(r.window_end_ms, r.t_off_ms, &sample);
+            if (r.t_off_ms == BTRX_BEARING_YAW_T_OFF_UNKNOWN) {
+                CHECK(!ready, "%s: sample not ready", name);
+            } else {
+                CHECK(ready && sample == (int64_t)r.window_end_ms + (int64_t)r.t_off_ms, "%s: sample_ms", name);
+            }
+        }
+        rows++;
+    }
+    fclose(f);
+    CHECK(rows == 16, "16 format-2 vectors (%d)", rows);
+    btrx_bearing_destroy(h);
+}
+
 int main(int argc, char **argv) {
     setvbuf(stdout, NULL, _IONBF, 0);
     g_grid = malloc(sizeof(float) * 192 * 192);
     bool quick = argc > 1 && strcmp(argv[1], "--quick") == 0;
     test_siphash();
     test_parsers();
+    test_steer_format2();
     test_model();
     test_clock();
     test_pose();

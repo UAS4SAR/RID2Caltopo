@@ -57,6 +57,12 @@ object BtrxProtocol {
      */
     const val BUILD_BUTTON_CONFIRM = 0x0108
     fun buttonConfirmSupported(buildHash: Int?): Boolean = buildHash != null && buildHash >= BUILD_BUTTON_CONFIRM
+    /**
+     * Build 0x010C (btrx 0b604f8): STEER extension format 2 carries a 10-byte gyro yaw
+     * block. Format 1 (28+6n bytes) is unchanged; the pod falls back to it when the yaw
+     * is more than 1 s old. Parsing is by format and length, not by this constant.
+     */
+    const val BUILD_GYRO_YAW = 0x010C
 
     // Message types (section 5 of the R2C integration brief).
     const val HELLO = 0x01
@@ -586,6 +592,8 @@ object BtrxProtocol {
         val extFormat: Int = 0,
         /** The extension was present but unreadable: only bytes 0-26 were used. */
         val extTruncated: Boolean = false,
+        /** Format 2 gyro yaw (firmware 0x010C); null when the format is not 2 or the length does not fit. */
+        val yaw: GyroYaw? = null,
     ) {
         val target: Boolean get() = flags and STEER_F_TARGET != 0
         val newSource: Boolean get() = flags and STEER_F_NEW != 0
@@ -619,15 +627,68 @@ object BtrxProtocol {
 
     const val STEER_EXTRA_LEN = 6
     const val STEER_MAX_EXTRAS = 2
+    const val STEER_YAW_LEN = 10
+    /** t_off_ms in a format-2 yaw block: cable clock sync not ready. */
+    const val YAW_T_OFF_UNKNOWN = -32768
+    const val YAW_F_RUNNING = 0x01
+    const val YAW_F_BIAS = 0x02
+    const val YAW_F_STILL = 0x04
+    const val YAW_F_REG = 0x08
+    const val YAW_F_LOST = 0x10
+    const val YAW_EPOCH_SHIFT = 5
+
+    /**
+     * 10-byte STEER format-2 gyro yaw (PROTOCOL.md "Gyro yaw"), little-endian.
+     * yaw grows as the nose turns right (DJI sense). Unwrapped = turns * 360 + yawX10 / 10.
+     */
+    class GyroYaw(
+        val yawX10: Int, val yawFixedX10: Int, val biasZMdps: Int,
+        val tOffMs: Int, val turns: Int, val yflags: Int,
+    ) {
+        val sampleReady: Boolean get() = tOffMs != YAW_T_OFF_UNKNOWN
+        /** window_end_ms + t_off_ms on pod A's clock; null when [tOffMs] is unknown. */
+        fun sampleMs(windowEndMs: Long): Long? = if (sampleReady) windowEndMs + tOffMs.toLong() else null
+        val unwrappedDeg: Double get() = turns * 360.0 + yawX10 / 10.0
+        val epoch: Int get() = (yflags ushr YAW_EPOCH_SHIFT) and 0x07
+    }
+
+    /**
+     * Format 2 yaw: count 0 and len 38, or record tails summing to exactly 10 bytes
+     * (rec_len 16 with one extra, 11 with two). Any other length means no yaw.
+     */
+    fun extractSteerYaw(p: ByteArray, format: Int, count: Int): GyroYaw? {
+        if (format != 2) return null
+        val yaw = ByteArray(STEER_YAW_LEN)
+        if (count == 0) {
+            if (p.size != STEER_LEN + 1 + STEER_YAW_LEN) return null
+            p.copyInto(yaw, 0, STEER_LEN + 1, STEER_LEN + 1 + STEER_YAW_LEN)
+        } else {
+            if (count > STEER_MAX_EXTRAS) return null
+            val recLen = (p.size - (STEER_LEN + 1)) / count
+            if (recLen < STEER_EXTRA_LEN || (recLen - STEER_EXTRA_LEN) * count != STEER_YAW_LEN) return null
+            val tail = recLen - STEER_EXTRA_LEN
+            var o = 0
+            for (i in 0 until count) {
+                val start = STEER_LEN + 1 + i * recLen + STEER_EXTRA_LEN
+                p.copyInto(yaw, o, start, start + tail)
+                o += tail
+            }
+        }
+        return GyroYaw(
+            yawX10 = u16(yaw, 0), yawFixedX10 = u16(yaw, 2), biasZMdps = i16(yaw, 4),
+            tOffMs = i16(yaw, 6), turns = i8(yaw, 8), yflags = u8(yaw, 9),
+        )
+    }
 
     fun parseSteer(p: ByteArray): Steer {
         need(p, STEER_LEN, "STEER")
         var extras = emptyList<SteerExtra>()
         var format = 0
         var truncated = false
+        var count = 0
         if (p.size > STEER_LEN) {
             val ext = u8(p, STEER_LEN)
-            val count = ext and 0x0F
+            count = ext and 0x0F
             format = ext ushr 4
             // Same rules as btrx_bearing_parse_steer: extras only with a target and format >= 1.
             if (u8(p, 1) and STEER_F_TARGET != 0 && format != 0 && count > 0) {
@@ -648,12 +709,13 @@ object BtrxProtocol {
                 }
             }
         }
+        val yaw = if (format == 2 && !truncated) extractSteerYaw(p, format, count) else null
         return Steer(
             steerSeq = u8(p, 0), flags = u8(p, 1), windowEndMs = u32(p, 2), ageMs = u16(p, 6), srcId = u16(p, 8),
             rssiPort = i8(p, 10), rssiStbd = i8(p, 11), peakRssi = i8(p, 12), hitsPort = u8(p, 13), hitsStbd = u8(p, 14),
             companyId = u16(p, 15), devClass = u8(p, 17), addrType = u8(p, 18), macLsbFirst = p.copyOfRange(19, 25),
             rollX2 = i8(p, 25), pitchX2 = i8(p, 26),
-            extras = extras, extFormat = format, extTruncated = truncated,
+            extras = extras, extFormat = format, extTruncated = truncated, yaw = yaw,
         )
     }
 

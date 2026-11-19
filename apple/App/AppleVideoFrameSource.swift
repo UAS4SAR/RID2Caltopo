@@ -1596,9 +1596,11 @@ final class AppleVideoFrameSource: ObservableObject {
                 )
                 // BTRX bearing layer (Developer Tools): aircraft yaw of this stream; the layer
                 // keeps it only for the "Drone Pod is on this drone" stream. Non-blocking.
-                if let sink = BtrxBearingFeed.sink,
-                   let yaw = OperationalClueGeometry.djiAircraftYawTrueNorthDegrees(seiCameraAzimuthDegrees: djiAzimuthDegrees) {
-                    sink.onYaw(designator: streamDesignator, yawTrueDeg: yaw, decodedAtWallMs: Int64(Date().timeIntervalSince1970 * 1000))
+                // Also record a machine-readable SEI yaw line for the 0x010C gyro-yaw drift test.
+                if let yaw = OperationalClueGeometry.djiAircraftYawTrueNorthDegrees(seiCameraAzimuthDegrees: djiAzimuthDegrees) {
+                    let tMs = Int64(Date().timeIntervalSince1970 * 1000)
+                    BtrxYawLog.noteSei(tMs: tMs, yawTrueDeg: yaw, stream: streamDesignator)
+                    BtrxBearingFeed.sink?.onYaw(designator: streamDesignator, yawTrueDeg: yaw, decodedAtWallMs: tMs)
                 }
             }
             var gimbalPitchDegrees = 0.0

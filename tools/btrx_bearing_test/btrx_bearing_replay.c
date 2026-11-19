@@ -134,6 +134,8 @@ int main(int argc, char **argv) {
             ps.mask = mask; ps.push_us = ps.t_us;
             btrx_bearing_push_pose(h, &ps);
         } else if (kind == 'R') {
+            /* ext_format (fmt) is stored as logged; format 2 (gyro yaw) is allowed.
+             * Yaw itself is analysed from the session log, not from BBv1. */
             btrx_bearing_report_t r; memset(&r, 0, sizeof r);
             int seq, flags, roll, pitch, backlog, fmt, trunc, n, used = 0;
             if (sscanf(p, "%" SCNd64 " %u %d %d %d %d %d %d %d %d%n", &r.arrival_us, &r.window_end_ms, &seq, &flags, &roll, &pitch,

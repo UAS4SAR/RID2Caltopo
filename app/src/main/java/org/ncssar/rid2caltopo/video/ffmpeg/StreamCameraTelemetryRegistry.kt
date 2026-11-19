@@ -93,8 +93,10 @@ object StreamCameraTelemetryRegistry {
         if (telemetry.sourceTag != "dji-sei-245") return
         observeFramePts(designator, telemetry.sourceTimestampUs, nowMs)
         // BTRX bearing layer (Developer Tools): aircraft yaw, true north, stamped at decode.
-        org.ncssar.rid2caltopo.btrx.BtrxBearingFeed.sink?.let { layer ->
-            DjiCameraOrientation.aircraftYawTrueNorthDeg(telemetry.cameraYawDeg)?.let { layer.onYaw(designator, it, nowMs) }
+        // Also record a machine-readable SEI yaw line for the 0x010C gyro-yaw drift test.
+        DjiCameraOrientation.aircraftYawTrueNorthDeg(telemetry.cameraYawDeg)?.let { yaw ->
+            org.ncssar.rid2caltopo.btrx.BtrxYawLog.noteSei(nowMs, yaw, designator)
+            org.ncssar.rid2caltopo.btrx.BtrxBearingFeed.sink?.onYaw(designator, yaw, nowMs)
         }
         val rawTilt = telemetry.gimbalPitchDeg?.takeIf { it.isFinite() } ?: return
         val tilt = DjiCameraOrientation.calibratedTiltDeg(rawTilt) ?: return

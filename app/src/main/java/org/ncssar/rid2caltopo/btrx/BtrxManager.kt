@@ -76,6 +76,10 @@ object BtrxManager {
         override fun debug(message: String) = CaltopoClient.CTDebug(TAG, message)
     }
 
+    init {
+        BtrxYawLog.sink = { logger.debug(it) }
+    }
+
     val model = BtrxDeskPodModel(
         logger,
         onPaired = { pod -> worker.execute { savePairedPod(pod) } },

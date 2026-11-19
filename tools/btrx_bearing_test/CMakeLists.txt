@@ -37,6 +37,8 @@ endif()
 
 add_executable(btrx_bearing_test test_btrx_bearing.c)
 target_compile_options(btrx_bearing_test PRIVATE ${BB_FLAGS})
+target_compile_definitions(btrx_bearing_test PRIVATE
+    "BTRX_STEER_FORMAT2_FIXTURE=\"${CMAKE_CURRENT_SOURCE_DIR}/../../test-fixtures/btrx/steer-format2.tsv\"")
 target_link_libraries(btrx_bearing_test PRIVATE btrx_bearing_host)
 if(BTRX_BEARING_TSAN)
     target_compile_options(btrx_bearing_test PRIVATE -fsanitize=thread -g)

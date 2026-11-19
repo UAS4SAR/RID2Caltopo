@@ -71,7 +71,9 @@ public enum BtrxFrameLog {
                 format: " kind=%@ cid=0x%04x rssi_port=%d rssi_stbd=%d peak=%d hits_port=%d hits_stbd=%d age_ms=%d [..%@] addr_type=%d",
                 P.devClassName(st.devClass), st.companyId, st.rssiPort, st.rssiStbd, st.peakRssi, st.hitsPort, st.hitsStbd, st.ageMs,
                 st.addressTail, st.addrType)
-            return "\(head)\(target) window_end_ms=\(st.windowEndMs) roll_x2=\(st.rollX2) pitch_x2=\(st.pitchX2)"
+            let ext = st.extFormat != 0 ? " ext_format=\(st.extFormat)" : ""
+            let yaw = st.yaw != nil ? " \(BtrxYawLog.steerFields(st))" : ""
+            return "\(head)\(target) window_end_ms=\(st.windowEndMs) roll_x2=\(st.rollX2) pitch_x2=\(st.pitchX2)\(ext)\(yaw)"
         case P.FILTER_ACK:
             let f = try P.parseFilterAck(p)
             return String(format: "version=%d op=%d ok=%d list_crc=0x%04x stored=%d", f.version, f.op, f.ok, f.listCrc, f.stored)
