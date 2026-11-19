@@ -1829,3 +1829,24 @@ Both planners now expose independent Transit speed in the same ft/s or m/s units
 - iOS: the archive is the app's Documents folder; there is no removable archive card, so the
   swap state cannot occur. The shared `ArchiveWritabilityText` gains the same `missing`
   wording so both tables match.
+
+## 2026-11-18 — BTRX map chip only after this session's link (2.6.0, build 446)
+
+- Ken, 2026-11-18: the A5 showed "BTRX: Inactive - BT Down" with no powered Desk Pod nearby,
+  only because a Desk Pod had been paired before.
+- Both platforms (shared `BtrxMapStatus.visibility`, fixture
+  `test-fixtures/btrx/map-chip-visibility.tsv` read by Android and iOS tests):
+  - "BTRX: Active" variants while the link is READY.
+  - "BTRX: Inactive - <reason>" only after the link was READY earlier this app session.
+  - "BTRX: Inactive - Connecting" for two minutes after an explicit user action (link turned
+    on, pairing, confirm/re-pair/replace pod, a newly remembered Desk Pod, Android USB attach);
+    Bluetooth off / No permission / Bluetooth unavailable still show inside that window.
+    Then hidden if nothing is found.
+  - Hidden otherwise: cold start with a saved pod that never answers, link off ("Link off" is
+    gone), and any device that has never remembered a Desk Pod (the Bluetooth toggle alone no
+    longer counts as set up).
+  - Background reconnect is unchanged; the Desk Pod screen keeps its "Waiting for … to come
+    back" / "Looking for the Desk Pod" detail.
+- Android only: the Remote ID scan's periodic restart is deferred for a busy Desk Pod link
+  only once that link has been READY this session (`BtrxRadioCoordinator.forgetSession` on
+  link off / forget). iOS has no periodic Remote ID restart deferral.

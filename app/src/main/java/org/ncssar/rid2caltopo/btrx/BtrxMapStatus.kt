@@ -8,8 +8,9 @@ import org.ncssar.rid2caltopo.btrx.BtrxDeskPodModel.LinkStatus
  * The BTRX status chip at the top of the map (Ken, Nov 16). It follows the Desk Pod link:
  * "BTRX: Active" (green) while the link is READY, or "BTRX: Active - No Drone Pod reports"
  * (orange) while READY with no frame from the paired Drone Pod for [DRONE_POD_REPORT_MS];
- * otherwise "BTRX: Inactive - " and why. Shown only once BTRX is set up (Bluetooth link on,
- * a Desk Pod remembered, or a USB link). Same strings, window and rules on the iPad.
+ * otherwise "BTRX: Inactive - " and why only after READY this session. Before then, a paired
+ * Desk Pod gets a two-minute Connecting chip only after an explicit user action (Ken, Nov 18).
+ * Off and never-paired devices stay hidden. Same strings, window and rules on the iPad.
  */
 object BtrxMapStatus {
     const val ACTIVE = "BTRX: Active"
@@ -48,9 +49,29 @@ object BtrxMapStatus {
     fun dronePodReporting(lastReportMs: Long, nowMs: Long): Boolean =
         lastReportMs != 0L && nowMs - lastReportMs in 0..DRONE_POD_REPORT_MS
 
-    /** BTRX is set up on this tablet: the chip shows. */
+    /** A remembered Desk Pod (or an attached USB Desk Pod), not merely the Bluetooth toggle. */
     fun setUp(bluetoothLinkEnabled: Boolean, deskPodRemembered: Boolean, usbLink: Boolean, pausedForUsb: Boolean): Boolean =
-        bluetoothLinkEnabled || deskPodRemembered || usbLink || pausedForUsb
+        deskPodRemembered || usbLink
+
+    /** Two minutes after an explicit user connect/pair action; automatic launch/retries never start it. */
+    const val CONNECTING_WINDOW_MS = 120_000L
+
+    /** Pure visibility rule, shared with iOS and the cross-platform CSV fixture. */
+    fun visibility(paired: Boolean, enabled: Boolean, ready: Boolean, readyEarlier: Boolean, requestedAtMs: Long?, nowMs: Long): String = when {
+        !paired || !enabled -> "hidden"
+        ready || readyEarlier -> "status"
+        requestedAtMs != null && nowMs - requestedAtMs in 0 until CONNECTING_WINDOW_MS -> "connecting"
+        else -> "hidden"
+    }
+
+    /** Session-only state; never saved, and automatic reconnect never opens the connecting window. */
+    class Session {
+        var readyEarlier: Boolean = false; private set
+        var requestedAtMs: Long? = null; private set
+        fun observe(ready: Boolean) { if (ready) readyEarlier = true }
+        fun request(nowMs: Long) { requestedAtMs = nowMs }
+        fun forget() { readyEarlier = false; requestedAtMs = null }
+    }
 
     /**
      * [dronePodReporting]: a Drone Pod report ([isDronePodReport]) in the last
@@ -62,8 +83,17 @@ object BtrxMapStatus {
     fun status(
         setUp: Boolean, link: LinkStatus, bluetoothOff: Boolean, pausedForUsb: Boolean, dronePodReporting: Boolean,
         deskPodSilent: Boolean = false, deskPodNotice: String? = null,
+        linkEnabled: Boolean = true, readyEarlier: Boolean = false, requestedAtMs: Long? = null, nowMs: Long = 0,
     ): Status? {
-        if (!setUp) return null
+        when (visibility(setUp, linkEnabled && link.phase != LinkPhase.OFF, link.phase == LinkPhase.READY && !pausedForUsb, readyEarlier, requestedAtMs, nowMs)) {
+            "hidden" -> return null
+            "connecting" -> return Status(INACTIVE_PREFIX + when {
+                bluetoothOff -> BLUETOOTH_OFF
+                link.phase == LinkPhase.NO_PERMISSION -> NO_PERMISSION
+                link.phase == LinkPhase.UNAVAILABLE -> UNAVAILABLE
+                else -> CONNECTING
+            }, false)
+        }
         if (link.phase == LinkPhase.READY && !pausedForUsb) {
             return when {
                 deskPodNotice != null -> Status(ACTIVE_PREFIX + deskPodNotice, active = true, warning = true)

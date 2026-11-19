@@ -1,0 +1,14 @@
+# BTRX map chip visibility, shared by Android BtrxMapChipSessionTest and iOS BtrxMapChipSessionTests.
+# paired	enabled	ready	readyEarlier	requestedAtMs(- = none)	nowMs	expected	case
+false	true	false	false	0	1000	hidden	never paired: user turns the link on
+false	true	true	false	-	1000	hidden	never paired: no Desk Pod remembered
+true	false	false	true	0	1000	hidden	link off hides even after READY
+true	false	true	true	-	1000	hidden	link off while ready
+true	true	false	false	-	500000	hidden	cold start with saved pod that never answers
+true	true	false	false	0	0	connecting	user action just now
+true	true	false	false	0	119999	connecting	last ms of the connect window
+true	true	false	false	0	120000	hidden	connect window over
+true	true	false	false	1000	500	hidden	clock went back: not trusted
+true	true	true	false	-	1000	status	ready shows Active
+true	true	false	true	-	900000	status	ready earlier this session: Inactive reason
+true	true	false	true	0	900000	status	ready earlier wins over expired window

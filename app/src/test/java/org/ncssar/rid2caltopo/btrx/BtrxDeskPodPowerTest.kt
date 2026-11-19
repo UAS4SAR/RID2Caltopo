@@ -100,9 +100,13 @@ class BtrxDeskPodPowerTest {
     }
 
     // ---- map chip ----
+    /** Earlier tests are about reasons after the link was READY this session. */
+    private fun seen(setUp: Boolean, link: LinkStatus, bluetoothOff: Boolean, pausedForUsb: Boolean, dronePodReporting: Boolean,
+                     deskPodSilent: Boolean = false, deskPodNotice: String? = null) =
+        BtrxMapStatus.status(setUp, link, bluetoothOff, pausedForUsb, dronePodReporting, deskPodSilent, deskPodNotice, readyEarlier = true)
 
     private fun text(link: LinkStatus, silent: Boolean = false, notice: String? = null, reporting: Boolean = true) =
-        BtrxMapStatus.status(true, link, bluetoothOff = false, pausedForUsb = false, dronePodReporting = reporting,
+        seen(true, link, bluetoothOff = false, pausedForUsb = false, dronePodReporting = reporting,
             deskPodSilent = silent, deskPodNotice = notice)
 
     private fun ble(phase: LinkPhase, failed: Int = 0) = LinkStatus(LinkKind.BLUETOOTH, phase, failedAttempts = failed)
@@ -117,8 +121,8 @@ class BtrxDeskPodPowerTest {
         // Answering again (configuring), Bluetooth off, link off and USB keep their own reasons.
         assertEquals("BTRX: Inactive - Connecting", text(ble(LinkPhase.CONFIGURING), silent = true)!!.text)
         assertEquals("BTRX: Inactive - Bluetooth off",
-            BtrxMapStatus.status(true, ble(LinkPhase.RETRY_WAIT, 1), true, false, false, deskPodSilent = true)!!.text)
-        assertEquals("BTRX: Inactive - Link off", text(LinkStatus(LinkKind.NONE, LinkPhase.OFF), silent = true)!!.text)
+            seen(true, ble(LinkPhase.RETRY_WAIT, 1), true, false, false, deskPodSilent = true)!!.text)
+        assertNull(text(LinkStatus(LinkKind.NONE, LinkPhase.OFF), silent = true)) // link off: no chip (Nov 18)
         assertEquals("BTRX: Inactive - Connecting", text(LinkStatus(LinkKind.USB, LinkPhase.CONFIGURING), silent = true)!!.text)
         assertFalse(text(ble(LinkPhase.RETRY_WAIT), silent = true)!!.active)
     }

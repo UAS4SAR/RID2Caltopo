@@ -780,6 +780,19 @@ public final class BtrxDeskPodCenter: ObservableObject {
     /// "BTRX: Active" / "BTRX: Inactive - <reason>" for the chip at the top of the map;
     /// nil (no chip) until BTRX is set up. Same as Android.
     @Published public private(set) var mapStatus: BtrxMapStatus.Status?
+    private var chipSession = BtrxMapStatus.Session()
+
+    /// Explicit link-on, connect or pair action: two minutes of "Connecting", then hide if no Desk Pod.
+    private func requestChipConnect() {
+        chipSession.request(now: ProcessInfo.processInfo.systemUptime)
+        updateMapStatus()
+        DispatchQueue.main.asyncAfter(deadline: .now() + BtrxMapStatus.connectingWindow + 1) { [weak self] in self?.updateMapStatus() }
+    }
+
+    private func forgetChipSession() {
+        chipSession.forget()
+        updateMapStatus()
+    }
 
     private func apply(_ s: Model.Snapshot) {
         snapshot = s
@@ -787,11 +800,14 @@ public final class BtrxDeskPodCenter: ObservableObject {
     }
 
     private func updateMapStatus() {
+        chipSession.observe(ready: snapshot.link.phase == .ready && !snapshot.bluetoothPausedForUSB)
         let setUp = BtrxMapStatus.setUp(bluetoothLinkEnabled: bluetoothEnabled, deskPodRemembered: rememberedPeripheral != nil)
         let next = BtrxMapStatus.status(setUp: setUp, link: snapshot.link, bluetoothOff: setUp && central.bluetoothPoweredOff(),
                                         pausedForUSB: snapshot.bluetoothPausedForUSB,
                                         dronePodReporting: BtrxMapStatus.dronePodReporting(secondsSinceReport: central.secondsSinceDronePodReport()),
-                                        deskPodSilent: snapshot.deskSilent, deskPodNotice: snapshot.deskRestartNotice)
+                                        deskPodSilent: snapshot.deskSilent, deskPodNotice: snapshot.deskRestartNotice,
+                                        linkEnabled: bluetoothEnabled, readyEarlier: chipSession.readyEarlier,
+                                        requestedAt: chipSession.requestedAt, now: ProcessInfo.processInfo.systemUptime)
         guard next != mapStatus else { return }
         mapStatus = next
         OperationalBridgePacketLog.write?("DEBUG", "Btrx", "map status: \(next?.text ?? "hidden")")
@@ -822,13 +838,14 @@ public final class BtrxDeskPodCenter: ObservableObject {
         bluetoothEnabled = on
         defaults.set(on, forKey: Self.keyEnabled)
         central.setEnabled(on, remembered: rememberedPeripheral)
-        updateMapStatus()
+        if on { requestChipConnect() } else { forgetChipSession() }
     }
 
     public func forgetDeskPod() {
         defaults.removeObject(forKey: Self.keyPeripheral)
         defaults.removeObject(forKey: Self.keyName)
         central.forgetDeskPod()
+        forgetChipSession()
     }
 
     public func forgetPairedPod() {
@@ -841,13 +858,14 @@ public final class BtrxDeskPodCenter: ObservableObject {
     public func replacePairedPod() {
         defaults.removeObject(forKey: Self.keyPaired)
         defaults.removeObject(forKey: Self.keySavedIgnores)
+        requestChipConnect()
         central.replacePairedPod()
     }
 
-    public func startPairing() { central.startPairing() }
-    public func confirmPod() { central.confirmPod() }
+    public func startPairing() { requestChipConnect(); central.startPairing() }
+    public func confirmPod() { requestChipConnect(); central.confirmPod() }
     /// "Re-pair Drone Pod" after its confirmation: PAIR_OPEN plus the Desk Pod window (build 0x0106).
-    public func repairDronePod() { central.repairDronePod() }
+    public func repairDronePod() { requestChipConnect(); central.repairDronePod() }
     /// Desk Pod button panel (firmware 0x0108): Confirm / Cancel. Same as Android.
     public func answerButtonConfirm(_ confirm: Bool) { central.answerButtonConfirm(confirm) }
     /// The button panel can be seen (app active): keepalive and "shown" go out only then.
@@ -995,8 +1013,10 @@ public final class BtrxDeskPodCenter: ObservableObject {
     }
 
     private func remember(_ id: UUID, _ name: String?) {
+        let newPod = rememberedPeripheral != id
         defaults.set(id.uuidString, forKey: Self.keyPeripheral)
         if let name { defaults.set(name, forKey: Self.keyName) }
+        if newPod { requestChipConnect() }
     }
 
     private func savePaired(_ pod: Model.PairedPod) {

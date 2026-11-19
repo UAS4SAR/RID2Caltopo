@@ -11,33 +11,37 @@ import org.ncssar.rid2caltopo.btrx.BtrxDeskPodModel.LinkStatus
 
 /** Same cases as the iPad's BtrxMapStatusTests. */
 class BtrxMapStatusTest {
+    /** Earlier tests are about reasons after the link was READY this session. */
+    private fun seen(setUp: Boolean, link: LinkStatus, bluetoothOff: Boolean, pausedForUsb: Boolean, dronePodReporting: Boolean,
+                     deskPodSilent: Boolean = false, deskPodNotice: String? = null) =
+        BtrxMapStatus.status(setUp, link, bluetoothOff, pausedForUsb, dronePodReporting, deskPodSilent, deskPodNotice, readyEarlier = true)
     private fun ble(phase: LinkPhase, failed: Int = 0) = LinkStatus(LinkKind.BLUETOOTH, phase, failedAttempts = failed)
     private fun text(link: LinkStatus, reporting: Boolean = false, bluetoothOff: Boolean = false, pausedForUsb: Boolean = false) =
-        BtrxMapStatus.status(true, link, bluetoothOff, pausedForUsb, reporting)!!.text
+        seen(true, link, bluetoothOff, pausedForUsb, reporting)!!.text
 
     @Test
     fun hiddenUntilBtrxIsSetUp() {
         assertFalse(BtrxMapStatus.setUp(bluetoothLinkEnabled = false, deskPodRemembered = false, usbLink = false, pausedForUsb = false))
-        assertTrue(BtrxMapStatus.setUp(bluetoothLinkEnabled = true, deskPodRemembered = false, usbLink = false, pausedForUsb = false))
+        assertFalse(BtrxMapStatus.setUp(bluetoothLinkEnabled = true, deskPodRemembered = false, usbLink = false, pausedForUsb = false))
         assertTrue(BtrxMapStatus.setUp(bluetoothLinkEnabled = false, deskPodRemembered = true, usbLink = false, pausedForUsb = false))
-        assertNull(BtrxMapStatus.status(false, ble(LinkPhase.READY), false, false, true))
-        assertNull(BtrxMapStatus.status(false, ble(LinkPhase.READY), false, false, false))
+        assertNull(seen(false, ble(LinkPhase.READY), false, false, true))
+        assertNull(seen(false, ble(LinkPhase.READY), false, false, false))
     }
 
     @Test
     fun activeFollowsTheLinkAndWarnsWhenTheDronePodIsQuiet() {
-        val s = BtrxMapStatus.status(true, ble(LinkPhase.READY), false, false, dronePodReporting = true)!!
+        val s = seen(true, ble(LinkPhase.READY), false, false, dronePodReporting = true)!!
         assertEquals("BTRX: Active", s.text)
         assertTrue(s.active)
         assertFalse(s.warning)
         // READY with no Drone Pod reports is still Active (the link is up), in orange.
-        val quiet = BtrxMapStatus.status(true, ble(LinkPhase.READY), false, false, dronePodReporting = false)!!
+        val quiet = seen(true, ble(LinkPhase.READY), false, false, dronePodReporting = false)!!
         assertEquals("BTRX: Active - No Drone Pod reports", quiet.text)
         assertTrue(quiet.active)
         assertTrue(quiet.warning)
         // Reports only matter while READY.
         assertEquals("BTRX: Inactive - BT Down", text(ble(LinkPhase.RETRY_WAIT, 1), reporting = true))
-        assertFalse(BtrxMapStatus.status(true, ble(LinkPhase.RETRY_WAIT, 1), false, false, true)!!.warning)
+        assertFalse(seen(true, ble(LinkPhase.RETRY_WAIT, 1), false, false, true)!!.warning)
     }
 
     @Test
@@ -64,7 +68,7 @@ class BtrxMapStatusTest {
     fun deskPodHealthEvery30sNoLongerFlapsTheChip() {
         // Nov 16: Desk Pod HEALTH every 30 s, no Drone Pod: the chip stays one state.
         val texts = (0..60).map { t ->
-            BtrxMapStatus.status(true, ble(LinkPhase.READY), false, false, BtrxMapStatus.dronePodReporting(0L, t * 1000L))!!.text
+            seen(true, ble(LinkPhase.READY), false, false, BtrxMapStatus.dronePodReporting(0L, t * 1000L))!!.text
         }.toSet()
         assertEquals(setOf("BTRX: Active - No Drone Pod reports"), texts)
     }
@@ -82,7 +86,7 @@ class BtrxMapStatusTest {
         assertEquals("BTRX: Inactive - Bluetooth unavailable", text(ble(LinkPhase.UNAVAILABLE)))
         assertEquals("BTRX: Inactive - No permission", text(ble(LinkPhase.NO_PERMISSION, 1)))
         assertEquals("BTRX: Inactive - Paused (USB)", text(ble(LinkPhase.PAUSED_FOR_USB), pausedForUsb = true))
-        assertEquals("BTRX: Inactive - Link off", text(LinkStatus(LinkKind.NONE, LinkPhase.OFF), bluetoothOff = true))
+        assertNull(seen(true, LinkStatus(LinkKind.NONE, LinkPhase.OFF), true, false, false)) // link off: no chip (Nov 18)
     }
 
     @Test

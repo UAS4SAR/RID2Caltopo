@@ -4,36 +4,42 @@ import XCTest
 /// Swift copy of Android's BtrxMapStatusTest.kt.
 final class BtrxMapStatusTests: XCTestCase {
     typealias Model = BtrxDeskPodModel
+    /// Earlier tests are about reasons after the link was READY this session.
+    private func seen(setUp: Bool, link: Model.LinkStatus, bluetoothOff: Bool, pausedForUSB: Bool, dronePodReporting: Bool,
+                      deskPodSilent: Bool = false, deskPodNotice: String? = nil) -> BtrxMapStatus.Status? {
+        BtrxMapStatus.status(setUp: setUp, link: link, bluetoothOff: bluetoothOff, pausedForUSB: pausedForUSB, dronePodReporting: dronePodReporting,
+                             deskPodSilent: deskPodSilent, deskPodNotice: deskPodNotice, readyEarlier: true)
+    }
 
     private func ble(_ phase: Model.LinkPhase, _ failed: Int = 0) -> Model.LinkStatus {
         Model.LinkStatus(kind: .bluetooth, phase: phase, failedAttempts: failed)
     }
 
     private func text(_ link: Model.LinkStatus, reporting: Bool = false, bluetoothOff: Bool = false, pausedForUSB: Bool = false) -> String {
-        BtrxMapStatus.status(setUp: true, link: link, bluetoothOff: bluetoothOff, pausedForUSB: pausedForUSB, dronePodReporting: reporting)!.text
+        seen(setUp: true, link: link, bluetoothOff: bluetoothOff, pausedForUSB: pausedForUSB, dronePodReporting: reporting)!.text
     }
 
     func testHiddenUntilBtrxIsSetUp() {
         XCTAssertFalse(BtrxMapStatus.setUp(bluetoothLinkEnabled: false, deskPodRemembered: false))
-        XCTAssertTrue(BtrxMapStatus.setUp(bluetoothLinkEnabled: true, deskPodRemembered: false))
+        XCTAssertFalse(BtrxMapStatus.setUp(bluetoothLinkEnabled: true, deskPodRemembered: false))
         XCTAssertTrue(BtrxMapStatus.setUp(bluetoothLinkEnabled: false, deskPodRemembered: true))
-        XCTAssertNil(BtrxMapStatus.status(setUp: false, link: ble(.ready), bluetoothOff: false, pausedForUSB: false, dronePodReporting: true))
-        XCTAssertNil(BtrxMapStatus.status(setUp: false, link: ble(.ready), bluetoothOff: false, pausedForUSB: false, dronePodReporting: false))
+        XCTAssertNil(seen(setUp: false, link: ble(.ready), bluetoothOff: false, pausedForUSB: false, dronePodReporting: true))
+        XCTAssertNil(seen(setUp: false, link: ble(.ready), bluetoothOff: false, pausedForUSB: false, dronePodReporting: false))
     }
 
     func testActiveFollowsTheLinkAndWarnsWhenTheDronePodIsQuiet() {
-        let s = BtrxMapStatus.status(setUp: true, link: ble(.ready), bluetoothOff: false, pausedForUSB: false, dronePodReporting: true)!
+        let s = seen(setUp: true, link: ble(.ready), bluetoothOff: false, pausedForUSB: false, dronePodReporting: true)!
         XCTAssertEqual(s.text, "BTRX: Active")
         XCTAssertTrue(s.active)
         XCTAssertFalse(s.warning)
         // READY with no Drone Pod reports is still Active (the link is up), in orange.
-        let quiet = BtrxMapStatus.status(setUp: true, link: ble(.ready), bluetoothOff: false, pausedForUSB: false, dronePodReporting: false)!
+        let quiet = seen(setUp: true, link: ble(.ready), bluetoothOff: false, pausedForUSB: false, dronePodReporting: false)!
         XCTAssertEqual(quiet.text, "BTRX: Active - No Drone Pod reports")
         XCTAssertTrue(quiet.active)
         XCTAssertTrue(quiet.warning)
         // Reports only matter while READY.
         XCTAssertEqual(text(ble(.retryWait, 1), reporting: true), "BTRX: Inactive - BT Down")
-        XCTAssertFalse(BtrxMapStatus.status(setUp: true, link: ble(.retryWait, 1), bluetoothOff: false, pausedForUSB: false, dronePodReporting: true)!.warning)
+        XCTAssertFalse(seen(setUp: true, link: ble(.retryWait, 1), bluetoothOff: false, pausedForUSB: false, dronePodReporting: true)!.warning)
     }
 
     func testDronePodReportWindowIs15Seconds() {
@@ -57,7 +63,7 @@ final class BtrxMapStatusTests: XCTestCase {
     func testDeskPodHealthEvery30sNoLongerFlapsTheChip() {
         // Nov 16: Desk Pod HEALTH every 30 s, no Drone Pod: the chip stays one state.
         let texts = Set((0...60).map { _ in
-            BtrxMapStatus.status(setUp: true, link: ble(.ready), bluetoothOff: false, pausedForUSB: false,
+            seen(setUp: true, link: ble(.ready), bluetoothOff: false, pausedForUSB: false,
                                  dronePodReporting: BtrxMapStatus.dronePodReporting(secondsSinceReport: nil))!.text
         })
         XCTAssertEqual(texts, ["BTRX: Active - No Drone Pod reports"])
@@ -75,7 +81,7 @@ final class BtrxMapStatusTests: XCTestCase {
         XCTAssertEqual(text(ble(.unavailable)), "BTRX: Inactive - Bluetooth unavailable")
         XCTAssertEqual(text(ble(.noPermission, 1)), "BTRX: Inactive - No permission")
         XCTAssertEqual(text(ble(.pausedForUSB), pausedForUSB: true), "BTRX: Inactive - Paused (USB)")
-        XCTAssertEqual(text(Model.LinkStatus(kind: .none, phase: .off), bluetoothOff: true), "BTRX: Inactive - Link off")
+        XCTAssertNil(seen(setUp: true, link: Model.LinkStatus(kind: .none, phase: .off), bluetoothOff: true, pausedForUSB: false, dronePodReporting: false)) // link off: no chip (Nov 18)
     }
 
     func testUSBLink() {

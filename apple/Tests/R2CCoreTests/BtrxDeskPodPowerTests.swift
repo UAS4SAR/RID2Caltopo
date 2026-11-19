@@ -7,6 +7,13 @@ final class BtrxDeskPodPowerTests: XCTestCase {
     typealias P = BtrxProtocol
     typealias M = MeshtasticPhoneAPI
     typealias Model = BtrxDeskPodModel
+
+    /// Chip reasons after the link was READY this session.
+    private func seen(setUp: Bool, link: Model.LinkStatus, bluetoothOff: Bool, pausedForUSB: Bool, dronePodReporting: Bool,
+                      deskPodSilent: Bool = false, deskPodNotice: String? = nil) -> BtrxMapStatus.Status? {
+        BtrxMapStatus.status(setUp: setUp, link: link, bluetoothOff: bluetoothOff, pausedForUSB: pausedForUSB, dronePodReporting: dronePodReporting,
+                             deskPodSilent: deskPodSilent, deskPodNotice: deskPodNotice, readyEarlier: true)
+    }
     typealias Power = BtrxDeskPodPower
     typealias DM = MeshtasticPhoneAPI.DeviceMetrics
 
@@ -87,7 +94,7 @@ final class BtrxDeskPodPowerTests: XCTestCase {
     }
 
     private func chip(_ link: Model.LinkStatus, silent: Bool = false, notice: String? = nil, bluetoothOff: Bool = false) -> BtrxMapStatus.Status {
-        BtrxMapStatus.status(setUp: true, link: link, bluetoothOff: bluetoothOff, pausedForUSB: false, dronePodReporting: true,
+        seen(setUp: true, link: link, bluetoothOff: bluetoothOff, pausedForUSB: false, dronePodReporting: true,
                              deskPodSilent: silent, deskPodNotice: notice)!
     }
 
@@ -99,7 +106,7 @@ final class BtrxDeskPodPowerTests: XCTestCase {
         XCTAssertEqual(chip(ble(.retryWait, 1)).text, "BTRX: Inactive - BT Down")
         XCTAssertEqual(chip(ble(.configuring), silent: true).text, "BTRX: Inactive - Connecting")
         XCTAssertEqual(chip(ble(.retryWait, 1), silent: true, bluetoothOff: true).text, "BTRX: Inactive - Bluetooth off")
-        XCTAssertEqual(chip(Model.LinkStatus(kind: .none, phase: .off), silent: true).text, "BTRX: Inactive - Link off")
+        XCTAssertNil(seen(setUp: true, link: Model.LinkStatus(kind: .none, phase: .off), bluetoothOff: false, pausedForUSB: false, dronePodReporting: true, deskPodSilent: true)) // link off: no chip (Nov 18)
         XCTAssertEqual(chip(Model.LinkStatus(kind: .usb, phase: .configuring), silent: true).text, "BTRX: Inactive - Connecting")
         XCTAssertFalse(chip(ble(.retryWait), silent: true).active)
     }

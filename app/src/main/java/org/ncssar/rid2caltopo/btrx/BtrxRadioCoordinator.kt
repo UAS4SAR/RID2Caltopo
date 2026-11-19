@@ -38,6 +38,8 @@ object BtrxRadioCoordinator {
 
     @Volatile private var phase = LinkPhase.OFF
     @Volatile private var gattOpen = false
+    /** The Desk Pod link reached READY in this app session. Until then a background hunt does not hold back Remote ID. */
+    @Volatile private var seenThisSession = false
     private val listeners = CopyOnWriteArrayList<Listener>()
 
     @JvmStatic
@@ -49,6 +51,7 @@ object BtrxRadioCoordinator {
         val wasReady = phase == LinkPhase.READY
         phase = next
         val ready = next == LinkPhase.READY
+        if (ready) seenThisSession = true
         if (wasReady != ready) listeners.forEach { runCatching { it.onDeskPodLinkReadyChanged(ready) } }
     }
 
@@ -68,7 +71,11 @@ object BtrxRadioCoordinator {
         linkBusy && scanRunningMs < MAX_RESTART_DEFERRAL_MS
 
     @JvmStatic
-    fun deferPeriodicRestart(scanRunningMs: Long): Boolean = deferPeriodicRestart(deskPodLinkBusy(), scanRunningMs)
+    fun deferPeriodicRestart(scanRunningMs: Long): Boolean = deferPeriodicRestart(deskPodLinkBusy() && seenThisSession, scanRunningMs)
+
+    /** Link turned off or Desk Pod forgotten: a later background hunt does not defer Remote ID again until READY. */
+    @JvmStatic fun forgetSession() { seenThisSession = false }
+    @JvmStatic fun deskPodSeenThisSession(): Boolean = seenThisSession
 
     /** Remote ID scan mode (ScanSettings.SCAN_MODE_*). */
     @JvmStatic
@@ -99,5 +106,5 @@ object BtrxRadioCoordinator {
     fun adapterResetAllowed(deskPodGattOpen: Boolean): Boolean = !deskPodGattOpen
 
     /** Tests only. */
-    internal fun resetForTest() { phase = LinkPhase.OFF; gattOpen = false; listeners.clear() }
+    internal fun resetForTest() { phase = LinkPhase.OFF; gattOpen = false; seenThisSession = false; listeners.clear() }
 }

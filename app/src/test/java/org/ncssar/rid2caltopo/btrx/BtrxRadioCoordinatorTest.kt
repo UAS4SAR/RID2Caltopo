@@ -71,4 +71,23 @@ class BtrxRadioCoordinatorTest {
         c.onGattOpen(false)
         assertTrue(c.adapterResetAllowed())
     }
+
+    @Test
+    fun aBackgroundHuntForAnUnseenDeskPodDoesNotHoldBackRemoteId() {
+        val c = BtrxRadioCoordinator
+        c.resetForTest()
+        // Saved Desk Pod powered off (A5, Nov 18): the link hunts in CONNECTING but has not been READY.
+        c.onLinkPhase(LinkPhase.CONNECTING)
+        assertTrue(c.deskPodLinkBusy())
+        assertFalse(c.deskPodSeenThisSession())
+        assertFalse(c.deferPeriodicRestart(240_000))
+        // Once seen, reconnects defer the restart as before.
+        c.onLinkPhase(LinkPhase.READY)
+        c.onLinkPhase(LinkPhase.CONNECTING)
+        assertTrue(c.deferPeriodicRestart(240_000))
+        // Link off / Desk Pod forgotten: unseen again.
+        c.forgetSession()
+        assertFalse(c.deferPeriodicRestart(240_000))
+        c.resetForTest()
+    }
 }

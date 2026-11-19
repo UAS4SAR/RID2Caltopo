@@ -3,8 +3,9 @@ import Foundation
 /// The BTRX status chip at the top of the map (Ken, Nov 16). It follows the Desk Pod link:
 /// "BTRX: Active" (green) while the link is READY, or "BTRX: Active - No Drone Pod reports"
 /// (orange) while READY with no frame from the paired Drone Pod for `dronePodReportSeconds`;
-/// otherwise "BTRX: Inactive - " and why. Shown only once BTRX is set up (Bluetooth link on
-/// or a Desk Pod remembered). Same strings, window and rules as Android's BtrxMapStatus.kt.
+/// otherwise "BTRX: Inactive - " and why only after READY this session. Before then, a paired
+/// Desk Pod gets a two-minute Connecting chip only after an explicit user action (Ken, Nov 18).
+/// Off and never-paired devices stay hidden. Same rules as Android's BtrxMapStatus.kt.
 public enum BtrxMapStatus {
     public static let active = "BTRX: Active"
     public static let activeNoReports = "BTRX: Active - No Drone Pod reports"
@@ -47,9 +48,30 @@ public enum BtrxMapStatus {
         return age >= 0 && age <= dronePodReportSeconds
     }
 
-    /// BTRX is set up on this device: the chip shows.
+    /// A remembered Desk Pod (or a USB Desk Pod), not merely the Bluetooth toggle.
     public static func setUp(bluetoothLinkEnabled: Bool, deskPodRemembered: Bool, usbLink: Bool = false, pausedForUSB: Bool = false) -> Bool {
-        bluetoothLinkEnabled || deskPodRemembered || usbLink || pausedForUSB
+        deskPodRemembered || usbLink
+    }
+
+    /// Two minutes after an explicit user connect/pair action. Never started by launch/retries.
+    public static let connectingWindow: Double = 120
+
+    /// Pure visibility rule, shared with Android and the cross-platform CSV fixture.
+    public static func visibility(paired: Bool, enabled: Bool, ready: Bool, readyEarlier: Bool, requestedAt: Double?, now: Double) -> String {
+        guard paired && enabled else { return "hidden" }
+        if ready || readyEarlier { return "status" }
+        if let requestedAt, now - requestedAt >= 0, now - requestedAt < connectingWindow { return "connecting" }
+        return "hidden"
+    }
+
+    /// Session-only state; never saved, and automatic reconnect never opens the connecting window.
+    public struct Session: Sendable {
+        public private(set) var readyEarlier = false
+        public private(set) var requestedAt: Double?
+        public init() {}
+        public mutating func observe(ready: Bool) { if ready { readyEarlier = true } }
+        public mutating func request(now: Double) { requestedAt = now }
+        public mutating func forget() { readyEarlier = false; requestedAt = nil }
     }
 
     /// `dronePodReporting`: a Drone Pod report (`isDronePodReport`) in the last
@@ -58,8 +80,15 @@ public enum BtrxMapStatus {
     /// started since (`deskPodSilent` replaces "BT Down" / "Connecting"). `deskPodNotice`:
     /// "Desk Pod restarted (power-on)" while fresh; orange "BTRX: Active - <notice>" while ready.
     public static func status(setUp: Bool, link: BtrxDeskPodModel.LinkStatus, bluetoothOff: Bool, pausedForUSB: Bool, dronePodReporting: Bool,
-                              deskPodSilent silent: Bool = false, deskPodNotice: String? = nil) -> Status? {
-        guard setUp else { return nil }
+                              deskPodSilent silent: Bool = false, deskPodNotice: String? = nil,
+                              linkEnabled: Bool = true, readyEarlier: Bool = false, requestedAt: Double? = nil, now: Double = 0) -> Status? {
+        switch visibility(paired: setUp, enabled: linkEnabled && link.phase != .off, ready: link.phase == .ready && !pausedForUSB, readyEarlier: readyEarlier, requestedAt: requestedAt, now: now) {
+        case "hidden": return nil
+        case "connecting":
+            let why = bluetoothOff ? Self.bluetoothOff : link.phase == .noPermission ? noPermission : link.phase == .unavailable ? unavailable : connecting
+            return Status(text: inactivePrefix + why, active: false)
+        default: break
+        }
         if link.phase == .ready && !pausedForUSB {
             if let notice = deskPodNotice { return Status(text: activePrefix + notice, active: true, warning: true) }
             return dronePodReporting ? Status(text: active, active: true) : Status(text: activeNoReports, active: true, warning: true)

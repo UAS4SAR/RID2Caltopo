@@ -198,13 +198,17 @@ object BtrxManager {
     // ---- BTRX status chip at the top of the map (Ken, Nov 16) ----
 
     private val _mapStatus = MutableStateFlow<BtrxMapStatus.Status?>(null)
-    /** "BTRX: Active" / "BTRX: Inactive - <reason>"; null (no chip) until BTRX is set up. */
+    /** "BTRX: Active" / "BTRX: Inactive - <reason>"; null (no chip) unless paired and READY this session or a user connect is under two minutes old. */
     val mapStatus: StateFlow<BtrxMapStatus.Status?> = _mapStatus.asStateFlow()
     private val mapStatusLock = Any()
+    private val chipSession = BtrxMapStatus.Session()
+    private fun requestChipConnect() = chipSession.request(android.os.SystemClock.elapsedRealtime())
+    private fun forgetChipSession() { chipSession.forget(); BtrxRadioCoordinator.forgetSession() }
 
     private fun updateMapStatus() {
         if (!installed) return
         val snap = _snapshot.value
+        chipSession.observe(snap.link.phase == LinkPhase.READY && !snap.bluetoothPausedForUsb)
         val setUp = BtrxMapStatus.setUp(
             bluetoothLinkEnabled = _bluetoothEnabled.value,
             deskPodRemembered = prefs().getString(KEY_ADDRESS, null) != null,
@@ -216,6 +220,10 @@ object BtrxManager {
             BtrxMapStatus.dronePodReporting(lastDronePodReportMs, android.os.SystemClock.elapsedRealtime()),
             deskPodSilent = snap.deskSilent,
             deskPodNotice = snap.deskRestartNotice,
+            linkEnabled = _bluetoothEnabled.value || link != null,
+            readyEarlier = chipSession.readyEarlier,
+            requestedAtMs = chipSession.requestedAtMs,
+            nowMs = android.os.SystemClock.elapsedRealtime(),
         )
         synchronized(mapStatusLock) {
             if (next == _mapStatus.value) return
@@ -330,6 +338,7 @@ object BtrxManager {
     fun setBluetoothEnabled(enabled: Boolean) = worker.execute {
         prefs().edit().putBoolean(KEY_BLE_ENABLED, enabled).apply()
         _bluetoothEnabled.value = enabled
+        if (enabled) requestChipConnect() else forgetChipSession()
         logger.info("Desk Pod Bluetooth link turned ${if (enabled) "on" else "off"}")
         applyArbiter(arbiter.update(bluetoothEnabled = enabled))
         publish()
@@ -373,6 +382,7 @@ object BtrxManager {
      */
     fun forgetDeskPod() = worker.execute {
         prefs().edit().remove(KEY_ADDRESS).remove(KEY_NAME).apply()
+        forgetChipSession()
         logger.info("Desk Pod forgotten; the next Bluetooth connection scans for any Desk Pod")
         if (arbiter.active == BtrxLinkArbiter.Link.BLUETOOTH) {
             ble?.stop("Desk Pod forgotten")
@@ -387,15 +397,16 @@ object BtrxManager {
         publish()
     }
 
-    fun startPairing() = worker.execute { model.startPairing(); publish() }
+    fun startPairing() = worker.execute { requestChipConnect(); model.startPairing(); publish() }
     /** "Replace Drone Pod" after its confirmation: unpair the current pod here, then pair. */
     fun replacePairedPod() = worker.execute {
         prefs().edit().remove(KEY_PAIRED).remove(KEY_SAVED_IGNORES).apply()
+        requestChipConnect()
         model.replacePairedPod()
         publish()
     }
     /** "Re-pair Drone Pod" after its confirmation: PAIR_OPEN plus the Desk Pod window (build 0x0106). */
-    fun repairDronePod() = worker.execute { model.repairDronePod(); publish() }
+    fun repairDronePod() = worker.execute { requestChipConnect(); model.repairDronePod(); publish() }
     /** Desk Pod button panel (firmware 0x0108): Confirm / Cancel. */
     fun answerButtonConfirm(confirm: Boolean) = worker.execute { model.answerButtonConfirm(confirm); publish() }
     /** The button panel host is on screen (app in front): keepalive and "shown" go out only then. */
@@ -409,7 +420,7 @@ object BtrxManager {
     /** "Restore ignored": undoes only what "Ignore all except this" ignored, here and on the pod; on the worker. */
     fun restoreIgnoreAll() = worker.execute { bearing.restoreIgnoreAll(); model.restoreIgnoreAll(); publish() }
     fun unignoreSourceSaved(srcId: Int) = worker.execute { model.unignoreSourceSaved(srcId); publish() }
-    fun confirmPod() = worker.execute { model.confirmPod(); publish() }
+    fun confirmPod() = worker.execute { requestChipConnect(); model.confirmPod(); publish() }
     fun cancelPairing() = worker.execute { model.cancelPairing(); publish() }
     fun clearPairingResult() = worker.execute { model.clearPairingResult(); publish() }
     /** "Mute" on the stream-view steering overlay. */
@@ -492,6 +503,7 @@ object BtrxManager {
         override fun onSessionEnded(client: BtrxClient, reason: String) = model.detach(client, reason)
         override fun rememberedAddress(): String? = prefs().getString(KEY_ADDRESS, null)
         override fun rememberDevice(address: String, name: String?) {
+            if (prefs().getString(KEY_ADDRESS, null) != address) requestChipConnect()
             prefs().edit().putString(KEY_ADDRESS, address).putString(KEY_NAME, name).apply()
         }
     }).also { ble = it }
@@ -501,7 +513,7 @@ object BtrxManager {
     /** Called by the USB attach activity, which Android opens when a Desk Pod is plugged in. */
     fun onDeviceAttached(context: Context, device: UsbDevice?) {
         install(context)
-        if (installed && usbHost && isDeskPodCandidate(device)) worker.execute { connect(device!!) }
+        if (installed && usbHost && isDeskPodCandidate(device)) worker.execute { requestChipConnect(); connect(device!!) }
     }
 
     private val receiver = object : BroadcastReceiver() {
@@ -509,7 +521,7 @@ object BtrxManager {
             val device = intent.usbDevice() ?: return
             if (!isDeskPodCandidate(device)) return
             when (intent.action) {
-                UsbManager.ACTION_USB_DEVICE_ATTACHED -> worker.execute { connect(device) }
+                UsbManager.ACTION_USB_DEVICE_ATTACHED -> worker.execute { requestChipConnect(); connect(device) }
                 UsbManager.ACTION_USB_DEVICE_DETACHED -> worker.execute { detached(device) }
                 ACTION_USB_PERMISSION -> {
                     val granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)
