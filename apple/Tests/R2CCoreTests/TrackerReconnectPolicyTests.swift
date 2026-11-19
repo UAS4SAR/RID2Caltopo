@@ -95,6 +95,57 @@ import Testing
     #expect(policy.peekDelayMilliseconds(kind: .connectFailure, legacyImmediateAckRetry: false) == 4_000)
 }
 
+@Test func equalJitterStaysInsideHalfTheStepAndTheTenSecondCap() {
+    #expect(TrackerReconnectPolicy.equalJitterMilliseconds(2_000, randomUnit: 0) == 1_000)
+    #expect(TrackerReconnectPolicy.equalJitterMilliseconds(2_000, randomUnit: 1) == 2_000)
+    #expect(TrackerReconnectPolicy.equalJitterMilliseconds(2_000, randomUnit: 0.5) == 1_500)
+    #expect(TrackerReconnectPolicy.equalJitterMilliseconds(10_000, randomUnit: 0) == 5_000)
+    #expect(TrackerReconnectPolicy.equalJitterMilliseconds(10_000, randomUnit: 1) == 10_000)
+    #expect(TrackerReconnectPolicy.equalJitterMilliseconds(20_000, randomUnit: 1) == 10_000)
+    #expect(TrackerReconnectPolicy.equalJitterMilliseconds(0, randomUnit: 1) == 0)
+}
+
+@Test func jitterChangesTheWaitWithoutChangingTheNextLadderStep() {
+    var policy = TrackerReconnectPolicy()
+    #expect(policy.takeRetryDelayMilliseconds(
+        kind: .connectFailure,
+        legacyImmediateAckRetry: false,
+        jitterEnabled: true,
+        randomUnit: 0
+    ) == 1_000)
+    #expect(policy.peekDelayMilliseconds(kind: .connectFailure, legacyImmediateAckRetry: false) == 4_000)
+    #expect(policy.takeRetryDelayMilliseconds(
+        kind: .ackTimeout,
+        legacyImmediateAckRetry: false,
+        jitterEnabled: true,
+        randomUnit: 1
+    ) == 4_000)
+    #expect(policy.peekDelayMilliseconds(kind: .ackTimeout, legacyImmediateAckRetry: false) == 8_000)
+}
+
+@Test func legacyImmediateRetryIsNotJittered() {
+    var policy = TrackerReconnectPolicy()
+    #expect(policy.takeRetryDelayMilliseconds(
+        kind: .ackTimeout,
+        legacyImmediateAckRetry: true,
+        jitterEnabled: true,
+        randomUnit: 0
+    ) == 0)
+    #expect(policy.peekDelayMilliseconds(kind: .connectFailure, legacyImmediateAckRetry: false) == 2_000)
+}
+
+@Test func missingReconnectJitterPreferenceStaysOn() {
+    let suite = "tracker-reconnect-jitter-test"
+    let defaults = UserDefaults(suiteName: suite)!
+    defaults.removePersistentDomain(forName: suite)
+    #expect(TrackerReconnectPolicy.reconnectJitterEnabled(in: defaults))
+    defaults.set(false, forKey: TrackerReconnectPolicy.reconnectJitterDefaultsKey)
+    #expect(!TrackerReconnectPolicy.reconnectJitterEnabled(in: defaults))
+    defaults.set(true, forKey: TrackerReconnectPolicy.reconnectJitterDefaultsKey)
+    #expect(TrackerReconnectPolicy.reconnectJitterEnabled(in: defaults))
+    defaults.removePersistentDomain(forName: suite)
+}
+
 @Test func appleCoordinatorUsesSharedReconnectPolicy() throws {
     let appleRoot = URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent()
@@ -115,7 +166,11 @@ import Testing
     #expect(coordinator.contains("heartbeatTimeoutMilliseconds: TrackerReconnectPolicy.heartbeatAckTimeoutMilliseconds"))
     #expect(coordinator.contains("scheduleReconnect(kind: .ackTimeout)"))
     #expect(coordinator.contains("scheduleReconnect(kind: .connectFailure)"))
+    #expect(coordinator.contains("jitterEnabled: jitterEnabled"))
+    #expect(coordinator.contains("TrackerReconnectPolicy.reconnectJitterEnabled"))
     #expect(!coordinator.contains("reconnectDelay"))
     #expect(settings.contains("Immediate ack retry (legacy)"))
+    #expect(settings.contains("Reconnect jitter"))
     #expect(settings.contains("TrackerReconnectPolicy.legacyImmediateAckRetryDefaultsKey"))
+    #expect(settings.contains("TrackerReconnectPolicy.reconnectJitterDefaultsKey"))
 }

@@ -122,6 +122,7 @@ class TrackerPeerCoordinatorTest {
         TrackerPeerCoordinator.setHandoffDelayMsForTesting(0L)
         TrackerPeerCoordinator.setTimeSourceForTesting(clock)
         TrackerPeerCoordinator.setLegacyImmediateAckRetryForTesting(false)
+        TrackerPeerCoordinator.setReconnectJitterForTesting(true, 1.0)
         AppUpdateAdvisory.resetForTesting()
         coordinator = TrackerPeerCoordinator.getInstance()
         coordinator.setSuppressReconnectTimerForTesting(true)
@@ -1786,6 +1787,26 @@ class TrackerPeerCoordinatorTest {
         coordinator.handleHelloAckForTesting()
         transport.close(1006, "after ack")
         assertEquals(2_000L, coordinator.getScheduledReconnectDelayMsForTesting())
+        coordinator.stopBackgroundTimersForTesting()
+    }
+
+    @Test
+    fun reconnectJitterSpreadsTheFirstRetryAndKeepsTheLadderStep() {
+        TrackerPeerCoordinator.setReconnectJitterForTesting(true, 0.0)
+        transport.autoOpen = false
+
+        coordinator.start("MAP1", "zone-alpha", "Alpha", null)
+        transport.fail(503, "restart")
+
+        assertEquals(1_000L, coordinator.getScheduledReconnectDelayMsForTesting())
+        assertEquals(4_000L, coordinator.getNextReconnectDelayMsForTesting())
+        assertEquals(1, transport.connectCount)
+
+        TrackerPeerCoordinator.setReconnectJitterForTesting(false, 0.0)
+        coordinator.runScheduledReconnectForTesting()
+        transport.open()
+        transport.close(1006, "again")
+        assertEquals(4_000L, coordinator.getScheduledReconnectDelayMsForTesting())
         coordinator.stopBackgroundTimersForTesting()
     }
 
