@@ -1403,7 +1403,9 @@ internal object OperationalStorage {
         // Persist the recovery pointer first; if the process exits before the link swap, a
         // repeated prepare is harmless. The reverse order could lose the pointer on a crash.
         DetachedPreviousStorage.detached(DetachedArea(volume, area.id, target!!))
-        Files.delete(source.toPath())
+        // Keep d97cc3f5's crash safety: a link that cannot be dropped takes the old typed, soft stop.
+        val dropped = runCatching { Files.deleteIfExists(source.toPath()) }.isSuccess && !Files.isSymbolicLink(source.toPath())
+        if (!dropped) return false
         CaltopoClient.CTInfo("OperationalStorage", "Card $volume was swapped out; ${area.id} now uses the active archive folder (files on $volume left untouched)")
         return true
     }
