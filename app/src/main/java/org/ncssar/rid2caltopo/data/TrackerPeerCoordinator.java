@@ -100,8 +100,6 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
     private static final long HEARTBEAT_INTERVAL_MS = 15_000L;
     private static final long LOG_SUMMARY_INTERVAL_MS = 60_000L;
     private static final long HEARTBEAT_RTT_ANOMALY_MS = 3_000L;
-    private static final long HELLO_ACK_TIMEOUT_MS = 10_000L;
-    private static final long HEARTBEAT_ACK_TIMEOUT_MS = 10_000L;
     private static final long ACK_WATCHDOG_INTERVAL_MS = 5_000L;
     private static final long HEARTBEAT_MIN_SEND_GAP_MS = 1_000L;
     private static final long SIGHTING_SEND_INTERVAL_MS = 3_000L;
@@ -115,8 +113,6 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
     private static final long DEFAULT_HANDOFF_DELAY_MS = 2_000L;
     private static volatile long handoffDelayMs = DEFAULT_HANDOFF_DELAY_MS;
     private static volatile long idleParkDelayMs = DEFAULT_IDLE_PARK_DELAY_MS;
-    private static final long RECONNECT_BASE_DELAY_MS = 2_000L;
-    private static final long RECONNECT_MAX_DELAY_MS = 10_000L;
     private static final long VIDEO_PRESENCE_INTERVAL_MS = 15_000L;
     private static final long INCIDENT_STANDBY_SILENCE_MS = 60_000L;
 
@@ -206,7 +202,8 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
     private volatile long myCaltopoRttMs = 2_000L;
     private volatile boolean started;
     private volatile boolean hardFailureNotified;
-    private volatile long nextReconnectDelayMs = RECONNECT_BASE_DELAY_MS;
+    @NonNull private final TrackerReconnectPolicy reconnectPolicy = new TrackerReconnectPolicy();
+    @Nullable private static volatile Boolean legacyImmediateAckRetryOverrideForTesting;
     private volatile long helloSeqSentAtMs;
     private volatile long helloAckAtMs;
     private volatile long heartbeatSeqCounter;
@@ -230,6 +227,8 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
     private volatile boolean reconnectPending;
     private volatile boolean connectInFlight;
     private volatile boolean suppressScheduledHeartbeatRequestsForTesting;
+    private volatile boolean keepHeartbeatSuppressedForTesting;
+    private volatile boolean suppressReconnectTimerForTesting;
 
     private TrackerPeerCoordinator() {
         videoPreflightPeer = new ManagedVideoPreflightPeer(
@@ -288,7 +287,9 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
 
     @Override
     public synchronized void start(@NonNull String mapId, @NonNull String guid, @NonNull String name, @Nullable String brokerUri) {
+        TrackerReconnectPrefs.preloadAsync(R2CApplication.getAppCtxt());
         stop();
+        reconnectPolicy.reset();
 
         String trackerUrlPrefix = trackerUrlPrefixOverrideForTesting != null
                 ? trackerUrlPrefixOverrideForTesting
@@ -320,7 +321,6 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
         this.trackerHttpOrigin = trackerHttpOrigin(trackerUrlPrefix);
         this.started = true;
         this.hardFailureNotified = false;
-        this.nextReconnectDelayMs = RECONNECT_BASE_DELAY_MS;
         this.helloSeqSentAtMs = 0L;
         this.helloAckAtMs = 0L;
         this.heartbeatSeqCounter = 0L;
@@ -339,7 +339,9 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
         this.reconnectScheduledAtMs = 0L;
         this.reconnectTargetAtMs = 0L;
         this.reconnectPending = false;
-        this.suppressScheduledHeartbeatRequestsForTesting = false;
+        if (!keepHeartbeatSuppressedForTesting) {
+            this.suppressScheduledHeartbeatRequestsForTesting = false;
+        }
         this.intentionallyParked = false;
         CTInfo(TAG, String.format(Locale.US,
                 "start(): wsUrl='%s' token=%s %s",
@@ -373,7 +375,7 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
                 ackWatchdogTimer.stop();
                 notifyCoordinationIndicatorListener();
                 notifyPeerListChanged();
-                scheduleReconnect("closed", -1L);
+                scheduleReconnect("closed", TrackerReconnectPolicy.RetryKind.CONNECT_FAILURE);
             }
 
             @Override
@@ -398,7 +400,7 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
                 notifyCoordinationIndicatorListener();
                 notifyPeerListChanged();
                 notifyHardFailureIfNeeded(responseCode, responseMessage);
-                scheduleReconnect("failure", -1L);
+                scheduleReconnect("failure", TrackerReconnectPolicy.RetryKind.CONNECT_FAILURE);
             }
         });
         connectInFlight = true;
@@ -1285,13 +1287,16 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
     }
 
     private void scheduleReconnect() {
-        scheduleReconnect("retry", -1L);
+        scheduleReconnect("retry", TrackerReconnectPolicy.RetryKind.CONNECT_FAILURE);
     }
 
-    private synchronized void scheduleReconnect(@NonNull String cause, long overrideDelayMs) {
+    private synchronized void scheduleReconnect(
+            @NonNull String cause,
+            @NonNull TrackerReconnectPolicy.RetryKind kind) {
         connectInFlight = false;
         if (!started || trackerWsUrl == null || trackerApiKey == null || intentionallyParked) return;
-        long delayMs = overrideDelayMs >= 0 ? overrideDelayMs : nextReconnectDelayMs;
+        boolean legacyImmediateAckRetry = legacyImmediateAckRetryEnabled();
+        long delayMs = reconnectPolicy.peekDelayMs(kind, legacyImmediateAckRetry);
         long scheduledAtMs = nowMs();
         long targetAtMs = scheduledAtMs + delayMs;
         if (reconnectPending && reconnectTargetAtMs > 0L && reconnectTargetAtMs <= targetAtMs) {
@@ -1302,22 +1307,26 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
                     delayMs));
             return;
         }
+        delayMs = reconnectPolicy.takeRetryDelay(kind, legacyImmediateAckRetry);
+        targetAtMs = scheduledAtMs + delayMs;
         reconnectPending = true;
         lastReconnectCause = cause;
         reconnectScheduledAtMs = scheduledAtMs;
         reconnectTargetAtMs = targetAtMs;
         CTDebug(TAG, String.format(Locale.US,
-                "scheduleReconnect(): cause=%s delayMs=%d lastAckSeq=%d helloAckAgeMs=%d heartbeatAckAgeMs=%d closeCode=%d closeReason='%s'",
+                "scheduleReconnect(): cause=%s kind=%s delayMs=%d nextDelayMs=%d legacyImmediateAckRetry=%s lastAckSeq=%d helloAckAgeMs=%d heartbeatAckAgeMs=%d closeCode=%d closeReason='%s'",
                 cause,
+                kind,
                 delayMs,
+                reconnectPolicy.peekDelayMs(kind, legacyImmediateAckRetry),
+                legacyImmediateAckRetry,
                 lastHeartbeatSeqAcked,
                 ageSince(helloAckAtMs),
                 ageSince(lastHeartbeatAckAtMs),
                 lastCloseCode,
                 lastCloseReason));
-        reconnectTimer.start(this::reconnect, delayMs, 0L);
-        if (overrideDelayMs < 0) {
-            nextReconnectDelayMs = Math.min(nextReconnectDelayMs * 2L, RECONNECT_MAX_DELAY_MS);
+        if (!suppressReconnectTimerForTesting) {
+            reconnectTimer.start(this::reconnect, delayMs, 0L);
         }
     }
 
@@ -1369,7 +1378,7 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
                 ackWatchdogTimer.stop();
                 notifyCoordinationIndicatorListener();
                 notifyPeerListChanged();
-                scheduleReconnect("closed", -1L);
+                scheduleReconnect("closed", TrackerReconnectPolicy.RetryKind.CONNECT_FAILURE);
             }
 
             @Override
@@ -1391,7 +1400,7 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
                 notifyCoordinationIndicatorListener();
                 notifyPeerListChanged();
                 notifyHardFailureIfNeeded(responseCode, responseMessage);
-                scheduleReconnect("failure", -1L);
+                scheduleReconnect("failure", TrackerReconnectPolicy.RetryKind.CONNECT_FAILURE);
             }
         });
         connectInFlight = true;
@@ -1409,8 +1418,8 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
         lastTrafficSentLogByKey.clear();
         lastTrafficShadowLogByKey.clear();
         PeerTrafficMapRegistry.clear();
-        suppressScheduledHeartbeatRequestsForTesting = false;
-        nextReconnectDelayMs = RECONNECT_BASE_DELAY_MS;
+        suppressScheduledHeartbeatRequestsForTesting = keepHeartbeatSuppressedForTesting;
+        reconnectPolicy.onTransportOpened(legacyImmediateAckRetryEnabled());
         lastReconnectCause = reconnecting ? "reconnected" : "connected";
         resetHeartbeatStateForNewTransport();
         sendHello();
@@ -1553,7 +1562,7 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
             }
             if (lastHeartbeatSeqSent > lastHeartbeatSeqAcked) {
                 long ackAgeMs = nowMs() - lastHeartbeatSentAtMs;
-                if (ackAgeMs > HEARTBEAT_ACK_TIMEOUT_MS) {
+                if (ackAgeMs > TrackerReconnectPolicy.HEARTBEAT_ACK_TIMEOUT_MS) {
                     forceReconnect(String.format(Locale.US,
                             "missed heartbeat_ack seq=%d ageMs=%d", lastHeartbeatSeqSent, ackAgeMs));
                 }
@@ -1746,13 +1755,17 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
         if (!started || !isConnected()) return;
         long nowMs = nowMs();
         if (helloAckAtMs < helloSeqSentAtMs && helloSeqSentAtMs > 0 &&
-                nowMs - helloSeqSentAtMs > HELLO_ACK_TIMEOUT_MS) {
+                TrackerReconnectPolicy.helloAckTimedOut(
+                        helloSeqSentAtMs,
+                        nowMs,
+                        true,
+                        legacyImmediateAckRetryEnabled())) {
             forceReconnect(String.format(Locale.US,
                     "missed hello_ack ageMs=%d", nowMs - helloSeqSentAtMs));
             return;
         }
         if (lastHeartbeatSeqSent > lastHeartbeatSeqAcked && lastHeartbeatSentAtMs > 0 &&
-                nowMs - lastHeartbeatSentAtMs > HEARTBEAT_ACK_TIMEOUT_MS) {
+                nowMs - lastHeartbeatSentAtMs > TrackerReconnectPolicy.HEARTBEAT_ACK_TIMEOUT_MS) {
             forceReconnect(String.format(Locale.US,
                     "missed heartbeat_ack seq=%d ageMs=%d",
                     lastHeartbeatSeqSent, nowMs - lastHeartbeatSentAtMs));
@@ -1786,7 +1799,7 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
         if (activeTransport != null) {
             activeTransport.disconnect();
         }
-        scheduleReconnect("forced-" + cause, 0L);
+        scheduleReconnect("forced-" + cause, TrackerReconnectPolicy.RetryKind.ACK_TIMEOUT);
     }
 
     private void handleIncomingMessage(@NonNull String text) {
@@ -1797,6 +1810,7 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
                 case "hello_ack":
                     helloAckAtMs = nowMs();
                     lastServerAcknowledgementAtMs = helloAckAtMs;
+                    reconnectPolicy.onHelloAcknowledged();
                     String canonicalDeviceName = jo.optString("canonicalDeviceName", "").trim();
                     Context identityContext = R2CApplication.getAppCtxt();
                     if (!canonicalDeviceName.isEmpty() && identityContext != null) {
@@ -2837,6 +2851,41 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
         return forcedReconnectCount;
     }
 
+    long getScheduledReconnectDelayMsForTesting() {
+        if (!reconnectPending) return -1L;
+        return Math.max(reconnectTargetAtMs - reconnectScheduledAtMs, 0L);
+    }
+
+    long getNextReconnectDelayMsForTesting() {
+        return reconnectPolicy.peekDelayMs(
+                TrackerReconnectPolicy.RetryKind.CONNECT_FAILURE,
+                false);
+    }
+
+    boolean isReconnectPendingForTesting() {
+        return reconnectPending;
+    }
+
+    void runScheduledReconnectForTesting() {
+        reconnectTimer.stop();
+        reconnect();
+    }
+
+    void setSuppressReconnectTimerForTesting(boolean suppress) {
+        suppressReconnectTimerForTesting = suppress;
+        if (suppress) reconnectTimer.stop();
+    }
+
+    void setKeepHeartbeatSuppressedForTesting(boolean suppressed) {
+        keepHeartbeatSuppressedForTesting = suppressed;
+        if (suppressed) {
+            suppressScheduledHeartbeatRequestsForTesting = true;
+            heartbeatTimer.stop();
+            ackWatchdogTimer.stop();
+            heartbeatCoalesceTimer.stop();
+        }
+    }
+
     @Nullable
     String getLastOutboundJsonForTesting() {
         return lastOutboundJsonForTesting;
@@ -3011,6 +3060,16 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
         timeSource = override;
     }
 
+    static void setLegacyImmediateAckRetryForTesting(@Nullable Boolean enabled) {
+        legacyImmediateAckRetryOverrideForTesting = enabled;
+    }
+
+    private static boolean legacyImmediateAckRetryEnabled() {
+        Boolean override = legacyImmediateAckRetryOverrideForTesting;
+        if (override != null) return override;
+        return TrackerReconnectPrefs.current();
+    }
+
     void setHardFailureListenerForTesting(@Nullable HardFailureListener listener) {
         hardFailureListener = listener;
     }
@@ -3049,6 +3108,10 @@ public final class TrackerPeerCoordinator implements PeerCoordinator {
         INSTANCE.intentionallyParked = false;
         INSTANCE.standaloneStandbyEligible = false;
         INSTANCE.suppressScheduledHeartbeatRequestsForTesting = false;
+        INSTANCE.keepHeartbeatSuppressedForTesting = false;
+        INSTANCE.suppressReconnectTimerForTesting = false;
+        legacyImmediateAckRetryOverrideForTesting = null;
+        INSTANCE.reconnectPolicy.reset();
         INSTANCE.lastOutboundJsonForTesting = null;
         INSTANCE.lastWaypointRemoteIdForTesting = null;
         transportFactory = OkHttpTrackerCoordinationTransport::new;
