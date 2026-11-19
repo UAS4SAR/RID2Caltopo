@@ -119,8 +119,11 @@ class TrackerPeerCoordinatorTest {
         TrackerPeerCoordinator.setTrackerConfigForTesting("https://tracker.example.org", "tracker-token")
         TrackerPeerCoordinator.setHandoffDelayMsForTesting(0L)
         TrackerPeerCoordinator.setTimeSourceForTesting(clock)
+        TrackerPeerCoordinator.setLegacyImmediateAckRetryForTesting(false)
         AppUpdateAdvisory.resetForTesting()
         coordinator = TrackerPeerCoordinator.getInstance()
+        coordinator.setSuppressReconnectTimerForTesting(true)
+        coordinator.setKeepHeartbeatSuppressedForTesting(true)
         CaltopoClient.ResetPersistedClientState()
     }
 
@@ -1184,19 +1187,26 @@ class TrackerPeerCoordinatorTest {
     }
 
     @Test
-    fun missedHelloAck_forcesReconnectDeterministically() {
+    fun slowHelloAckOnOpenSocket_waitsThirtySecondsThenUsesBackoff() {
         transport.autoOpen = false
 
         coordinator.start("MAP1", "zone-alpha", "Alpha", null)
         transport.open()
-        clock.advanceBy(10_001L)
+        clock.advanceBy(12_000L)
 
         coordinator.checkAckLivenessForTesting()
 
+        assertEquals(0L, coordinator.getForcedReconnectCountForTesting())
+        assertEquals(1, transport.connectCount)
+
+        clock.advanceBy(18_002L)
+        coordinator.checkAckLivenessForTesting()
+
         assertEquals(1L, coordinator.getForcedReconnectCountForTesting())
-        awaitTrue("expected reconnect attempt after missed hello ack") {
-            transport.connectCount >= 2
-        }
+        assertEquals(2_000L, coordinator.getScheduledReconnectDelayMsForTesting())
+        assertEquals(4_000L, coordinator.getNextReconnectDelayMsForTesting())
+        assertEquals(1, transport.connectCount)
+        coordinator.stopBackgroundTimersForTesting()
     }
 
     @Test
@@ -1205,18 +1215,93 @@ class TrackerPeerCoordinatorTest {
 
         coordinator.start("MAP1", "zone-alpha", "Alpha", null)
         transport.open()
-        clock.advanceBy(9_999L)
+        clock.advanceBy(29_999L)
 
         coordinator.checkAckLivenessForTesting()
         coordinator.handleHelloAckForTesting()
 
         assertEquals(0L, coordinator.getForcedReconnectCountForTesting())
         assertEquals(1, transport.connectCount)
+        assertEquals(2_000L, coordinator.getNextReconnectDelayMsForTesting())
         assertEquals(PeerCoordinator.CoordinationIndicatorState.HEALTHY, coordinator.coordinationIndicatorState)
     }
 
     @Test
-    fun missedHeartbeatAck_forcesReconnectDeterministically() {
+    fun missedHelloAckBackoffSurvivesSocketOpenUntilHelloAck() {
+        transport.autoOpen = false
+
+        coordinator.start("MAP1", "zone-alpha", "Alpha", null)
+        transport.open()
+        clock.advanceBy(30_001L)
+        coordinator.checkAckLivenessForTesting()
+        assertEquals(2_000L, coordinator.getScheduledReconnectDelayMsForTesting())
+
+        coordinator.runScheduledReconnectForTesting()
+        transport.open()
+        assertEquals(4_000L, coordinator.getNextReconnectDelayMsForTesting())
+
+        clock.advanceBy(30_001L)
+        coordinator.checkAckLivenessForTesting()
+        assertEquals(4_000L, coordinator.getScheduledReconnectDelayMsForTesting())
+        assertEquals(8_000L, coordinator.getNextReconnectDelayMsForTesting())
+
+        coordinator.runScheduledReconnectForTesting()
+        transport.open()
+        coordinator.handleHelloAckForTesting()
+        assertEquals(2_000L, coordinator.getNextReconnectDelayMsForTesting())
+        coordinator.stopBackgroundTimersForTesting()
+    }
+
+    @Test
+    fun connectFailureBackoffIsNotResetBySocketOpen() {
+        transport.autoOpen = false
+
+        coordinator.start("MAP1", "zone-alpha", "Alpha", null)
+        transport.fail(503, "unavailable")
+        assertEquals(2_000L, coordinator.getScheduledReconnectDelayMsForTesting())
+        assertEquals(4_000L, coordinator.getNextReconnectDelayMsForTesting())
+
+        transport.fail(503, "duplicate")
+        assertEquals(2_000L, coordinator.getScheduledReconnectDelayMsForTesting())
+        assertEquals(4_000L, coordinator.getNextReconnectDelayMsForTesting())
+
+        coordinator.runScheduledReconnectForTesting()
+        transport.open()
+        assertEquals(4_000L, coordinator.getNextReconnectDelayMsForTesting())
+        transport.close(1006, "dropped")
+        assertEquals(4_000L, coordinator.getScheduledReconnectDelayMsForTesting())
+        assertEquals(8_000L, coordinator.getNextReconnectDelayMsForTesting())
+
+        coordinator.runScheduledReconnectForTesting()
+        transport.open()
+        coordinator.handleHelloAckForTesting()
+        transport.close(1006, "after ack")
+        assertEquals(2_000L, coordinator.getScheduledReconnectDelayMsForTesting())
+        coordinator.stopBackgroundTimersForTesting()
+    }
+
+    @Test
+    fun legacyImmediateAckRetry_closesHelloAtTenSecondsAndRedialsImmediately() {
+        TrackerPeerCoordinator.setLegacyImmediateAckRetryForTesting(true)
+        transport.autoOpen = false
+
+        coordinator.start("MAP1", "zone-alpha", "Alpha", null)
+        transport.open()
+        clock.advanceBy(10_001L)
+        coordinator.checkAckLivenessForTesting()
+
+        assertEquals(1L, coordinator.getForcedReconnectCountForTesting())
+        assertEquals(0L, coordinator.getScheduledReconnectDelayMsForTesting())
+        assertEquals(1, transport.connectCount)
+        coordinator.runScheduledReconnectForTesting()
+        assertEquals(2, transport.connectCount)
+        transport.open()
+        assertEquals(2_000L, coordinator.getNextReconnectDelayMsForTesting())
+        coordinator.stopBackgroundTimersForTesting()
+    }
+
+    @Test
+    fun missedHeartbeatAck_schedulesBackoffWithoutImmediateRedial() {
         transport.autoOpen = false
 
         coordinator.start("MAP1", "zone-alpha", "Alpha", null)
@@ -1228,9 +1313,9 @@ class TrackerPeerCoordinatorTest {
         coordinator.checkAckLivenessForTesting()
 
         assertEquals(1L, coordinator.getForcedReconnectCountForTesting())
-        awaitTrue("expected reconnect attempt after missed heartbeat ack") {
-            transport.connectCount >= 2
-        }
+        assertEquals(2_000L, coordinator.getScheduledReconnectDelayMsForTesting())
+        assertEquals(1, transport.connectCount)
+        coordinator.stopBackgroundTimersForTesting()
     }
 
     @Test
@@ -1303,9 +1388,9 @@ class TrackerPeerCoordinatorTest {
         coordinator.handleHeartbeatAckForTesting(8L, 0L)
 
         assertEquals(1L, coordinator.getForcedReconnectCountForTesting())
-        awaitTrue("expected reconnect attempt after mismatched heartbeat ack") {
-            transport.connectCount >= 2
-        }
+        assertEquals(2_000L, coordinator.getScheduledReconnectDelayMsForTesting())
+        assertEquals(1, transport.connectCount)
+        coordinator.stopBackgroundTimersForTesting()
     }
 
     @Test
@@ -1319,15 +1404,15 @@ class TrackerPeerCoordinatorTest {
         clock.advanceBy(10_001L)
 
         coordinator.checkAckLivenessForTesting()
-        awaitTrue("expected reconnect attempt after missed heartbeat ack") {
-            transport.connectCount >= 2
-        }
+        assertTrue(coordinator.isReconnectPendingForTesting())
         val forcedReconnectsAfterFirstCheck = coordinator.getForcedReconnectCountForTesting()
 
         coordinator.checkAckLivenessForTesting()
 
         assertEquals(forcedReconnectsAfterFirstCheck, coordinator.getForcedReconnectCountForTesting())
-        assertEquals(2, transport.connectCount)
+        assertEquals(1, transport.connectCount)
+        assertEquals(2_000L, coordinator.getScheduledReconnectDelayMsForTesting())
+        coordinator.stopBackgroundTimersForTesting()
     }
 
     @Test
@@ -1341,9 +1426,8 @@ class TrackerPeerCoordinatorTest {
         clock.advanceBy(10_001L)
 
         coordinator.checkAckLivenessForTesting()
-        awaitTrue("expected reconnect attempt after missed heartbeat ack") {
-            transport.connectCount >= 2
-        }
+        coordinator.runScheduledReconnectForTesting()
+        assertEquals(2, transport.connectCount)
 
         transport.open()
         coordinator.stopBackgroundTimersAndResetHeartbeatStateForTesting()

@@ -88,6 +88,7 @@ import org.ncssar.rid2caltopo.data.AppConfigStore
 import org.ncssar.rid2caltopo.data.CaltopoClient
 import org.ncssar.rid2caltopo.data.TrackerEnrollmentClient
 import org.ncssar.rid2caltopo.data.TrackerEnrollmentResult
+import org.ncssar.rid2caltopo.data.TrackerReconnectPrefs
 import org.ncssar.rid2caltopo.data.CaltopoClient.CTDebug
 import org.ncssar.rid2caltopo.data.CaltopoClient.CTError
 import org.ncssar.rid2caltopo.data.CaltopoClient.CTWarn
@@ -538,6 +539,9 @@ fun MainScreen(
     var bluetoothRidPeriodicRestart by remember {
         mutableStateOf(BluetoothRidTestPrefs.isPeriodicRestartEnabled(context))
     }
+    var legacyImmediateAckRetry by remember {
+        mutableStateOf(TrackerReconnectPrefs.current())
+    }
     var pendingDriveAction by remember { mutableStateOf<DriveSyncAction?>(null) }
     var pendingOrgExport by remember { mutableStateOf(false) }
     var pendingFaaExport by remember { mutableStateOf(false) }
@@ -634,6 +638,12 @@ fun MainScreen(
         if (openDeveloperToolsOnStart) {
             showTestingToolsDialog = true
             onDeveloperToolsOpened()
+        }
+    }
+    LaunchedEffect(showTestingToolsDialog) {
+        if (!showTestingToolsDialog) return@LaunchedEffect
+        legacyImmediateAckRetry = withContext(Dispatchers.IO) {
+            TrackerReconnectPrefs.preload(context)
         }
     }
 
@@ -2298,6 +2308,30 @@ fun MainScreen(
                     ) {
                         Text("LogLevel:$level")
                     }
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Button(
+                        onClick = {
+                            val enabled = !legacyImmediateAckRetry
+                            legacyImmediateAckRetry = enabled
+                            TrackerReconnectPrefs.setCached(enabled)
+                            coroutineScope.launch(Dispatchers.IO) {
+                                TrackerReconnectPrefs.persist(context, enabled)
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            if (legacyImmediateAckRetry) {
+                                "Ack retry: immediate (legacy)"
+                            } else {
+                                "Ack retry: backoff 2/4/8/10 s"
+                            }
+                        )
+                    }
+                    Text(
+                        "Backoff is the default. A late hello_ack stays on the open socket for 30 seconds, then reconnects on the ladder, which resets only after hello_ack. Immediate closes at 10 seconds and redials with no delay, which can storm a struggling tracker. Websocket messages are unchanged.",
+                        style = MaterialTheme.typography.bodySmall
+                    )
                     Spacer(modifier = Modifier.height(8.dp))
                     Button(
                         onClick = {

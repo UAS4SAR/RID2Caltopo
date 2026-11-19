@@ -396,7 +396,7 @@ final class AppleTrackerCoordinator: ObservableObject {
     private var connected = false
     private var helloAcknowledged = false
     private var trackerKnownUnavailable = false
-    private var reconnectDelay: Duration = .seconds(2)
+    private var reconnectPolicy = TrackerReconnectPolicy()
     private var receiveTask: Task<Void, Never>?
     private var receiveFailureTask: Task<Void, Never>?
     private var heartbeatTask: Task<Void, Never>?
@@ -964,6 +964,7 @@ final class AppleTrackerCoordinator: ObservableObject {
         lastTrafficShadowLogAtByKey.removeAll()
         let now = Self.nowMilliseconds
         protocolState.transportOpened(helloSentAtMilliseconds: now)
+        reconnectPolicy.onTransportOpened(legacyImmediateAckRetry: legacyImmediateAckRetryEnabled())
         firstSightingsSent.removeAll()
         status = .connecting
         statusDetail = "Waiting for tracker hello"
@@ -1025,7 +1026,7 @@ final class AppleTrackerCoordinator: ObservableObject {
                 switch event {
                 case let .helloAcknowledged(recommendedAppVersionCode, updateURL):
                     helloAcknowledged = true
-                    reconnectDelay = .seconds(2)
+                    reconnectPolicy.onHelloAcknowledged()
                     helloAcknowledgedAtMilliseconds = Self.nowMilliseconds
                     self.recommendedAppVersionCode = max(0, recommendedAppVersionCode ?? 0)
                     self.recommendedUpdateURL = updateURL.flatMap {
@@ -2411,8 +2412,14 @@ final class AppleTrackerCoordinator: ObservableObject {
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(5))
                 guard !Task.isCancelled, let self, generation == self.generation, self.connected else { return }
+                let legacyImmediateAckRetry = self.legacyImmediateAckRetryEnabled()
                 if let reason = self.protocolState.requiresReconnectForMissingAcknowledgement(
-                    nowMilliseconds: Self.nowMilliseconds
+                    nowMilliseconds: Self.nowMilliseconds,
+                    helloTimeoutMilliseconds: TrackerReconnectPolicy.helloAckTimeoutMilliseconds(
+                        socketOpen: true,
+                        legacyImmediateAckRetry: legacyImmediateAckRetry
+                    ),
+                    heartbeatTimeoutMilliseconds: TrackerReconnectPolicy.heartbeatAckTimeoutMilliseconds
                 ) {
                     self.reconnect(reason: reason)
                     return
@@ -2432,7 +2439,7 @@ final class AppleTrackerCoordinator: ObservableObject {
         status = .degraded
         statusDetail = detail
         AppleLog.error("TrackerPeer", detail)
-        scheduleReconnect()
+        scheduleReconnect(kind: .connectFailure)
     }
 
     private func socketFailed(generation: UUID, responseCode: Int?, detail: String) {
@@ -2454,19 +2461,31 @@ final class AppleTrackerCoordinator: ObservableObject {
         status = .degraded
         statusDetail = reason
         stopSocketOnly()
-        scheduleReconnect()
+        scheduleReconnect(kind: .ackTimeout)
     }
 
-    private func scheduleReconnect() {
+    private func scheduleReconnect(kind: TrackerReconnectPolicy.RetryKind) {
         guard coordinationRequired, reconnectTask == nil else { return }
-        let delay = reconnectDelay
-        reconnectDelay = min(reconnectDelay * 2, .seconds(10))
+        let legacyImmediateAckRetry = legacyImmediateAckRetryEnabled()
+        let delayMs = reconnectPolicy.takeRetryDelayMilliseconds(
+            kind: kind,
+            legacyImmediateAckRetry: legacyImmediateAckRetry
+        )
+        let delay = Duration.milliseconds(delayMs)
+        AppleLog.info(
+            "TrackerPeer",
+            "Reconnecting in \(delayMs) ms kind=\(kind == .ackTimeout ? "ackTimeout" : "connectFailure") legacyImmediateAckRetry=\(legacyImmediateAckRetry) nextDelayMs=\(reconnectPolicy.nextDelayMilliseconds)"
+        )
         reconnectTask = Task { [weak self] in
             try? await Task.sleep(for: delay)
             guard !Task.isCancelled, let self else { return }
             self.reconnectTask = nil
             self.connect()
         }
+    }
+
+    private func legacyImmediateAckRetryEnabled() -> Bool {
+        defaults.bool(forKey: TrackerReconnectPolicy.legacyImmediateAckRetryDefaultsKey)
     }
 
     private func recoverReauthenticationChallenge() {
@@ -2865,6 +2884,7 @@ final class AppleTrackerCoordinator: ObservableObject {
         stopSocketOnly()
         peers = []
         organizationConfigSyncInProgress = false
+        reconnectPolicy.reset()
         resetAcknowledgements()
     }
 
