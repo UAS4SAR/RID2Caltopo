@@ -573,16 +573,20 @@ public struct TrackerCoordinationProtocolState: Sendable {
 
     public func requiresReconnectForMissingAcknowledgement(
         nowMilliseconds: Int64,
-        timeoutMilliseconds: Int64 = 10_000
+        timeoutMilliseconds: Int64 = 10_000,
+        helloTimeoutMilliseconds: Int64? = nil,
+        heartbeatTimeoutMilliseconds: Int64? = nil
     ) -> String? {
+        let helloLimit = helloTimeoutMilliseconds ?? timeoutMilliseconds
+        let heartbeatLimit = heartbeatTimeoutMilliseconds ?? timeoutMilliseconds
         if helloSentAtMilliseconds > 0,
            helloAcknowledgedAtMilliseconds < helloSentAtMilliseconds,
-           nowMilliseconds - helloSentAtMilliseconds > timeoutMilliseconds {
+           nowMilliseconds - helloSentAtMilliseconds > helloLimit {
             return "missed hello_ack"
         }
         if lastHeartbeatSequenceSent > lastHeartbeatSequenceAcknowledged,
            lastHeartbeatSentAtMilliseconds > 0,
-           nowMilliseconds - lastHeartbeatSentAtMilliseconds > timeoutMilliseconds {
+           nowMilliseconds - lastHeartbeatSentAtMilliseconds > heartbeatLimit {
             return "missed heartbeat_ack seq=\(lastHeartbeatSequenceSent)"
         }
         return nil
