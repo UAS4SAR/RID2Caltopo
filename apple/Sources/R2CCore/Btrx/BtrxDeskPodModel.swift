@@ -184,6 +184,8 @@ public final class BtrxDeskPodModel {
         public var deskSilent = false
         /// Why that session ended.
         public var deskSilentReason: String?
+        /// The Desk Pod's power was fine just before that session ended (link drop, not power).
+        public var deskSilentPowerOk = false
         /// "Desk Pod restarted (power-on)" while fresh (the map chip), else nil.
         public var deskRestartNotice: String?
         /// The latest restart after a link drop, kept for the Desk Pod screen.
@@ -335,7 +337,11 @@ public final class BtrxDeskPodModel {
         guard self.sender === sender else { return }
         self.sender = nil
         log.debug(linkDropLine(reason: reason, nowMs: clock()))
-        if let line = power.onDrop(reason: reason, nowMs: clock()) { log.warn(line) }
+        let now = clock()
+        let powerOk = BtrxDeskPodPower.powerOkAtDrop(
+            health: deskHealthPower, healthAgeMs: deskHealthAtMs > 0 ? now - deskHealthAtMs : nil,
+            metrics: power.metrics, metricsAgeMs: power.metricsAtMs.map { now - $0 })
+        if let line = power.onDrop(reason: reason, nowMs: now, powerOk: powerOk) { log.warn(line) }
         if Self.activeSteps.contains(pairing.step) { fail(pairing.step, "The link to the Desk Pod was lost (\(reason)).") }
         if !pendingFilters.isEmpty { filterMessage = "No answer from the Drone Pod: the link to the Desk Pod was lost." }
         pendingFilters.removeAll()
@@ -805,6 +811,7 @@ public final class BtrxDeskPodModel {
         s.deskResetAtMs = deskResetAtMs
         s.deskSilent = power.silentSinceMs != nil
         s.deskSilentReason = power.silentReason
+        s.deskSilentPowerOk = power.silentPowerOk
         s.deskRestartNotice = power.restartNotice(nowMs: now)
         s.deskRestart = power.restart
         s.deskDeviceMetrics = power.metrics

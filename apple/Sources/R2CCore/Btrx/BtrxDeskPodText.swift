@@ -251,7 +251,7 @@ public enum BtrxDeskPodText {
     /// DeviceMetrics when it sends them. Same lines as Android.
     public static func deskPowerLines(_ s: Model.Snapshot) -> [String] {
         var out: [String] = []
-        if s.deskSilent { out.append(BtrxDeskPodPower.silent + (s.deskSilentReason.map { " (link lost: \($0))" } ?? "")) }
+        if s.deskSilent { out.append((s.deskSilentPowerOk ? BtrxDeskPodPower.linkDropped : BtrxDeskPodPower.silent) + (s.deskSilentReason.map { " (link lost: \($0))" } ?? "")) }
         if let r = s.deskRestart {
             let down = r.downMs.map { "; back about \($0 / 1000) s after the link dropped" } ?? ""
             out.append("\(r.text) \(ago(s.nowMs - r.atMs)) (uptime \(r.uptimeS) s\(down))")

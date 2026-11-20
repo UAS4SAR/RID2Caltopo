@@ -6,7 +6,9 @@ import Foundation
 ///
 /// - a session that ended because the Desk Pod stopped answering (supervision timeout, a read
 ///   or write that failed or got no answer) is "Desk Pod went silent — check its power" until
-///   the next session starts;
+///   the next session starts; when its last HEALTH or DeviceMetrics just before the drop showed
+///   good power (`powerOkAtDrop`) it is "Desk Pod link dropped — reconnecting" instead (Nov 20:
+///   7 drops after landing, with USB power and a full battery and the Desk Pod's uptime unbroken);
 /// - a Desk Pod HEALTH with uptime under `restartUptimeS` within `restartAfterDropMs` of a link
 ///   drop is "Desk Pod restarted (power-on)" (or the reset reason it reported), shown for
 ///   `restartShowMs`;
@@ -23,6 +25,15 @@ public final class BtrxDeskPodPower {
     }
 
     public static let silent = "Desk Pod went silent — check its power"
+    public static let linkDropped = "Desk Pod link dropped — reconnecting"
+    /// A Desk Pod HEALTH at most this old at the drop counts for `powerOkAtDrop`.
+    public static let powerHealthFreshMs: Int64 = 60_000
+    /// DeviceMetrics come less often (Meshtastic telemetry interval).
+    public static let powerMetricsFreshMs: Int64 = 15 * 60_000
+    /// A battery at or above this (mV) is fine without USB.
+    public static let powerOkVbatMv = 3600
+    /// battery_level at or above this is fine (101 = external power).
+    public static let powerOkLevel = 20
     public static let restarted = "Desk Pod restarted"
     /// A Desk Pod HEALTH with uptime below this soon after a drop: it restarted.
     public static let restartUptimeS: Int64 = 60
@@ -35,6 +46,10 @@ public final class BtrxDeskPodPower {
     public private(set) var silentSinceMs: Int64?
     /// Why that session ended.
     public private(set) var silentReason: String?
+    /// The Desk Pod's power was fine just before that session ended: the radio link dropped.
+    public private(set) var silentPowerOk = false
+    /// `silent` or `linkDropped` while silent, else nil.
+    public var silentText: String? { silentSinceMs == nil ? nil : (silentPowerOk ? Self.linkDropped : Self.silent) }
     /// The latest link drop not yet matched to a restart.
     private var lastDropAtMs: Int64?
     /// The latest restart seen after a drop.
@@ -46,18 +61,35 @@ public final class BtrxDeskPodPower {
     public init() {}
 
     /// The session ended. Returns the warning to log when the Desk Pod went silent, else nil.
-    public func onDrop(reason: String, nowMs: Int64) -> String? {
+    public func onDrop(reason: String, nowMs: Int64, powerOk: Bool = false) -> String? {
         lastDropAtMs = nowMs
         guard Self.isSilentDrop(reason) else { return nil }
         silentSinceMs = nowMs
         silentReason = reason
-        return "\(Self.silent) (\(reason))"
+        silentPowerOk = powerOk
+        return powerOk ? "\(Self.linkDropped) (\(reason); its power was fine)" : "\(Self.silent) (\(reason))"
     }
 
     /// A new session started: the Desk Pod answered a connect, so it is not silent.
     public func onSessionStarted() {
         silentSinceMs = nil
         silentReason = nil
+        silentPowerOk = false
+    }
+
+    /// The Desk Pod's power was fine just before a drop: a fresh HEALTH with USB power or a good
+    /// battery and no low-supply flags, or fresh DeviceMetrics with external power or a good
+    /// battery. Ages are nil when nothing was received.
+    public static func powerOkAtDrop(health: BtrxProtocol.HealthPower?, healthAgeMs: Int64?,
+                                     metrics: MeshtasticPhoneAPI.DeviceMetrics?, metricsAgeMs: Int64?) -> Bool {
+        if let h = health, let age = healthAgeMs, age >= 0, age <= powerHealthFreshMs {
+            let f = h.powerFlags
+            if f & (BtrxProtocol.PWR_VDD_LOW | BtrxProtocol.PWR_POF | BtrxProtocol.PWR_VBUS_LOST) != 0 { return false }
+            if f & BtrxProtocol.PWR_VBUS != 0 || h.vbatMv >= powerOkVbatMv { return true }
+        }
+        if let m = metrics, let age = metricsAgeMs, age >= 0, age <= powerMetricsFreshMs,
+           let level = m.batteryLevel, level >= powerOkLevel { return true }
+        return false
     }
 
     /// The Desk Pod's own live HEALTH. Returns the warning to log when it shows a restart after

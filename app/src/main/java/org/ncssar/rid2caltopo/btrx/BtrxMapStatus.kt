@@ -28,6 +28,7 @@ object BtrxMapStatus {
     const val UNAVAILABLE = "Bluetooth unavailable"
     /** The last Bluetooth session ended with the Desk Pod silent (Nov 17): most likely its power. */
     const val DESK_POD_SILENT = BtrxDeskPodPower.SILENT
+    const val DESK_POD_LINK_DROPPED = BtrxDeskPodPower.LINK_DROPPED
 
     /** No frame from the paired Drone Pod for this long while READY: the orange Active chip (iPad: 15 s too). */
     const val DRONE_POD_REPORT_MS = 15_000L
@@ -77,13 +78,15 @@ object BtrxMapStatus {
      * [dronePodReporting]: a Drone Pod report ([isDronePodReport]) in the last
      * [DRONE_POD_REPORT_MS]. [bluetoothOff]: the tablet's Bluetooth is turned off.
      * [deskPodSilent]: the last Bluetooth session ended with the Desk Pod silent and none has
-     * started since ([DESK_POD_SILENT] replaces "BT Down" / "Connecting"). [deskPodNotice]:
+     * started since ([DESK_POD_SILENT] replaces "BT Down" / "Connecting"; [DESK_POD_LINK_DROPPED]
+     * when [deskPodPowerOk]: its power was fine just before the drop). [deskPodNotice]:
      * "Desk Pod restarted (power-on)" while fresh; orange "BTRX: Active - <notice>" while READY.
      */
     fun status(
         setUp: Boolean, link: LinkStatus, bluetoothOff: Boolean, pausedForUsb: Boolean, dronePodReporting: Boolean,
         deskPodSilent: Boolean = false, deskPodNotice: String? = null,
         linkEnabled: Boolean = true, readyEarlier: Boolean = false, requestedAtMs: Long? = null, nowMs: Long = 0,
+        deskPodPowerOk: Boolean = false,
     ): Status? {
         when (visibility(setUp, linkEnabled && link.phase != LinkPhase.OFF, link.phase == LinkPhase.READY && !pausedForUsb, readyEarlier, requestedAtMs, nowMs)) {
             "hidden" -> return null
@@ -101,10 +104,10 @@ object BtrxMapStatus {
                 else -> Status(ACTIVE_NO_REPORTS, active = true, warning = true)
             }
         }
-        return Status(INACTIVE_PREFIX + reason(link, bluetoothOff, pausedForUsb, deskPodSilent), false)
+        return Status(INACTIVE_PREFIX + reason(link, bluetoothOff, pausedForUsb, deskPodSilent, deskPodPowerOk), false)
     }
 
-    private fun reason(link: LinkStatus, bluetoothOff: Boolean, pausedForUsb: Boolean, deskPodSilent: Boolean): String = when {
+    private fun reason(link: LinkStatus, bluetoothOff: Boolean, pausedForUsb: Boolean, deskPodSilent: Boolean, powerOk: Boolean): String = when {
         pausedForUsb || link.phase == LinkPhase.PAUSED_FOR_USB -> PAUSED_USB
         link.kind == LinkKind.USB -> CONNECTING
         link.phase == LinkPhase.OFF -> LINK_OFF
@@ -113,7 +116,7 @@ object BtrxMapStatus {
         link.phase == LinkPhase.UNAVAILABLE -> UNAVAILABLE
         link.phase == LinkPhase.CONFIGURING -> CONNECTING
         // RETRY_WAIT, SCANNING, BONDING, CONNECTING after the Desk Pod stopped answering.
-        deskPodSilent && link.kind == LinkKind.BLUETOOTH -> DESK_POD_SILENT
+        deskPodSilent && link.kind == LinkKind.BLUETOOTH -> if (powerOk) DESK_POD_LINK_DROPPED else DESK_POD_SILENT
         link.phase == LinkPhase.RETRY_WAIT -> BT_DOWN
         // SCANNING, BONDING, CONNECTING: the first connect, or reconnecting after a drop.
         link.failedAttempts > 0 -> BT_DOWN

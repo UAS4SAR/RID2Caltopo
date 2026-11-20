@@ -193,6 +193,8 @@ class BtrxDeskPodModel(
         val deskSilent: Boolean = false,
         /** Why that session ended. */
         val deskSilentReason: String? = null,
+        /** The Desk Pod's power was fine just before that session ended (link drop, not power). */
+        val deskSilentPowerOk: Boolean = false,
         /** "Desk Pod restarted (power-on)" while fresh (the map chip), else null. */
         val deskRestartNotice: String? = null,
         /** The latest restart after a link drop, kept for the Desk Pod screen. */
@@ -307,7 +309,12 @@ class BtrxDeskPodModel(
             if (this.sender !== sender) return
             this.sender = null
             log.debug(linkDropLine(reason, clock()))
-            power.onDrop(reason, clock())?.let { log.warn(it) }
+            val now = clock()
+            val powerOk = BtrxDeskPodPower.powerOkAtDrop(
+                deskHealthPower, if (deskHealthAtMs > 0L) now - deskHealthAtMs else null,
+                power.metrics, power.metricsAtMs?.let { now - it },
+            )
+            power.onDrop(reason, now, powerOk)?.let { log.warn(it) }
             if (pairing.step in ACTIVE_STEPS) fail(pairing.step, "The link to the Desk Pod was lost ($reason).")
             if (pendingFilters.isNotEmpty()) filterMessage = "No answer from the Drone Pod: the link to the Desk Pod was lost."
             pendingFilters.clear()
@@ -827,6 +834,7 @@ class BtrxDeskPodModel(
             deskResetAtMs = deskResetAtMs,
             deskSilent = power.silentSinceMs != null,
             deskSilentReason = power.silentReason,
+            deskSilentPowerOk = power.silentPowerOk,
             deskRestartNotice = power.restartNotice(now),
             deskRestart = power.restart,
             deskDeviceMetrics = power.metrics,

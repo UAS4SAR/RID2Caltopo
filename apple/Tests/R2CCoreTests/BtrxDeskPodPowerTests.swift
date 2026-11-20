@@ -171,6 +171,74 @@ final class BtrxDeskPodPowerTests: XCTestCase {
         XCTAssertEqual(BtrxDeskPodText.deskPowerLines(s), ["Desk Pod power: external (battery_level 101), 5.01 V, 5 s ago"])
     }
 
+    // MARK: Nov 20: link drops with good power
+
+    private func hp(vbat: Int, flags: Int) -> P.HealthPower {
+        P.HealthPower(vddMv: 3301, vddMinMv: 3290, vddhMv: 4180, vddhMinMv: 4012, vbatMv: vbat, powerFlags: flags, bootCause: 1, vbusDrops: 0)
+    }
+
+    func testPowerOkAtDropNeedsFreshGoodPower() {
+        let usb = hp(vbat: 0, flags: P.PWR_VBUS | P.PWR_USB_READY)
+        let batt = hp(vbat: 4150, flags: P.PWR_BATTERY)
+        let ok = BtrxDeskPodPower.powerOkAtDrop
+        XCTAssertTrue(ok(usb, 5_000, nil, nil))
+        XCTAssertTrue(ok(batt, 5_000, nil, nil))
+        XCTAssertFalse(ok(hp(vbat: 3400, flags: P.PWR_BATTERY), 5_000, nil, nil))
+        XCTAssertFalse(ok(usb, 61_000, nil, nil))
+        XCTAssertFalse(ok(hp(vbat: 0, flags: P.PWR_VBUS | P.PWR_VBUS_LOST), 5_000, nil, nil))
+        XCTAssertFalse(ok(hp(vbat: 4150, flags: P.PWR_VDD_LOW), 5_000, DM(batteryLevel: 101, voltage: 5, uptimeSeconds: 1), 1_000))
+        XCTAssertTrue(ok(nil, nil, DM(batteryLevel: 101, voltage: 5.01, uptimeSeconds: 30), 60_000))
+        XCTAssertTrue(ok(nil, nil, DM(batteryLevel: 64, voltage: 3.9, uptimeSeconds: 30), 60_000))
+        XCTAssertFalse(ok(nil, nil, DM(batteryLevel: 12, voltage: 3.5, uptimeSeconds: 30), 60_000))
+        XCTAssertFalse(ok(nil, nil, DM(batteryLevel: 101, voltage: 5, uptimeSeconds: 30), 16 * 60_000))
+        XCTAssertFalse(ok(nil, nil, nil, nil))
+    }
+
+    func testDropWithGoodPowerSaysReconnecting() {
+        let p = BtrxDeskPodPower()
+        XCTAssertEqual(p.onDrop(reason: "disconnected (status 8)", nowMs: 1_000, powerOk: true),
+                       "Desk Pod link dropped — reconnecting (disconnected (status 8); its power was fine)")
+        XCTAssertEqual(p.silentText, BtrxDeskPodPower.linkDropped)
+        XCTAssertTrue(p.silentPowerOk)
+        p.onSessionStarted()
+        XCTAssertNil(p.silentText)
+        XCTAssertFalse(p.silentPowerOk)
+        XCTAssertEqual(p.onDrop(reason: "disconnected (status 8)", nowMs: 2_000), "Desk Pod went silent — check its power (disconnected (status 8))")
+        XCTAssertEqual(p.silentText, BtrxDeskPodPower.silent)
+        XCTAssertNil(p.onDrop(reason: "USB detached", nowMs: 3_000, powerOk: true))
+    }
+
+    func testChipSaysLinkDroppedWhenPowerWasFine() {
+        let s = BtrxMapStatus.status(setUp: true, link: ble(.retryWait, 1), bluetoothOff: false, pausedForUSB: false, dronePodReporting: false,
+                                     deskPodSilent: true, readyEarlier: true, deskPodPowerOk: true)!
+        XCTAssertEqual(s.text, "BTRX: Inactive - Desk Pod link dropped — reconnecting")
+        XCTAssertFalse(s.active)
+        XCTAssertEqual(BtrxMapStatus.status(setUp: true, link: ble(.retryWait, 1), bluetoothOff: false, pausedForUSB: false, dronePodReporting: false,
+                                            deskPodSilent: false, readyEarlier: true, deskPodPowerOk: true)?.text, "BTRX: Inactive - BT Down")
+    }
+
+    /// Nov 20 A5: 7 drops after landing (status 133 / 8 / timeout), USB power and the Desk Pod's uptime unbroken.
+    func testModelSaysLinkDroppedAfterAGoodHealth() throws {
+        let log = BtrxTestLogger()
+        let model = Model(log: log, clock: { [unowned self] in self.now })
+        let first = FakeSender()
+        model.attach(first); model.onConfigured(localNode: desk)
+        var h = [UInt8](repeating: 0, count: P.healthPowerLen)
+        P.putU32(&h, 0, 845); h[6] = 3
+        for (o, v) in [(46, 3301), (48, 3290), (50, 4180), (52, 4012), (54, 4170)] { h[o] = UInt8(v & 0xFF); h[o + 1] = UInt8(v >> 8) }
+        h[56] = UInt8(P.PWR_VBUS | P.PWR_USB_READY | P.PWR_BATTERY); h[57] = 1; h[58] = 0
+        model.onFrame(try P.decodeFrame(P.encodeFrame(P.HEALTH, payload: h)),
+                      meta: BtrxRadioMeta(fromNode: desk, toNode: desk, rxRssi: 0, rxSnr: 0, arrivalMs: now, backlog: false))
+        now += 8_000
+        model.detach(first, reason: "disconnected (status 8)")
+        let s = model.snapshot()
+        XCTAssertTrue(s.deskSilent)
+        XCTAssertTrue(s.deskSilentPowerOk)
+        XCTAssertTrue(log.warns.contains("Desk Pod link dropped — reconnecting (disconnected (status 8); its power was fine)"), "\(log.warns)")
+        XCTAssertTrue(BtrxDeskPodText.deskPowerLines(s).contains("Desk Pod link dropped — reconnecting (link lost: disconnected (status 8))"))
+        XCTAssertFalse(BtrxDeskPodText.deskPowerLines(s).contains { $0.contains("check its power") })
+    }
+
     // MARK: phone API: standard DeviceMetrics
 
     private func deviceMetrics(_ level: Int?, _ volts: Float?, _ uptime: UInt64?) -> [UInt8] {

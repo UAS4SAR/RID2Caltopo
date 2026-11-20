@@ -108,7 +108,7 @@ object BtrxDeskPodText {
      * DeviceMetrics when it sends them. Same lines on the iPad.
      */
     fun deskPowerLines(s: BtrxDeskPodModel.Snapshot): List<String> = buildList {
-        if (s.deskSilent) add(BtrxDeskPodPower.SILENT + (s.deskSilentReason?.let { " (link lost: $it)" } ?: ""))
+        if (s.deskSilent) add((if (s.deskSilentPowerOk) BtrxDeskPodPower.LINK_DROPPED else BtrxDeskPodPower.SILENT) + (s.deskSilentReason?.let { " (link lost: $it)" } ?: ""))
         s.deskRestart?.let { r ->
             val down = r.downMs?.let { "; back about ${it / 1000} s after the link dropped" } ?: ""
             add("${r.text} ${ago(s.nowMs - r.atMs)} (uptime ${r.uptimeS} s$down)")

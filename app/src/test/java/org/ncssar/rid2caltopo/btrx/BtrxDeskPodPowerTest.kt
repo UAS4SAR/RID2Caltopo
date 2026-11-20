@@ -226,6 +226,73 @@ class BtrxDeskPodPowerTest {
         assertEquals(listOf("Desk Pod power: external (battery_level 101), 5.01 V, 5 s ago"), BtrxDeskPodText.deskPowerLines(s))
     }
 
+    // ---- Nov 20: link drops with good power ----
+
+    @Test
+    fun powerOkAtDropNeedsFreshGoodPower() {
+        val usb = P.HealthPower(3301, 3290, 4180, 4012, 0, P.PWR_VBUS or P.PWR_USB_READY, 1, 0)
+        val batt = P.HealthPower(3301, 3290, 4180, 4012, 4150, P.PWR_BATTERY, 1, 0)
+        val low = P.HealthPower(3301, 3290, 4180, 4012, 3400, P.PWR_BATTERY, 1, 0)
+        assertTrue(BtrxDeskPodPower.powerOkAtDrop(usb, 5_000, null, null))
+        assertTrue(BtrxDeskPodPower.powerOkAtDrop(batt, 5_000, null, null))
+        assertFalse(BtrxDeskPodPower.powerOkAtDrop(low, 5_000, null, null))
+        assertFalse(BtrxDeskPodPower.powerOkAtDrop(usb, 61_000, null, null))           // stale
+        assertFalse(BtrxDeskPodPower.powerOkAtDrop(usb.copy(powerFlags = P.PWR_VBUS or P.PWR_VBUS_LOST), 5_000, null, null))
+        assertFalse(BtrxDeskPodPower.powerOkAtDrop(batt.copy(powerFlags = P.PWR_VDD_LOW), 5_000, DeviceMetrics(101, 5f, 1), 1_000))
+        assertTrue(BtrxDeskPodPower.powerOkAtDrop(null, null, DeviceMetrics(101, 5.01f, 30), 60_000))
+        assertTrue(BtrxDeskPodPower.powerOkAtDrop(null, null, DeviceMetrics(64, 3.9f, 30), 60_000))
+        assertFalse(BtrxDeskPodPower.powerOkAtDrop(null, null, DeviceMetrics(12, 3.5f, 30), 60_000))
+        assertFalse(BtrxDeskPodPower.powerOkAtDrop(null, null, DeviceMetrics(101, 5f, 30), 16 * 60_000L))
+        assertFalse(BtrxDeskPodPower.powerOkAtDrop(null, null, null, null))
+    }
+
+    @Test
+    fun dropWithGoodPowerSaysReconnecting() {
+        val p = BtrxDeskPodPower()
+        assertEquals("Desk Pod link dropped — reconnecting (disconnected (status 8); its power was fine)",
+            p.onDrop("disconnected (status 8)", 1_000, powerOk = true))
+        assertEquals(BtrxDeskPodPower.LINK_DROPPED, p.silentText)
+        assertTrue(p.silentPowerOk)
+        p.onSessionStarted()
+        assertNull(p.silentText)
+        assertFalse(p.silentPowerOk)
+        assertEquals("Desk Pod went silent — check its power (disconnected (status 8))", p.onDrop("disconnected (status 8)", 2_000))
+        assertEquals(BtrxDeskPodPower.SILENT, p.silentText)
+        assertNull(p.onDrop("USB detached", 3_000, powerOk = true))
+    }
+
+    @Test
+    fun chipSaysLinkDroppedWhenPowerWasFine() {
+        val s = BtrxMapStatus.status(true, ble(LinkPhase.RETRY_WAIT, 1), false, false, false, deskPodSilent = true,
+            readyEarlier = true, deskPodPowerOk = true)!!
+        assertEquals("BTRX: Inactive - Desk Pod link dropped — reconnecting", s.text)
+        assertFalse(s.active)
+        assertEquals("BTRX: Inactive - BT Down", BtrxMapStatus.status(true, ble(LinkPhase.RETRY_WAIT, 1), false, false, false,
+            deskPodSilent = false, readyEarlier = true, deskPodPowerOk = true)!!.text)
+    }
+
+    /** Nov 20 A5: 7 drops after landing (status 133 / 8 / timeout), USB power and the Desk Pod's uptime unbroken. */
+    @Test
+    fun modelSaysLinkDroppedAfterAGoodHealth() {
+        val model = BtrxDeskPodModel(logger, clock = { now })
+        val first = FakeSender()
+        model.attach(first); model.onConfigured(desk)
+        val h = ByteArray(P.HEALTH_POWER_LEN).also {
+            P.putU32(it, 0, 845); it[6] = 3
+            for ((o, v) in listOf(46 to 3301, 48 to 3290, 50 to 4180, 52 to 4012, 54 to 4170)) { it[o] = (v and 0xFF).toByte(); it[o + 1] = (v shr 8).toByte() }
+            it[56] = (P.PWR_VBUS or P.PWR_USB_READY or P.PWR_BATTERY).toByte(); it[57] = 1; it[58] = 0
+        }
+        model.onFrame(P.decodeFrame(P.encodeFrame(P.HEALTH, payload = h)), BtrxClient.RadioMeta(desk, desk, 0, 0f, now, false))
+        now += 8_000
+        model.detach(first, "disconnected (status 8)")
+        val s = model.snapshot()
+        assertTrue(s.deskSilent)
+        assertTrue(s.deskSilentPowerOk)
+        assertTrue(logs.toString(), logs.contains("W Desk Pod link dropped — reconnecting (disconnected (status 8); its power was fine)"))
+        assertTrue(BtrxDeskPodText.deskPowerLines(s).contains("Desk Pod link dropped — reconnecting (link lost: disconnected (status 8))"))
+        assertFalse(BtrxDeskPodText.deskPowerLines(s).any { "check its power" in it })
+    }
+
     // ---- phone API: standard DeviceMetrics ----
 
     private fun deviceMetrics(level: Int?, volts: Float?, uptime: Long?) = ProtoWriter().apply {
