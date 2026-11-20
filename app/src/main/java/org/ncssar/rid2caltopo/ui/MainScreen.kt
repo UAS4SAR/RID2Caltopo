@@ -114,6 +114,7 @@ import org.ncssar.rid2caltopo.data.CaltopoPersonalSession
 import org.ncssar.rid2caltopo.data.CaltopoClient
 import org.ncssar.rid2caltopo.data.TrackerEnrollmentClient
 import org.ncssar.rid2caltopo.data.TrackerEnrollmentResult
+import org.ncssar.rid2caltopo.data.TrackerReconnectPrefs
 import org.ncssar.rid2caltopo.data.CaltopoClient.CTDebug
 import org.ncssar.rid2caltopo.data.CaltopoClient.CTError
 import org.ncssar.rid2caltopo.data.CaltopoClient.CTWarn
@@ -732,6 +733,12 @@ fun MainScreen(
     var bluetoothRidPeriodicRestart by remember {
         mutableStateOf(BluetoothRidTestPrefs.isPeriodicRestartEnabled(context))
     }
+    var legacyImmediateAckRetry by remember {
+        mutableStateOf(TrackerReconnectPrefs.current())
+    }
+    var reconnectJitterEnabled by remember {
+        mutableStateOf(TrackerReconnectPrefs.reconnectJitterEnabled())
+    }
     var pendingDriveAction by remember { mutableStateOf<DriveSyncAction?>(null) }
     var driveSyncInProgress by remember { mutableStateOf(false) }
     var driveRestoreEligibilityLoaded by remember { mutableStateOf(false) }
@@ -838,6 +845,15 @@ fun MainScreen(
             showTestingToolsDialog = true
             onDeveloperToolsOpened()
         }
+    }
+    LaunchedEffect(showTestingToolsDialog) {
+        if (!showTestingToolsDialog) return@LaunchedEffect
+        val loaded = withContext(Dispatchers.IO) {
+            TrackerReconnectPrefs.preload(context)
+            TrackerReconnectPrefs.reconnectJitterEnabled() to TrackerReconnectPrefs.current()
+        }
+        reconnectJitterEnabled = loaded.first
+        legacyImmediateAckRetry = loaded.second
     }
 
     LaunchedEffect(nextProfileExpiry) {
@@ -2395,6 +2411,48 @@ fun MainScreen(
                     ) {
                         Text("LogLevel:$level")
                     }
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Button(
+                        onClick = {
+                            val enabled = !legacyImmediateAckRetry
+                            legacyImmediateAckRetry = enabled
+                            TrackerReconnectPrefs.setCached(enabled)
+                            coroutineScope.launch(Dispatchers.IO) {
+                                TrackerReconnectPrefs.persist(context, enabled)
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            if (legacyImmediateAckRetry) {
+                                "Ack retry: immediate (legacy)"
+                            } else {
+                                "Ack retry: backoff 2/4/8/10 s"
+                            }
+                        )
+                    }
+                    Text(
+                        "Backoff is the default. A late hello_ack stays on the open socket for 30 seconds, then reconnects on the ladder, which resets only after hello_ack. Immediate closes at 10 seconds and redials with no delay, which can storm a struggling tracker. Websocket messages are unchanged.",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Button(
+                        onClick = {
+                            val enabled = !reconnectJitterEnabled
+                            reconnectJitterEnabled = enabled
+                            TrackerReconnectPrefs.setReconnectJitterCached(enabled)
+                            coroutineScope.launch(Dispatchers.IO) {
+                                TrackerReconnectPrefs.persistReconnectJitter(context, enabled)
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(if (reconnectJitterEnabled) "Reconnect jitter: on" else "Reconnect jitter: off")
+                    }
+                    Text(
+                        "On is the default. Each reconnect waits a random time from half of the current 2/4/8/10 second step up to that step, and never more than 10 seconds. The first redial after a tracker restart is spread across 1–2 seconds instead of every tablet waiting exactly 2 seconds. Off restores the fixed ladder.",
+                        style = MaterialTheme.typography.bodySmall
+                    )
                     Spacer(modifier = Modifier.height(8.dp))
                     Button(
                         onClick = {
