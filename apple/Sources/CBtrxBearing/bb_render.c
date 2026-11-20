@@ -80,7 +80,8 @@ static void publish_fine(btrx_bearing_t *h, bb_snap_t *sn, const int32_t *draw_s
         if (!lit) continue;
         any = true;
         const bb_source_t *s = &h->sources[slot];
-        float dim = h->focus_key && s->key != h->focus_key ? h->cfg.focus_dim : 1.0f;
+        float dim = 1.0f;
+        if (bb_focus_active(h) && !bb_focus_match(h, s)) dim = h->focus_hide ? 0.0f : h->cfg.focus_dim;
         composite_rgba(sn->fine_rgba, N, alpha, bb_palette(s->colour), dim);
     }
     if (!any) return;
@@ -197,11 +198,16 @@ void bb_publish(btrx_bearing_t *h, int64_t now_us) {
         o->effective_reports = eff;
         o->peak_alpha = peak;
         o->alpha = alpha;
-        if (in_window > 0) bb_estimate(h, h->scr_e, eff, yaw_span, baseline, &o->estimate);
+        if (in_window > 0) {
+            bb_cover_penalty(h, s, now_us, h->scr_e);
+            bb_estimate(h, h->scr_e, eff, yaw_span, baseline, &o->estimate);
+        }
         else { memset(&o->estimate, 0, sizeof o->estimate); o->estimate.second_lat_deg = o->estimate.second_lon_deg = NAN; }
         /* suggested own aircraft: no estimate until the user decides (Nov 16) */
         if (s->flags & BTRX_BEARING_SRC_OWN_SUSPECT) o->estimate.valid = false;
         s->est_valid = o->estimate.valid;
+        o->company_id = s->company_id;
+        o->focus_match = bb_focus_active(h) && bb_focus_match(h, s);
         o->pinned = o->estimate.valid && 2.0f * o->estimate.axis_major_1s_m <= h->cfg.pin_max_axis_2s_m;
         o->latest_ray = s->ray;
         o->last_rssi_dbm = s->last_rssi;
@@ -222,6 +228,13 @@ void bb_publish(btrx_bearing_t *h, int64_t now_us) {
         }
     }
     pub->focus_key = h->focus_key;
+    pub->focus_class_mask = h->focus_class_mask;
+    pub->focus_company_id = h->focus_company;
+    pub->focus_hide_others = h->focus_hide;
+    pub->focus_active = bb_focus_active(h);
+    pub->launch_valid = h->launch_set;
+    if (h->launch_set) bb_latlon(h, h->launch_e, h->launch_n, &pub->launch_lat_deg, &pub->launch_lon_deg);
+    else pub->launch_lat_deg = pub->launch_lon_deg = NAN;
     pub->source_count = n_src;
 
     /* RGBA: unmuted, unignored sources "over" in order of last heard (most recent on top) */
@@ -237,7 +250,8 @@ void bb_publish(btrx_bearing_t *h, int64_t now_us) {
     for (int32_t d = 0; d < nd; d++) {
         const btrx_bearing_source_t *o = &pub->sources[draw[d]];
         draw_slot[d] = order[draw[d]];
-        float dim = h->focus_key && o->key != h->focus_key ? h->cfg.focus_dim : 1.0f;
+        float dim = 1.0f;
+        if (bb_focus_active(h) && !o->focus_match) dim = h->focus_hide ? 0.0f : h->cfg.focus_dim;
         composite_rgba(sn->rgba, N, o->alpha, o->rgb, dim);
     }
     publish_fine(h, sn, draw_slot, nd, now_us);

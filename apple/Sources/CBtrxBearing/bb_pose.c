@@ -70,6 +70,20 @@ void bb_pose_push(btrx_bearing_t *h, const btrx_bearing_pose_t *in) {
             p->pos_head = (p->pos_head + 1) % p->pos_cap;
             if (p->pos_n < p->pos_cap) p->pos_n++;
         }
+        if (!h->is_fine) {
+            double le, ln;
+            bb_local(h, in->lat_deg, in->lon_deg, &le, &ln);
+            bb_cover_add(h, (float)le, (float)ln);
+            /* launch point: the first position with a known AGL, if the drone is on the ground */
+            if (!h->launch_done && (in->mask & BTRX_BEARING_POSE_AGL) && isfinite(in->agl_m)) {
+                h->launch_done = true;
+                if (in->agl_m <= h->cfg.launch_max_agl_m) {
+                    h->launch_set = true;
+                    h->launch_e = (float)le; h->launch_n = (float)ln;
+                    h->launch_t = in->t_us;
+                }
+            }
+        }
         p->last_pos_push_us = in->push_us ? in->push_us : in->t_us;
         if (in->push_us) bb_lag_input(h, 1, in->push_us - in->t_us);
     }
@@ -208,4 +222,100 @@ bool bb_drone_speed(btrx_bearing_t *h, int64_t t_rep, float *mps) {
     bb_local(h, b->lat, b->lon, &eb, &nb);
     *mps = (float)(hypot(eb - ea, nb - na) / ((double)(b->t - a->t) / 1e6));
     return true;
+}
+
+/* ---------- coverage (Nov 20) ---------- */
+void bb_cover_add(btrx_bearing_t *h, float e, float n) {
+    if (!h->cover_e) return;
+    if (h->cover_n_pts > 0) {
+        int32_t k = h->cover_n_pts - 1;
+        if (hypotf(e - h->cover_e[k], n - h->cover_n[k]) < BB_COVER_STEP_M) return;
+    }
+    if (h->cover_n_pts == h->cover_cap) {          /* full: keep every other point */
+        int32_t j = 0;
+        for (int32_t i = 0; i < h->cover_n_pts; i += 2, j++) { h->cover_e[j] = h->cover_e[i]; h->cover_n[j] = h->cover_n[i]; }
+        h->cover_n_pts = j;
+    }
+    h->cover_e[h->cover_n_pts] = e;
+    h->cover_n[h->cover_n_pts] = n;
+    h->cover_n_pts++;
+    h->cover_dist_pts = -1;
+}
+
+/* Distance (m) from every coarse view cell to the nearest track point: two-pass chamfer
+ * (3-4) over the view, seeded with the track points inside it. False: no point inside. */
+static bool cover_build(btrx_bearing_t *h) {
+    int32_t W = h->cfg.grid_cells, N = W * W;
+    if (h->cover_dist_pts == h->cover_n_pts && h->cover_vtx0 == h->vtx0 && h->cover_vty0 == h->vty0)
+        return h->cover_dist_pts > 0;
+    const float big = 1e9f, cell = h->cfg.cell_m;
+    float *d = h->cover_dist;
+    for (int32_t c = 0; c < N; c++) d[c] = big;
+    double west = h->vtx0 * BB_TILE * (double)cell, south = h->vty0 * BB_TILE * (double)cell;
+    int32_t seeds = 0;
+    for (int32_t i = 0; i < h->cover_n_pts; i++) {
+        int32_t col = (int32_t)floor((h->cover_e[i] - west) / cell);
+        int32_t rowS = (int32_t)floor((h->cover_n[i] - south) / cell);
+        if (col < 0 || rowS < 0 || col >= W || rowS >= W) continue;
+        d[(size_t)(W - 1 - rowS) * W + col] = 0;   /* row 0 = north */
+        seeds++;
+    }
+    h->cover_dist_pts = seeds > 0 ? h->cover_n_pts : 0;
+    h->cover_vtx0 = h->vtx0; h->cover_vty0 = h->vty0;
+    if (!seeds) return false;
+    const float a = 1.0f, b = 1.41421356f;          /* in cells */
+    for (int32_t r = 0; r < W; r++)
+        for (int32_t c = 0; c < W; c++) {
+            float v = d[r * W + c];
+            if (c > 0 && d[r * W + c - 1] + a < v) v = d[r * W + c - 1] + a;
+            if (r > 0) {
+                if (d[(r - 1) * W + c] + a < v) v = d[(r - 1) * W + c] + a;
+                if (c > 0 && d[(r - 1) * W + c - 1] + b < v) v = d[(r - 1) * W + c - 1] + b;
+                if (c < W - 1 && d[(r - 1) * W + c + 1] + b < v) v = d[(r - 1) * W + c + 1] + b;
+            }
+            d[r * W + c] = v;
+        }
+    for (int32_t r = W - 1; r >= 0; r--)
+        for (int32_t c = W - 1; c >= 0; c--) {
+            float v = d[r * W + c];
+            if (c < W - 1 && d[r * W + c + 1] + a < v) v = d[r * W + c + 1] + a;
+            if (r < W - 1) {
+                if (d[(r + 1) * W + c] + a < v) v = d[(r + 1) * W + c] + a;
+                if (c < W - 1 && d[(r + 1) * W + c + 1] + b < v) v = d[(r + 1) * W + c + 1] + b;
+                if (c > 0 && d[(r + 1) * W + c - 1] + b < v) v = d[(r + 1) * W + c - 1] + b;
+            }
+            d[r * W + c] = v;
+        }
+    for (int32_t c = 0; c < N; c++) d[c] *= cell;
+    return true;
+}
+
+/* Lower the evidence in cells far from the track: cover_nats_per_100m per 100 m beyond
+ * cover_free_m. Used for the estimate only (the shading and the latest ray are unchanged). */
+void bb_cover_penalty(btrx_bearing_t *h, const bb_source_t *s, int64_t now_us, float *e) {
+    int32_t W = h->cfg.grid_cells, N = W * W;
+    if (h->cfg.cover_nats_per_100m > 0 && h->cover_dist && cover_build(h)) {
+        const float k = h->cfg.cover_nats_per_100m / 100.0f, free_m = h->cfg.cover_free_m;
+        for (int32_t c = 0; c < N; c++) {
+            float over = h->cover_dist[c] - free_m;
+            if (over > 0) e[c] -= k * over;
+        }
+    }
+    /* range cap: heard strong while low bounds the range from that point */
+    if (s && s->near_valid && h->cfg.range_cap_nats_per_100m > 0
+            && now_us - s->near_t <= (int64_t)((double)h->fade_total_s * 1e6)) {
+        float r = bb_range_m(h, (float)s->near_rssi) * h->cfg.range_cap_margin;
+        if (r < h->cfg.range_cap_min_m) r = h->cfg.range_cap_min_m;
+        if (r > h->cfg.footprint_m) r = h->cfg.footprint_m;
+        const float k = h->cfg.range_cap_nats_per_100m / 100.0f, cell = h->cfg.cell_m;
+        double west = h->vtx0 * BB_TILE * (double)cell, south = h->vty0 * BB_TILE * (double)cell;
+        for (int32_t row = 0; row < W; row++) {
+            float y = (float)(south + ((double)(W - 1 - row) + 0.5) * cell) - s->near_n;
+            for (int32_t col = 0; col < W; col++) {
+                float x = (float)(west + ((double)col + 0.5) * cell) - s->near_e;
+                float over = sqrtf(x * x + y * y) - r;
+                if (over > 0) e[(size_t)row * W + col] -= k * over;
+            }
+        }
+    }
 }

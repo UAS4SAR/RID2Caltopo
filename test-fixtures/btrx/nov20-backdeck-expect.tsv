@@ -1,0 +1,12 @@
+# Expected engine results for nov20-backdeck.bbv1 (tools/btrx_bearing_test test_nov20).
+# Takeoff point 39.153087,-121.132797 (DJI track). The Garmin watch sat on a generator on the back
+# deck; its spot is from the drone position at its strongest reading (-48 dBm at 13:17:36 PST,
+# 16 m N of takeoff, 6 m AGL), not surveyed.
+# kind: estimate = valid estimate within tol_m of lat,lon at the end; launch = flagged at the launch
+# point (LAUNCH and, by default, MUTED); class = engine class and company id.
+# short_id	key	kind	lat	lon	tol_m	class	company	note
+WwlbDt	5b095b0ed66d178d	estimate	39.1532309	-121.1327970	20	2	135	Garmin watch (wearable, 0x0087)
+6N3IwO	e8ddc8c0e5b630a5	launch	-	-	-	-	-	device at the launch point (-18 dBm at the pod before takeoff)
+Gs1W3K	1acd56dcaeab3ff6	launch	-	-	-	-	-	device at the launch point
+0DEepq	d0311ea6a1e7eded	launch	-	-	-	-	-	device at the launch point
+CCGqDo	0821aa0e8b8a94e2	class	-	-	-	6	6	Microsoft computer (pod class 5 = computer)

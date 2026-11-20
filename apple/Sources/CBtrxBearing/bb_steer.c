@@ -122,12 +122,24 @@ btrx_bearing_status_t btrx_bearing_parse_health(const uint8_t *p, size_t len, bt
     return BTRX_BEARING_OK;
 }
 
+bool bb_focus_active(const btrx_bearing_t *h) {
+    return h->focus_key || h->focus_class_mask || h->focus_company >= 0;
+}
+
+/* Focused: the focus key, or the focus filter's class or company. False with no focus. */
+bool bb_focus_match(const btrx_bearing_t *h, const bb_source_t *s) {
+    if (h->focus_key && s->key == h->focus_key) return true;
+    if (s->cls < 32 && (h->focus_class_mask & (1u << s->cls))) return true;
+    return h->focus_company >= 0 && s->company_id == (uint16_t)h->focus_company;
+}
+
 uint8_t bb_class_from_pod(uint8_t pod) {
     switch (pod) {
     case 1: return BTRX_BEARING_CLASS_PHONE;
     case 2: return BTRX_BEARING_CLASS_WATCH;
     case 3: return BTRX_BEARING_CLASS_TAG;
     case 4: return BTRX_BEARING_CLASS_AUDIO;
+    case 5: return BTRX_BEARING_CLASS_COMPUTER;
     default: return BTRX_BEARING_CLASS_UNKNOWN;
     }
 }
@@ -262,7 +274,8 @@ static int32_t evict_choice(const btrx_bearing_t *h, int64_t t_us) {
     int best_tier = 0;
     for (int32_t i = 0; i < h->cfg.max_sources; i++) {
         const bb_source_t *s = &h->sources[i];
-        bool focused = h->focus_key && (s->key == h->focus_key);
+        /* focused (key or filter): kept while any other slot can go (Nov 20) */
+        bool focused = bb_focus_match(h, s);
         int tier = focused ? 2 : (s->est_valid ? 1 : 0);
         float score = source_evidence(h, s, t_us) + (t_us - s->last_us < 30000000 ? 1.0f : 0.0f);
         if (best == BB_NONE || tier < best_tier || (tier == best_tier && (score < best_score
@@ -334,6 +347,10 @@ static int32_t new_source(btrx_bearing_t *h, uint64_t key, bool provisional, int
     s->last_rssi = BTRX_BEARING_RSSI_NOT_HEARD;
     for (int32_t i = 0; i < h->cfg.buckets_per_source; i++) { memset(&s->buckets[i], 0, sizeof s->buckets[i]); s->buckets[i].tile_head = BB_NONE; }
     s->ray.mirror_true_deg = NAN;
+    s->company_id = 0;
+    /* flagged at the launch point before an eviction: flagged (and muted) again; the app's
+       own flags (pending) come after, so an unmute stays */
+    if (bb_launch_key(h, key)) s->flags |= BTRX_BEARING_SRC_LAUNCH | (h->launch_auto_mute ? BTRX_BEARING_SRC_MUTED : 0u);
     apply_pending_flags(h, s);
     return slot;
 }
@@ -346,6 +363,10 @@ static void merge_into(btrx_bearing_t *h, int32_t dst, int32_t src) {
     if (s->first_us < d->first_us) d->first_us = s->first_us;
     if (s->last_us > d->last_us) { d->last_us = s->last_us; d->ray = s->ray; d->heard_order = s->heard_order; }
     merge_class(d, s->cls);
+    if (!d->company_id) d->company_id = s->company_id;
+    if (s->near_valid && (!d->near_valid || s->near_rssi > d->near_rssi)) {
+        d->near_valid = true; d->near_e = s->near_e; d->near_n = s->near_n; d->near_rssi = s->near_rssi; d->near_t = s->near_t;
+    }
     d->flags |= s->flags & BTRX_BEARING_SRC_IGNORED;
     for (int32_t i = 0; i < h->div.n; i++) if (h->div.item[i].slot == src) h->div.item[i].slot = dst;
     if (h->fine) {
@@ -450,6 +471,7 @@ int32_t bb_resolve_entry(btrx_bearing_t *h, const btrx_bearing_report_source_t *
         }
     }
     if (rs->src_id) h->sources[slot].src_id = rs->src_id;
+    if (rs->company_id) h->sources[slot].company_id = rs->company_id;
     merge_class(&h->sources[slot], bb_class_from_pod(rs->pod_dev_class));
     return slot;
 }

@@ -15,7 +15,7 @@
 extern "C" {
 #endif
 
-#define BTRX_BEARING_ABI_VERSION 2u
+#define BTRX_BEARING_ABI_VERSION 3u
 /* 32 (was 8, Nov 16 watch test: an 8-slot LRU erased the watch's history). */
 #define BTRX_BEARING_MAX_SOURCES 32
 #define BTRX_BEARING_TRAIL_MAX 600            /* strength trail points of the focused source */
@@ -45,6 +45,7 @@ typedef enum {
     BTRX_BEARING_CLASS_HEARING_AID = 3,
     BTRX_BEARING_CLASS_TAG = 4,
     BTRX_BEARING_CLASS_AUDIO = 5,    /* pod "audio": earbuds, headphones, maybe hearing aid */
+    BTRX_BEARING_CLASS_COMPUTER = 6, /* pod "computer": laptops, desktops, tablets (ABI 3) */
 } btrx_bearing_class_t;
 
 typedef int64_t (*btrx_bearing_now_us_fn)(void *ctx);           /* host monotonic */
@@ -56,7 +57,7 @@ typedef struct {
     /* grid */
     float cell_m;                    /* 10 */
     int32_t grid_cells;              /* 192 (square, multiple of 16) */
-    int32_t max_sources;             /* 24 (<= BTRX_BEARING_MAX_SOURCES); full: evict least evidence */
+    int32_t max_sources;             /* 32 (<= BTRX_BEARING_MAX_SOURCES); full: evict least evidence */
     float footprint_m;               /* 400 */
     float recentre_margin_m;         /* 300 */
     /* model */
@@ -100,7 +101,7 @@ typedef struct {
     /* estimate */
     int32_t est_min_reports;         /* 10 */
     float est_min_yaw_span_deg, est_min_baseline_m; /* 60, 50 */
-    float est_max_axis_2s_m;         /* 200 */
+    float est_max_axis_2s_m;         /* 100 (was 200 before Nov 20: weak sources slid ~200 m along the ray) */
     float second_peak_mass;          /* 0.25 */
     /* work */
     int32_t max_reports_per_tick;    /* 4 frames */
@@ -114,6 +115,28 @@ typedef struct {
     float range_exponent;            /* 2.2: path-loss exponent */
     float range_margin;              /* 3: reach = range * margin (about +10 dB): drawn wedge length */
     float range_min_m;               /* 30: reach floor; footprint_m is the ceiling */
+    /* range cap (Nov 20, ABI 3): a strong report while low bounds the coarse footprint, so a
+       nearby source's evidence cannot slide toward the footprint edge. Off: range_cap_dbm >= 0. */
+    float range_cap_dbm;             /* -55: reports this strong (strongest patch mean) ... */
+    float range_cap_max_agl_m;       /* 40: ... while the drone is this low or lower ... */
+    float range_cap_margin;          /* 4: ... use footprint = clamp(range * margin, range_cap_min_m, footprint_m) */
+    float range_cap_min_m;           /* 25 */
+    float range_cap_nats_per_100m;   /* 20: the estimate's evidence is lowered by this per 100 m
+                                        beyond the capped range from where the drone heard the
+                                        source strongest while low (fade window); 0 = off */
+    /* coverage (Nov 20, ABI 3): the estimate's evidence is reduced in cells far from anywhere
+       the drone flew this session (the grid cannot tell "far" from "beyond the track"). */
+    float cover_free_m;              /* 60: no penalty within this distance of the track */
+    float cover_nats_per_100m;       /* 3: penalty per 100 m beyond cover_free_m; 0 = off */
+    /* launch site (Nov 20, ABI 3): sources heard at least launch_rssi_dbm while the drone sits
+       within launch_radius_m of its first ground position (AGL <= launch_max_agl_m), during
+       the first launch_window_s of the session, get BTRX_BEARING_SRC_LAUNCH and, with
+       launch_auto_mute, BTRX_BEARING_SRC_MUTED (the app can unmute). */
+    float launch_rssi_dbm;           /* -70 */
+    float launch_radius_m;           /* 15 */
+    float launch_max_agl_m;          /* 5 */
+    float launch_window_s;           /* 300 */
+    bool launch_auto_mute;           /* true */
     /* own aircraft suggestion: stronger than own_rssi_dbm for own_hold_ms while the drone
        moved own_moved_m sets BTRX_BEARING_SRC_OWN_SUSPECT (a suggestion, never a mute) */
     float own_rssi_dbm;              /* -40 */
@@ -265,6 +288,8 @@ enum {
     BTRX_BEARING_SRC_OWN_SUSPECT = 1u << 2, /* set by the layer: looks like it rides on the drone;
                                                its estimate is not drawn until decided */
     BTRX_BEARING_SRC_OWN_CLEARED = 1u << 3, /* set by the app: "not on the drone"; no suggestion */
+    BTRX_BEARING_SRC_LAUNCH = 1u << 4,      /* set by the layer: strong at the launch point
+                                               before takeoff (ABI 3); muted if launch_auto_mute */
 };
 /* Sets or clears `mask` bits to `value` for each key (panel rows, "Mute all"). */
 btrx_bearing_status_t btrx_bearing_set_source_flags(btrx_bearing_t *h, const uint64_t *keys,
@@ -289,6 +314,16 @@ btrx_bearing_status_t btrx_bearing_set_stable_src_ids(btrx_bearing_t *h, bool st
 /* Focus (any thread, next tick): the other sources' shading at focus_dim; the snapshot carries
  * the focused source's strength trail. key 0 clears. */
 btrx_bearing_status_t btrx_bearing_set_focus(btrx_bearing_t *h, uint64_t key);
+
+/* Focus filter (ABI 3; any thread, next tick): sources whose class bit (1u << class) is in
+ * class_mask, or whose company id equals company_id (-1 = none), are focused along with the
+ * focus key. hide_others draws the other sources not at all (alpha 0) instead of focus_dim.
+ * Focused sources are never evicted while another slot can go. All zero/-1/false clears. */
+btrx_bearing_status_t btrx_bearing_set_focus_filter(btrx_bearing_t *h, uint32_t class_mask,
+        int32_t company_id, bool hide_others);
+
+/* Launch-site auto mute on or off (ABI 3; any thread, next tick). Off does not unmute. */
+btrx_bearing_status_t btrx_bearing_set_launch_auto_mute(btrx_bearing_t *h, bool on);
 
 /* Work */
 btrx_bearing_status_t btrx_bearing_tick(btrx_bearing_t *h, int64_t now_us, bool *published);
@@ -347,6 +382,8 @@ typedef struct {
     bool label_valid;                /* label point inside the shaded area */
     double label_lat_deg, label_lon_deg;
     bool pinned;                     /* estimate valid and 2 sigma <= pin_max_axis_2s_m */
+    uint16_t company_id;             /* Bluetooth SIG company id from the pod; 0 = unknown (ABI 3) */
+    bool focus_match;                /* focus active and this source is focused (ABI 3) */
 } btrx_bearing_source_t;
 
 typedef enum {
@@ -397,6 +434,12 @@ typedef struct {
     btrx_bearing_source_t sources[BTRX_BEARING_MAX_SOURCES];
     btrx_bearing_stats_t stats;
     uint64_t focus_key;              /* 0 = none; other sources at focus_dim alpha */
+    uint32_t focus_class_mask;       /* ABI 3: focus filter in effect (see set_focus_filter) */
+    int32_t focus_company_id;        /* -1 = none */
+    bool focus_hide_others;
+    bool focus_active;               /* key or filter set */
+    bool launch_valid;               /* ABI 3: launch point known */
+    double launch_lat_deg, launch_lon_deg;
     /* fine layer (fine_cell_m), only reports while low and slow or strong; draw over rgba */
     bool fine_valid;
     int32_t fine_width, fine_height;

@@ -12,7 +12,7 @@ void btrx_bearing_config_default(btrx_bearing_config_t *c) {
     memset(c, 0, sizeof *c);
     c->struct_size = (uint32_t)sizeof *c;
     c->abi_version = BTRX_BEARING_ABI_VERSION;
-    c->cell_m = 10; c->grid_cells = 192; c->max_sources = 24;
+    c->cell_m = 10; c->grid_cells = 192; c->max_sources = 32;
     c->footprint_m = 400; c->recentre_margin_m = 300;
     c->sigma_sample_db = 5.5f; c->sigma_c0_db = 0.5f; c->c0_db = 0; c->sigma_model_db = 2;
     c->student_nu = 4; c->p_far = 0.05f; c->scan_floor_dbm = -100; c->hpbw_deg = 90;
@@ -30,10 +30,15 @@ void btrx_bearing_config_default(btrx_bearing_config_t *c) {
     c->yaw_latency_ms = 0; c->default_agl_m = 30; c->sync_window_ms = 120000;
     c->lag_trace = false; c->lag_history = 600;
     c->est_min_reports = 10; c->est_min_yaw_span_deg = 60; c->est_min_baseline_m = 50;
-    c->est_max_axis_2s_m = 200; c->second_peak_mass = 0.25f;
+    c->est_max_axis_2s_m = 100; c->second_peak_mass = 0.25f;
     c->max_reports_per_tick = 4; c->publish_interval_ms = 1000;
     c->extra_min_sightings = 2; c->extra_sighting_window_ms = 60000;
     c->range_ref_dbm = -38; c->range_exponent = 2.2f; c->range_margin = 3; c->range_min_m = 30;
+    c->range_cap_dbm = -55; c->range_cap_max_agl_m = 40; c->range_cap_margin = 4; c->range_cap_min_m = 25;
+    c->range_cap_nats_per_100m = 20;
+    c->cover_free_m = 60; c->cover_nats_per_100m = 3;
+    c->launch_rssi_dbm = -70; c->launch_radius_m = 15; c->launch_max_agl_m = 5; c->launch_window_s = 300;
+    c->launch_auto_mute = true;
     c->own_rssi_dbm = -40; c->own_hold_ms = 60000; c->own_moved_m = 30;
     c->fine_cell_m = 2.5f; c->fine_grid_cells = 160; c->fine_footprint_m = 100;
     c->fine_max_agl_m = 30; c->fine_max_speed_mps = 4; c->fine_strong_dbm = -65; c->fine_tile_pool_tiles = 3072;
@@ -85,6 +90,9 @@ static bool config_ok(const btrx_bearing_config_t *c) {
             || c->fine_grid_cells > 1024 || !(c->fine_footprint_m > 0) || c->fine_tile_pool_tiles < 1)) return false;
     if (!(c->range_exponent > 0) || !fin(c->range_ref_dbm) || !(c->range_margin >= 0)) return false;
     if (!(c->focus_dim >= 0 && c->focus_dim <= 1) || !(c->roll_max_deg > 0)) return false;
+    if (!fin(c->range_cap_dbm) || !(c->range_cap_margin > 0) || !(c->range_cap_min_m > 0) || !(c->range_cap_nats_per_100m >= 0) || !fin(c->range_cap_max_agl_m)) return false;
+    if (!(c->cover_free_m >= 0) || !(c->cover_nats_per_100m >= 0)) return false;
+    if (!fin(c->launch_rssi_dbm) || !(c->launch_radius_m >= 0) || !fin(c->launch_max_agl_m) || !(c->launch_window_s >= 0)) return false;
     return true;
 }
 
@@ -119,7 +127,14 @@ btrx_bearing_status_t btrx_bearing_create(const btrx_bearing_config_t *cfg,
     h->scr_s = malloc(N * sizeof(float));
     h->scr_stack = malloc(N * sizeof(int32_t));
     h->scr_mask = malloc(N);
-    bool ok = h->inbox[0] && h->inbox[1] && h->pattern_delta && h->pattern_sum && h->pose.yaw && h->pose.pos
+    h->cover_cap = BB_COVER_CAP;
+    h->cover_e = malloc((size_t)h->cover_cap * sizeof(float));
+    h->cover_n = malloc((size_t)h->cover_cap * sizeof(float));
+    h->cover_dist = malloc(N * sizeof(float));
+    h->cover_dist_pts = -1;
+    h->focus_company = -1;
+    h->launch_auto_mute = cfg->launch_auto_mute;
+    bool ok = h->cover_e && h->cover_n && h->cover_dist && h->inbox[0] && h->inbox[1] && h->pattern_delta && h->pattern_sum && h->pose.yaw && h->pose.pos
         && h->lag.rec && h->lag.yaw_in && h->lag.pos_in && h->lag.scratch && h->bucket_mem && h->tiles
         && h->scr_e && h->scr_s && h->scr_stack && h->scr_mask;
     for (int i = 0; i < 3 && ok; i++) {
@@ -204,6 +219,7 @@ void btrx_bearing_destroy(btrx_bearing_t *h) {
     free(h->lag.rec); free(h->lag.yaw_in); free(h->lag.pos_in); free(h->lag.scratch);
     free(h->bucket_mem); free(h->tiles);
     free(h->scr_e); free(h->scr_s); free(h->scr_stack); free(h->scr_mask);
+    free(h->cover_e); free(h->cover_n); free(h->cover_dist);
     for (int i = 0; i < 3; i++) {
         free(h->snaps[i].rgba); free(h->snaps[i].alpha); free(h->snaps[i].fine_rgba); free(h->snaps[i].trail);
     }
@@ -297,7 +313,7 @@ btrx_bearing_status_t btrx_bearing_set_source_flags(btrx_bearing_t *h, const uin
 }
 
 btrx_bearing_status_t btrx_bearing_set_source_class(btrx_bearing_t *h, uint64_t key, btrx_bearing_class_t cls) {
-    if (!h || cls < BTRX_BEARING_CLASS_UNKNOWN || cls > BTRX_BEARING_CLASS_AUDIO) return BTRX_BEARING_E_INVALID;
+    if (!h || cls < BTRX_BEARING_CLASS_UNKNOWN || cls > BTRX_BEARING_CLASS_COMPUTER) return BTRX_BEARING_E_INVALID;
     bb_cmd_t c = { .type = BB_CMD_CLASS, .key = key, .a = (uint32_t)cls };
     return push_cmd(h, &c);
 }
@@ -317,6 +333,19 @@ btrx_bearing_status_t btrx_bearing_set_stable_src_ids(btrx_bearing_t *h, bool st
 btrx_bearing_status_t btrx_bearing_set_focus(btrx_bearing_t *h, uint64_t key) {
     if (!h) return BTRX_BEARING_E_INVALID;
     bb_cmd_t c = { .type = BB_CMD_FOCUS, .key = key };
+    return push_cmd(h, &c);
+}
+
+btrx_bearing_status_t btrx_bearing_set_focus_filter(btrx_bearing_t *h, uint32_t class_mask,
+        int32_t company_id, bool hide_others) {
+    if (!h || company_id < -1 || company_id > 0xFFFF) return BTRX_BEARING_E_INVALID;
+    bb_cmd_t c = { .type = BB_CMD_FOCUS_FILTER, .a = class_mask, .b = (uint32_t)(company_id + 1), .seq = hide_others ? 1u : 0u };
+    return push_cmd(h, &c);
+}
+
+btrx_bearing_status_t btrx_bearing_set_launch_auto_mute(btrx_bearing_t *h, bool on) {
+    if (!h) return BTRX_BEARING_E_INVALID;
+    bb_cmd_t c = { .type = BB_CMD_LAUNCH_MUTE, .a = on ? 1u : 0u };
     return push_cmd(h, &c);
 }
 
@@ -373,6 +402,15 @@ static void apply_cmd(btrx_bearing_t *h, const bb_cmd_t *c) {
         h->force_publish = true;
         break;
     }
+    case BB_CMD_FOCUS_FILTER:
+        h->focus_class_mask = c->a;
+        h->focus_company = (int32_t)c->b - 1;
+        h->focus_hide = c->seq != 0;
+        h->force_publish = true;
+        break;
+    case BB_CMD_LAUNCH_MUTE:
+        h->launch_auto_mute = c->a != 0;
+        break;
     case BB_CMD_FADE:
         h->fade_total_s = c->f1;
         h->fade_shape_p = c->f2;
@@ -387,6 +425,8 @@ static void apply_cmd(btrx_bearing_t *h, const bb_cmd_t *c) {
             h->pend_flags_n = 0;
             h->cand_n = 0;
             h->focus_key = 0;
+            h->focus_class_mask = 0; h->focus_company = -1; h->focus_hide = false;
+            h->cover_n_pts = 0; h->cover_dist_pts = -1;
         } else if (c->a == BTRX_BEARING_RESET_SOURCE) {
             int32_t slot = bb_find_source(h, c->key);
             if (slot != BB_NONE) bb_source_evict(h, slot);
@@ -473,6 +513,40 @@ void bb_source_heard_at(btrx_bearing_t *h, bb_source_t *s, int64_t t, float e, f
     }
 }
 
+bool bb_launch_key(const btrx_bearing_t *h, uint64_t key) {
+    for (int32_t i = 0; i < h->launch_keys_n; i++) if (h->launch_keys[i] == key) return true;
+    return false;
+}
+
+/* Nov 20: strong at the launch point before takeoff (Ken's back deck: phones and a laptop at
+ * the pod read -18 dBm, then smeared 200 m along the rays). */
+static void launch_check(btrx_bearing_t *h, bb_source_t *s, int64_t t, const bb_pose_at_t *pp, int8_t best) {
+    if (!h->launch_set || (s->flags & (BTRX_BEARING_SRC_LAUNCH | BTRX_BEARING_SRC_IGNORED))) return;
+    if (best < h->cfg.launch_rssi_dbm || pp->agl_default || !(pp->agl <= h->cfg.launch_max_agl_m)) return;
+    if (t - h->launch_t > (int64_t)((double)h->cfg.launch_window_s * 1e6)) return;
+    if (hypotf((float)pp->e - h->launch_e, (float)pp->n - h->launch_n) > h->cfg.launch_radius_m) return;
+    if (h->focus_key && s->key == h->focus_key) return;
+    s->flags |= BTRX_BEARING_SRC_LAUNCH;
+    if (h->launch_auto_mute) s->flags |= BTRX_BEARING_SRC_MUTED;
+    if (h->launch_keys_n < BB_LAUNCH_KEYS) h->launch_keys[h->launch_keys_n++] = s->key;
+    h->force_publish = true;
+    char sid[8];
+    btrx_bearing_short_id(s->key, sid);
+    bb_log(h, 1, "BBLAUNCH %s heard %d dBm at the launch point%s", sid, (int)best, h->launch_auto_mute ? ": muted" : "");
+}
+
+/* Nov 20 range cap: where the drone heard the source strongest while low (strong only). An
+ * older point outside the fade window gives way to any new strong one. */
+static void near_note(btrx_bearing_t *h, bb_source_t *s, int64_t t, const bb_pose_at_t *pp, int8_t best) {
+    if (!(h->cfg.range_cap_dbm < 0) || best < h->cfg.range_cap_dbm || pp->agl_default
+            || !(pp->agl <= h->cfg.range_cap_max_agl_m)) return;
+    bool stale = s->near_valid && t - s->near_t > (int64_t)((double)h->fade_total_s * 1e6);
+    if (s->near_valid && !stale && best < s->near_rssi) return;
+    s->near_valid = true;
+    s->near_e = (float)pp->e; s->near_n = (float)pp->n;
+    s->near_rssi = best; s->near_t = t;
+}
+
 static void evaluate(btrx_bearing_t *h, bb_pending_t *p, int64_t now) {
     const btrx_bearing_report_t *r = &p->r;
     bb_lagrec_t *rec = bb_lag_new(h, p);
@@ -540,6 +614,11 @@ static void evaluate(btrx_bearing_t *h, bb_pending_t *p, int64_t now) {
         if (best != BTRX_BEARING_RSSI_NOT_HEARD) {
             s->last_rssi = best;
             if (have_pos) bb_source_heard_at(h, s, t_rep, (float)pp.e, (float)pp.n, best);
+            if (have_pos) launch_check(h, s, t_rep, &pp, best);
+            /* range cap level: mean of both sides (the antenna pattern's port - stbd split
+             * would read a side lobe several dB hot), one side alone 3 dB down */
+            if (have_pos) near_note(h, s, t_rep, &pp, hp0 && hs0
+                    ? (int8_t)lrintf(0.5f * ((float)rs->rssi_port + (float)rs->rssi_stbd)) : (int8_t)(best - 3));
         }
         if (f || frame_gated) continue;
         if (s->flags & BTRX_BEARING_SRC_IGNORED) { h->stats.ignored++; *ef = BB_FATE_IGNORED; continue; }
@@ -587,6 +666,15 @@ static void evaluate(btrx_bearing_t *h, bb_pending_t *p, int64_t now) {
          * strong-transmitting phone's true cells "far" (Tx power varies by 10 dB and more).
          * The range estimate sets the drawn wedge (reach) and the fine layer only. */
         g.foot_m = h->cfg.footprint_m;
+        /* Nov 20 range cap: strong and low bounds the footprint (Garmin watch 16 m from the
+         * takeoff point slid ~200 m along the ray). The margin (x4, about +13 dB at n 2.2) and
+         * the floor keep a hot phone's true cells inside. */
+        if (level >= h->cfg.range_cap_dbm && h->cfg.range_cap_dbm < 0 && !pose.agl_default
+                && pose.agl <= h->cfg.range_cap_max_agl_m) {
+            float cap = bb_range_m(h, level) * h->cfg.range_cap_margin;
+            if (cap < h->cfg.range_cap_min_m) cap = h->cfg.range_cap_min_m;
+            if (cap < g.foot_m) g.foot_m = cap;
+        }
         g.reach_m = bb_reach_m(h, level, h->cfg.footprint_m);
         g.range_m = bb_range_m(h, level);
         g.sigma2 = sd2 + fixed2;

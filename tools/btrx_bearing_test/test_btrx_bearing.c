@@ -1,6 +1,7 @@
 /* Host tests for btrx_bearing (docs/btrx/BEARING-LAYER-spec.md section 9.1, 9.3).
  * Build: cmake -S tools/btrx_bearing_test -B /tmp/bbt && cmake --build /tmp/bbt && /tmp/bbt/btrx_bearing_test */
 #define _POSIX_C_SOURCE 200809L
+#include <inttypes.h>
 #include <math.h>
 #include <pthread.h>
 #include <stdatomic.h>
@@ -1340,7 +1341,7 @@ static void test_watch_fixes(void) {
     btrx_bearing_config_t c;
     btrx_bearing_config_default(&c);
     CHECK(c.max_sources >= 16 && c.max_sources <= BTRX_BEARING_MAX_SOURCES && BTRX_BEARING_MAX_SOURCES == 32, "16-32 sources (%d)", c.max_sources);
-    CHECK(btrx_bearing_abi_version() == 2, "ABI 2");
+    CHECK(btrx_bearing_abi_version() == 3, "ABI 3");
 
     /* 1. eviction by least evidence, not least recent; colour follows the device */
     btrx_bearing_config_t c3 = c; c3.max_sources = 3; c3.extra_min_sightings = 1;
@@ -1667,6 +1668,298 @@ static void test_steer_format2(void) {
     btrx_bearing_destroy(h);
 }
 
+
+/* ================= Nov 20 back-deck flight fixes ================= */
+#ifndef BTRX_FIXTURE_DIR
+#define BTRX_FIXTURE_DIR "test-fixtures/btrx"
+#endif
+static FILE *open_fixture(const char *name) {
+    const char *dirs[] = { BTRX_FIXTURE_DIR, "test-fixtures/btrx", "../test-fixtures/btrx", "../../test-fixtures/btrx",
+        "../../../test-fixtures/btrx", NULL };
+    char path[1024];
+    for (int i = 0; dirs[i]; i++) {
+        snprintf(path, sizeof path, "%s/%s", dirs[i], name);
+        FILE *f = fopen(path, "r");
+        if (f) return f;
+    }
+    return NULL;
+}
+
+static uint64_t hex64s(const char *s) { return strtoull(s, NULL, 16); }
+
+/* Feeds a BBv1 file (spec 9.2; same parsing as btrx_bearing_replay.c), ticking every 200 ms of
+ * host time, then 20 s more. Returns the number of lines fed, -1 if the file is missing. */
+static long feed_bbv1(btrx_bearing_t *h, const char *name, int64_t *end_us) {
+    FILE *in = open_fixture(name);
+    if (!in) return -1;
+    char line[2048];
+    int64_t next_tick = INT64_MIN;
+    long lines = 0;
+    while (fgets(line, sizeof line, in)) {
+        if (strncmp(line, "BBv1 ", 5) != 0) continue;
+        char kind = line[5];
+        char *p = line + 7;
+        int64_t t = strtoll(p, NULL, 10);
+        if (next_tick == INT64_MIN) next_tick = t;
+        while (next_tick <= t) { btrx_bearing_tick(h, next_tick, NULL); next_tick += 200000; }
+        lines++;
+        if (kind == 'P') {
+            btrx_bearing_pose_t ps; memset(&ps, 0, sizeof ps);
+            unsigned mask;
+            if (sscanf(p, "%" SCNd64 " %u %lf %lf %f %f %f %f", &ps.t_us, &mask, &ps.lat_deg, &ps.lon_deg, &ps.agl_m,
+                    &ps.yaw_true_deg, &ps.pitch_deg, &ps.roll_deg) != 8) continue;
+            ps.mask = mask; ps.push_us = ps.t_us;
+            btrx_bearing_push_pose(h, &ps);
+        } else if (kind == 'R') {
+            btrx_bearing_report_t r; memset(&r, 0, sizeof r);
+            int seq, flags, roll, pitch, backlog, fmt, trunc, n, used = 0;
+            if (sscanf(p, "%" SCNd64 " %u %d %d %d %d %d %d %d %d%n", &r.arrival_us, &r.window_end_ms, &seq, &flags, &roll, &pitch,
+                    &backlog, &fmt, &trunc, &n, &used) != 10 || n < 0 || n > 3) continue;
+            r.steer_seq = (uint8_t)seq; r.flags = (uint8_t)flags; r.roll_x2 = (int8_t)roll; r.pitch_x2 = (int8_t)pitch;
+            r.backlog = backlog; r.ext_format = (uint8_t)fmt; r.truncated = trunc;
+            r.push_us = r.arrival_us;
+            char *q = p + used;
+            int k;
+            for (k = 0; k < n; k++) {
+                btrx_bearing_report_source_t *e = &r.src[k];
+                char keyhex[32];
+                int id, port, stbd, peak, hp, hs, age, nw, lk, cls, comp, u2 = 0;
+                if (sscanf(q, "%d %31s %d %d %d %d %d %d %d %d %d %d%n", &id, keyhex, &port, &stbd, &peak, &hp, &hs, &age,
+                        &nw, &lk, &cls, &comp, &u2) != 12) break;
+                q += u2;
+                e->src_id = (uint16_t)id; e->addr_key = hex64s(keyhex); e->rssi_port = (int8_t)port; e->rssi_stbd = (int8_t)stbd;
+                e->peak_rssi = (int8_t)peak; e->hits_port = (uint8_t)hp; e->hits_stbd = (uint8_t)hs; e->age_ms = (uint16_t)age;
+                e->is_new = nw; e->linked = lk; e->pod_dev_class = (uint8_t)cls; e->company_id = (uint16_t)comp; e->rank = (uint8_t)k;
+            }
+            r.source_count = (uint8_t)k;
+            btrx_bearing_push_report(h, &r);
+        } else if (kind == 'S') {
+            int64_t t1, t4; unsigned t2, t3;
+            if (sscanf(p, "%" SCNd64 " %u %u %" SCNd64, &t1, &t2, &t3, &t4) == 4) btrx_bearing_push_time_sync(h, t1, t2, t3, t4);
+        } else if (kind == 'H') {
+            int64_t tu; int role; unsigned up; char lost[32];
+            if (sscanf(p, "%" SCNd64 " %d %u %31s", &tu, &role, &up, lost) == 4) {
+                bool known = strcmp(lost, "unknown") != 0;
+                btrx_bearing_push_health(h, tu, (uint8_t)role, up, known, known ? (uint32_t)strtoul(lost, NULL, 10) : 0);
+            }
+        } else if (kind == 'M') {
+            int64_t tu; char keyhex[32]; int muted;
+            if (sscanf(p, "%" SCNd64 " %31s %d", &tu, keyhex, &muted) == 3) {
+                uint64_t key = hex64s(keyhex);
+                btrx_bearing_set_source_flags(h, &key, 1, BTRX_BEARING_SRC_MUTED, muted ? BTRX_BEARING_SRC_MUTED : 0);
+            }
+        } else if (kind == 'F') {
+            int64_t tu; float tot, shp;
+            if (sscanf(p, "%" SCNd64 " %f %f", &tu, &tot, &shp) == 3) btrx_bearing_set_fade(h, tot, shp);
+        }
+    }
+    fclose(in);
+    for (int k = 0; k < 100; k++) { btrx_bearing_tick(h, next_tick, NULL); next_tick += 200000; }
+    if (end_us) *end_us = next_tick;
+    return lines;
+}
+
+static double ll_dist_m(double la1, double lo1, double la2, double lo2) {
+    double dn = (la2 - la1) * BB_DEG * BB_EARTH_R, de = (lo2 - lo1) * BB_DEG * BB_EARTH_R * cos(la1 * BB_DEG);
+    return hypot(de, dn);
+}
+
+/* The Nov 20 flight through the engine: the Garmin watch 16 m N of takeoff, launch-point
+ * devices flagged, the laptop's class. Expectations from nov20-backdeck-expect.tsv. */
+static void test_nov20_fixture(void) {
+    printf("Nov 20 back-deck fixture\n");
+    FILE *ex = open_fixture("nov20-backdeck-expect.tsv");
+    CHECK(ex != NULL, "nov20-backdeck-expect.tsv found");
+    if (!ex) return;
+    btrx_bearing_config_t c; btrx_bearing_config_default(&c);
+    btrx_bearing_t *h = mk(&c);
+    long n = feed_bbv1(h, "nov20-backdeck.bbv1", NULL);
+    CHECK(n > 17000, "nov20-backdeck.bbv1 fed (%ld lines)", n);
+    const btrx_bearing_snapshot_t *sn = btrx_bearing_snapshot_acquire(h);
+    CHECK(sn != NULL, "snapshot");
+    /* the old settings (no range cap, no coverage term, 2 sigma 200 m) put the watch ~200 m SSW */
+    btrx_bearing_config_t o = c;
+    o.range_cap_dbm = 0; o.cover_nats_per_100m = 0; o.est_max_axis_2s_m = 200; o.max_sources = 24;
+    o.launch_rssi_dbm = 100;
+    btrx_bearing_t *ho = mk(&o);
+    feed_bbv1(ho, "nov20-backdeck.bbv1", NULL);
+    const btrx_bearing_snapshot_t *so = btrx_bearing_snapshot_acquire(ho);
+    char line[512];
+    while (sn && fgets(line, sizeof line, ex)) {
+        if (line[0] == '#' || line[0] == '\n') continue;
+        char sid[16], keyhex[32], kind[16], la[32], lo[32], tol[16], cls[8], comp[8];
+        if (sscanf(line, "%15s %31s %15s %31s %31s %15s %7s %7s", sid, keyhex, kind, la, lo, tol, cls, comp) != 8) continue;
+        uint64_t key = hex64s(keyhex);
+        const btrx_bearing_source_t *s = snap_src(sn, key);
+        CHECK(s != NULL, "%s tracked", sid);
+        if (!s) continue;
+        if (!strcmp(kind, "estimate")) {
+            double d = s->estimate.valid ? ll_dist_m(atof(la), atof(lo), s->estimate.lat_deg, s->estimate.lon_deg) : 1e9;
+            printf("  %s estimate %s: %.1f m from the expected spot, 2 sigma %.0f m\n", sid, s->estimate.valid ? "valid" : "invalid",
+                d, 2.0 * s->estimate.axis_major_1s_m);
+            CHECK(s->estimate.valid && d <= atof(tol), "%s within %s m (%.1f)", sid, tol, d);
+            CHECK((int)s->dev_class == atoi(cls) && (int)s->company_id == atoi(comp), "%s class %d company %u", sid, s->dev_class, s->company_id);
+            const btrx_bearing_source_t *old = so ? snap_src(so, key) : NULL;
+            double dold = old && old->estimate.valid ? ll_dist_m(atof(la), atof(lo), old->estimate.lat_deg, old->estimate.lon_deg) : -1;
+            printf("  %s with the old settings: %s %.1f m\n", sid, old && old->estimate.valid ? "valid" : "invalid", dold);
+        } else if (!strcmp(kind, "launch")) {
+            CHECK((s->flags & BTRX_BEARING_SRC_LAUNCH) && (s->flags & BTRX_BEARING_SRC_MUTED), "%s flagged at the launch point (flags %u)", sid, s->flags);
+        } else if (!strcmp(kind, "class")) {
+            CHECK((int)s->dev_class == atoi(cls) && (int)s->company_id == atoi(comp), "%s class %d company %u", sid, s->dev_class, s->company_id);
+            CHECK(!(s->flags & BTRX_BEARING_SRC_LAUNCH), "%s not at the launch point", sid);
+        }
+    }
+    fclose(ex);
+    CHECK(sn && sn->launch_valid && ll_dist_m(39.153087, -121.132797, sn->launch_lat_deg, sn->launch_lon_deg) < 15,
+        "launch point near the takeoff point");
+    int far_valid = 0;
+    for (int k = 0; sn && k < sn->source_count; k++) {
+        const btrx_bearing_source_t *s = &sn->sources[k];
+        if (s->estimate.valid && ll_dist_m(39.153087, -121.132797, s->estimate.lat_deg, s->estimate.lon_deg) > 150) far_valid++;
+        CHECK(!s->estimate.valid || 2.0f * s->estimate.axis_major_1s_m <= c.est_max_axis_2s_m, "valid within est_max_axis_2s_m");
+    }
+    CHECK(far_valid == 0, "no valid estimate slid beyond 150 m (%d)", far_valid);
+    btrx_bearing_snapshot_release(ho, so);
+    btrx_bearing_snapshot_release(h, sn);
+    btrx_bearing_destroy(ho);
+    btrx_bearing_destroy(h);
+}
+
+static const btrx_bearing_source_t *snap_src_now(btrx_bearing_t *h, const btrx_bearing_snapshot_t **sn, uint64_t key) {
+    *sn = btrx_bearing_snapshot_acquire(h);
+    return *sn ? snap_src(*sn, key) : NULL;
+}
+
+/* Focus filter, eviction of focused sources, the computer class, launch auto mute, range cap. */
+static void test_nov20_units(void) {
+    printf("Nov 20 focus filter, launch, range cap\n");
+    btrx_bearing_config_t c; btrx_bearing_config_default(&c);
+    CHECK(c.max_sources == 32 && c.est_max_axis_2s_m == 100, "defaults: 32 sources, 2 sigma 100 m");
+    CHECK(c.range_cap_dbm == -55 && c.launch_auto_mute, "defaults: range cap -55 dBm, launch auto mute on");
+    CHECK(bb_class_from_pod(5) == BTRX_BEARING_CLASS_COMPUTER, "pod class 5 = computer");
+    btrx_bearing_t *hx = mk(NULL);
+    CHECK(btrx_bearing_set_source_class(hx, 1, BTRX_BEARING_CLASS_COMPUTER) == BTRX_BEARING_OK, "computer class settable");
+    CHECK(btrx_bearing_set_focus_filter(hx, 0, 70000, false) == BTRX_BEARING_E_INVALID, "company id range");
+    btrx_bearing_destroy(hx);
+
+    /* focus filter by class and by company; hide others draws nothing of them */
+    {
+        btrx_bearing_t *h = mk(NULL);
+        inj_t s = { 0, 0, 0 };
+        for (int i = 0; i < 20; i++) {
+            btrx_bearing_report_source_t e[2] = { entry(0xA1, 10, -55, -63, 9), entry(0xB2, 11, -64, -57, 9) };
+            e[0].pod_dev_class = 2; e[0].company_id = 0x0087;      /* Garmin watch */
+            e[1].pod_dev_class = 5; e[1].company_id = 0x0006;      /* Microsoft computer */
+            inject(h, &s, 10000000 + i * 1000000LL, i * 3.0, 0, (float)(i * 7 % 90), 30, e, 2, true);
+        }
+        const btrx_bearing_snapshot_t *sn;
+        const btrx_bearing_source_t *a = snap_src_now(h, &sn, 0xA1), *b = sn ? snap_src(sn, 0xB2) : NULL;
+        CHECK(a && b && a->company_id == 0x0087 && b->company_id == 0x0006 && b->dev_class == BTRX_BEARING_CLASS_COMPUTER,
+            "company ids and the computer class in the snapshot");
+        CHECK(sn && !sn->focus_active && a && !a->focus_match, "no focus: nothing matches");
+        btrx_bearing_snapshot_release(h, sn);
+        btrx_bearing_set_focus_filter(h, 1u << BTRX_BEARING_CLASS_WATCH, -1, true);
+        btrx_bearing_tick(h, 31000000, NULL);
+        a = snap_src_now(h, &sn, 0xA1); b = sn ? snap_src(sn, 0xB2) : NULL;
+        CHECK(sn && sn->focus_active && sn->focus_hide_others && a && a->focus_match && b && !b->focus_match, "class filter: watches");
+        int other = 0;
+        for (int c2 = 0; sn && a && c2 < sn->width * sn->height; c2++) if (sn->rgba[c2 * 4 + 3] != a->alpha[c2]) other++;
+        CHECK(other == 0, "hide others: only the focused colour in the RGBA (%d px)", other);
+        btrx_bearing_snapshot_release(h, sn);
+        btrx_bearing_set_focus_filter(h, 0, 0x0006, false);
+        btrx_bearing_tick(h, 32100000, NULL);
+        a = snap_src_now(h, &sn, 0xA1); b = sn ? snap_src(sn, 0xB2) : NULL;
+        CHECK(sn && b && b->focus_match && a && !a->focus_match && sn->focus_company_id == 6, "company filter: Microsoft");
+        btrx_bearing_snapshot_release(h, sn);
+        btrx_bearing_set_focus_filter(h, 0, -1, false);
+        btrx_bearing_tick(h, 33200000, NULL);
+        sn = btrx_bearing_snapshot_acquire(h);
+        CHECK(sn && !sn->focus_active, "filter cleared");
+        btrx_bearing_snapshot_release(h, sn);
+        btrx_bearing_destroy(h);
+    }
+    /* a focused (filtered) source is never evicted, even with the least evidence */
+    {
+        btrx_bearing_config_t c3 = c; c3.max_sources = 3; c3.extra_min_sightings = 1;
+        btrx_bearing_t *h = mk(&c3);
+        inj_t s = { 0, 0, 0 };
+        btrx_bearing_report_source_t w = entry(0xF0, 1, -70, -72, 2);
+        w.pod_dev_class = 2; w.company_id = 0x0087;
+        inject(h, &s, 10000000, 0, 0, 90, 30, &w, 1, true);
+        btrx_bearing_set_focus_filter(h, 0, 0x0087, false);
+        for (int i = 0; i < 12; i++) {
+            btrx_bearing_report_source_t e = entry(0x100 + (uint64_t)i, (uint16_t)(10 + i), -60, -65, 9);
+            for (int j = 0; j < 3; j++) inject(h, &s, 11000000 + (i * 3 + j) * 1000000LL, i * 5.0, j * 5.0, (float)(j * 30), 30, &e, 1, true);
+        }
+        CHECK(src_of(h, 0xF0) != NULL, "focused Garmin kept through 12 newcomers in 3 slots");
+        btrx_bearing_destroy(h);
+    }
+    /* launch point: strong while on the ground at the first position -> LAUNCH | MUTED; heard
+       strong later away from it -> not flagged; auto mute off flags without muting */
+    for (int mute_on = 0; mute_on < 2; mute_on++) {
+        btrx_bearing_t *h = mk(NULL);
+        btrx_bearing_set_launch_auto_mute(h, mute_on != 0);
+        inj_t s = { 0, 0, 0 };
+        btrx_bearing_report_source_t g = entry(0xC1, 1, -30, -32, 9);
+        for (int i = 0; i < 5; i++) inject(h, &s, 10000000 + i * 1000000LL, 0, 0, (float)(i * 20), 0.5f, &g, 1, true);
+        btrx_bearing_report_source_t far = entry(0xC2, 2, -40, -42, 9);
+        for (int i = 0; i < 5; i++) inject(h, &s, 20000000 + i * 1000000LL, 200, 0, (float)(i * 20), 30, &far, 1, true);
+        const btrx_bearing_snapshot_t *sn;
+        const btrx_bearing_source_t *a = snap_src_now(h, &sn, 0xC1), *b = sn ? snap_src(sn, 0xC2) : NULL;
+        CHECK(sn && sn->launch_valid, "launch point set from the first ground position");
+        CHECK(a && (a->flags & BTRX_BEARING_SRC_LAUNCH) && (((a->flags & BTRX_BEARING_SRC_MUTED) != 0) == (mute_on != 0)),
+            "launch source flagged, muted only with auto mute (%d, flags %u)", mute_on, a ? a->flags : 0);
+        CHECK(b && !(b->flags & BTRX_BEARING_SRC_LAUNCH), "away from the launch point: not flagged");
+        btrx_bearing_snapshot_release(h, sn);
+        if (mute_on) {   /* the user unmutes: stays unmuted, also after an eviction and return */
+            uint64_t k = 0xC1;
+            btrx_bearing_set_source_flags(h, &k, 1, BTRX_BEARING_SRC_MUTED, 0);
+            btrx_bearing_reset(h, BTRX_BEARING_RESET_SOURCE, 0xC1);
+            for (int i = 0; i < 3; i++) inject(h, &s, 30000000 + i * 1000000LL, 200, 10, 0, 30, &g, 1, true);
+            a = snap_src_now(h, &sn, 0xC1);
+            CHECK(a && (a->flags & BTRX_BEARING_SRC_LAUNCH) && !(a->flags & BTRX_BEARING_SRC_MUTED), "unmuted launch source stays unmuted (%u)", a ? a->flags : 0);
+            btrx_bearing_snapshot_release(h, sn);
+        }
+        btrx_bearing_destroy(h);
+    }
+    /* first position already airborne: no launch point, nothing flagged */
+    {
+        btrx_bearing_t *h = mk(NULL);
+        inj_t s = { 0, 0, 0 };
+        btrx_bearing_report_source_t g = entry(0xD1, 1, -30, -32, 9);
+        for (int i = 0; i < 5; i++) inject(h, &s, 10000000 + i * 1000000LL, 0, 0, 0, 40, &g, 1, true);
+        for (int i = 0; i < 5; i++) inject(h, &s, 15000000 + i * 1000000LL, 0, 0, 0, 1, &g, 1, true);
+        const btrx_bearing_snapshot_t *sn;
+        const btrx_bearing_source_t *a = snap_src_now(h, &sn, 0xD1);
+        CHECK(sn && !sn->launch_valid && a && !(a->flags & BTRX_BEARING_SRC_LAUNCH), "airborne start: no launch flags");
+        btrx_bearing_snapshot_release(h, sn);
+        btrx_bearing_destroy(h);
+    }
+    /* range cap: a source heard -50 dBm (both sides) at 8 m AGL is bounded within the capped
+       range of that spot even when most reports point it far along a ray */
+    {
+        btrx_bearing_t *h = mk(NULL);
+        inj_t s = { 0, 0, 0 };
+        btrx_bearing_report_source_t e;
+        /* 40 weak reports from 0..195 m east, heading north, port side louder: ray to the west */
+        for (int i = 0; i < 40; i++) {
+            e = entry(0xE1, 1, -70, -76, 9);
+            inject(h, &s, 10000000 + i * 1000000LL, i * 5.0, 0, (float)(i % 2 ? 0 : 20), 30, &e, 1, true);
+        }
+        e = entry(0xE1, 1, -50, -51, 9);
+        for (int i = 0; i < 3; i++) inject(h, &s, 50000000 + i * 1000000LL, 0, 0, (float)(i * 30), 8, &e, 1, true);
+        bb_source_t *bs = src_of(h, 0xE1);
+        CHECK(bs && bs->near_valid && bs->near_rssi == -50, "strong low report noted (%d)", bs ? bs->near_rssi : 0);
+        const btrx_bearing_snapshot_t *sn;
+        const btrx_bearing_source_t *a = snap_src_now(h, &sn, 0xE1);
+        double x = 0, y = 0;
+        if (a && a->estimate.lat_deg == a->estimate.lat_deg) est_to_m(&a->estimate, &x, &y);
+        CHECK(a && hypot(x, y) <= 40, "estimate within the capped range of the strong spot (%.1f m)", hypot(x, y));
+        btrx_bearing_snapshot_release(h, sn);
+        btrx_bearing_destroy(h);
+    }
+}
+
 int main(int argc, char **argv) {
     setvbuf(stdout, NULL, _IONBF, 0);
     g_grid = malloc(sizeof(float) * 192 * 192);
@@ -1688,6 +1981,8 @@ int main(int argc, char **argv) {
     test_backlog_health();
     test_stats_without_view();
     test_watch_fixes();
+    test_nov20_units();
+    test_nov20_fixture();
     test_threads();
     test_worker_and_abi();
     scenarios();

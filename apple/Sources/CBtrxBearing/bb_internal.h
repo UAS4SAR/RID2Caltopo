@@ -31,6 +31,9 @@
 #define BB_PALETTE 12
 #define BB_CAND_TABLE 64                 /* extras seen once, not tracked yet */
 #define BB_COLOUR_MEMORY 64              /* key -> colour of evicted sources */
+#define BB_LAUNCH_KEYS 64                /* keys flagged at the launch point (survive eviction) */
+#define BB_COVER_STEP_M 5.0f             /* track decimation for the coverage term */
+#define BB_COVER_CAP 8192
 
 /* ---------- tiles and buckets (bb_tiles.c) ---------- */
 typedef struct {
@@ -63,6 +66,7 @@ typedef struct {
     uint16_t src_id;                 /* latest src_id reported for this source */
     uint8_t cls;
     uint8_t colour;
+    uint16_t company_id;             /* latest nonzero from the pod (primary entries only) */
     uint32_t flags;
     int64_t first_us, last_us;
     uint32_t reports_in, reports_used;
@@ -80,12 +84,18 @@ typedef struct {
     /* the last STEER windows of it, for averaging (newest first) */
     struct { int64_t t; int8_t rp, rs; uint8_t hp, hs; float roll; } win[4];
     int32_t win_n;
+    /* Nov 20: strongest report while low (range cap), local metres */
+    bool near_valid;
+    float near_e, near_n;
+    int8_t near_rssi;
+    int64_t near_t;
 } bb_source_t;
 
 /* ---------- inputs ---------- */
 typedef struct { int64_t t1, t4; uint32_t t2, t3; } bb_sync_in_t;
 typedef struct { int64_t host_us; uint8_t role; uint32_t uptime_s; bool known; uint32_t lost; } bb_health_in_t;
-enum { BB_CMD_FLAGS = 1, BB_CMD_CLASS, BB_CMD_FADE, BB_CMD_RESET, BB_CMD_RENDERED, BB_CMD_CONNECTED, BB_CMD_STABLE_IDS, BB_CMD_FOCUS };
+enum { BB_CMD_FLAGS = 1, BB_CMD_CLASS, BB_CMD_FADE, BB_CMD_RESET, BB_CMD_RENDERED, BB_CMD_CONNECTED, BB_CMD_STABLE_IDS, BB_CMD_FOCUS,
+       BB_CMD_FOCUS_FILTER, BB_CMD_LAUNCH_MUTE };
 typedef struct { int type; uint64_t key; uint32_t a, b; float f1, f2; uint64_t seq; int64_t us; } bb_cmd_t;
 
 #define BB_RING(T, N) struct { T item[N]; int32_t head, count; }
@@ -266,6 +276,22 @@ struct btrx_bearing {
     btrx_bearing_t *fine;            /* fine layer: accumulation only, slot-parallel sources */
     bool is_fine;
     uint64_t focus_key;
+    uint32_t focus_class_mask;       /* Nov 20: focus filter */
+    int32_t focus_company;           /* -1 none */
+    bool focus_hide;
+    /* coverage: drone track, decimated (local metres) */
+    float *cover_e, *cover_n;
+    int32_t cover_n_pts, cover_cap;
+    float *cover_dist;               /* per view cell, metres to the nearest track point */
+    int32_t cover_dist_pts;          /* cover_n_pts when cover_dist was built; -1 none */
+    int32_t cover_vtx0, cover_vty0;
+    /* launch point */
+    bool launch_set, launch_done;
+    float launch_e, launch_n;
+    int64_t launch_t;
+    bool launch_auto_mute;
+    uint64_t launch_keys[BB_LAUNCH_KEYS];
+    int32_t launch_keys_n;
     struct { uint64_t key; int64_t t; int32_t n; } cand[BB_CAND_TABLE];
     int32_t cand_n;
     struct { uint64_t key; uint8_t colour; } colmem[BB_COLOUR_MEMORY];
@@ -306,6 +332,9 @@ int bb_pose_at(btrx_bearing_t *h, int64_t t_end, bb_pose_at_t *out);
 int bb_pose_pos(btrx_bearing_t *h, int64_t t_rep, bb_pose_at_t *out);   /* position and AGL only */
 bool bb_drone_speed(btrx_bearing_t *h, int64_t t_rep, float *mps);
 void bb_source_heard_at(btrx_bearing_t *h, bb_source_t *s, int64_t t, float e, float n, int8_t rssi);
+void bb_cover_add(btrx_bearing_t *h, float e, float n);
+void bb_cover_penalty(btrx_bearing_t *h, const bb_source_t *s, int64_t now_us, float *e);   /* coarse view, in place */
+bool bb_launch_key(const btrx_bearing_t *h, uint64_t key);
 
 /* bb_tiles.c */
 void bb_tiles_init(btrx_bearing_t *h);
@@ -347,6 +376,8 @@ int32_t bb_find_source(const btrx_bearing_t *h, uint64_t key);
 void bb_srcid_clear(btrx_bearing_t *h);
 void bb_source_evict(btrx_bearing_t *h, int32_t slot);
 uint8_t bb_class_from_pod(uint8_t pod);
+bool bb_focus_match(const btrx_bearing_t *h, const bb_source_t *s);
+bool bb_focus_active(const btrx_bearing_t *h);
 
 /* bb_lag.c */
 bb_lagrec_t *bb_lag_new(btrx_bearing_t *h, const bb_pending_t *p);
