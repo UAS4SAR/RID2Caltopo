@@ -469,9 +469,15 @@ struct BtrxBearingSection: View {
     @ObservedObject var center: BtrxDeskPodCenter
     @State private var minutes: Double?
     @State private var shape: Double?
+    @State private var maxPm: Double?
+    @State private var minRpt: Double?
 
     var body: some View {
         let settings = center.bearingSettings
+        let d = center.bearingDisplay
+        let pm = maxPm ?? Double(BtrxBearingView.sliderFromMaxPm(d.maxPlusMinusM))
+        let rpt = minRpt ?? Double(d.minReports)
+        let noLimit = Double(BtrxBearingView.sliderFromMaxPm(0))
         let m = minutes ?? Double(settings.fadeMinutes)
         let p = shape ?? Double(settings.fadeShapeP)
         let draft = BtrxBearingSettings(fadeTotalS: Float(m.rounded()) * 60, fadeShapeP: Float(p))
@@ -494,6 +500,24 @@ struct BtrxBearingSection: View {
             }
             Toggle(BtrxBearingText.lagTrace, isOn: Binding(get: { center.bearingLagTrace }, set: { center.setBearingLagTrace($0) }))
                 .font(.footnote)
+            // Nov 20: hide wide estimates and thin labels; mute sources at the takeoff spot. Same as Android.
+            Text("\(BtrxBearingView.settingMaxPm): \(BtrxBearingView.maxPlusMinusText(BtrxBearingView.maxPmFromSlider(Float(pm))))")
+            Slider(value: Binding(get: { pm }, set: { maxPm = $0 }), in: Double(BtrxBearingDisplay.minPlusMinusM)...noLimit, step: 10) { editing in
+                if !editing {
+                    var n = d; n.maxPlusMinusM = BtrxBearingView.maxPmFromSlider(Float(pm))
+                    center.setBearingDisplay(n); maxPm = nil
+                }
+            }
+            Text("\(BtrxBearingView.settingMinReports): \(BtrxBearingView.minReportsText(Int(rpt.rounded())))")
+            Slider(value: Binding(get: { rpt }, set: { minRpt = $0 }), in: 1...Double(BtrxBearingDisplay.maxMinReports), step: 1) { editing in
+                if !editing {
+                    var n = d; n.minReports = Int(rpt.rounded())
+                    center.setBearingDisplay(n); minRpt = nil
+                }
+            }
+            Toggle(BtrxBearingView.settingLaunchMute, isOn: Binding(get: { d.launchAutoMute },
+                                                                    set: { var n = d; n.launchAutoMute = $0; center.setBearingDisplay(n) }))
+            Text(BtrxBearingView.settingLaunchMuteHint).font(.footnote).foregroundStyle(.secondary)
             if center.bearingOn, let line = center.bearingStatus?.line { Text(line).font(.footnote).foregroundStyle(.red) }
             // Counters also before the first snapshot (no drone pose yet), from the status copy.
             if center.bearingOn, center.bearingSnapshot == nil, let st = center.bearingStatus?.stats {
@@ -707,27 +731,99 @@ struct BtrxPinnedInspectCard: View {
     }
 }
 
-/// Shown while a source is focused: its short ID, "Ignore all except this" and "Clear focus";
-/// and, focused or not, "Restore ignored (n)" while "Ignore all except this" has ignores to
-/// undo. Same as Android.
+/// The focus chip at the top of the map. While a source is focused: its short ID, "Ignore all
+/// except this" and "Clear focus"; while a class/maker focus is on: what it shows. Always (with
+/// sources on the map) "Focus…": the kinds and makers on the map, and "Hide the others"
+/// (Nov 20). Also "n muted at takeoff · Show" for sources the layer muted at the launch point,
+/// and "Restore ignored (n)" while "Ignore all except this" has ignores to undo. Same as Android.
 struct BtrxFocusChip: View {
     @ObservedObject var center: BtrxDeskPodCenter
+    @State private var menu = false
     var body: some View {
         let snap = center.bearingOn ? center.bearingSnapshot : nil
         let src = snap.flatMap { s in s.focusKey == 0 ? nil : s.sources.first(where: { $0.key == s.focusKey }) }
-        if center.bearingOn, src != nil || !center.ignoredByAll.isEmpty || (center.snapshot.ignoreAll?.saved.isEmpty == false) {
+        let restore = !center.ignoredByAll.isEmpty || (center.snapshot.ignoreAll?.saved.isEmpty == false)
+        let launch = (snap?.sources ?? []).filter { $0.launch && !$0.ignored }
+        let launchMuted = launch.filter(\.muted).count
+        if center.bearingOn, let snap, !snap.sources.isEmpty || restore {
             HStack(spacing: 6) {
                 if let src {
                     RoundedRectangle(cornerRadius: 2).fill(Color(rgb: src.rgb)).frame(width: 12, height: 12)
                     Text(src.shortID).font(.footnote)
                     BtrxIgnoreAllExceptButton(center: center, source: src).font(.footnote)
-                    Button(BtrxBearingText.clearFocus) { center.bearing.setFocus(0) }.font(.footnote)
+                }
+                if let text = BtrxBearingView.filterText(snap.focusFilter) {
+                    Text((src != nil ? "· " : "") + text).font(.footnote)
+                }
+                if snap.focusActive {
+                    Button(BtrxBearingText.clearFocus) { center.bearing.clearFocus() }.font(.footnote)
+                }
+                Button(BtrxBearingView.focusMenu) { menu = true }.font(.footnote)
+                    .popover(isPresented: $menu) { BtrxFocusMenu(center: center) }
+                if let text = BtrxBearingView.launchChipText(mutedCount: launchMuted, flaggedCount: launch.count) {
+                    Text(text).font(.footnote)
+                    Button(launchMuted > 0 ? BtrxBearingView.launchShow : BtrxBearingView.launchHide) {
+                        if launchMuted > 0 { center.bearing.unmuteLaunch() } else { center.bearing.setMuted(launch.map(\.key), muted: true) }
+                    }.font(.footnote)
                 }
                 BtrxRestoreIgnoredButton(center: center).font(.footnote)
             }
             .foregroundStyle(.white)
             .padding(.horizontal, 10).padding(.vertical, 6)
             .background(Color(white: 0.125).opacity(0.9), in: Capsule())
+        }
+    }
+}
+
+/// "Focus on" (Nov 20): kinds and makers on the map with counts (tap toggles), "Hide the
+/// others", "Clear focus". Applied at once (next tick). Same as Android.
+struct BtrxFocusMenu: View {
+    @ObservedObject var center: BtrxDeskPodCenter
+    @Environment(\.dismiss) private var dismiss
+    var body: some View {
+        let snap = center.bearingSnapshot
+        let f = snap?.focusFilter ?? .none
+        let options = BtrxBearingView.focusOptions(snap?.sources ?? [])
+        NavigationStack {
+            List {
+                if options.isEmpty { Text(BtrxBearingView.focusNoneOnMap).font(.footnote) }
+                let kinds = options.filter(\.isClass), makers = options.filter { !$0.isClass }
+                if !kinds.isEmpty {
+                    Section(BtrxBearingView.focusClasses) {
+                        ForEach(kinds) { o in
+                            row(o, on: f.classMask & (1 << o.value) != 0) { center.bearing.setFocusFilter(f.withClass(o.value)) }
+                        }
+                    }
+                }
+                if !makers.isEmpty {
+                    Section(BtrxBearingView.focusMakers) {
+                        ForEach(makers) { o in
+                            row(o, on: f.companyId == o.value) { center.bearing.setFocusFilter(f.withCompany(o.value)) }
+                        }
+                    }
+                }
+                Toggle(BtrxBearingView.focusHideOthers, isOn: Binding(get: { f.hideOthers },
+                                                                       set: { center.bearing.setFocusFilter(f.withHideOthers($0)) }))
+            }
+            .navigationTitle(BtrxBearingView.focusMenuTitle)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button(BtrxBearingText.clearFocus) { center.bearing.clearFocus(); dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) { Button(BtrxBearingText.done) { dismiss() } }
+            }
+        }
+        .frame(minWidth: 320, minHeight: 420)
+    }
+
+    private func row(_ o: BtrxBearingFocusOption, on: Bool, toggle: @escaping () -> Void) -> some View {
+        Button(action: toggle) {
+            HStack {
+                Image(systemName: on ? "checkmark.square.fill" : "square")
+                Text("\(o.label) (\(o.count))")
+                Spacer()
+            }
         }
     }
 }

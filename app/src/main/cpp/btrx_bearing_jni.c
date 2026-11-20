@@ -11,6 +11,7 @@
  *   [9] focused source index (-1 none) [10] fine_valid [11] fine cells (square)
  *   [12] fine north [13] fine south [14] fine east [15] fine west
  *   [16..] stats (BBN_STATS_* below, 87 used), [112] trail point count (focused source),
+ *   [113] focus bits (1 = active, 2 = hide others) [114] focus class mask [115] focus company id (-1 none),
  *   [116 + 56*i ..] source i (bbn_meta below).
  */
 #include <jni.h>
@@ -237,6 +238,19 @@ JNIEXPORT jint JNICALL JFN(nativeSetFocus)(JNIEnv *env, jobject self, jlong hand
     return w ? btrx_bearing_set_focus(w->h, (uint64_t)key) : BTRX_BEARING_E_INVALID;
 }
 
+JNIEXPORT jint JNICALL JFN(nativeSetFocusFilter)(JNIEnv *env, jobject self, jlong handle, jint class_mask,
+        jint company_id, jboolean hide_others) {
+    (void)env; (void)self;
+    bbn_t *w = bbn(handle);
+    return w ? btrx_bearing_set_focus_filter(w->h, (uint32_t)class_mask, company_id, hide_others == JNI_TRUE) : BTRX_BEARING_E_INVALID;
+}
+
+JNIEXPORT jint JNICALL JFN(nativeSetLaunchAutoMute)(JNIEnv *env, jobject self, jlong handle, jboolean on) {
+    (void)env; (void)self;
+    bbn_t *w = bbn(handle);
+    return w ? btrx_bearing_set_launch_auto_mute(w->h, on == JNI_TRUE) : BTRX_BEARING_E_INVALID;
+}
+
 JNIEXPORT jint JNICALL JFN(nativeReset)(JNIEnv *env, jobject self, jlong handle, jint what, jlong key) {
     (void)env; (void)self;
     bbn_t *w = bbn(handle);
@@ -283,6 +297,8 @@ static void bbn_meta(const btrx_bearing_snapshot_t *s, double *m) {
     m[12] = s->fine_north_deg; m[13] = s->fine_south_deg; m[14] = s->fine_east_deg; m[15] = s->fine_west_deg;
     bbn_stats(&s->stats, m + BBN_META_STATS);
     m[BBN_META_TRAIL_COUNT] = s->trail_count;
+    m[113] = (s->focus_active ? 1 : 0) | (s->focus_hide_others ? 2 : 0);
+    m[114] = s->focus_class_mask; m[115] = s->focus_company_id;
     for (int k = 0; k < s->source_count && k < BTRX_BEARING_MAX_SOURCES; k++) {
         const btrx_bearing_source_t *src = &s->sources[k];
         double *o = m + BBN_META_SOURCES + BBN_META_PER_SOURCE * k;
@@ -307,6 +323,7 @@ static void bbn_meta(const btrx_bearing_snapshot_t *s, double *m) {
         o[j++] = (double)src->strongest_t_us;                    /* 40 */
         o[j++] = src->label_valid ? 1 : 0; o[j++] = src->label_lat_deg; o[j++] = src->label_lon_deg; /* 41-43 */
         o[j++] = src->pinned ? 1 : 0;                            /* 44 */
+        o[j++] = src->company_id; o[j++] = src->focus_match ? 1 : 0; /* 45, 46 (ABI 3) */
     }
 }
 

@@ -338,6 +338,21 @@ internal class CameraFovOverlay(
     }
 }
 
+/**
+ * Screen boxes of the drone name and telemetry labels from the last map frame (main thread),
+ * for the BTRX bearing labels to keep clear of (Nov 20). Empty when no drone label is drawn.
+ */
+internal object DroneLabelScreenRects {
+    @Volatile var boxes: List<org.ncssar.rid2caltopo.btrx.BtrxLabelLayout.Box> = emptyList()
+        set(value) { field = value; atMs = android.os.SystemClock.uptimeMillis() }
+    @Volatile var atMs = 0L
+        private set
+
+    /** The boxes when drawn within the last second (the drone label overlay may be gone). */
+    fun recent(): List<org.ncssar.rid2caltopo.btrx.BtrxLabelLayout.Box> =
+        if (android.os.SystemClock.uptimeMillis() - atMs <= 1000L) boxes else emptyList()
+}
+
 internal class DroneLabelOverlay(
     private val labels: List<DroneLabelDrawSpec>
 ) : Overlay() {
@@ -355,7 +370,8 @@ internal class DroneLabelOverlay(
     }
 
     override fun draw(canvas: Canvas, mapView: MapView, shadow: Boolean) {
-        if (shadow || labels.isEmpty()) return
+        if (shadow) return
+        if (labels.isEmpty()) { DroneLabelScreenRects.boxes = emptyList(); return }
         val projection = mapView.projection
         val layoutInputs = labels.map { label ->
             val point = projection.toPixels(label.position, null)
@@ -374,6 +390,11 @@ internal class DroneLabelOverlay(
             viewportWidth = mapView.width.takeIf { it > 0 } ?: canvas.width,
             viewportHeight = mapView.height.takeIf { it > 0 } ?: canvas.height
         )
+        DroneLabelScreenRects.boxes = layouts.flatMap { l ->
+            listOf(l.nameBounds, l.statusBounds).map {
+                org.ncssar.rid2caltopo.btrx.BtrxLabelLayout.Box(it.left.toFloat(), it.top.toFloat(), it.right.toFloat(), it.bottom.toFloat())
+            }
+        }
         layouts.zip(labels).forEach { (layout, label) ->
             layout.leaderLine?.let { line ->
                 canvas.drawLine(

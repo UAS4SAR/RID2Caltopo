@@ -10,6 +10,8 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
@@ -89,6 +91,7 @@ fun BtrxBearingSection() {
         Text(BtrxBearingText.LAG_TRACE, Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
         Switch(checked = trace, onCheckedChange = { BtrxManager.setBearingLagTrace(it) })
     }
+    BtrxBearingDisplaySettings()
     if (on) status?.line?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
     val s = snap
     // Counters also before the first snapshot (no drone pose yet), from the status copy.
@@ -120,6 +123,36 @@ fun BtrxBearingSection() {
         }
     }
     if (pod.savedIgnoreSupported || pod.savedIgnores.isNotEmpty()) BtrxSavedOwnAircraft(pod)
+}
+
+/**
+ * Nov 20: hide estimates wider than ±N m (2 sigma; the top of the slider = no limit), hide
+ * labels of sources with fewer reports, and mute sources at the takeoff spot. Same as the iPad.
+ */
+@Composable
+private fun BtrxBearingDisplaySettings() {
+    val V = org.ncssar.rid2caltopo.btrx.BtrxBearingView
+    val D = org.ncssar.rid2caltopo.btrx.BtrxBearingDisplay
+    val d by BtrxManager.bearingDisplay.collectAsState()
+    val noLimit = V.sliderFromMaxPm(0)
+    var pm by remember(d.maxPlusMinusM) { mutableFloatStateOf(V.sliderFromMaxPm(d.maxPlusMinusM)) }
+    var minRpt by remember(d.minReports) { mutableFloatStateOf(d.minReports.toFloat()) }
+    fun pmValue(v: Float): Int = V.maxPmFromSlider(v)
+    Text("${V.SETTING_MAX_PM}: ${V.maxPlusMinusText(pmValue(pm))}")
+    Slider(
+        value = pm, onValueChange = { pm = it }, valueRange = D.MIN_PLUS_MINUS_M.toFloat()..noLimit, steps = ((noLimit - D.MIN_PLUS_MINUS_M) / 10f).roundToInt() - 1,
+        onValueChangeFinished = { BtrxManager.setBearingDisplay(d.copy(maxPlusMinusM = pmValue(pm))) },
+    )
+    Text("${V.SETTING_MIN_REPORTS}: ${V.minReportsText(minRpt.roundToInt())}")
+    Slider(
+        value = minRpt, onValueChange = { minRpt = it }, valueRange = 1f..D.MAX_MIN_REPORTS.toFloat(), steps = D.MAX_MIN_REPORTS - 2,
+        onValueChangeFinished = { BtrxManager.setBearingDisplay(d.copy(minReports = minRpt.roundToInt())) },
+    )
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(V.SETTING_LAUNCH_MUTE, Modifier.weight(1f))
+        Switch(checked = d.launchAutoMute, onCheckedChange = { BtrxManager.setBearingDisplay(d.copy(launchAutoMute = it)) })
+    }
+    Text(V.SETTING_LAUNCH_MUTE_HINT, style = MaterialTheme.typography.bodySmall)
 }
 
 /** The paired Drone Pod's saved own aircraft (build 0x0106), each with Remove, and the latest result. */
@@ -298,8 +331,11 @@ fun BtrxPinnedInspectCard(
 }
 
 /**
- * Shown while a source is focused: its short ID, "Ignore all except this" and "Clear focus";
- * and, focused or not, "Restore ignored (n)" while "Ignore all except this" has ignores to undo.
+ * The focus chip at the top of the map. While a source is focused: its short ID, "Ignore all
+ * except this" and "Clear focus"; while a class/maker focus is on: what it shows. Always (with
+ * sources on the map) "Focus…": the kinds and makers on the map to focus on, and "Hide the
+ * others" (Nov 20). Also "n muted at takeoff · Show" for sources the layer muted at the launch
+ * point, and "Restore ignored (n)" while "Ignore all except this" has ignores to undo.
  */
 @Composable
 fun BtrxFocusChip(onClear: () -> Unit, modifier: Modifier = Modifier) {
@@ -307,18 +343,84 @@ fun BtrxFocusChip(onClear: () -> Unit, modifier: Modifier = Modifier) {
     val s = snap ?: return
     val src = if (s.focusKey == 0L) null else s.sources.firstOrNull { it.key == s.focusKey }
     val byAll by BtrxManager.bearing.ignoredByAll.collectAsState()
-    if (src == null && byAll.isEmpty()) return
+    var menu by remember { mutableStateOf(false) }
+    val filterText = org.ncssar.rid2caltopo.btrx.BtrxBearingView.filterText(s.focusFilter)
+    val launch = s.sources.filter { it.launch && !it.ignored }
+    val launchMuted = launch.count { it.muted }
+    val launchText = org.ncssar.rid2caltopo.btrx.BtrxBearingView.launchChipText(launchMuted, launch.size)
+    if (s.sources.isEmpty() && byAll.isEmpty()) return
     Surface(modifier, shape = RoundedCornerShape(16.dp), color = Color(0xE6202020), contentColor = Color.White) {
         Row(Modifier.padding(start = 10.dp), verticalAlignment = Alignment.CenterVertically) {
             if (src != null) {
                 Box(Modifier.size(12.dp).background(Color(0xFF000000.toInt() or src.rgb), RoundedCornerShape(2.dp)))
                 Text(" ${src.shortId}", style = MaterialTheme.typography.bodySmall)
                 BtrxIgnoreAllExceptButton(src, color = Color.White)
+            }
+            filterText?.let { Text((if (src != null) " · " else "") + it, style = MaterialTheme.typography.bodySmall) }
+            if (s.focusActive) {
                 TextButton(onClick = onClear) { Text(BtrxBearingText.CLEAR_FOCUS, color = Color.White, style = MaterialTheme.typography.bodySmall) }
+            }
+            TextButton(onClick = { menu = true }) {
+                Text(org.ncssar.rid2caltopo.btrx.BtrxBearingView.FOCUS_MENU, color = Color(0xFF8AB4F8), style = MaterialTheme.typography.bodySmall)
+            }
+            launchText?.let { t ->
+                Text(t, style = MaterialTheme.typography.bodySmall)
+                TextButton(onClick = {
+                    if (launchMuted > 0) BtrxManager.bearing.unmuteLaunch()
+                    else BtrxManager.bearing.setMuted(launch.map { it.key }, true)
+                }) {
+                    Text(
+                        if (launchMuted > 0) org.ncssar.rid2caltopo.btrx.BtrxBearingView.LAUNCH_SHOW else org.ncssar.rid2caltopo.btrx.BtrxBearingView.LAUNCH_HIDE,
+                        color = Color(0xFF8AB4F8), style = MaterialTheme.typography.bodySmall,
+                    )
+                }
             }
             BtrxRestoreIgnoredButton(color = Color(0xFF8AB4F8))
         }
     }
+    if (menu) BtrxFocusMenu(s, onClear = { menu = false; onClear() }, onDismiss = { menu = false })
+}
+
+/** "Focus on": kinds and makers on the map with counts (tap toggles), "Hide the others", Clear, Done. */
+@Composable
+private fun BtrxFocusMenu(s: org.ncssar.rid2caltopo.btrx.BtrxBearingSnapshot, onClear: () -> Unit, onDismiss: () -> Unit) {
+    val V = org.ncssar.rid2caltopo.btrx.BtrxBearingView
+    val f = s.focusFilter
+    val options = V.focusOptions(s.sources)
+    fun apply(n: org.ncssar.rid2caltopo.btrx.BtrxBearingFocusFilter) = BtrxManager.bearing.setFocusFilter(n)
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(V.FOCUS_MENU_TITLE) },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                if (options.isEmpty()) Text(V.FOCUS_NONE_ON_MAP, style = MaterialTheme.typography.bodySmall)
+                val kinds = options.filter { it.isClass }
+                val makers = options.filter { !it.isClass }
+                if (kinds.isNotEmpty()) Text(V.FOCUS_CLASSES, fontWeight = FontWeight.SemiBold)
+                kinds.forEach { o ->
+                    val on = f.classMask and (1 shl o.value) != 0
+                    Row(Modifier.clickable { apply(f.withClass(o.value)) }, verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(checked = on, onCheckedChange = { apply(f.withClass(o.value)) })
+                        Text("${o.label} (${o.count})")
+                    }
+                }
+                if (makers.isNotEmpty()) Text(V.FOCUS_MAKERS, fontWeight = FontWeight.SemiBold)
+                makers.forEach { o ->
+                    val on = f.companyId == o.value
+                    Row(Modifier.clickable { apply(f.withCompany(o.value)) }, verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(checked = on, onCheckedChange = { apply(f.withCompany(o.value)) })
+                        Text("${o.label} (${o.count})")
+                    }
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(V.FOCUS_HIDE_OTHERS, Modifier.weight(1f))
+                    Switch(checked = f.hideOthers, onCheckedChange = { apply(f.copy(hideOthers = it)) })
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text(BtrxBearingText.DONE) } },
+        dismissButton = { TextButton(onClick = onClear) { Text(BtrxBearingText.CLEAR_FOCUS) } },
+    )
 }
 
 /**

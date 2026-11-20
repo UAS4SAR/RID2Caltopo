@@ -102,6 +102,14 @@ public struct BtrxBearingSource: Sendable, Equatable, Identifiable {
     public var labelLon: Double? = nil
     /// Estimate valid and tight (2 sigma <= 30 m): drawn as a distinct "pinned" marker.
     public var pinned: Bool = false
+    /// Bluetooth SIG company id from the Drone Pod (0 = unknown).
+    public var companyId: Int = 0
+    /// A focus (source, class or maker) is active and this source is in it.
+    public var focusMatch: Bool = false
+    /// Strong at the launch point before takeoff (Nov 20); muted by the layer while launch auto mute is on.
+    public var launch: Bool { flags & UInt32(BTRX_BEARING_SRC_LAUNCH) != 0 }
+    /// Short maker name, "0x1234" when not in ``BtrxMakers``, nil when unknown.
+    public var maker: String? { BtrxMakers.maker(companyId) }
     public var muted: Bool { flags & UInt32(BTRX_BEARING_SRC_MUTED) != 0 }
     /// Looks like it rides on the drone (a suggestion; Ken decides).
     public var ownSuspect: Bool { flags & UInt32(BTRX_BEARING_SRC_OWN_SUSPECT) != 0 }
@@ -136,6 +144,10 @@ public struct BtrxBearingSnapshot: Sendable, Equatable {
     public var fine: BtrxBearingFine? = nil
     /// Strength trail of the focused source, oldest first.
     public var trail: [BtrxBearingTrailPoint] = []
+    /// Focus filter in effect (Nov 20): by class bits and/or maker, the others hidden or dimmed.
+    public var focusFilter = BtrxBearingFocusFilter()
+    /// A focus (key or filter) is active: ``BtrxBearingSource/focusMatch`` says who is in it.
+    public var focusActive: Bool = false
 }
 
 /// Why the layer draws nothing (field test, Nov 13): `line` is the short map status, nil
@@ -293,6 +305,7 @@ public final class BtrxBearingLayer: @unchecked Sendable {
         cfg.fade_total_s = s.fadeTotalS
         cfg.fade_shape_p = s.fadeShapeP
         cfg.lag_trace = trace
+        cfg.launch_auto_mute = launchAutoMute
         cfg.callback_ctx = Unmanaged.passUnretained(logSink).toOpaque()
         cfg.log = { ctx, _, msg in
             guard let ctx, let msg else { return }
@@ -616,7 +629,7 @@ public final class BtrxBearingLayer: @unchecked Sendable {
                     strongestLon: src.strongest_valid ? src.strongest_lon_deg : nil,
                     labelLat: src.label_valid ? src.label_lat_deg : nil,
                     labelLon: src.label_valid ? src.label_lon_deg : nil,
-                    pinned: src.pinned)
+                    pinned: src.pinned, companyId: Int(src.company_id), focusMatch: src.focus_match)
             }
         }
         var fine: BtrxBearingFine?
@@ -632,7 +645,10 @@ public final class BtrxBearingLayer: @unchecked Sendable {
         return BtrxBearingSnapshot(seq: s.seq, tUs: s.t_us, width: Int(s.width), height: Int(s.height),
                                    north: s.north_deg, south: s.south_deg, east: s.east_deg, west: s.west_deg,
                                    rgba: rgba, sources: sources, stats: stats,
-                                   focusKey: s.focus_key, fine: fine, trail: trail)
+                                   focusKey: s.focus_key, fine: fine, trail: trail,
+                                   focusFilter: BtrxBearingFocusFilter(classMask: Int(s.focus_class_mask), companyId: Int(s.focus_company_id),
+                                                                       hideOthers: s.focus_hide_others),
+                                   focusActive: s.focus_active)
     }
 
     // MARK: UI
@@ -682,6 +698,39 @@ public final class BtrxBearingLayer: @unchecked Sendable {
     /// Main thread: "Focus this source" (0 = clear). Applied at the next tick, which publishes.
     public func setFocus(_ key: UInt64) {
         withHandle(()) { h in _ = btrx_bearing_set_focus(h, key) }
+    }
+
+    /// Main thread: focus by class and/or maker (Nov 20); `.none` clears. Next tick.
+    public func setFocusFilter(_ filter: BtrxBearingFocusFilter) {
+        withHandle(()) { h in _ = btrx_bearing_set_focus_filter(h, UInt32(filter.classMask), Int32(filter.companyId), filter.hideOthers) }
+        log("bearing: focus filter \(filter.logText)")
+    }
+
+    /// "Clear focus": the focused source and the class/maker filter.
+    public func clearFocus() {
+        withHandle(()) { h in
+            _ = btrx_bearing_set_focus(h, 0)
+            _ = btrx_bearing_set_focus_filter(h, 0, -1, false)
+        }
+    }
+
+    private var _launchAutoMute = true
+    /// Launch-point auto mute (Developer Tools, default on); applied now and at every layer start.
+    public var launchAutoMute: Bool { stateLock.lock(); defer { stateLock.unlock() }; return _launchAutoMute }
+
+    public func setLaunchAutoMute(_ on: Bool) {
+        stateLock.lock(); _launchAutoMute = on; stateLock.unlock()
+        withHandle(()) { h in _ = btrx_bearing_set_launch_auto_mute(h, on) }
+    }
+
+    /// "Show launch sources": unmute every source muted at the launch point.
+    @discardableResult
+    public func unmuteLaunch() -> Int {
+        snapLock.lock(); let snap = current; snapLock.unlock()
+        let keys = (snap?.sources ?? []).filter { $0.launch && $0.muted }.map(\.key)
+        setMuted(keys, muted: false)
+        if !keys.isEmpty { log("bearing: \(keys.count) launch-point source(s) unmuted") }
+        return keys.count
     }
 
     // Own-aircraft suggestion answers (Nov 17 watch test): "Own aircraft (saved)" went to the
@@ -882,7 +931,8 @@ public enum BtrxBearingText {
 
     /// Inspect card of a pinned source: one line per field. Same as Android.
     public static func inspectLines(_ s: BtrxBearingSource, nowUs: Int64) -> [String] {
-        var out = ["Source \(s.shortID)" + (s.srcId != 0 ? " (id \(s.srcId))" : "") + " · \(s.className)"]
+        var out = ["Source \(s.shortID)" + (s.srcId != 0 ? " (id \(s.srcId))" : "") + " · \(s.className)" + (s.maker.map { " · \($0)" } ?? "")]
+        if s.launch { out.append("Heard strongly at the takeoff spot" + (s.muted ? " (muted)" : "")) }
         if let e = s.estimate {
             out.append(String(format: "Estimate %.6f, %.6f", e.lat, e.lon))
             out.append("Uncertainty ±\(Int(e.plusMinus2sM.rounded())) m (2σ)" + (e.ambiguous ? " · ambiguous" : ""))
@@ -908,6 +958,7 @@ public enum BtrxBearingText {
         case 3: return "hearing aid"
         case 4: return "tag"
         case 5: return "audio"
+        case 6: return "computer"
         default: return "unknown"
         }
     }
@@ -924,9 +975,9 @@ public enum BtrxBearingText {
 
     public static func reports(_ n: Int) -> String { n == 1 ? "1 rpt" : "\(n) rpt" }
 
-    /// Map label (spec 5): `phone · Q3x9Kd · 23 rpt · ±18 m`, plus "ambiguous".
+    /// Map label (spec 5; maker Nov 20): `watch · Garmin · Q3x9Kd · 23 rpt · ±18 m`, plus "ambiguous".
     public static func label(_ s: BtrxBearingSource) -> String {
-        let base = "\(s.className) · \(s.shortID) · \(reports(s.reportsInWindow))" + (s.ownSuspect ? " · \(ownSuspectTag)" : "")
+        let base = "\(s.className)\(s.maker.map { " · \($0)" } ?? "") · \(s.shortID) · \(reports(s.reportsInWindow))" + (s.ownSuspect ? " · \(ownSuspectTag)" : "")
         guard let est = s.estimate else { return base }
         return base + " · ±\(Int(est.plusMinus2sM.rounded())) m" + (est.ambiguous ? " · ambiguous" : "")
     }

@@ -14,7 +14,11 @@ import kotlin.math.asin
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.sin
+import org.ncssar.rid2caltopo.btrx.BtrxBearingDisplay
+import org.ncssar.rid2caltopo.btrx.BtrxBearingDrawMode
 import org.ncssar.rid2caltopo.btrx.BtrxBearingSnapshot
+import org.ncssar.rid2caltopo.btrx.BtrxBearingView
+import org.ncssar.rid2caltopo.btrx.BtrxLabelLayout
 import org.ncssar.rid2caltopo.btrx.BtrxBearingSource
 import org.ncssar.rid2caltopo.btrx.BtrxBearingText
 import org.osmdroid.util.GeoPoint
@@ -39,6 +43,12 @@ import org.osmdroid.views.overlay.Overlay
  * the RSSI range says, both lobes alike when ambiguous; labels inside the shading; a
  * distinct marker for a pinned source (tap: inspect card); for the focused source its
  * strength trail along the flight path and a "strongest here" marker.
+ *
+ * Nov 20 (back-deck test, 40 devices at takeoff): focus by class or maker dims or hides the
+ * rest; estimates wider than the Developer Tools limit and labels of thin sources are not
+ * drawn; labels are placed around their anchor so they overlap neither each other nor the
+ * drone labels (the previous frame's boxes, [DroneLabelScreenRects]); a label with no free
+ * spot is left out.
  */
 class BtrxBearingMapOverlay(
     private val density: Float,
@@ -47,6 +57,10 @@ class BtrxBearingMapOverlay(
     private val onPinnedTapped: (key: Long) -> Unit = {},
 ) : Overlay() {
     @Volatile var tapsEnabled = true
+    /** Developer Tools thresholds (hide wide estimates, thin labels). */
+    @Volatile var display = BtrxBearingDisplay()
+    private val labelItems = ArrayList<BtrxLabelLayout.Item>()
+    private val labelTexts = HashMap<Long, String>()
     private var snapshot: BtrxBearingSnapshot? = null
     private var bitmap: Bitmap? = null
     private var fineBitmap: Bitmap? = null
@@ -105,9 +119,12 @@ class BtrxBearingMapOverlay(
         fineBitmap?.let { if (fine != null) drawRaster(c, proj, it, fine.north, fine.south, fine.east, fine.west) }
         val nowUs = SystemClock.elapsedRealtimeNanos() / 1000L
         drawTrail(c, proj, snap)
+        val d = display
+        labelItems.clear(); labelTexts.clear()
         for (s in snap.sources) {
-            if (s.muted || s.ignored) continue
-            val dim = snap.focusKey != 0L && s.key != snap.focusKey
+            val mode = BtrxBearingView.drawMode(s, snap)
+            if (mode == BtrxBearingDrawMode.HIDDEN) continue
+            val dim = mode == BtrxBearingDrawMode.DIM
             val color = 0xFF000000.toInt() or s.rgb
             s.latestRay?.let { ray ->
                 val age = nowUs - ray.tUs
@@ -142,7 +159,8 @@ class BtrxBearingMapOverlay(
                     }
                 }
             }
-            val est = s.estimate
+            val est = s.estimate?.takeIf { BtrxBearingView.estimateShown(s, d, snap.focusKey) }
+            val wantLabel = !dim && BtrxBearingView.labelShown(s, d, snap.focusKey)
             if (est != null) {
                 for (k in 1..2) {
                     ellipsePath(proj, est.lat, est.lon, k * est.axisMajor1sM, k * est.axisMinor1sM, est.axisMajorDeg)
@@ -157,17 +175,20 @@ class BtrxBearingMapOverlay(
                     c.drawCircle(pt.x.toFloat(), pt.y.toFloat(), 4f * density, haloPaint)
                     c.drawCircle(pt.x.toFloat(), pt.y.toFloat(), 4f * density, dotPaint)
                 }
-                drawLabel(c, BtrxBearingText.label(s), pt.x + 8f * density, pt.y - 8f * density)
+                if (wantLabel) addLabel(s.key, BtrxBearingText.label(s), pt.x.toFloat(), pt.y.toFloat(), BtrxBearingView.labelPriority(s, snap))
+            } else if (!wantLabel) {
+                // no label
             } else if (s.labelLat != null && s.labelLon != null) {
                 // Inside the shading (Nov 16: labels sat 240 m out along a fixed 400 m ray).
                 proj.toPixels(GeoPoint(s.labelLat, s.labelLon), pt)
-                drawLabel(c, BtrxBearingText.label(s), pt.x.toFloat(), pt.y.toFloat())
+                addLabel(s.key, BtrxBearingText.label(s), pt.x.toFloat(), pt.y.toFloat(), BtrxBearingView.labelPriority(s, snap))
             } else s.latestRay?.let { ray ->
                 val end = destination(ray.apexLat, ray.apexLon, ray.centreTrueDeg.toDouble(), ray.lengthM.toDouble() * 0.6)
                 proj.toPixels(end, pt)
-                drawLabel(c, BtrxBearingText.label(s), pt.x.toFloat(), pt.y.toFloat())
+                addLabel(s.key, BtrxBearingText.label(s), pt.x.toFloat(), pt.y.toFloat(), BtrxBearingView.labelPriority(s, snap))
             }
         }
+        val obstacles = ArrayList<BtrxLabelLayout.Box>(DroneLabelScreenRects.recent())
         // "Strongest here" for the focused source, on top.
         snap.sources.firstOrNull { it.key == snap.focusKey && snap.focusKey != 0L }?.let { f ->
             val lat = f.strongestLat ?: return@let
@@ -176,8 +197,25 @@ class BtrxBearingMapOverlay(
             val x = pt.x.toFloat(); val y = pt.y.toFloat(); val r = 9f * density
             c.drawLine(x - r, y - r, x + r, y + r, haloPaint); c.drawLine(x - r, y + r, x + r, y - r, haloPaint)
             c.drawLine(x - r, y - r, x + r, y + r, starPaint); c.drawLine(x - r, y + r, x + r, y - r, starPaint)
-            drawLabel(c, BtrxBearingText.STRONGEST_HERE + (f.maxRssiDbm?.let { " $it dBm" } ?: ""), x + r + 4f * density, y + 4f * density)
+            val text = BtrxBearingText.STRONGEST_HERE + (f.maxRssiDbm?.let { " $it dBm" } ?: "")
+            drawLabel(c, text, x + r + 4f * density, y + 4f * density)
+            val pad = 3f * density
+            obstacles += BtrxLabelLayout.Box(x + r + 4f * density - pad, y + 4f * density - labelPaint.textSize - pad / 2,
+                x + r + 4f * density + labelPaint.measureText(text) + pad, y + 4f * density + pad)
         }
+        // Labels last, placed clear of each other and of the drone labels (Nov 20).
+        val placed = BtrxLabelLayout.place(labelItems, obstacles, 8f * density, 2f * density)
+        for ((id, p) in placed) {
+            val pad = 3f * density
+            labelTexts[id]?.let { drawLabel(c, it, p.box.left + pad, p.box.top + labelPaint.textSize + pad / 2) }
+        }
+    }
+
+    /** A label to place: its box is the text plus padding, as [drawLabel] draws it. */
+    private fun addLabel(id: Long, text: String, ax: Float, ay: Float, priority: Int) {
+        val pad = 3f * density
+        labelItems += BtrxLabelLayout.Item(id, ax, ay, labelPaint.measureText(text) + 2 * pad, labelPaint.textSize + 1.5f * pad, priority)
+        labelTexts[id] = text
     }
 
     /** Pinned source: a bold ring with a cross and a centre dot, distinct from the estimate dot. */
@@ -238,7 +276,9 @@ class BtrxBearingMapOverlay(
         val proj = mapView.projection
         // Pinned-source markers first: the inspect card.
         val hitR = (PIN_RADIUS_DP * 2.2f) * density
-        snap.sources.filter { it.pinned && !it.muted && !it.ignored && it.estimate != null }.minByOrNull { s ->
+        snap.sources.filter {
+            it.pinned && BtrxBearingView.drawMode(it, snap) != BtrxBearingDrawMode.HIDDEN && BtrxBearingView.estimateShown(it, display, snap.focusKey)
+        }.minByOrNull { s ->
             proj.toPixels(GeoPoint(s.estimate!!.lat, s.estimate.lon), pt)
             kotlin.math.hypot(pt.x - e.x, pt.y - e.y)
         }?.let { s ->

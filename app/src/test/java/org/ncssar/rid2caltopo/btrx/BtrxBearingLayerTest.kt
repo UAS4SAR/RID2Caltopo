@@ -45,6 +45,11 @@ class BtrxBearingLayerTest {
         override fun setStableSrcIds(handle: Long, stable: Boolean): Int { calls += "stable $stable"; return 0 }
         override fun reset(handle: Long, what: Int, key: Long): Int = 0
         override fun setFocus(handle: Long, key: Long): Int { calls += "focus $key"; return 0 }
+        override fun setFocusFilter(handle: Long, classMask: Int, companyId: Int, hideOthers: Boolean): Int {
+            calls += "filter $classMask $companyId $hideOthers"; return 0
+        }
+        override fun setLaunchAutoMute(handle: Long, on: Boolean): Int { calls += "launchMute $on"; return 0 }
+        var focusFilterMeta = false
         override fun tick(handle: Long, nowUs: Long): Int = if (publish) 1.also { publish = false } else 0
         var withFine = false
         override fun copySnapshot(handle: Long, rgba: ByteBuffer, fine: ByteBuffer?, trail: DoubleArray?, keys: LongArray, shortIds: ByteArray, meta: DoubleArray): Int {
@@ -83,6 +88,18 @@ class BtrxBearingLayerTest {
                     meta[o + 44] = 1.0
                 }
                 if (i == 1) meta[o + 5] = (BtrxBearingNative.SRC_MUTED or BtrxBearingNative.SRC_OWN_SUSPECT).toDouble()
+                if (focusFilterMeta) {
+                    meta[o + 45] = if (i == 0) 0x0087.toDouble() else 0.0
+                    meta[o + 46] = if (i == 0) 1.0 else 0.0
+                    if (i == 1) meta[o + 5] = (BtrxBearingNative.SRC_MUTED or BtrxBearingNative.SRC_LAUNCH).toDouble()
+                }
+            }
+            if (focusFilterMeta) {
+                meta[BtrxBearingNative.META_FOCUS_BITS] = 3.0
+                meta[BtrxBearingNative.META_FOCUS_CLASS_MASK] = 4.0
+                meta[BtrxBearingNative.META_FOCUS_COMPANY] = 0x0087.toDouble()
+            } else {
+                meta[BtrxBearingNative.META_FOCUS_COMPANY] = -1.0
             }
             return 2
         }
@@ -262,6 +279,40 @@ class BtrxBearingLayerTest {
         assertEquals(0, e.flags.last().third)
         l.noteRendered(5L); l.noteRendered(5L)
         assertEquals(1, e.calls.count { it == "rendered 5" })
+    }
+
+    /** Nov 20: company id, focus match, focus filter and launch flag decode; filter, clear and launch calls. */
+    @Test fun snapshotDecodesFocusFilterAndLaunch() {
+        val e = FakeEngine()
+        val l = layer(e)
+        l.setLaunchAutoMute(false)
+        l.start(BtrxBearingSettings(), false, true)
+        assertTrue("launchMute false" in e.calls)
+        e.publish = true
+        tickAt(l, now + 200_000L)
+        var s = l.snapshot.value!!
+        assertFalse(s.focusActive)
+        assertEquals(BtrxBearingFocusFilter.NONE, s.focusFilter)
+        e.focusFilterMeta = true
+        e.publish = true
+        tickAt(l, now + 400_000L)
+        s = l.snapshot.value!!
+        assertTrue(s.focusActive)
+        assertEquals(BtrxBearingFocusFilter(4, 0x0087, true), s.focusFilter)
+        assertEquals(0x0087, s.sources[0].companyId)
+        assertEquals("Garmin", s.sources[0].maker)
+        assertTrue(s.sources[0].focusMatch)
+        assertFalse(s.sources[1].focusMatch)
+        assertTrue(s.sources[1].launch)
+        assertEquals("phone · Garmin · ID0000 · 23 rpt · ±18 m", BtrxBearingText.label(s.sources[0]))
+        l.setFocusFilter(BtrxBearingFocusFilter.NONE.withClass(2).copy(hideOthers = true))
+        assertEquals("filter 4 -1 true", e.calls.last())
+        l.clearFocus()
+        assertEquals(listOf("focus 0", "filter 0 -1 false"), e.calls.takeLast(2))
+        assertEquals(1, l.unmuteLaunch())
+        assertEquals(Triple(listOf(101L), BtrxBearingNative.SRC_MUTED, 0), e.flags.last())
+        l.setLaunchAutoMute(true)
+        assertEquals("launchMute true", e.calls.last())
     }
 
     @Test fun snapshotDecodesWatchTestFields() {

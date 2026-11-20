@@ -997,6 +997,11 @@ internal fun SplitMapPane(
     }
     val btrxBearingStatus by org.ncssar.rid2caltopo.btrx.BtrxManager.bearing.status.collectAsState()
     val btrxMapStatus by org.ncssar.rid2caltopo.btrx.BtrxManager.mapStatus.collectAsState()
+    val btrxDisplay by org.ncssar.rid2caltopo.btrx.BtrxManager.bearingDisplay.collectAsState()
+    LaunchedEffect(btrxDisplay) {
+        btrxOverlay.display = btrxDisplay
+        currentMapView?.invalidate()
+    }
     LaunchedEffect(btrxBearingOn) {
         if (!btrxBearingOn) {
             btrxOverlay.show(null, null)
@@ -5004,7 +5009,7 @@ internal fun SplitMapPane(
                 modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 120.dp, start = 56.dp, end = 56.dp),
             )
             org.ncssar.rid2caltopo.ui.BtrxFocusChip(
-                onClear = { org.ncssar.rid2caltopo.btrx.BtrxManager.bearing.setFocus(0L) },
+                onClear = { org.ncssar.rid2caltopo.btrx.BtrxManager.bearing.clearFocus() },
                 modifier = Modifier.align(Alignment.TopCenter).padding(top = 48.dp),
             )
         }

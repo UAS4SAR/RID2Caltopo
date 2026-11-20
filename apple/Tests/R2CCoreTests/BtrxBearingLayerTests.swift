@@ -245,9 +245,19 @@ final class BtrxBearingLayerTests: XCTestCase {
             layer.tick { _, _ in false }
             clock.us += 200_000
         }
-        let last = try XCTUnwrap(snaps.last, "grounded drone: snapshot")
+        var last = try XCTUnwrap(snaps.last, "grounded drone: snapshot")
         XCTAssertGreaterThan(last.stats.used, 10, BtrxBearingText.countsLine(last.stats))
         XCTAssertGreaterThan(try XCTUnwrap(last.sources.first).peakAlpha, 0)
+        // Nov 20: -64 dBm while the drone sits at its first position: muted as a launch-site
+        // source (launch auto mute, on by default), so nothing is shown until "Show".
+        let src = try XCTUnwrap(last.sources.first)
+        XCTAssertTrue(src.launch && src.muted)
+        XCTAssertTrue(try XCTUnwrap(statuses.last).line?.hasPrefix("Bearing layer: every source with shading is hidden") == true)
+        XCTAssertEqual(layer.unmuteLaunch(), 1)
+        for _ in 0..<10 { layer.tick { _, _ in false }; clock.us += 200_000 }
+        last = try XCTUnwrap(snaps.last)
+        XCTAssertTrue(try XCTUnwrap(last.sources.first).launch)
+        XCTAssertFalse(try XCTUnwrap(last.sources.first).muted)
         XCTAssertNil(try XCTUnwrap(statuses.last).line, "shading on screen: no status line")
         layer.stop()
     }

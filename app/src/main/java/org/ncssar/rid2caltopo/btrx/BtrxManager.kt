@@ -55,6 +55,9 @@ object BtrxManager {
     private const val KEY_BEARING_FADE_S = "bearing_fade_total_s"
     private const val KEY_BEARING_FADE_P = "bearing_fade_shape_p"
     private const val KEY_BEARING_LAG_TRACE = "bearing_lag_trace"
+    private const val KEY_BEARING_MAX_PM = "bearing_max_plus_minus_m"
+    private const val KEY_BEARING_MIN_REPORTS = "bearing_min_reports"
+    private const val KEY_BEARING_LAUNCH_MUTE = "bearing_launch_auto_mute"
     /** Time the Desk Pod takes to advertise again after a clean USB close. */
     private const val BLE_RESUME_AFTER_USB_MS = 3_000L
 
@@ -117,6 +120,9 @@ object BtrxManager {
     val bearingOn: StateFlow<Boolean> = _bearingOn.asStateFlow()
     private val _bearingSettings = MutableStateFlow(BtrxBearingSettings())
     val bearingSettings: StateFlow<BtrxBearingSettings> = _bearingSettings.asStateFlow()
+    private val _bearingDisplay = MutableStateFlow(BtrxBearingDisplay())
+    /** Map thresholds and launch auto mute (Developer Tools > BTRX, Nov 20). */
+    val bearingDisplay: StateFlow<BtrxBearingDisplay> = _bearingDisplay.asStateFlow()
     private val _bearingLagTrace = MutableStateFlow(false)
     val bearingLagTrace: StateFlow<Boolean> = _bearingLagTrace.asStateFlow()
     private var bearingTick: java.util.concurrent.ScheduledFuture<*>? = null
@@ -228,6 +234,7 @@ object BtrxManager {
             readyEarlier = chipSession.readyEarlier,
             requestedAtMs = chipSession.requestedAtMs,
             nowMs = android.os.SystemClock.elapsedRealtime(),
+            deskPodPowerOk = snap.deskSilentPowerOk,
         )
         synchronized(mapStatusLock) {
             if (next == _mapStatus.value) return
@@ -247,6 +254,17 @@ object BtrxManager {
         worker.execute {
             bearing.setFade(s)
             prefs().edit().putFloat(KEY_BEARING_FADE_S, s.fadeTotalS).putFloat(KEY_BEARING_FADE_P, s.fadeShapeP).apply()
+        }
+    }
+
+    /** Display thresholds and launch auto mute: applied at once and saved. */
+    fun setBearingDisplay(display: BtrxBearingDisplay) {
+        val d = display.clamped()
+        _bearingDisplay.value = d
+        worker.execute {
+            bearing.setLaunchAutoMute(d.launchAutoMute)
+            prefs().edit().putInt(KEY_BEARING_MAX_PM, d.maxPlusMinusM).putInt(KEY_BEARING_MIN_REPORTS, d.minReports)
+                .putBoolean(KEY_BEARING_LAUNCH_MUTE, d.launchAutoMute).apply()
         }
     }
 
@@ -315,6 +333,12 @@ object BtrxManager {
                 p.getFloat(KEY_BEARING_FADE_P, BtrxBearingSettings.DEFAULT_SHAPE_P),
             ).clamped()
             _bearingLagTrace.value = p.getBoolean(KEY_BEARING_LAG_TRACE, false)
+            _bearingDisplay.value = BtrxBearingDisplay(
+                p.getInt(KEY_BEARING_MAX_PM, BtrxBearingDisplay.DEFAULT_MAX_PLUS_MINUS_M),
+                p.getInt(KEY_BEARING_MIN_REPORTS, BtrxBearingDisplay.DEFAULT_MIN_REPORTS),
+                p.getBoolean(KEY_BEARING_LAUNCH_MUTE, true),
+            ).clamped()
+            bearing.setLaunchAutoMute(_bearingDisplay.value.launchAutoMute)
             setAttachActivityEnabled(usbDebug)
             if (usbHost && usbDebug) scanAttached()
             applyArbiter(arbiter.update(bluetoothEnabled = enabled, usbDebugEnabled = usbDebug))

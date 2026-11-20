@@ -102,12 +102,20 @@ data class BtrxBearingSource(
     val labelLon: Double? = null,
     /** Estimate valid and tight (2 sigma <= 30 m): drawn as a distinct "pinned" marker. */
     val pinned: Boolean = false,
+    /** Bluetooth SIG company id from the Drone Pod (0 = unknown). */
+    val companyId: Int = 0,
+    /** A focus (source, class or maker) is active and this source is in it. */
+    val focusMatch: Boolean = false,
 ) {
     val muted: Boolean get() = flags and BtrxBearingNative.SRC_MUTED != 0
     val ignored: Boolean get() = flags and BtrxBearingNative.SRC_IGNORED != 0
     /** The layer suggests "Own aircraft": strong while the drone moved. Estimate hidden until decided. */
     val ownSuspect: Boolean get() = flags and BtrxBearingNative.SRC_OWN_SUSPECT != 0
     val className: String get() = BtrxBearingText.className(devClass)
+    /** Strong at the launch point before takeoff (Nov 20); muted by the layer while launch auto mute is on. */
+    val launch: Boolean get() = flags and BtrxBearingNative.SRC_LAUNCH != 0
+    /** Short maker name, "0x1234" when not in [BtrxMakers], null when unknown. */
+    val maker: String? get() = BtrxMakers.maker(companyId)
 }
 
 data class BtrxBearingLag(val count: Int, val p50Ms: Int, val p90Ms: Int, val p99Ms: Int, val maxMs: Int, val lateDrops: Int)
@@ -136,6 +144,10 @@ class BtrxBearingSnapshot(
     val fine: BtrxBearingFine? = null,
     /** Strength trail of the focused source, oldest first. */
     val trail: List<BtrxBearingTrailPoint> = emptyList(),
+    /** Focus filter in effect (Nov 20): by class bits and/or maker, the others hidden or dimmed. */
+    val focusFilter: BtrxBearingFocusFilter = BtrxBearingFocusFilter(),
+    /** A focus (key or filter) is active: [BtrxBearingSource.focusMatch] says who is in it. */
+    val focusActive: Boolean = focusKey != 0L,
 )
 
 class BtrxBearingFine(
@@ -251,6 +263,7 @@ class BtrxBearingLayer(
         lastError = null
         lagTrace = trace
         stableSrcIds = false
+        engine.setLaunchAutoMute(h, launchAutoMute)
         handleLock.write { handle = h }
         rgbaBuffer = null
         lastPodSession = -1L
@@ -510,6 +523,7 @@ class BtrxBearingLayer(
                 strongestLat = if (v(37) != 0.0) v(38) else null, strongestLon = if (v(37) != 0.0) v(39) else null,
                 labelLat = if (v(41) != 0.0) v(42) else null, labelLon = if (v(41) != 0.0) v(43) else null,
                 pinned = v(44) != 0.0,
+                companyId = v(45).toInt(), focusMatch = v(46) != 0.0,
             )
         }
         val focusIdx = m[BtrxBearingNative.META_FOCUS_INDEX].toInt()
@@ -523,7 +537,14 @@ class BtrxBearingLayer(
         } else null
         val nt = m[BtrxBearingNative.META_TRAIL_COUNT].toInt().coerceIn(0, BtrxBearingNative.TRAIL_MAX)
         val trail = (0 until nt).map { BtrxBearingTrailPoint(trailBuf[3 * it], trailBuf[3 * it + 1], trailBuf[3 * it + 2].toInt()) }
-        return BtrxBearingSnapshot(m[0].toLong(), m[1].toLong(), w, ht, m[4], m[5], m[6], m[7], rgba, sources, stats, focusKey, fine, trail)
+        val bits = m[BtrxBearingNative.META_FOCUS_BITS].toInt()
+        val filter = BtrxBearingFocusFilter(
+            classMask = m[BtrxBearingNative.META_FOCUS_CLASS_MASK].toInt(),
+            companyId = m[BtrxBearingNative.META_FOCUS_COMPANY].toInt(),
+            hideOthers = bits and 2 != 0,
+        )
+        return BtrxBearingSnapshot(m[0].toLong(), m[1].toLong(), w, ht, m[4], m[5], m[6], m[7], rgba, sources, stats, focusKey, fine, trail,
+            focusFilter = filter, focusActive = bits and 1 != 0)
     }
 
     // ---- UI ----
@@ -566,6 +587,37 @@ class BtrxBearingLayer(
     /** UI thread: "Focus this source" (0 = clear). Applied at the next tick, which publishes. */
     fun setFocus(key: Long) {
         withHandle(Unit) { h -> engine.setFocus(h, key) }
+    }
+
+    /** UI thread: focus by class and/or maker (Nov 20); [BtrxBearingFocusFilter.NONE] clears. Next tick. */
+    fun setFocusFilter(filter: BtrxBearingFocusFilter) {
+        withHandle(Unit) { h -> engine.setFocusFilter(h, filter.classMask, filter.companyId, filter.hideOthers) }
+        log("bearing: focus filter ${filter.logText()}")
+    }
+
+    /** UI thread: "Clear focus": the focused source and the class/maker filter. */
+    fun clearFocus() {
+        withHandle(Unit) { h ->
+            engine.setFocus(h, 0L)
+            engine.setFocusFilter(h, 0, -1, false)
+        }
+    }
+
+    /** Launch-point auto mute (Developer Tools, default on); applied now and at every layer start. */
+    @Volatile var launchAutoMute = true
+        private set
+
+    fun setLaunchAutoMute(on: Boolean) {
+        launchAutoMute = on
+        withHandle(Unit) { h -> engine.setLaunchAutoMute(h, on) }
+    }
+
+    /** UI thread: "Show launch sources": unmute every source muted at the launch point. */
+    fun unmuteLaunch(): Int {
+        val keys = _snapshot.value?.sources?.filter { it.launch && it.muted }?.map { it.key }.orEmpty()
+        setMuted(keys, false)
+        if (keys.isNotEmpty()) log("bearing: ${keys.size} launch-point source(s) unmuted")
+        return keys.size
     }
 
     // Own-aircraft suggestion answers (Nov 17 watch test): "Own aircraft (saved)" went to the
@@ -775,7 +827,8 @@ object BtrxBearingText {
     fun inspectLines(s: BtrxBearingSource, nowUs: Long): List<String> {
         val est = s.estimate
         return listOfNotNull(
-            "Source ${s.shortId}" + (if (s.srcId != 0) " (id ${s.srcId})" else "") + " · ${s.className}",
+            "Source ${s.shortId}" + (if (s.srcId != 0) " (id ${s.srcId})" else "") + " · ${s.className}" + (s.maker?.let { " · $it" } ?: ""),
+            if (s.launch) "Heard strongly at the takeoff spot" + if (s.muted) " (muted)" else "" else null,
             est?.let { "Estimate %.6f, %.6f".format(java.util.Locale.US, it.lat, it.lon) },
             est?.let { "Uncertainty ±${it.plusMinus2sM.roundToInt()} m (2σ)" + if (it.ambiguous) " · ambiguous" else "" },
             "Reports ${s.reportsInWindow} in the fade window (${s.reportsUsed} used of ${s.reportsIn})",
@@ -794,6 +847,7 @@ object BtrxBearingText {
         3 -> "hearing aid"
         4 -> "tag"
         5 -> "audio"
+        6 -> "computer"
         else -> "unknown"
     }
 
@@ -812,9 +866,10 @@ object BtrxBearingText {
 
     fun reports(n: Int): String = if (n == 1) "1 rpt" else "$n rpt"
 
-    /** Map label (spec 5): `phone · Q3x9Kd · 23 rpt · ±18 m`, plus "ambiguous". */
+    /** Map label (spec 5; maker Nov 20): `watch · Garmin · Q3x9Kd · 23 rpt · ±18 m`, plus "ambiguous". */
     fun label(s: BtrxBearingSource): String {
-        val base = "${s.className} · ${s.shortId} · ${reports(s.reportsInWindow)}" + if (s.ownSuspect) " · $OWN_SUSPECT_TAG" else ""
+        val maker = s.maker?.let { " · $it" } ?: ""
+        val base = "${s.className}$maker · ${s.shortId} · ${reports(s.reportsInWindow)}" + if (s.ownSuspect) " · $OWN_SUSPECT_TAG" else ""
         val est = s.estimate ?: return base
         val pm = " · ±${est.plusMinus2sM.roundToInt()} m"
         return base + pm + if (est.ambiguous) " · ambiguous" else ""

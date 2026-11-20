@@ -6515,6 +6515,11 @@ private final class AircraftAnnotationView: MKAnnotationView {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
+    /// The visible name and telemetry labels in `view`'s coordinates (BTRX label obstacles).
+    func labelRects(in view: UIView) -> [CGRect] {
+        [nameLabel, statusLabel].filter { !$0.isHidden && !$0.frame.isEmpty }.map { convert($0.frame, to: view) }
+    }
+
     private func configureLabel(_ label: UILabel, fontSize: CGFloat, cornerRadius: CGFloat) {
         label.font = .boldSystemFont(ofSize: fontSize)
         label.textAlignment = .center
@@ -7566,6 +7571,12 @@ private final class UnitMapScaleView: UIView {
 /// One world-sized overlay for the whole layer; the renderer draws the raster, each shown
 /// source's fading latest-ray outline (5 s, dashed mirror), the estimate with its 1 sigma /
 /// 2 sigma ellipses, and the label. Same drawing as Android's BtrxBearingMapOverlay.
+///
+/// Nov 20 (back-deck test, 40 devices at takeoff): focus by class or maker dims or hides the
+/// rest; estimates wider than the Developer Tools limit and labels of thin sources are not
+/// drawn; labels are placed around their anchor (``BtrxLabelLayout``) so they overlap neither
+/// each other nor the drone labels (`obstacles`, set by the controller with each snapshot); a
+/// label with no free spot is left out.
 final class BtrxBearingMapOverlay: NSObject, MKOverlay {
     let coordinate = CLLocationCoordinate2D(latitude: 0, longitude: 0)
     let boundingMapRect = MKMapRect.world
@@ -7580,6 +7591,18 @@ final class BtrxBearingMapRenderer: MKOverlayRenderer, @unchecked Sendable {
     private var fineImage: CGImage?
     private let nowUs: () -> Int64
     static let pinRadiusPt: CGFloat = 9
+    private var display = BtrxBearingDisplay()
+    /// Drone name/telemetry label boxes as map rects (main thread sets; draw reads).
+    private var obstacles: [MKMapRect] = []
+
+    /// Main thread: Developer Tools thresholds and the drone label boxes; redraws.
+    func setLayout(display: BtrxBearingDisplay, obstacles: [MKMapRect]) {
+        lock.lock()
+        let changed = display != self.display || !obstacles.elementsEqual(self.obstacles, by: MKMapRectEqualToRect)
+        self.display = display; self.obstacles = obstacles
+        lock.unlock()
+        if changed { setNeedsDisplay() }
+    }
 
     init(overlay: MKOverlay, nowUs: @escaping () -> Int64) {
         self.nowUs = nowUs
@@ -7631,10 +7654,13 @@ final class BtrxBearingMapRenderer: MKOverlayRenderer, @unchecked Sendable {
 
     /// Main thread: the pinned source whose marker is within the touch radius of `p` (map points of this renderer).
     func pinnedSource(near coordinate: CLLocationCoordinate2D, radiusM: Double) -> BtrxBearingSource? {
-        lock.lock(); let snap = snapshot; lock.unlock()
+        lock.lock(); let snap = snapshot; let display = self.display; lock.unlock()
         let here = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
         return snap?.sources
-            .filter { $0.pinned && !$0.muted && !$0.ignored && $0.estimate != nil }
+            .filter { s in
+                guard let snap else { return false }
+                return s.pinned && BtrxBearingView.drawMode(s, snap) != .hidden && BtrxBearingView.estimateShown(s, display, focusKey: snap.focusKey)
+            }
             .map { s in (s, here.distance(from: CLLocation(latitude: s.estimate!.lat, longitude: s.estimate!.lon))) }
             .filter { $0.1 <= radiusM }
             .min { $0.1 < $1.1 }?.0
@@ -7651,7 +7677,7 @@ final class BtrxBearingMapRenderer: MKOverlayRenderer, @unchecked Sendable {
     override func draw(_ mapRect: MKMapRect, zoomScale: MKZoomScale, in ctx: CGContext) {
         lock.lock(); let snap = snapshot; let img = image; lock.unlock()
         guard let snap else { return }
-        lock.lock(); let fineImg = fineImage; lock.unlock()
+        lock.lock(); let fineImg = fineImage; let display = self.display; let obstacleRects = obstacles; lock.unlock()
         let px = 1 / zoomScale // one screen point in map points
         if let img { drawRaster(img, north: snap.north, south: snap.south, east: snap.east, west: snap.west, mapRect: mapRect, in: ctx) }
         if let fineImg, let f = snap.fine {
@@ -7660,9 +7686,25 @@ final class BtrxBearingMapRenderer: MKOverlayRenderer, @unchecked Sendable {
         let now = nowUs()
         UIGraphicsPushContext(ctx)
         defer { UIGraphicsPopContext() }
-        drawTrail(snap, px: px, in: ctx)
-        for s in snap.sources where !s.muted && !s.ignored {
-            let dim = snap.focusKey != 0 && s.key != snap.focusKey
+        var obstacleBoxes = obstacleRects.map { r -> BtrxLabelLayout.Box in
+            let b = rect(for: r)
+            return BtrxLabelLayout.Box(left: Float(b.minX), top: Float(b.minY), right: Float(b.maxX), bottom: Float(b.maxY))
+        }
+        if let box = drawTrail(snap, px: px, in: ctx) { obstacleBoxes.append(box) }
+        var items: [BtrxLabelLayout.Item] = []
+        var texts: [Int64: String] = [:]
+        func addLabel(_ s: BtrxBearingSource, _ text: String, _ a: CGPoint) {
+            let size = Self.labelSize(text, px: px)
+            let id = Int64(bitPattern: s.key)
+            items.append(BtrxLabelLayout.Item(id: id, anchorX: Float(a.x), anchorY: Float(a.y), width: Float(size.width),
+                                              height: Float(size.height), priority: BtrxBearingView.labelPriority(s, snap)))
+            texts[id] = text
+        }
+        for s in snap.sources {
+            let mode = BtrxBearingView.drawMode(s, snap)
+            if mode == .hidden { continue }
+            let dim = mode == .dim
+            let wantLabel = !dim && BtrxBearingView.labelShown(s, display, focusKey: snap.focusKey)
             let color = UIColor(red: CGFloat((s.rgb >> 16) & 0xFF) / 255, green: CGFloat((s.rgb >> 8) & 0xFF) / 255,
                                 blue: CGFloat(s.rgb & 0xFF) / 255, alpha: 1)
             if let ray = s.latestRay {
@@ -7695,7 +7737,7 @@ final class BtrxBearingMapRenderer: MKOverlayRenderer, @unchecked Sendable {
                     }
                 }
             }
-            if let est = s.estimate {
+            if let est = s.estimate, BtrxBearingView.estimateShown(s, display, focusKey: snap.focusKey) {
                 for k: Float in [1, 2] {
                     let path = ellipsePath(est.lat, est.lon, k * est.axisMajor1sM, k * est.axisMinor1sM, est.axisMajorDeg)
                     ctx.addPath(path); ctx.setStrokeColor(UIColor.white.withAlphaComponent(0.8).cgColor); ctx.setLineWidth(4 * px); ctx.strokePath()
@@ -7709,15 +7751,42 @@ final class BtrxBearingMapRenderer: MKOverlayRenderer, @unchecked Sendable {
                     ctx.setFillColor(color.cgColor); ctx.fillEllipse(in: dot)
                     ctx.setStrokeColor(UIColor.white.withAlphaComponent(0.8).cgColor); ctx.setLineWidth(2 * px); ctx.strokeEllipse(in: dot)
                 }
-                drawLabel(BtrxBearingText.label(s), at: CGPoint(x: c.x + 8 * px, y: c.y - 8 * px), px: px)
+                if wantLabel { addLabel(s, BtrxBearingText.label(s), c) }
+            } else if !wantLabel {
+                // no label
             } else if let lat = s.labelLat, let lon = s.labelLon {
                 // Inside the shading (Nov 16: labels sat 240 m out along a fixed 400 m ray).
-                drawLabel(BtrxBearingText.label(s), at: point(for: MKMapPoint(CLLocationCoordinate2D(latitude: lat, longitude: lon))), px: px)
+                addLabel(s, BtrxBearingText.label(s), point(for: MKMapPoint(CLLocationCoordinate2D(latitude: lat, longitude: lon))))
             } else if let ray = s.latestRay {
                 let end = point(for: MKMapPoint(Self.destination(ray.apexLat, ray.apexLon, Double(ray.centreTrueDeg), Double(ray.lengthM) * 0.6)))
-                drawLabel(BtrxBearingText.label(s), at: end, px: px)
+                addLabel(s, BtrxBearingText.label(s), end)
             }
         }
+        // Labels last, placed clear of each other and of the drone labels (Nov 20). The layout
+        // covers every source, so each map tile places them the same way.
+        let placed = BtrxLabelLayout.place(items, obstacles: obstacleBoxes, gap: Float(8 * px), margin: Float(2 * px))
+        for (id, p) in placed {
+            if let text = texts[id] { drawLabelBox(text, at: CGPoint(x: CGFloat(p.box.left), y: CGFloat(p.box.top)), px: px) }
+        }
+    }
+
+    /// A label's box: the text plus padding, as `drawLabelBox` draws it.
+    static func labelSize(_ text: String, px: CGFloat) -> CGSize {
+        let font = UIFont.systemFont(ofSize: 12 * px)
+        let size = (text as NSString).size(withAttributes: [.font: font])
+        let pad = 3 * px
+        return CGSize(width: size.width + 2 * pad, height: size.height + pad)
+    }
+
+    /// `at` is the top-left of the label box.
+    private func drawLabelBox(_ text: String, at o: CGPoint, px: CGFloat) {
+        let font = UIFont.systemFont(ofSize: 12 * px)
+        let attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: UIColor.black]
+        let size = Self.labelSize(text, px: px)
+        let pad = 3 * px
+        UIColor.white.withAlphaComponent(0.85).setFill()
+        UIBezierPath(roundedRect: CGRect(origin: o, size: size), cornerRadius: pad).fill()
+        (text as NSString).draw(at: CGPoint(x: o.x + pad, y: o.y + pad / 2), withAttributes: attrs)
     }
 
     /// Pinned source: a bold ring with a cross and a centre dot, distinct from the estimate dot. Same as Android.
@@ -7736,7 +7805,9 @@ final class BtrxBearingMapRenderer: MKOverlayRenderer, @unchecked Sendable {
     }
 
     /// Focused source: dots along the flight path, blue (weak) to red (strong), and "strongest here". Same as Android.
-    private func drawTrail(_ snap: BtrxBearingSnapshot, px: CGFloat, in ctx: CGContext) {
+    /// Returns the "strongest here" label box (a label obstacle), nil when not drawn.
+    @discardableResult
+    private func drawTrail(_ snap: BtrxBearingSnapshot, px: CGFloat, in ctx: CGContext) -> BtrxLabelLayout.Box? {
         if !snap.trail.isEmpty {
             let lo = snap.trail.map(\.rssiDbm).min()!, hi = snap.trail.map(\.rssiDbm).max()!
             let span = CGFloat(max(1, hi - lo))
@@ -7749,7 +7820,7 @@ final class BtrxBearingMapRenderer: MKOverlayRenderer, @unchecked Sendable {
             }
         }
         guard snap.focusKey != 0, let f = snap.sources.first(where: { $0.key == snap.focusKey }),
-              let lat = f.strongestLat, let lon = f.strongestLon else { return }
+              let lat = f.strongestLat, let lon = f.strongestLon else { return nil }
         let p = point(for: MKMapPoint(CLLocationCoordinate2D(latitude: lat, longitude: lon)))
         let r = 9 * px
         for (w, c) in [(5 * px, UIColor.white.withAlphaComponent(0.8)), (3 * px, UIColor(red: 0.84, green: 0, blue: 0, alpha: 1))] {
@@ -7758,7 +7829,12 @@ final class BtrxBearingMapRenderer: MKOverlayRenderer, @unchecked Sendable {
             ctx.move(to: CGPoint(x: p.x - r, y: p.y + r)); ctx.addLine(to: CGPoint(x: p.x + r, y: p.y - r))
             ctx.strokePath()
         }
-        drawLabel(BtrxBearingText.strongestHere + (f.maxRssiDbm.map { " \($0) dBm" } ?? ""), at: CGPoint(x: p.x + r + 4 * px, y: p.y + 4 * px), px: px)
+        let text = BtrxBearingText.strongestHere + (f.maxRssiDbm.map { " \($0) dBm" } ?? "")
+        let at = CGPoint(x: p.x + r + 4 * px, y: p.y + 4 * px)
+        drawLabel(text, at: at, px: px)
+        let size = Self.labelSize(text, px: px)
+        let top = at.y - UIFont.systemFont(ofSize: 12 * px).ascender - 1.5 * px
+        return BtrxLabelLayout.Box(left: Float(at.x - 3 * px), top: Float(top), right: Float(at.x - 3 * px + size.width), bottom: Float(top + size.height))
     }
 
     /// `at` is the text baseline start, as on Android.
@@ -7812,6 +7888,7 @@ final class BtrxBearingMapController: NSObject, UIGestureRecognizerDelegate {
     private weak var center: BtrxDeskPodCenter?
     private weak var map: MKMapView?
     private var cancellable: AnyCancellable?
+    private var displayCancellable: AnyCancellable?
     private var snapshot: BtrxBearingSnapshot?
     private var inset = false
     private var fadeTimer: Timer?
@@ -7845,6 +7922,12 @@ final class BtrxBearingMapController: NSObject, UIGestureRecognizerDelegate {
                 // @Published fires before the value is stored; apply on the next main turn.
                 DispatchQueue.main.async { self?.show(snap) }
             }
+            displayCancellable = center?.$bearingDisplay.sink { [weak self] d in
+                DispatchQueue.main.async {
+                    guard let self, let map = self.map else { return }
+                    self.renderer?.setLayout(display: d, obstacles: self.droneLabelRects(map))
+                }
+            }
             if center == nil { show(nil) }
         }
         ensureOnTop()
@@ -7855,6 +7938,7 @@ final class BtrxBearingMapController: NSObject, UIGestureRecognizerDelegate {
         guard overlay === self.overlay else { return nil }
         let layer = center?.bearing
         let r = BtrxBearingMapRenderer(overlay: overlay, nowUs: { layer?.nowUs() ?? 0 })
+        if let map { r.setLayout(display: center?.bearingDisplay ?? BtrxBearingDisplay(), obstacles: droneLabelRects(map)) }
         r.show(snapshot)
         renderer = r
         return r
@@ -7870,9 +7954,23 @@ final class BtrxBearingMapController: NSObject, UIGestureRecognizerDelegate {
             return
         }
         ensureOnTop()
+        renderer?.setLayout(display: center?.bearingDisplay ?? BtrxBearingDisplay(), obstacles: droneLabelRects(map))
         renderer?.show(snap)
         center?.bearing.noteRendered(snap.seq)
         updateFadeTimer()
+    }
+
+    /// Drone name and telemetry labels on screen, as map rects (label obstacles, Nov 20).
+    private func droneLabelRects(_ map: MKMapView) -> [MKMapRect] {
+        guard !inset else { return [] }
+        return map.annotations.compactMap { $0 as? AircraftAnnotation }
+            .compactMap { map.view(for: $0) as? AircraftAnnotationView }
+            .flatMap { $0.labelRects(in: map) }
+            .map { r in
+                let a = MKMapPoint(map.convert(CGPoint(x: r.minX, y: r.minY), toCoordinateFrom: map))
+                let b = MKMapPoint(map.convert(CGPoint(x: r.maxX, y: r.maxY), toCoordinateFrom: map))
+                return MKMapRect(x: min(a.x, b.x), y: min(a.y, b.y), width: abs(b.x - a.x), height: abs(b.y - a.y))
+            }
     }
 
     /// Above assignments, lines and areas; markers are views and stay on top.

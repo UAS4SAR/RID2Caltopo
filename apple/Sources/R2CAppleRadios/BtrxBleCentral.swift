@@ -165,6 +165,7 @@ final class BtrxBleCentral: NSObject, @unchecked Sendable {
     }
 
     func setBearingFade(_ settings: BtrxBearingSettings) { queue.async { [self] in bearing.setFade(settings) } }
+    func setBearingLaunchAutoMute(_ on: Bool) { queue.async { [self] in bearing.setLaunchAutoMute(on) } }
     func setBearingSteering(_ id: String?, liveStreams: Int) {
         if bearing.steeringDesignator != id { log.debug("bearing: pose stream \(id ?? "none")") }
         bearing.steeringDesignator = id
@@ -771,6 +772,7 @@ public final class BtrxDeskPodCenter: ObservableObject {
         overlayShown = defaults.object(forKey: Self.keyOverlayShown) as? Bool ?? true
         bearingSettings = (defaults.data(forKey: Self.keyBearingSettings).flatMap { try? JSONDecoder().decode(BtrxBearingSettings.self, from: $0) } ?? BtrxBearingSettings()).clamped()
         bearingLagTrace = defaults.bool(forKey: Self.keyBearingLagTrace)
+        bearingDisplay = (defaults.data(forKey: Self.keyBearingDisplay).flatMap { try? JSONDecoder().decode(BtrxBearingDisplay.self, from: $0) } ?? BtrxBearingDisplay()).clamped()
         let paired = defaults.data(forKey: Self.keyPaired).flatMap { try? JSONDecoder().decode(Model.PairedPod.self, from: $0) }
         let events = BtrxBleCentral.Events(
             snapshot: { [weak self] s in Task { @MainActor in self?.apply(s) } },
@@ -780,6 +782,7 @@ public final class BtrxDeskPodCenter: ObservableObject {
         )
         let savedIgnores = (defaults.array(forKey: Self.keySavedIgnores) as? [Int]) ?? []
         central = BtrxBleCentral(events: events, paired: paired, savedIgnores: savedIgnores)
+        central.bearing.setLaunchAutoMute(bearingDisplay.launchAutoMute)
     }
 
     /// "BTRX: Active" / "BTRX: Inactive - <reason>" for the chip at the top of the map;
@@ -812,7 +815,8 @@ public final class BtrxDeskPodCenter: ObservableObject {
                                         dronePodReporting: BtrxMapStatus.dronePodReporting(secondsSinceReport: central.secondsSinceDronePodReport()),
                                         deskPodSilent: snapshot.deskSilent, deskPodNotice: snapshot.deskRestartNotice,
                                         linkEnabled: bluetoothEnabled, readyEarlier: chipSession.readyEarlier,
-                                        requestedAt: chipSession.requestedAt, now: ProcessInfo.processInfo.systemUptime)
+                                        requestedAt: chipSession.requestedAt, now: ProcessInfo.processInfo.systemUptime,
+                                        deskPodPowerOk: snapshot.deskSilentPowerOk)
         guard next != mapStatus else { return }
         mapStatus = next
         OperationalBridgePacketLog.write?("DEBUG", "Btrx", "map status: \(next?.text ?? "hidden")")
@@ -953,11 +957,14 @@ public final class BtrxDeskPodCenter: ObservableObject {
 
     private static let keyBearingSettings = "btrx.bearing.fade"
     private static let keyBearingLagTrace = "btrx.bearing.lag_trace"
+    private static let keyBearingDisplay = "btrx.bearing.display"
 
     /// "Show bearing layer on map"; never on at launch.
     @Published public private(set) var bearingOn = false
     @Published public private(set) var bearingSettings = BtrxBearingSettings()
     @Published public private(set) var bearingLagTrace = false
+    /// Map thresholds and launch auto mute (Developer Tools > BTRX, Nov 20).
+    @Published public private(set) var bearingDisplay = BtrxBearingDisplay()
     @Published public private(set) var bearingSnapshot: BtrxBearingSnapshot?
     @Published public private(set) var bearingError: String?
     /// Why the layer draws nothing, about once a second while it is on (nil while off).
@@ -987,6 +994,14 @@ public final class BtrxDeskPodCenter: ObservableObject {
         bearingSettings = s
         if let data = try? JSONEncoder().encode(s) { defaults.set(data, forKey: Self.keyBearingSettings) }
         central.setBearingFade(s)
+    }
+
+    /// Display thresholds and launch auto mute: applied at once and saved.
+    public func setBearingDisplay(_ display: BtrxBearingDisplay) {
+        let d = display.clamped()
+        bearingDisplay = d
+        if let data = try? JSONEncoder().encode(d) { defaults.set(data, forKey: Self.keyBearingDisplay) }
+        central.setBearingLaunchAutoMute(d.launchAutoMute)
     }
 
     /// Lag trace (BBv1/BBLAG/BBRND lines in the session log); restarts a running layer.

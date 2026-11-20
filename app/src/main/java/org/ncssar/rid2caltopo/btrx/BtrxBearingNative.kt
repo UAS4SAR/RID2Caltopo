@@ -26,6 +26,14 @@ interface BtrxBearingEngine {
     fun reset(handle: Long, what: Int, key: Long): Int
     /** Focus one source (0 = none): the others dimmed, its strength trail in the snapshot. */
     fun setFocus(handle: Long, key: Long): Int
+    /**
+     * Focus filter (ABI 3, Nov 20): sources whose class bit (1 shl class) is in [classMask], or
+     * whose company id is [companyId] (-1 none), are focused with the focus key; [hideOthers]
+     * draws the rest not at all. Focused sources are never evicted. 0, -1, false clears.
+     */
+    fun setFocusFilter(handle: Long, classMask: Int, companyId: Int, hideOthers: Boolean): Int = 0
+    /** Launch-point auto mute (ABI 3): sources strong at the takeoff spot before takeoff are muted. */
+    fun setLaunchAutoMute(handle: Long, on: Boolean): Int = 0
     /** 1 = a snapshot was published, 0 = not, negative = error. */
     fun tick(handle: Long, nowUs: Long): Int
     /**
@@ -48,7 +56,7 @@ interface BtrxBearingEngine {
 }
 
 object BtrxBearingNative : BtrxBearingEngine {
-    const val ABI_VERSION = 2
+    const val ABI_VERSION = 3
     const val MAX_SOURCES = 32
     const val TRAIL_MAX = 600
     /** Fine layer raster side (btrx_bearing_config_t.fine_grid_cells default). */
@@ -59,6 +67,10 @@ object BtrxBearingNative : BtrxBearingEngine {
     const val META_FINE_NORTH = 12
     const val META_STATS = 16
     const val META_TRAIL_COUNT = 112
+    /** ABI 3: bits 1 = focus active, 2 = hide others; then the class mask and company id (-1 none). */
+    const val META_FOCUS_BITS = 113
+    const val META_FOCUS_CLASS_MASK = 114
+    const val META_FOCUS_COMPANY = 115
     const val META_SOURCES = 116
     const val META_PER_SOURCE = 56
     const val META_SIZE = META_SOURCES + META_PER_SOURCE * MAX_SOURCES
@@ -75,6 +87,8 @@ object BtrxBearingNative : BtrxBearingEngine {
     const val SRC_OWN_SUSPECT = 4
     /** Set by the app: "not on the drone", no more suggestions. */
     const val SRC_OWN_CLEARED = 8
+    /** Set by the layer (ABI 3): strong at the launch point before takeoff; muted too while launch auto mute is on. */
+    const val SRC_LAUNCH = 16
 
     const val RESET_ALL = 0
 
@@ -103,6 +117,9 @@ object BtrxBearingNative : BtrxBearingEngine {
     override fun setStableSrcIds(handle: Long, stable: Boolean) = nativeSetStableSrcIds(handle, stable)
     override fun reset(handle: Long, what: Int, key: Long) = nativeReset(handle, what, key)
     override fun setFocus(handle: Long, key: Long) = nativeSetFocus(handle, key)
+    override fun setFocusFilter(handle: Long, classMask: Int, companyId: Int, hideOthers: Boolean) =
+        nativeSetFocusFilter(handle, classMask, companyId, hideOthers)
+    override fun setLaunchAutoMute(handle: Long, on: Boolean) = nativeSetLaunchAutoMute(handle, on)
     override fun tick(handle: Long, nowUs: Long) = nativeTick(handle, nowUs)
     override fun copySnapshot(handle: Long, rgba: ByteBuffer, fine: ByteBuffer?, trail: DoubleArray?, keys: LongArray, shortIds: ByteArray, meta: DoubleArray) =
         nativeCopySnapshot(handle, rgba, fine, trail, keys, shortIds, meta)
@@ -127,6 +144,8 @@ object BtrxBearingNative : BtrxBearingEngine {
     private external fun nativeSetStableSrcIds(handle: Long, stable: Boolean): Int
     private external fun nativeReset(handle: Long, what: Int, key: Long): Int
     private external fun nativeSetFocus(handle: Long, key: Long): Int
+    private external fun nativeSetFocusFilter(handle: Long, classMask: Int, companyId: Int, hideOthers: Boolean): Int
+    private external fun nativeSetLaunchAutoMute(handle: Long, on: Boolean): Int
     private external fun nativeTick(handle: Long, nowUs: Long): Int
     private external fun nativeCopySnapshot(handle: Long, rgba: ByteBuffer, fine: ByteBuffer?, trail: DoubleArray?, keys: LongArray, shortIds: ByteArray, meta: DoubleArray): Int
     private external fun nativeCopyStats(handle: Long, out: DoubleArray): Int
