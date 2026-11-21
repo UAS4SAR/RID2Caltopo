@@ -1,0 +1,15 @@
+# BTRX map popup placement (BtrxPopupPlacement), shared by Android BtrxPopupPlacementTest and iOS BtrxPopupPlacementTests.
+# margin 8. kind point: x y = tap point (panel top-left); kind bottom: x y = left inset, bottom inset (inspect card).
+# obstacle = stream PiP left top right bottom, - = none. Expected: choice (0 asked, 1 left, 2 up, 3 left+up, 4-7 slid on
+# screen, 8 left of PiP, 9 above PiP with height capped, 10 nothing clear), x, y, maxHeight, clear (1/0).
+# case	kind	W	H	popupW	popupH	x	y	obsL	obsT	obsR	obsB	choice	ex	ey	maxH	clear
+room to the right	point	1000	600	300	200	100	100	-	-	-	-	0	100	100	584	1
+tap near the right edge	point	1000	600	300	200	850	100	-	-	-	-	1	550	100	584	1
+tap near the bottom	point	1000	600	300	200	100	500	-	-	-	-	2	100	300	584	1
+tap in the corner	point	1000	600	300	200	850	500	-	-	-	-	3	550	300	584	1
+A5 Nov 20 tap above the PiP	point	1024	525	380	330	780	70	682	345	1012	513	8	294	70	509	1
+tall panel squeezed above the PiP	point	1000	600	900	500	50	50	600	400	980	580	9	50	8	384	1
+boxed in	point	1000	600	300	200	100	100	0	0	1000	600	10	100	100	584	0
+panel taller than the map	point	800	400	300	700	100	100	-	-	-	-	4	100	8	384	1
+inspect card clear of the PiP	bottom	1000	600	400	200	8	72	600	400	980	580	0	8	328	584	1
+inspect card under a wide PiP	bottom	1000	600	400	200	8	72	300	350	990	590	9	8	142	200	1

@@ -95,6 +95,19 @@ final class LiveVideoSurfaceView: UIView {
     }
 }
 
+/// The PiP-size safety notice (Ken, Nov 20): the full notice covered most of the PiP. Same as Android's VideoSafetyBadge.
+struct AppleVideoSafetyBadge: View {
+    static let text = "Observation only"
+    var body: some View {
+        Text(Self.text)
+            .font(.caption2.weight(.bold)).foregroundStyle(Color(red: 1, green: 0.835, blue: 0.31))
+            .lineLimit(1)
+            .padding(.horizontal, 6).padding(.vertical, 2)
+            .background(Color.black.opacity(0.78), in: RoundedRectangle(cornerRadius: 4))
+            .accessibilityLabel("Observation only. Do not pilot using this video.")
+    }
+}
+
 struct AppleVideoSafetyNotice: View {
     var body: some View {
         Text("Observation only — do not pilot using this video. Images may be delayed or frozen. Use the aircraft’s flight-control system and maintain required visual observation.")

@@ -656,6 +656,7 @@ private struct CalTopoArtifactRefreshLifecycleModifier: ViewModifier {
 struct RIDTrackMapView: View {
     @AppStorage(DisplayUnits.storageKey) private var displayUnitsPreference = DisplayUnits.imperial.rawValue
     private static let splitDividerTouchThickness: CGFloat = 88
+    nonisolated private static let mapVideoSpace = "r2c.mapVideoLayout"
     private static let splitDividerTouchLength: CGFloat = 96
 
     @ObservedObject var model: RIDTrackViewModel
@@ -686,6 +687,8 @@ struct RIDTrackMapView: View {
     /// BTRX bearing layer (not observed here: the map follows its snapshot directly).
     @Environment(\.btrxDeskPod) private var btrxCenter
     @State private var btrxPanel: BtrxBearingPanelRequest?
+    /// The video PiP over the map, in `Self.mapVideoSpace` (nil = none), so BTRX popups open clear of it (Nov 20).
+    @State private var videoPipFrame: CGRect?
     /// Pinned-source inspect card (Nov 16): the tapped source key, nil = closed.
     @State private var btrxInspect: UInt64?
     /// "Focus this source": handed to the map once (zoom).
@@ -1323,7 +1326,7 @@ struct RIDTrackMapView: View {
             case .mapPrimary:
                 ZStack(alignment: .bottomTrailing) {
                     mapPane(inset: false)
-                    insetFrame(size: size, onTap: { layout = .videoPrimary }) { videoPane }
+                    insetFrame(size: size, reportsFrame: true, onTap: { layout = .videoPrimary }) { videoPaneView(compact: true) }
                 }
             case .videoPrimary:
                 ZStack(alignment: .bottomTrailing) {
@@ -1345,6 +1348,7 @@ struct RIDTrackMapView: View {
                     )
             }
         }
+        .coordinateSpace(.named(Self.mapVideoSpace))
     }
 
     @ViewBuilder
@@ -1606,21 +1610,28 @@ struct RIDTrackMapView: View {
                 if let btrxCenter { DeskPodView(center: btrxCenter, onDismiss: { showDeskPodFromMap = false }) }
             }
             // "BTRX sources here" at the tap point (main map only).
-            .overlay(alignment: .topLeading) {
+            // Stays on the map and clear of the video PiP, flipping left or up (Ken, Nov 20 A5 test).
+            .overlay {
                 if !inset, let request = btrxPanel, let btrxCenter {
-                    BtrxBearingPanel(center: btrxCenter, rows: request.keys, onDismiss: { btrxPanel = nil },
-                                     onFocus: { src in btrxPanel = nil; btrxFocusRequest = BtrxFocusRequest(source: src) })
-                        .offset(x: request.point.x, y: request.point.y)
-                        .id(request.id)
+                    GeometryReader { g in
+                        BtrxPopupLayout(tapAt: request.point, obstacle: btrxPipObstacle(in: g)) {
+                            BtrxBearingPanel(center: btrxCenter, rows: request.keys, onDismiss: { btrxPanel = nil },
+                                             onFocus: { src in btrxPanel = nil; btrxFocusRequest = BtrxFocusRequest(source: src) })
+                        }
+                    }
+                    .id(request.id)
                 }
             }
             // Pinned-source inspect card, own-aircraft suggestion and the focus chip (Nov 16; main map only).
-            .overlay(alignment: .bottomLeading) {
+            .overlay {
                 if !inset, let key = btrxInspect, let btrxCenter {
-                    BtrxPinnedInspectCard(center: btrxCenter, key: key,
-                                          onFocus: { src in btrxFocusRequest = BtrxFocusRequest(source: src) },
-                                          onDismiss: { btrxInspect = nil })
-                        .padding(.leading, 8).padding(.bottom, 72)
+                    GeometryReader { g in
+                        BtrxPopupLayout(bottomStart: CGSize(width: 8, height: 72), obstacle: btrxPipObstacle(in: g)) {
+                            BtrxPinnedInspectCard(center: btrxCenter, key: key,
+                                                  onFocus: { src in btrxFocusRequest = BtrxFocusRequest(source: src) },
+                                                  onDismiss: { btrxInspect = nil })
+                        }
+                    }
                 }
             }
             .overlay(alignment: .bottom) {
@@ -1781,7 +1792,10 @@ struct RIDTrackMapView: View {
         }
     }
 
-    private var videoPane: some View {
+    private var videoPane: some View { videoPaneView(compact: false) }
+
+    /// `compact`: the video PiP over the map shows only the "Observation only" badge and the video (Ken, Nov 20).
+    private func videoPaneView(compact: Bool) -> some View {
         ZStack {
             Color.black
             AppleStreamsGridView(
@@ -1829,11 +1843,12 @@ struct RIDTrackMapView: View {
                         startWithAddAircraft: true
                     ))
                 },
-                operationalAlertOverlay: AnyView(OperationalAlertPopup(center: operationalAlerts, onMap: { layout = .map }))
+                operationalAlertOverlay: AnyView(OperationalAlertPopup(center: operationalAlerts, onMap: { layout = .map })),
+                compactPip: compact
             )
             // Without video the control is always disabled; hiding it then keeps it off the
-            // "Waiting for controller" placeholder on narrow screens.
-            if videoModel.frameCount > 0 {
+            // "Waiting for controller" placeholder on narrow screens. Not in the compact PiP.
+            if videoModel.frameCount > 0, !compact {
                 VStack {
                     Spacer()
                     HStack {
@@ -2388,8 +2403,16 @@ struct RIDTrackMapView: View {
         )
     }
 
+    /// The video PiP in the coordinates of the map overlay `g` (nil when no PiP is over the map).
+    private func btrxPipObstacle(in g: GeometryProxy) -> CGRect? {
+        guard layout == .mapPrimary, let videoPipFrame else { return nil }
+        let origin = g.frame(in: .named(Self.mapVideoSpace)).origin
+        return videoPipFrame.offsetBy(dx: -origin.x, dy: -origin.y)
+    }
+
     private func insetFrame<Content: View>(
         size: CGSize,
+        reportsFrame: Bool = false,
         onTap: @escaping () -> Void,
         @ViewBuilder content: () -> Content
     ) -> some View {
@@ -2448,6 +2471,10 @@ struct RIDTrackMapView: View {
                     .stroke(pipEditorMode ? Color.accentColor : .white.opacity(0.8), lineWidth: 2)
             )
             .shadow(radius: 5)
+            .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(Self.mapVideoSpace)) } action: { frame in
+                if reportsFrame { videoPipFrame = frame }
+            }
+            .onDisappear { if reportsFrame { videoPipFrame = nil } }
             .padding(12)
     }
 

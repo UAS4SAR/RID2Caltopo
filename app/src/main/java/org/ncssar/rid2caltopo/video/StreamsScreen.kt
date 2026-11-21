@@ -22,6 +22,8 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
@@ -135,6 +137,10 @@ import org.opendroneid.android.bluetooth.DroneScoutBridgeMonitor
 
 private const val EMPTY_STREAMS_SETTINGS_DESIGNATOR = "__empty_streams_defaults__"
 private const val STREAM_PIP_FRAME_PADDING_DP = 24f
+
+/** The stream PiP's bounds in root coordinates while it is over the map, else null (Nov 20). */
+internal val LocalStreamPipBoundsInRoot =
+    androidx.compose.runtime.compositionLocalOf<androidx.compose.runtime.State<androidx.compose.ui.geometry.Rect?>?> { null }
 
 internal data class StreamPipInsetSize(
     val width: Float,
@@ -555,6 +561,9 @@ fun StreamsScreen(
                 )
             }
 
+            // Where the stream PiP is (root coordinates), so map popups open clear of it (Nov 20).
+            val pipBoundsInRoot = remember { mutableStateOf<androidx.compose.ui.geometry.Rect?>(null) }
+            androidx.compose.runtime.CompositionLocalProvider(LocalStreamPipBoundsInRoot provides pipBoundsInRoot) {
             Box(Modifier.fillMaxSize()) {
                 if (externalContentMode == null) {
                     val effectiveSplitFraction = when (layoutMode) {
@@ -651,6 +660,7 @@ fun StreamsScreen(
                     StreamPipInsetFrame(
                         editorMode = streamPipUiState.editorMode,
                         insetFraction = streamPipUiState.insetFraction,
+                        boundsInRoot = pipBoundsInRoot,
                         onTap = swapToStreams,
                         onLongPress = { viewModel.toggleStreamPipEditorModeFromLongPress() },
                         onResizeFractionChange = { next -> viewModel.setStreamPipInsetFraction(next) }
@@ -662,6 +672,7 @@ fun StreamsScreen(
                             showTileControls = false,
                             remoteVideoDesignator = remoteVideoDesignator,
                             remoteRequesterEmail = remoteRequesterEmail,
+                            compactPip = true,
                             modifier = Modifier.fillMaxSize()
                         )
                     }
@@ -682,6 +693,7 @@ fun StreamsScreen(
                         onIgnoredFlightAnswer = viewModel::answerIgnoredFlightPrompt,
                     )
                 }
+            }
             }
         }
 
@@ -1442,6 +1454,7 @@ private fun SplitDragHandle(
 private fun StreamPipInsetFrame(
     editorMode: Boolean,
     insetFraction: Float,
+    boundsInRoot: androidx.compose.runtime.MutableState<androidx.compose.ui.geometry.Rect?>? = null,
     onTap: () -> Unit,
     onLongPress: () -> Unit,
     onResizeFractionChange: (Float) -> Unit,
@@ -1459,6 +1472,7 @@ private fun StreamPipInsetFrame(
         val density = LocalDensity.current
         val latestInsetFraction by rememberUpdatedState(insetFraction)
         val latestOnResizeFractionChange by rememberUpdatedState(onResizeFractionChange)
+        if (boundsInRoot != null) DisposableEffect(boundsInRoot) { onDispose { boundsInRoot.value = null } }
 
         Box(
             modifier = Modifier
@@ -1466,6 +1480,7 @@ private fun StreamPipInsetFrame(
                 .padding(12.dp)
                 .width(insetSize.width.dp)
                 .height(insetSize.height.dp)
+                .then(if (boundsInRoot != null) Modifier.onGloballyPositioned { boundsInRoot.value = it.boundsInRoot() } else Modifier)
                 .clip(MaterialTheme.shapes.small)
                 .background(MaterialTheme.colorScheme.surface)
         ) {
@@ -1570,6 +1585,7 @@ private fun StreamsGrid(
     fullScreenContent: Boolean = false,
     remoteVideoDesignator: String? = null,
     remoteRequesterEmail: String? = null,
+    compactPip: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     val tag = "StreamsGrid"
@@ -1607,7 +1623,7 @@ private fun StreamsGrid(
         if (visibleEntries.isEmpty()) {
             CTDebug(tag, "No streams to show.")
             Column(Modifier.fillMaxSize()) {
-                VideoSafetyNotice()
+                if (compactPip) VideoSafetyBadge(Modifier.padding(4.dp)) else VideoSafetyNotice()
                 EmptyStreamsView(
                     viewModel = viewModel,
                     mapName = mapName,
@@ -1656,6 +1672,7 @@ private fun StreamsGrid(
                         )
                     },
                     showTileControls = showTileControls,
+                    compactPip = compactPip,
                     effectiveFocused = focusPresentation.effectiveFocused,
                     showFocusBorder = focusPresentation.showFocusBorder,
                     fillContainer = chromePresentation.fillContainer,
@@ -1714,6 +1731,7 @@ private fun StreamsGrid(
                                     )
                                 },
                                 showTileControls = showTileControls,
+                                compactPip = compactPip,
                                 effectiveFocused = focusPresentation.effectiveFocused,
                                 showFocusBorder = focusPresentation.showFocusBorder,
                                 fillContainer = chromePresentation.fillContainer,

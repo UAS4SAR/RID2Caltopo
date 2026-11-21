@@ -273,6 +273,8 @@ fun StreamTile(
     fillContainer: Boolean = false,
     showStandaloneTelemetryOverlay: Boolean = true,
     remoteRequesterEmail: String? = null,
+    /** Stream PiP over the map (Ken, Nov 20): only the "Observation only" badge and the video. */
+    compactPip: Boolean = false,
 ) {
     val tag="StreamTile"
     val clueCaptureSlowMs = 250L
@@ -619,8 +621,8 @@ fun StreamTile(
             .then(if (fillContainer) Modifier.fillMaxSize() else Modifier.aspectRatio(16f / 9f))
             .clipToBounds()
     ) {
-        VideoSafetyNotice()
-        Row(Modifier.fillMaxWidth().background(Color.Black), verticalAlignment = Alignment.CenterVertically) {
+        if (!compactPip) VideoSafetyNotice()
+        if (!compactPip) Row(Modifier.fillMaxWidth().background(Color.Black), verticalAlignment = Alignment.CenterVertically) {
             Box(Modifier.weight(1f)) {
         DesignatorIndicator(
             streamDesignator = streamDesignator,
@@ -681,6 +683,7 @@ fun StreamTile(
                 .onSizeChanged { streamTileSize = it }
                 .clipToBounds()
         ) {
+        if (compactPip) VideoSafetyBadge(Modifier.align(Alignment.TopStart).padding(4.dp).zIndex(10f))
         Box(
             modifier = Modifier
                 .matchParentSize()
@@ -2324,6 +2327,21 @@ internal fun VideoSafetyNotice() {
         fontWeight = FontWeight.Bold
     )
 }
+
+/** The PiP-size safety notice (Ken, Nov 20): the full [VideoSafetyNotice] covered most of the PiP. */
+@Composable
+internal fun VideoSafetyBadge(modifier: Modifier = Modifier) {
+    Text(
+        text = VIDEO_SAFETY_BADGE_TEXT,
+        modifier = modifier.background(Color.Black.copy(alpha = 0.78f), RoundedCornerShape(4.dp)).padding(horizontal = 6.dp, vertical = 2.dp),
+        color = Color(0xFFFFD54F),
+        style = MaterialTheme.typography.labelSmall,
+        fontWeight = FontWeight.Bold,
+        maxLines = 1,
+    )
+}
+
+internal const val VIDEO_SAFETY_BADGE_TEXT = "Observation only"
 
 /** Shared guides for decoded video and the waiting-for-controller preview. */
 @Composable

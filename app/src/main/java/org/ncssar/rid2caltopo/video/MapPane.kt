@@ -4988,22 +4988,26 @@ internal fun SplitMapPane(
             )
         }
 
+        // Popups stay on the map and clear of the stream PiP (Ken, Nov 20 A5 test).
+        val btrxPipObstacle = if (isInsetMode) null else LocalStreamPipBoundsInRoot.current?.value
         btrxPanel?.let { (keys, at) ->
-            org.ncssar.rid2caltopo.ui.BtrxBearingPanel(
-                rows = keys,
-                onDismiss = { btrxPanel = null },
-                modifier = Modifier.align(Alignment.TopStart).offset { at },
-                onFocus = btrxFocus,
-            )
+            org.ncssar.rid2caltopo.ui.BtrxPopupHost(obstacleInRoot = btrxPipObstacle, tapAt = at) {
+                org.ncssar.rid2caltopo.ui.BtrxBearingPanel(
+                    rows = keys,
+                    onDismiss = { btrxPanel = null },
+                    onFocus = btrxFocus,
+                )
+            }
         }
         if (btrxBearingOn && !isInsetMode) {
             btrxInspect?.let { key ->
-                org.ncssar.rid2caltopo.ui.BtrxPinnedInspectCard(
-                    key = key,
-                    onFocus = btrxFocus,
-                    onDismiss = { btrxInspect = null },
-                    modifier = Modifier.align(Alignment.BottomStart).padding(start = 8.dp, bottom = 72.dp),
-                )
+                org.ncssar.rid2caltopo.ui.BtrxPopupHost(obstacleInRoot = btrxPipObstacle, bottomStart = 8.dp to 72.dp) {
+                    org.ncssar.rid2caltopo.ui.BtrxPinnedInspectCard(
+                        key = key,
+                        onFocus = btrxFocus,
+                        onDismiss = { btrxInspect = null },
+                    )
+                }
             }
             org.ncssar.rid2caltopo.ui.BtrxOwnAircraftSuggestion(
                 modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 120.dp, start = 56.dp, end = 56.dp),

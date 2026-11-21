@@ -10,6 +10,10 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
+import org.ncssar.rid2caltopo.btrx.BtrxPopupPlacement
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -184,6 +188,50 @@ fun BtrxBearingStatusLines() {
     }
 }
 
+/**
+ * Places one map popup (the tap panel at [tapAt], or the inspect card [bottomStart] insets from
+ * the bottom-left) with [BtrxPopupPlacement]: inside this host (fill the map), clear of
+ * [obstacleInRoot] (the stream PiP, root coordinates), flipped left or up, height capped so the
+ * popup scrolls (Ken, Nov 20). The host itself takes no touches.
+ */
+@Composable
+fun BtrxPopupHost(
+    obstacleInRoot: androidx.compose.ui.geometry.Rect?,
+    modifier: Modifier = Modifier,
+    tapAt: androidx.compose.ui.unit.IntOffset? = null,
+    bottomStart: Pair<androidx.compose.ui.unit.Dp, androidx.compose.ui.unit.Dp>? = null,
+    content: @Composable () -> Unit,
+) {
+    var origin by remember { mutableStateOf(androidx.compose.ui.geometry.Offset.Zero) }
+    androidx.compose.ui.layout.Layout(
+        content,
+        modifier.fillMaxSize().onGloballyPositioned { origin = it.positionInRoot() },
+    ) { measurables, c ->
+        val w = c.maxWidth
+        val h = c.maxHeight
+        val child = measurables.firstOrNull()
+        if (child == null || !c.hasBoundedWidth || !c.hasBoundedHeight) {
+            val p = child?.measure(c.copy(minWidth = 0, minHeight = 0))
+            return@Layout layout(c.minWidth, c.minHeight) { p?.place(tapAt ?: androidx.compose.ui.unit.IntOffset.Zero) }
+        }
+        val m = 8.dp.toPx()
+        val obs = obstacleInRoot?.let { BtrxPopupPlacement.Box(it.left - origin.x, it.top - origin.y, it.right - origin.x, it.bottom - origin.y) }
+        fun plan(pw: Float, ph: Float): BtrxPopupPlacement.Plan =
+            if (bottomStart != null) BtrxPopupPlacement.atBottomStart(w.toFloat(), h.toFloat(), pw, ph, bottomStart.first.toPx(), bottomStart.second.toPx(), obs, m)
+            else BtrxPopupPlacement.atPoint(w.toFloat(), h.toFloat(), pw, ph, (tapAt?.x ?: 0).toFloat(), (tapAt?.y ?: 0).toFloat(), obs, m)
+        val maxW = (w - 2 * m).toInt().coerceAtLeast(1)
+        // Natural size first (intrinsics), so a popup squeezed above the PiP is measured at the capped height.
+        val natural = runCatching {
+            val nw = child.maxIntrinsicWidth(androidx.compose.ui.unit.Constraints.Infinity).coerceAtMost(maxW)
+            nw to child.maxIntrinsicHeight(nw)
+        }.getOrNull()
+        val cap = natural?.let { plan(it.first.toFloat(), it.second.toFloat()).maxHeight } ?: (h - 2 * m)
+        val p = child.measure(androidx.compose.ui.unit.Constraints(maxWidth = maxW, maxHeight = cap.toInt().coerceIn(1, h)))
+        val fin = plan(p.width.toFloat(), p.height.toFloat())
+        layout(w, h) { p.place(fin.x.roundToInt(), fin.y.roundToInt()) }
+    }
+}
+
 /** Map status (field test, Nov 13): why the bearing layer draws nothing. Not tappable. */
 @Composable
 fun BtrxBearingStatusChip(line: String, modifier: Modifier = Modifier) {
@@ -201,11 +249,16 @@ fun BtrxBearingSourceRow(src: BtrxBearingSource, nowUs: Long, onShownChange: (Bo
                 .border(1.dp, Color.Black.copy(alpha = 0.4f), RoundedCornerShape(3.dp)),
         )
         Checkbox(checked = !src.muted, onCheckedChange = onShownChange)
-        Text(src.shortId, fontWeight = FontWeight.SemiBold)
-        Text(src.className)
-        Text(BtrxBearingText.lastHeard(nowUs, src.lastHeardUs), style = MaterialTheme.typography.bodySmall)
-        Text(BtrxBearingText.reports(src.reportsInWindow), style = MaterialTheme.typography.bodySmall)
-        if (src.ownSuspect) Text(BtrxBearingText.OWN_SUSPECT_TAG, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+        Text(src.shortId, fontWeight = FontWeight.SemiBold, maxLines = 1)
+        // Two lines (Nov 20 A5 test: in a narrow panel "136 rpt" wrapped one letter per line).
+        Column {
+            Text(src.className, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(
+                BtrxBearingText.lastHeard(nowUs, src.lastHeardUs) + " · " + BtrxBearingText.reports(src.reportsInWindow),
+                style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis,
+            )
+            if (src.ownSuspect) Text(BtrxBearingText.OWN_SUSPECT_TAG, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+        }
     }
 }
 
@@ -226,7 +279,7 @@ fun BtrxBearingPanel(
     val byKey = s.sources.associateBy { it.key }
     val listed = rows.mapNotNull { byKey[it] }
     Surface(modifier.widthIn(max = 420.dp), shape = MaterialTheme.shapes.medium, tonalElevation = 6.dp, shadowElevation = 6.dp) {
-        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Column(Modifier.verticalScroll(rememberScrollState()).padding(12.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Text(BtrxBearingText.PANEL_TITLE, style = MaterialTheme.typography.titleMedium)
             listed.forEach { src ->
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -314,7 +367,7 @@ fun BtrxPinnedInspectCard(
     val s = snap ?: return
     val src = s.sources.firstOrNull { it.key == key } ?: return
     Surface(modifier.widthIn(max = 420.dp), shape = MaterialTheme.shapes.medium, tonalElevation = 6.dp, shadowElevation = 6.dp) {
-        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Column(Modifier.verticalScroll(rememberScrollState()).padding(12.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 Box(Modifier.size(16.dp).background(Color(0xFF000000.toInt() or src.rgb), RoundedCornerShape(3.dp)))
                 Text(BtrxBearingText.PINNED_TITLE, style = MaterialTheme.typography.titleMedium)

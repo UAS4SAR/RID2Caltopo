@@ -523,6 +523,8 @@ struct AppleStreamsGridView: View {
     var registeredDroneDesignators: [String] = []
     var aircraftDetailsView: (() -> AnyView)? = nil
     var operationalAlertOverlay: AnyView? = nil
+    /// The video PiP over the map: only the "Observation only" badge and the video (Ken, Nov 20).
+    var compactPip = false
     @State private var showRegisteredDesignators = false
     @State private var showAircraftDetails = false
 
@@ -644,7 +646,8 @@ struct AppleStreamsGridView: View {
                 { callback(session.id) }
             },
             onRestartStreams: onRestartStreams,
-            operationalAlertOverlay: operationalAlertOverlay
+            operationalAlertOverlay: operationalAlertOverlay,
+            compactPip: compactPip
         )
     }
 }
@@ -712,6 +715,7 @@ private struct AppleStreamTile: View {
     let onClose: (() -> Void)?
     let onRestartStreams: (() -> Void)?
     let operationalAlertOverlay: AnyView?
+    let compactPip: Bool
 
     init(
         session: AppleLiveStreamSession,
@@ -735,7 +739,8 @@ private struct AppleStreamTile: View {
         onDoubleTap: @escaping (Double, CGPoint) -> Void,
         onClose: (() -> Void)?,
         onRestartStreams: (() -> Void)?,
-        operationalAlertOverlay: AnyView? = nil
+        operationalAlertOverlay: AnyView? = nil,
+        compactPip: Bool = false
     ) {
         self.session = session
         self.incidentMapTitle = incidentMapTitle
@@ -760,13 +765,18 @@ private struct AppleStreamTile: View {
         self.onClose = onClose
         self.onRestartStreams = onRestartStreams
         self.operationalAlertOverlay = operationalAlertOverlay
+        self.compactPip = compactPip
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            AppleVideoSafetyNotice()
-            telemetryStrip
-            videoContent
+        if compactPip {
+            videoContent.overlay(alignment: .topLeading) { AppleVideoSafetyBadge().padding(4) }
+        } else {
+            VStack(spacing: 0) {
+                AppleVideoSafetyNotice()
+                telemetryStrip
+                videoContent
+            }
         }
     }
 

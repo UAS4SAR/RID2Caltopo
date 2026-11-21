@@ -609,12 +609,63 @@ struct BtrxBearingSourceRow: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel(source.muted ? "Show \(source.shortID)" : "Hide \(source.shortID)")
-            Text(source.shortID).fontWeight(.semibold)
-            Text(source.className)
-            Text(BtrxBearingText.lastHeard(nowUs: nowUs, lastUs: source.lastHeardUs)).font(.footnote)
-            Text(BtrxBearingText.reports(source.reportsInWindow)).font(.footnote)
-            if source.ownSuspect { Text(BtrxBearingText.ownSuspectTag).font(.footnote).foregroundStyle(.red) }
+            Text(source.shortID).fontWeight(.semibold).lineLimit(1)
+            // Two lines (Nov 20 A5 test: in a narrow panel "136 rpt" wrapped one letter per line). Same as Android.
+            VStack(alignment: .leading, spacing: 0) {
+                Text(source.className).lineLimit(1)
+                Text(BtrxBearingText.lastHeard(nowUs: nowUs, lastUs: source.lastHeardUs) + " · " + BtrxBearingText.reports(source.reportsInWindow))
+                    .font(.footnote).lineLimit(1)
+                if source.ownSuspect { Text(BtrxBearingText.ownSuspectTag).font(.footnote).foregroundStyle(.red) }
+            }
         }
+    }
+}
+
+/// A popup's content as is when it fits the height offered, else in a ScrollView of that height
+/// (BtrxPopupLayout caps the height above the video PiP; Nov 20). Same as Android's verticalScroll.
+struct BtrxScrollsWhenCapped<Content: View>: View {
+    @ViewBuilder var content: () -> Content
+    var body: some View {
+        ViewThatFits(in: .vertical) {
+            content()
+            ScrollView(.vertical) { content() }
+        }
+    }
+}
+
+/// Places one map popup (the tap panel at `tapAt`, or the inspect card `bottomStart` in from the
+/// bottom-left) with BtrxPopupPlacement: inside the map, clear of `obstacle` (the video PiP, in
+/// this layout's coordinates), flipped left or up, height capped so the popup scrolls (Ken,
+/// Nov 20). Same as Android's BtrxPopupHost.
+struct BtrxPopupLayout: Layout {
+    var tapAt: CGPoint? = nil
+    var bottomStart: CGSize? = nil
+    var obstacle: CGRect?
+    var margin: CGFloat = 8
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        proposal.replacingUnspecifiedDimensions()
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        guard let child = subviews.first else { return }
+        let maxW = max(1, bounds.width - 2 * margin)
+        let natural = child.sizeThatFits(ProposedViewSize(width: maxW, height: nil))
+        let cap = plan(bounds.size, natural).maxHeight
+        let sized = child.sizeThatFits(ProposedViewSize(width: maxW, height: cap))
+        let final = plan(bounds.size, CGSize(width: sized.width, height: min(sized.height, cap)))
+        child.place(at: CGPoint(x: bounds.minX + final.x, y: bounds.minY + final.y), anchor: .topLeading,
+                    proposal: ProposedViewSize(width: min(sized.width, maxW), height: min(sized.height, cap)))
+    }
+
+    private func plan(_ size: CGSize, _ popup: CGSize) -> BtrxPopupPlacement.Plan {
+        let obs = obstacle.map { BtrxPopupPlacement.Box(left: $0.minX, top: $0.minY, right: $0.maxX, bottom: $0.maxY) }
+        if let bottomStart {
+            return BtrxPopupPlacement.atBottomStart(width: size.width, height: size.height, popupW: popup.width, popupH: popup.height,
+                                                    left: bottomStart.width, bottom: bottomStart.height, obstacle: obs, margin: margin)
+        }
+        return BtrxPopupPlacement.atPoint(width: size.width, height: size.height, popupW: popup.width, popupH: popup.height,
+                                          x: Double(tapAt?.x ?? 0), y: Double(tapAt?.y ?? 0), obstacle: obs, margin: margin)
     }
 }
 
@@ -631,7 +682,7 @@ struct BtrxBearingPanel: View {
         if let snap = center.bearingSnapshot {
             let byKey = Dictionary(snap.sources.map { ($0.key, $0) }, uniquingKeysWith: { a, _ in a })
             let listed = rows.compactMap { byKey[$0] }
-            VStack(alignment: .leading, spacing: 4) {
+            BtrxScrollsWhenCapped { VStack(alignment: .leading, spacing: 4) {
                 Text(BtrxBearingText.panelTitle).font(.headline)
                 ForEach(listed) { src in
                     HStack {
@@ -646,7 +697,7 @@ struct BtrxBearingPanel: View {
                     Button(BtrxBearingText.done, action: onDismiss)
                 }
             }
-            .padding(12)
+            .padding(12) }
             .frame(maxWidth: 420, alignment: .leading)
             .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
             .shadow(radius: 6)
@@ -710,7 +761,7 @@ struct BtrxPinnedInspectCard: View {
     let onDismiss: () -> Void
     var body: some View {
         if let snap = center.bearingSnapshot, let src = snap.sources.first(where: { $0.key == key }) {
-            VStack(alignment: .leading, spacing: 3) {
+            BtrxScrollsWhenCapped { VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
                     RoundedRectangle(cornerRadius: 3).fill(Color(rgb: src.rgb)).frame(width: 16, height: 16)
                     Text(BtrxBearingText.pinnedTitle).font(.headline)
@@ -723,7 +774,7 @@ struct BtrxPinnedInspectCard: View {
                     Button(BtrxBearingText.close, action: onDismiss)
                 }
             }
-            .padding(12)
+            .padding(12) }
             .frame(maxWidth: 420, alignment: .leading)
             .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
             .shadow(radius: 6)
