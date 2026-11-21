@@ -16,6 +16,10 @@ It is safe to install over when either
   * the current launch's log ends with "Primary application session cleanup completed"
     (Quit, window swipe or idle timeout finished) with no new session started after it.
 Otherwise the app may be monitoring; do not install.
+
+An App Store or TestFlight install (devicectl: builtByDeveloper false) has a container devicectl
+cannot read, so its logs cannot be checked: the check says so plainly and exits 2 (Nov 20 2026).
+Only Ken's confirmation that the app is not in use can override that.
 """
 import json
 import os
@@ -136,6 +140,24 @@ def ipad_decision(pid, log_text):
     return True, f"pid {pid}: current launch's log ends with cleanup completed (quit and suspended)"
 
 
+def installed_app(apps_json):
+    """The RID2CaltopoApple entry of `devicectl device info apps --include-all-apps`, or None."""
+    for app in apps_json.get("result", {}).get("apps", []):
+        if app.get("bundleIdentifier") == BUNDLE_ID:
+            return app
+    return None
+
+
+def store_build_message(app, pids):
+    """A plain message when the installed app's container cannot be read (App Store/TestFlight), else None."""
+    if app is None or (app.get("builtByDeveloper") is not False and app.get("containerAccessible") is not False):
+        return None
+    return (f"UNRELIABLE: the installed RID2CaltopoApple {app.get('version', '?')} ({app.get('bundleVersion', '?')}) "
+            "is an App Store/TestFlight build (builtByDeveloper=false), so devicectl cannot read its container "
+            f"or logs. Running pid(s) {', '.join(map(str, pids))} may be an iOS prewarm. Installing a developer build "
+            "over it needs Ken's confirmation that the app is not in use.")
+
+
 def ipad(udid):
     with tempfile.TemporaryDirectory() as tmp:
         procs_path = os.path.join(tmp, "procs.json")
@@ -152,6 +174,20 @@ def ipad(udid):
         if not pids:
             print("SAFE: RID2CaltopoApple is not running.")
             return 0
+        apps_path = os.path.join(tmp, "apps.json")
+        rc, _, err = run(["xcrun", "devicectl", "device", "info", "apps", "--device", udid,
+                          "--include-all-apps", "--json-output", apps_path])
+        if rc == 0 and os.path.exists(apps_path):
+            app = installed_app(json.load(open(apps_path)))
+            if app is not None:
+                print(f"installed: {app.get('version', '?')} ({app.get('bundleVersion', '?')}) "
+                      f"builtByDeveloper={app.get('builtByDeveloper')} containerAccessible={app.get('containerAccessible')}")
+            message = store_build_message(app, pids)
+            if message:
+                print(message)
+                return 2
+        else:
+            print(f"note: devicectl apps rc={rc} {err.strip()} (build type unknown; checking logs)")
         files_path = os.path.join(tmp, "files.json")
         rc, _, err = run(["xcrun", "devicectl", "device", "info", "files", "--device", udid,
                           "--domain-type", "appDataContainer", "--domain-identifier", BUNDLE_ID,
@@ -213,6 +249,15 @@ tcp        0      0 192.168.68.50:46894     172.217.113.4:443       CLOSE_WAIT""
     assert not ipad_decision(458, "\n".join(running))[0]        # session open
     reopened = quit_log + "\nx [INFO][458-main] [App] Application UI started"
     assert not ipad_decision(458, reopened)[0]                  # reopened after cleanup
+    store = {"result": {"apps": [{"bundleIdentifier": "com.google.Gmail", "builtByDeveloper": False},
+                                 {"bundleIdentifier": BUNDLE_ID, "version": "2.5.7", "bundleVersion": "436",
+                                  "builtByDeveloper": False, "containerAccessible": False}]}}
+    msg = store_build_message(installed_app(store), [453])
+    assert msg and "App Store/TestFlight" in msg and "2.5.7 (436)" in msg and "453" in msg
+    dev = {"result": {"apps": [{"bundleIdentifier": BUNDLE_ID, "version": "2.6.0", "bundleVersion": "446",
+                                "builtByDeveloper": True, "containerAccessible": True}]}}
+    assert store_build_message(installed_app(dev), [453]) is None
+    assert store_build_message(installed_app({"result": {"apps": []}}), [453]) is None
     print("self-test passed")
     return 0
 
