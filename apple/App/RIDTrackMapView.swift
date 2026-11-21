@@ -1848,7 +1848,7 @@ struct RIDTrackMapView: View {
             )
             // Without video the control is always disabled; hiding it then keeps it off the
             // "Waiting for controller" placeholder on narrow screens. Not in the compact PiP.
-            if videoModel.frameCount > 0, !compact {
+            if videoModel.frameCount > 0, StreamTileChrome.shows(.clueButton, compactPip: compact) {
                 VStack {
                     Spacer()
                     HStack {

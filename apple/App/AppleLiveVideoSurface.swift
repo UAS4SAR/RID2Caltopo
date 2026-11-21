@@ -97,9 +97,8 @@ final class LiveVideoSurfaceView: UIView {
 
 /// The PiP-size safety notice (Ken, Nov 20): the full notice covered most of the PiP. Same as Android's VideoSafetyBadge.
 struct AppleVideoSafetyBadge: View {
-    static let text = "Observation only"
     var body: some View {
-        Text(Self.text)
+        Text(StreamTileChrome.badgeText)
             .font(.caption2.weight(.bold)).foregroundStyle(Color(red: 1, green: 0.835, blue: 0.31))
             .lineLimit(1)
             .padding(.horizontal, 6).padding(.vertical, 2)

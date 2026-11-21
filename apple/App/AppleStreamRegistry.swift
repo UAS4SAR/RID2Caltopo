@@ -769,14 +769,13 @@ private struct AppleStreamTile: View {
     }
 
     var body: some View {
-        if compactPip {
-            videoContent.overlay(alignment: .topLeading) { AppleVideoSafetyBadge().padding(4) }
-        } else {
-            VStack(spacing: 0) {
-                AppleVideoSafetyNotice()
-                telemetryStrip
-                videoContent
-            }
+        VStack(spacing: 0) {
+            if StreamTileChrome.shows(.safetyNotice, compactPip: compactPip) { AppleVideoSafetyNotice() }
+            if StreamTileChrome.shows(.statusRow, compactPip: compactPip) { telemetryStrip }
+            videoContent
+        }
+        .overlay(alignment: .topLeading) {
+            if StreamTileChrome.shows(.safetyBadge, compactPip: compactPip) { AppleVideoSafetyBadge().padding(4) }
         }
     }
 
@@ -843,7 +842,8 @@ private struct AppleStreamTile: View {
                 ZStack {
                     if model.usesNativeVideoSurface { AppleLiveVideoSurface(model: model) }
                     else if let player = model.player { VideoPlayer(player: player) }
-                    else { waitingForController }
+                    else if StreamTileChrome.shows(.waitingPlaceholder, compactPip: compactPip) { waitingForController }
+                    else { Color.black }
                     if model.anomalyMode != .off {
                         AnomalyBoxOverlay(boxes: model.anomalyBoxes)
                             .allowsHitTesting(false)
@@ -897,7 +897,7 @@ private struct AppleStreamTile: View {
                 }
             )
             .allowsHitTesting(session.id != "demo")
-            if session.state == .live && session.id != "demo" {
+            if session.state == .live && session.id != "demo", StreamTileChrome.shows(.steeringOverlay, compactPip: compactPip) {
                 // btrx steering overlay (section 41): top center, clear of the requested-by
                 // label (bottom leading), the alert overlay (top leading) and the crosshair.
                 // Only on the drone carrying the pod: the single live tile, or the one picked.
@@ -905,7 +905,7 @@ private struct AppleStreamTile: View {
                     .padding(.top, 8)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             }
-            if remoteRequesterEmail != nil || model.anomalyThermallySuspended {
+            if remoteRequesterEmail != nil || model.anomalyThermallySuspended, StreamTileChrome.shows(.requesterLabel, compactPip: compactPip) {
                 VStack(alignment: .leading, spacing: 4) {
                     if let remoteRequesterEmail {
                         Label(
@@ -929,7 +929,7 @@ private struct AppleStreamTile: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
                 .padding(6)
             }
-            if focused {
+            if focused, StreamTileChrome.shows(.centerpointOverlay, compactPip: compactPip) {
                 AppleCenterpointElevationOverlay(
                     sample: centerpointElevationSample,
                     showLabel: centerpointElevationEnabled,
@@ -941,7 +941,7 @@ private struct AppleStreamTile: View {
             }
         }
         .overlay(alignment: .topLeading) {
-            if focused, let operationalAlertOverlay { operationalAlertOverlay }
+            if focused, let operationalAlertOverlay, StreamTileChrome.shows(.alertOverlay, compactPip: compactPip) { operationalAlertOverlay }
         }
         .modifier(StreamTileSizing(
             fillsAvailableSpace: fillsAvailableSpace,

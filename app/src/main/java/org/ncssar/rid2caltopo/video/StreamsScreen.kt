@@ -1622,8 +1622,13 @@ private fun StreamsGrid(
     Box(modifier = modifier) {
         if (visibleEntries.isEmpty()) {
             CTDebug(tag, "No streams to show.")
-            Column(Modifier.fillMaxSize()) {
-                if (compactPip) VideoSafetyBadge(Modifier.padding(4.dp)) else VideoSafetyNotice()
+            if (!streamTileShows(StreamTileChrome.WAITING_PLACEHOLDER, compactPip)) {
+                // Compact PiP with no stream: black and the badge, no setup text or RTMP URLs.
+                Box(Modifier.fillMaxSize().background(Color.Black)) {
+                    VideoSafetyBadge(Modifier.align(Alignment.TopStart).padding(4.dp))
+                }
+            } else Column(Modifier.fillMaxSize()) {
+                VideoSafetyNotice()
                 EmptyStreamsView(
                     viewModel = viewModel,
                     mapName = mapName,

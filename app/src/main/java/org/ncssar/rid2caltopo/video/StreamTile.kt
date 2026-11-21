@@ -362,7 +362,7 @@ fun StreamTile(
     val showAnomalyLegendControls = true
     val showLegendControls = showLocalPlaybackLegendControls || showAnomalyLegendControls
     val showLocalPlaybackShell = isLocalPlayback && streamState != StreamState.ERROR
-    val showOverlayControls = showTileControls &&
+    val showOverlayControls = showTileControls && streamTileShows(StreamTileChrome.LEGEND, compactPip) &&
         (isFocused || isLocalPlayback) &&
         (streamState == StreamState.LIVE || showLocalPlaybackShell)
     var streamTileSize by remember(streamDesignator) { mutableStateOf(IntSize.Zero) }
@@ -621,8 +621,8 @@ fun StreamTile(
             .then(if (fillContainer) Modifier.fillMaxSize() else Modifier.aspectRatio(16f / 9f))
             .clipToBounds()
     ) {
-        if (!compactPip) VideoSafetyNotice()
-        if (!compactPip) Row(Modifier.fillMaxWidth().background(Color.Black), verticalAlignment = Alignment.CenterVertically) {
+        if (streamTileShows(StreamTileChrome.SAFETY_NOTICE, compactPip)) VideoSafetyNotice()
+        if (streamTileShows(StreamTileChrome.STATUS_ROW, compactPip)) Row(Modifier.fillMaxWidth().background(Color.Black), verticalAlignment = Alignment.CenterVertically) {
             Box(Modifier.weight(1f)) {
         DesignatorIndicator(
             streamDesignator = streamDesignator,
@@ -683,7 +683,7 @@ fun StreamTile(
                 .onSizeChanged { streamTileSize = it }
                 .clipToBounds()
         ) {
-        if (compactPip) VideoSafetyBadge(Modifier.align(Alignment.TopStart).padding(4.dp).zIndex(10f))
+        if (streamTileShows(StreamTileChrome.SAFETY_BADGE, compactPip)) VideoSafetyBadge(Modifier.align(Alignment.TopStart).padding(4.dp).zIndex(10f))
         Box(
             modifier = Modifier
                 .matchParentSize()
@@ -893,7 +893,7 @@ fun StreamTile(
                     }
                 )
         )
-        if (isFocused && streamState == StreamState.LIVE) {
+        if (isFocused && streamState == StreamState.LIVE && streamTileShows(StreamTileChrome.CENTERPOINT_OVERLAY, compactPip)) {
             CenterpointElevationOverlay(
                 sample = centerpointElevation,
                 referenceElevationFeet = centerpointReferenceElevationFeet,
@@ -902,7 +902,7 @@ fun StreamTile(
                 coordinateFormat = viewModel.coordinateDisplayFormat,
             )
         }
-        if (shouldShowStreamClueCaptureButton(showTileControls, isLocalPlayback, streamState)) {
+        if (shouldShowStreamClueCaptureButton(showTileControls && streamTileShows(StreamTileChrome.CLUE_BUTTON, compactPip), isLocalPlayback, streamState)) {
             // Greyed and not tappable while a clue is pending (until it is submitted or canceled).
             val clueCaptureEnabled = viewModel.pendingClue == null
             IconButton(
@@ -926,7 +926,7 @@ fun StreamTile(
                 )
             }
         }
-        if (streamState == StreamState.LIVE && !isLocalPlayback) {
+        if (streamState == StreamState.LIVE && !isLocalPlayback && streamTileShows(StreamTileChrome.STEERING_OVERLAY, compactPip)) {
             // btrx steering overlay (section 41): top center, clear of the camera button
             // (center end), the legend (bottom start) and the centerpoint crosshair. Only
             // on the drone carrying the pod: the single live tile, or the one picked.
@@ -2342,6 +2342,19 @@ internal fun VideoSafetyBadge(modifier: Modifier = Modifier) {
 }
 
 internal const val VIDEO_SAFETY_BADGE_TEXT = "Observation only"
+
+/**
+ * Everything a stream tile can draw besides the video (Ken, Nov 20: "too much text in the PiP").
+ * The compact PiP over the map shows only [SAFETY_BADGE]; full-size tiles show the rest as
+ * before. Same list as the iPad's StreamTileChrome (R2CCore).
+ */
+internal enum class StreamTileChrome {
+    SAFETY_NOTICE, SAFETY_BADGE, STATUS_ROW, STEERING_OVERLAY, CENTERPOINT_OVERLAY,
+    REQUESTER_LABEL, ALERT_OVERLAY, CLUE_BUTTON, LEGEND, WAITING_PLACEHOLDER,
+}
+
+internal fun streamTileShows(chrome: StreamTileChrome, compactPip: Boolean): Boolean =
+    if (compactPip) chrome == StreamTileChrome.SAFETY_BADGE else chrome != StreamTileChrome.SAFETY_BADGE
 
 /** Shared guides for decoded video and the waiting-for-controller preview. */
 @Composable
