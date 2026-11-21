@@ -79,7 +79,9 @@ import Testing
 @Test func legacyAckTimeoutRedialsImmediatelyWithoutAdvancingOrSurvivingOpen() {
     var policy = TrackerReconnectPolicy()
     #expect(policy.takeRetryDelayMilliseconds(kind: .connectFailure, legacyImmediateAckRetry: true) == 2_000)
-    #expect(policy.peekDelayMilliseconds(kind: .ackTimeout, legacyImmediateAckRetry: true) == 4_000)
+    #expect(policy.peekDelayMilliseconds(kind: .connectFailure, legacyImmediateAckRetry: true) == 4_000)
+    // With the legacy switch on, an ack timeout redials at once (peek and take agree, as on Android).
+    #expect(policy.peekDelayMilliseconds(kind: .ackTimeout, legacyImmediateAckRetry: true) == 0)
     #expect(policy.takeRetryDelayMilliseconds(kind: .ackTimeout, legacyImmediateAckRetry: true) == 0)
     #expect(policy.peekDelayMilliseconds(kind: .connectFailure, legacyImmediateAckRetry: true) == 4_000)
 

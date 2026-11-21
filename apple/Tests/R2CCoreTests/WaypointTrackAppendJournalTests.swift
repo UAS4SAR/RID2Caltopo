@@ -152,6 +152,9 @@ import Testing
         #expect((await awaiting.entries).filter { $0.decision == "review" && $0.finished }.count == 1)
 
         try await ledger.remember(flightID: flightID, disposition: .discarded)
+        // remember() persists on a background task. A real cold restart follows the old process,
+        // so let that write land before the cold instances read the file.
+        try await ledger.flushForTesting()
         #expect(try await awaiting.discard(id: flightID))
         #expect((await awaiting.entries).isEmpty)
 

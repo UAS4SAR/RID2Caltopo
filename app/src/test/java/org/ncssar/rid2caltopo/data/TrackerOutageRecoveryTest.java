@@ -49,18 +49,37 @@ public class TrackerOutageRecoveryTest {
         return predicate.getAsBoolean();
     }
 
+    /**
+     * Reconnect rules since the PR #14/#15 merge (f2a767a2): an open socket waits 30 s for
+     * hello_ack, an ack timeout takes the next ladder step (2, 4, 8, 10 s) with equal jitter
+     * (1-2, 2-4, 4-8, 5-10 s), and the legacy immediate redial is off unless Developer Tools
+     * turns it on. Both switches and the jitter draw are pinned, and the reconnect timer is run
+     * by hand, so the test does not depend on wall-clock waits.
+     */
     @Test public void activityDuringHandshakeMustNotSuppressNextRetry() throws Exception {
+        TrackerPeerCoordinator.setLegacyImmediateAckRetryForTesting(false);
+        TrackerPeerCoordinator.setReconnectJitterForTesting(true, 0.0);
         coordinator.stopBackgroundTimersForTesting();
-        now += 10001;
+        coordinator.setSuppressReconnectTimerForTesting(true);
+        now += 10_001;
         coordinator.checkAckLivenessForTesting();
-        assertTrue("forced reconnect should start", until(() -> transport.connects >= 2, 1500));
+        assertEquals("an open socket still waits for hello_ack at 10 s", 0L, coordinator.getForcedReconnectCountForTesting());
+        now += 20_000;
+        coordinator.checkAckLivenessForTesting();
+        assertEquals("hello_ack missing after 30 s forces a reconnect", 1L, coordinator.getForcedReconnectCountForTesting());
+        assertEquals("ack timeout takes the first ladder step (2 s, jittered to 1 s)", 1_000L, coordinator.getScheduledReconnectDelayMsForTesting());
+        assertEquals(4_000L, coordinator.getNextReconnectDelayMsForTesting());
+        coordinator.runScheduledReconnectForTesting();
+        assertEquals("forced reconnect should start", 2, transport.connects);
         // New activity must not replace the reconnect transport mid-handshake.
         confirm();
         assertEquals(2, transport.connects);
-        int beforeFailure = transport.connects;
         transport.fail();
         assertTrue("failed handshake must schedule another attempt instead of retaining stale reconnectPending",
-                until(() -> transport.connects > beforeFailure, 3000));
+                coordinator.isReconnectPendingForTesting());
+        assertEquals("the next attempt is the next ladder step (4 s, jittered to 2 s)", 2_000L, coordinator.getScheduledReconnectDelayMsForTesting());
+        coordinator.runScheduledReconnectForTesting();
+        assertEquals(3, transport.connects);
     }
 
     @Test public void confirmationAcceptedBySocketButNotAcknowledgedMustReplay() {
