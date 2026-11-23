@@ -122,4 +122,11 @@ final class BtrxBearingViewTests: XCTestCase {
         XCTAssertEqual(lines[1], "Heard strongly at the takeoff spot (muted)")
         XCTAssertTrue(l.launch)
     }
+
+    func testPopupDismissWordingMatchesAndroid() {
+        // Nov 23 watch test: × at the top right of the map popups hides them; it is not "Close".
+        XCTAssertEqual(BtrxBearingText.dismiss, "Dismiss")
+        XCTAssertEqual(BtrxBearingText.done, "Done")
+        XCTAssertEqual(BtrxBearingText.close, "Close")
+    }
 }

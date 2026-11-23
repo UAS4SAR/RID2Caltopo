@@ -813,6 +813,8 @@ object BtrxBearingText {
     const val STRONGEST_HERE = "strongest here"
     const val PINNED_TITLE = "BTRX source located"
     const val CLOSE = "Close"
+    /** The × at the top right of a map popup: hides the popup; focus and mutes stay as they are. */
+    const val DISMISS = "Dismiss"
 
     /** Own-aircraft suggestion banner (Nov 17: one line; it was a three-line card over the map). */
     fun ownSuggestion(s: BtrxBearingSource): String = "${s.shortId} (${s.className}) on the drone?"

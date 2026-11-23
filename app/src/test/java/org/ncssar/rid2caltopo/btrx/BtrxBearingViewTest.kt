@@ -132,4 +132,12 @@ class BtrxBearingViewTest {
         assertEquals("Heard strongly at the takeoff spot (muted)", lines[1])
         assertTrue(launch.launch)
     }
+
+    @Test
+    fun popupDismissWordingMatchesTheIpad() {
+        // Nov 23 watch test: × at the top right of the map popups hides them; it is not "Close".
+        assertEquals("Dismiss", BtrxBearingText.DISMISS)
+        assertEquals("Done", BtrxBearingText.DONE)
+        assertEquals("Close", BtrxBearingText.CLOSE)
+    }
 }

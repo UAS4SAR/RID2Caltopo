@@ -279,8 +279,12 @@ fun BtrxBearingPanel(
     val byKey = s.sources.associateBy { it.key }
     val listed = rows.mapNotNull { byKey[it] }
     Surface(modifier.widthIn(max = 420.dp), shape = MaterialTheme.shapes.medium, tonalElevation = 6.dp, shadowElevation = 6.dp) {
-        Column(Modifier.verticalScroll(rememberScrollState()).padding(12.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Column(Modifier.padding(12.dp)) {
+        // Title and × stay put while the rows scroll (Ken, Nov 23: Done was below the fold).
+        BtrxPopupHeader(onDismiss = onDismiss) {
             Text(BtrxBearingText.PANEL_TITLE, style = MaterialTheme.typography.titleMedium)
+        }
+        Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             listed.forEach { src ->
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Box(Modifier.weight(1f)) {
@@ -295,6 +299,22 @@ fun BtrxBearingPanel(
                 TextButton(onClick = onDismiss) { Text(BtrxBearingText.DONE) }
             }
         }
+        }
+    }
+}
+
+/**
+ * Popup header: the title, then × at the top right (Ken, Nov 23 watch test). × dismisses the
+ * popup only: focus, mutes and ignores stay as they are. Same as the iPad.
+ */
+@Composable
+private fun BtrxPopupHeader(onDismiss: () -> Unit, title: @Composable () -> Unit) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.weight(1f)) { title() }
+        TextButton(
+            onClick = onDismiss,
+            modifier = Modifier.semantics { contentDescription = BtrxBearingText.DISMISS },
+        ) { Text("×", style = MaterialTheme.typography.titleLarge) }
     }
 }
 
@@ -367,11 +387,14 @@ fun BtrxPinnedInspectCard(
     val s = snap ?: return
     val src = s.sources.firstOrNull { it.key == key } ?: return
     Surface(modifier.widthIn(max = 420.dp), shape = MaterialTheme.shapes.medium, tonalElevation = 6.dp, shadowElevation = 6.dp) {
-        Column(Modifier.verticalScroll(rememberScrollState()).padding(12.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Column(Modifier.padding(12.dp)) {
+        BtrxPopupHeader(onDismiss = onDismiss) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 Box(Modifier.size(16.dp).background(Color(0xFF000000.toInt() or src.rgb), RoundedCornerShape(3.dp)))
                 Text(BtrxBearingText.PINNED_TITLE, style = MaterialTheme.typography.titleMedium)
             }
+        }
+        Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             BtrxBearingText.inspectLines(src, s.tUs).forEach { Text(it, style = MaterialTheme.typography.bodySmall) }
             BtrxRestoreIgnoredButton()
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -379,6 +402,7 @@ fun BtrxPinnedInspectCard(
                 BtrxIgnoreAllExceptButton(src)
                 TextButton(onClick = onDismiss) { Text(BtrxBearingText.CLOSE) }
             }
+        }
         }
     }
 }

@@ -633,6 +633,24 @@ struct BtrxScrollsWhenCapped<Content: View>: View {
     }
 }
 
+/// Popup header: the title, then × at the top right (Ken, Nov 23 watch test). × dismisses the
+/// popup only: focus, mutes and ignores stay as they are. Same as Android's BtrxPopupHeader.
+struct BtrxPopupHeader<Title: View>: View {
+    let onDismiss: () -> Void
+    @ViewBuilder var title: () -> Title
+    var body: some View {
+        HStack(alignment: .center, spacing: 8) {
+            title()
+            Spacer(minLength: 8)
+            Button(action: onDismiss) {
+                Image(systemName: "xmark").font(.body.weight(.semibold)).frame(width: 32, height: 32).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(BtrxBearingText.dismiss)
+        }
+    }
+}
+
 /// Places one map popup (the tap panel at `tapAt`, or the inspect card `bottomStart` in from the
 /// bottom-left) with BtrxPopupPlacement: inside the map, clear of `obstacle` (the video PiP, in
 /// this layout's coordinates), flipped left or up, height capped so the popup scrolls (Ken,
@@ -682,8 +700,10 @@ struct BtrxBearingPanel: View {
         if let snap = center.bearingSnapshot {
             let byKey = Dictionary(snap.sources.map { ($0.key, $0) }, uniquingKeysWith: { a, _ in a })
             let listed = rows.compactMap { byKey[$0] }
+            VStack(alignment: .leading, spacing: 4) {
+            // Title and × stay put while the rows scroll (Ken, Nov 23: Done was below the fold).
+            BtrxPopupHeader(onDismiss: onDismiss) { Text(BtrxBearingText.panelTitle).font(.headline) }
             BtrxScrollsWhenCapped { VStack(alignment: .leading, spacing: 4) {
-                Text(BtrxBearingText.panelTitle).font(.headline)
                 ForEach(listed) { src in
                     HStack {
                         BtrxBearingSourceRow(source: src, nowUs: snap.tUs) { shown in center.bearing.setMuted([src.key], muted: !shown) }
@@ -696,8 +716,9 @@ struct BtrxBearingPanel: View {
                     Button(BtrxBearingText.unmuteAll) { center.bearing.setMuted(listed.map(\.key), muted: false) }.buttonStyle(.bordered)
                     Button(BtrxBearingText.done, action: onDismiss)
                 }
+            } }
             }
-            .padding(12) }
+            .padding(12)
             .frame(maxWidth: 420, alignment: .leading)
             .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
             .shadow(radius: 6)
@@ -761,11 +782,14 @@ struct BtrxPinnedInspectCard: View {
     let onDismiss: () -> Void
     var body: some View {
         if let snap = center.bearingSnapshot, let src = snap.sources.first(where: { $0.key == key }) {
-            BtrxScrollsWhenCapped { VStack(alignment: .leading, spacing: 3) {
+            VStack(alignment: .leading, spacing: 3) {
+            BtrxPopupHeader(onDismiss: onDismiss) {
                 HStack(spacing: 6) {
                     RoundedRectangle(cornerRadius: 3).fill(Color(rgb: src.rgb)).frame(width: 16, height: 16)
                     Text(BtrxBearingText.pinnedTitle).font(.headline)
                 }
+            }
+            BtrxScrollsWhenCapped { VStack(alignment: .leading, spacing: 3) {
                 ForEach(BtrxBearingText.inspectLines(src, nowUs: snap.tUs), id: \.self) { Text($0).font(.footnote) }
                 BtrxRestoreIgnoredButton(center: center)
                 HStack(spacing: 8) {
@@ -773,8 +797,9 @@ struct BtrxPinnedInspectCard: View {
                     BtrxIgnoreAllExceptButton(center: center, source: src)
                     Button(BtrxBearingText.close, action: onDismiss)
                 }
+            } }
             }
-            .padding(12) }
+            .padding(12)
             .frame(maxWidth: 420, alignment: .leading)
             .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
             .shadow(radius: 6)

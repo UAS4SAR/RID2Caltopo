@@ -919,6 +919,8 @@ public enum BtrxBearingText {
     public static let strongestHere = "strongest here"
     public static let pinnedTitle = "BTRX source located"
     public static let close = "Close"
+    /// The × at the top right of a map popup: hides the popup; focus and mutes stay as they are.
+    public static let dismiss = "Dismiss"
 
     /// Own-aircraft suggestion banner (Nov 17: one line; it was a three-line card over the map).
     public static func ownSuggestion(_ s: BtrxBearingSource) -> String { "\(s.shortID) (\(s.className)) on the drone?" }
