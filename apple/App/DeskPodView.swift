@@ -659,6 +659,8 @@ struct BtrxPopupLayout: Layout {
     var tapAt: CGPoint? = nil
     var bottomStart: CGSize? = nil
     var obstacle: CGRect?
+    /// Height of the map attribution strip at the bottom: popups stay above it (Ken, Nov 23).
+    var reservedBottom: CGFloat = 0
     var margin: CGFloat = 8
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
@@ -678,11 +680,14 @@ struct BtrxPopupLayout: Layout {
 
     private func plan(_ size: CGSize, _ popup: CGSize) -> BtrxPopupPlacement.Plan {
         let obs = obstacle.map { BtrxPopupPlacement.Box(left: $0.minX, top: $0.minY, right: $0.maxX, bottom: $0.maxY) }
+        let height = BtrxPopupPlacement.usableHeight(size.height, reservedBottom: reservedBottom)
         if let bottomStart {
-            return BtrxPopupPlacement.atBottomStart(width: size.width, height: size.height, popupW: popup.width, popupH: popup.height,
-                                                    left: bottomStart.width, bottom: bottomStart.height, obstacle: obs, margin: margin)
+            return BtrxPopupPlacement.atBottomStart(width: size.width, height: height, popupW: popup.width, popupH: popup.height,
+                                                    left: bottomStart.width,
+                                                    bottom: BtrxPopupPlacement.bottomAboveReserved(bottomStart.height, reservedBottom: reservedBottom),
+                                                    obstacle: obs, margin: margin)
         }
-        return BtrxPopupPlacement.atPoint(width: size.width, height: size.height, popupW: popup.width, popupH: popup.height,
+        return BtrxPopupPlacement.atPoint(width: size.width, height: height, popupW: popup.width, popupH: popup.height,
                                           x: Double(tapAt?.x ?? 0), y: Double(tapAt?.y ?? 0), obstacle: obs, margin: margin)
     }
 }

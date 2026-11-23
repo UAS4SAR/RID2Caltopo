@@ -23,6 +23,16 @@ public enum BtrxPopupPlacement {
     /// The smallest height a popup is squeezed to above the obstacle before overlap is accepted.
     public static let minBand = 96.0
 
+    /// The map height a popup may use: everything above the attribution strip (Ken, Nov 23).
+    public static func usableHeight(_ height: Double, reservedBottom: Double) -> Double {
+        max(1, height - max(0, reservedBottom))
+    }
+
+    /// The inspect card's offset from the usable bottom, so it stays where it was when nothing is reserved.
+    public static func bottomAboveReserved(_ bottom: Double, reservedBottom: Double) -> Double {
+        max(0, bottom - max(0, reservedBottom))
+    }
+
     /// The tap panel: its top-left corner at the tap point, flipping left or up around it.
     public static func atPoint(width: Double, height: Double, popupW: Double, popupH: Double, x: Double, y: Double,
                                obstacle: Box?, margin: Double) -> Plan {

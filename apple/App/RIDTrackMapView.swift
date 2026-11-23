@@ -691,6 +691,8 @@ struct RIDTrackMapView: View {
     @State private var videoPipFrame: CGRect?
     /// Pinned-source inspect card (Nov 16): the tapped source key, nil = closed.
     @State private var btrxInspect: UInt64?
+    /// Main map attribution strip height: BTRX popups stay above it (Ken, Nov 23).
+    @State private var mapAttributionHeight: CGFloat = 0
     /// "Focus this source": handed to the map once (zoom).
     @State private var btrxFocusRequest: BtrxFocusRequest?
     @State private var showDeskPodFromMap = false
@@ -1596,6 +1598,8 @@ struct RIDTrackMapView: View {
                 },
                 btrx: btrxCenter,
                 onSelectBtrx: inset ? nil : { point, keys in btrxInspect = nil; btrxPanel = BtrxBearingPanelRequest(point: point, keys: keys) },
+                btrxPopupOpen: !inset && (btrxPanel != nil || btrxInspect != nil),
+                onDismissBtrxPopup: inset ? nil : { btrxPanel = nil; btrxInspect = nil },
                 onDeskPodDoubleTap: inset ? nil : { showDeskPodFromMap = true },
                 onPinnedBtrx: inset ? nil : { key in btrxPanel = nil; btrxInspect = key },
                 btrxFocusRequest: inset ? nil : btrxFocusRequest,
@@ -1614,7 +1618,7 @@ struct RIDTrackMapView: View {
             .overlay {
                 if !inset, let request = btrxPanel, let btrxCenter {
                     GeometryReader { g in
-                        BtrxPopupLayout(tapAt: request.point, obstacle: btrxPipObstacle(in: g)) {
+                        BtrxPopupLayout(tapAt: request.point, obstacle: btrxPipObstacle(in: g), reservedBottom: mapAttributionHeight) {
                             BtrxBearingPanel(center: btrxCenter, rows: request.keys, onDismiss: { btrxPanel = nil },
                                              onFocus: { src in btrxPanel = nil; btrxFocusRequest = BtrxFocusRequest(source: src) })
                         }
@@ -1626,7 +1630,7 @@ struct RIDTrackMapView: View {
             .overlay {
                 if !inset, let key = btrxInspect, let btrxCenter {
                     GeometryReader { g in
-                        BtrxPopupLayout(bottomStart: CGSize(width: 8, height: 72), obstacle: btrxPipObstacle(in: g)) {
+                        BtrxPopupLayout(bottomStart: CGSize(width: 8, height: 72), obstacle: btrxPipObstacle(in: g), reservedBottom: mapAttributionHeight) {
                             BtrxPinnedInspectCard(center: btrxCenter, key: key,
                                                   onFocus: { src in btrxFocusRequest = BtrxFocusRequest(source: src) },
                                                   onDismiss: { btrxInspect = nil })
@@ -1648,7 +1652,9 @@ struct RIDTrackMapView: View {
             }
             // Only map-content taps expand a split pane. Settings controls must
             // not also change the layout and destroy their presenting view.
-            .simultaneousGesture(TapGesture().onEnded { onMapTap?() }, including: onMapTap == nil ? .none : .all)
+            // A tap that closes a BTRX popup does nothing else (Ken, Nov 23).
+            .simultaneousGesture(TapGesture().onEnded { if btrxPanel == nil && btrxInspect == nil { onMapTap?() } },
+                                 including: onMapTap == nil ? .none : .all)
             Group {
                 if baseLayer == .imagery {
                     VStack(alignment: .leading, spacing: 1) {
@@ -1671,6 +1677,9 @@ struct RIDTrackMapView: View {
                 .padding(.vertical, 3)
                 .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 4))
                 .padding(5)
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
+                    if !inset { mapAttributionHeight = height }
+                }
                 .task(id: baseLayer == .imagery ? imageryViewports[inset] : nil) {
                     guard baseLayer == .imagery, let region = imageryViewports[inset] else { return }
                     do { try await Task.sleep(for: .milliseconds(180)) } catch { return }
@@ -4901,6 +4910,9 @@ private struct OperationalMKMapView: UIViewRepresentable {
     /// BTRX bearing layer (Developer Tools); nil without a Desk Pod center.
     var btrx: BtrxDeskPodCenter? = nil
     var onSelectBtrx: ((CGPoint, [UInt64]) -> Void)? = nil
+    /// A BTRX popup is open: the next map tap only closes it.
+    var btrxPopupOpen = false
+    var onDismissBtrxPopup: (() -> Void)? = nil
     var onDeskPodDoubleTap: (() -> Void)? = nil
     var onPinnedBtrx: ((UInt64) -> Void)? = nil
     var btrxFocusRequest: BtrxFocusRequest? = nil
@@ -4982,6 +4994,8 @@ private struct OperationalMKMapView: UIViewRepresentable {
         context.coordinator.onAttributionViewportChanged = onAttributionViewportChanged
         defer {
             context.coordinator.btrxMap.onSelect = onSelectBtrx
+            context.coordinator.btrxMap.popupOpen = btrxPopupOpen
+            context.coordinator.btrxMap.onDismissPopup = onDismissBtrxPopup
             context.coordinator.btrxMap.onPinned = onPinnedBtrx
             context.coordinator.btrxMap.onDeskPodDoubleTap = onDeskPodDoubleTap
             context.coordinator.btrxMap.attach(btrx, map: map, inset: inset)
@@ -6458,6 +6472,8 @@ private struct OperationalMKMapView: UIViewRepresentable {
                   !currentInset,
                   let map = gesture.view as? MKMapView
             else { return }
+            // A tap that closes a BTRX popup opens nothing else (Ken, Nov 23).
+            if btrxMap.popupOpen { return }
             let location = gesture.location(in: map)
             if annotationHit(at: location, in: map) {
                 return
@@ -7920,6 +7936,9 @@ final class BtrxBearingMapController: NSObject, UIGestureRecognizerDelegate {
     private var inset = false
     private var fadeTimer: Timer?
     var onSelect: ((CGPoint, [UInt64]) -> Void)?
+    /// A BTRX popup is open: a map tap only closes it, never re-opens one (Ken, Nov 23).
+    var popupOpen = false
+    var onDismissPopup: (() -> Void)?
     /// Tap on a pinned-source marker: the inspect card (Nov 16).
     var onPinned: ((UInt64) -> Void)?
     /// The inspected source; the camera crosshair measures to it, else to the focused one.
@@ -8088,6 +8107,7 @@ final class BtrxBearingMapController: NSObject, UIGestureRecognizerDelegate {
 
     @objc private func handleTap(_ gesture: UITapGestureRecognizer) {
         guard gesture.state == .ended, let map = gesture.view as? MKMapView else { return }
+        if popupOpen { onDismissPopup?(); return }
         let location = gesture.location(in: map)
         if annotationHit?(location, map) == true { return }
         if !inset, let renderer {

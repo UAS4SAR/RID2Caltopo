@@ -200,6 +200,8 @@ fun BtrxPopupHost(
     modifier: Modifier = Modifier,
     tapAt: androidx.compose.ui.unit.IntOffset? = null,
     bottomStart: Pair<androidx.compose.ui.unit.Dp, androidx.compose.ui.unit.Dp>? = null,
+    /** Top of the map attribution strip in root coordinates: popups stay above it (Ken, Nov 23). */
+    keepAboveInRoot: Float? = null,
     content: @Composable () -> Unit,
 ) {
     var origin by remember { mutableStateOf(androidx.compose.ui.geometry.Offset.Zero) }
@@ -208,16 +210,18 @@ fun BtrxPopupHost(
         modifier.fillMaxSize().onGloballyPositioned { origin = it.positionInRoot() },
     ) { measurables, c ->
         val w = c.maxWidth
-        val h = c.maxHeight
+        val fullH = c.maxHeight
         val child = measurables.firstOrNull()
         if (child == null || !c.hasBoundedWidth || !c.hasBoundedHeight) {
             val p = child?.measure(c.copy(minWidth = 0, minHeight = 0))
             return@Layout layout(c.minWidth, c.minHeight) { p?.place(tapAt ?: androidx.compose.ui.unit.IntOffset.Zero) }
         }
+        val reserved = keepAboveInRoot?.let { origin.y + fullH - it } ?: 0f
+        val h = BtrxPopupPlacement.usableHeight(fullH.toFloat(), reserved).roundToInt()
         val m = 8.dp.toPx()
         val obs = obstacleInRoot?.let { BtrxPopupPlacement.Box(it.left - origin.x, it.top - origin.y, it.right - origin.x, it.bottom - origin.y) }
         fun plan(pw: Float, ph: Float): BtrxPopupPlacement.Plan =
-            if (bottomStart != null) BtrxPopupPlacement.atBottomStart(w.toFloat(), h.toFloat(), pw, ph, bottomStart.first.toPx(), bottomStart.second.toPx(), obs, m)
+            if (bottomStart != null) BtrxPopupPlacement.atBottomStart(w.toFloat(), h.toFloat(), pw, ph, bottomStart.first.toPx(), BtrxPopupPlacement.bottomAboveReserved(bottomStart.second.toPx(), reserved), obs, m)
             else BtrxPopupPlacement.atPoint(w.toFloat(), h.toFloat(), pw, ph, (tapAt?.x ?: 0).toFloat(), (tapAt?.y ?: 0).toFloat(), obs, m)
         val maxW = (w - 2 * m).toInt().coerceAtLeast(1)
         // Natural size first (intrinsics), so a popup squeezed above the PiP is measured at the capped height.
@@ -228,7 +232,7 @@ fun BtrxPopupHost(
         val cap = natural?.let { plan(it.first.toFloat(), it.second.toFloat()).maxHeight } ?: (h - 2 * m)
         val p = child.measure(androidx.compose.ui.unit.Constraints(maxWidth = maxW, maxHeight = cap.toInt().coerceIn(1, h)))
         val fin = plan(p.width.toFloat(), p.height.toFloat())
-        layout(w, h) { p.place(fin.x.roundToInt(), fin.y.roundToInt()) }
+        layout(w, fullH) { p.place(fin.x.roundToInt(), fin.y.roundToInt()) }
     }
 }
 

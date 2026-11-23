@@ -352,3 +352,25 @@ class BtrxBearingMapOverlay(
         }
     }
 }
+
+/**
+ * While a BTRX popup is open, a single tap anywhere on the map only closes it (Ken, Nov 23
+ * field test: tapping the map beside the panel re-opened it at the new spot instead). Added
+ * as the last overlay, so osmdroid offers it the tap before the bearing layer, the markers
+ * and the tap overlay. Pans, flings, pinches and double taps are untouched.
+ */
+class BtrxPopupDismissOverlay(
+    private val popupOpen: () -> Boolean,
+    private val dismiss: () -> Unit,
+) : Overlay() {
+    /** True when the tap was used to close a popup. */
+    fun consumeTap(): Boolean {
+        if (!popupOpen()) return false
+        dismiss()
+        return true
+    }
+
+    override fun onSingleTapConfirmed(e: MotionEvent, mapView: MapView): Boolean = consumeTap()
+
+    override fun draw(c: Canvas, mapView: MapView, shadow: Boolean) {}
+}

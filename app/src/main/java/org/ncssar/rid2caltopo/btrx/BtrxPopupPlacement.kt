@@ -57,6 +57,12 @@ object BtrxPopupPlacement {
         return Plan(cx(x0), cy(y0), cap, false, 10)
     }
 
+    /** The map height a popup may use: everything above the attribution strip (Ken, Nov 23). */
+    fun usableHeight(height: Float, reservedBottom: Float): Float = max(1f, height - max(0f, reservedBottom))
+
+    /** The inspect card's offset from the usable bottom, so it stays where it was when nothing is reserved. */
+    fun bottomAboveReserved(bottom: Float, reservedBottom: Float): Float = max(0f, bottom - max(0f, reservedBottom))
+
     fun overlaps(a: Box, b: Box, margin: Float): Boolean =
         a.left < b.right + margin && a.right > b.left - margin && a.top < b.bottom + margin && a.bottom > b.top - margin
 }

@@ -98,7 +98,9 @@ import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
@@ -970,6 +972,24 @@ internal fun SplitMapPane(
     var btrxPanel by remember { mutableStateOf<Pair<List<Long>, androidx.compose.ui.unit.IntOffset>?>(null) }
     // Pinned-source inspect card (Nov 16): the tapped source key, null = closed.
     var btrxInspect by remember { mutableStateOf<Long?>(null) }
+    // Top of the attribution strip (root coordinates): BTRX popups stay above it (Ken, Nov 23).
+    var btrxAttributionTopInRoot by remember { mutableStateOf<Float?>(null) }
+    val closeBtrxPopups: () -> Boolean = {
+        val open = btrxPanel != null || btrxInspect != null
+        btrxPanel = null
+        btrxInspect = null
+        open
+    }
+    // Back closes an open BTRX popup instead of offering Quit (Ken, Nov 23 field test).
+    androidx.activity.compose.BackHandler(enabled = btrxPanel != null || btrxInspect != null) { closeBtrxPopups() }
+    DisposableEffect(Unit) {
+        val registration = org.ncssar.rid2caltopo.ui.BtrxPopupBack.register { closeBtrxPopups() }
+        onDispose { registration.close() }
+    }
+    // While a popup is open a map tap only closes it: no new panel, no marker or checkbox changes.
+    val btrxPopupDismissOverlay = remember {
+        BtrxPopupDismissOverlay(popupOpen = { btrxPanel != null || btrxInspect != null }, dismiss = { closeBtrxPopups() })
+    }
     val btrxOverlay = remember {
         BtrxBearingMapOverlay(
             density = context.resources.displayMetrics.density,
@@ -4560,6 +4580,11 @@ internal fun SplitMapPane(
                     mapView.overlays.add(labelOverlay)
                     managedOverlays.add(labelOverlay)
                 }
+                // Last, so osmdroid offers it every single tap first.
+                if (btrxBearingOn && !isInsetMode) {
+                    mapView.overlays.add(btrxPopupDismissOverlay)
+                    managedOverlays.add(btrxPopupDismissOverlay)
+                }
 
                 val limitAglM = AGL_LIMIT_FT * FT_TO_METERS
                 val limitRangeM = RANGE_LIMIT_FT * FT_TO_METERS
@@ -4991,7 +5016,7 @@ internal fun SplitMapPane(
         // Popups stay on the map and clear of the stream PiP (Ken, Nov 20 A5 test).
         val btrxPipObstacle = if (isInsetMode) null else LocalStreamPipBoundsInRoot.current?.value
         btrxPanel?.let { (keys, at) ->
-            org.ncssar.rid2caltopo.ui.BtrxPopupHost(obstacleInRoot = btrxPipObstacle, tapAt = at) {
+            org.ncssar.rid2caltopo.ui.BtrxPopupHost(obstacleInRoot = btrxPipObstacle, tapAt = at, keepAboveInRoot = btrxAttributionTopInRoot) {
                 org.ncssar.rid2caltopo.ui.BtrxBearingPanel(
                     rows = keys,
                     onDismiss = { btrxPanel = null },
@@ -5001,7 +5026,7 @@ internal fun SplitMapPane(
         }
         if (btrxBearingOn && !isInsetMode) {
             btrxInspect?.let { key ->
-                org.ncssar.rid2caltopo.ui.BtrxPopupHost(obstacleInRoot = btrxPipObstacle, bottomStart = 8.dp to 72.dp) {
+                org.ncssar.rid2caltopo.ui.BtrxPopupHost(obstacleInRoot = btrxPipObstacle, bottomStart = 8.dp to 72.dp, keepAboveInRoot = btrxAttributionTopInRoot) {
                     org.ncssar.rid2caltopo.ui.BtrxPinnedInspectCard(
                         key = key,
                         onFocus = btrxFocus,
@@ -5767,6 +5792,7 @@ internal fun SplitMapPane(
         Column(
             modifier = Modifier.align(Alignment.BottomStart).fillMaxWidth()
                 .then(if (isInsetMode) Modifier else Modifier.navigationBarsPadding())
+                .onGloballyPositioned { if (!isInsetMode) btrxAttributionTopInRoot = it.positionInRoot().y }
                 .padding(if (isInsetMode) 3.dp else 6.dp)
                 .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.80f))
                 .padding(horizontal = 4.dp, vertical = 2.dp)

@@ -1649,6 +1649,8 @@ class R2CActivity :
                     .activeScreen
                     .collectAsState()
                 BackHandler(enabled = pendingAppExitSource == null && !waitingForSystemUnlock && mappingJob?.active != true) {
+                    // An open BTRX map popup closes first (Ken, Nov 23); Quit is only offered after.
+                    if (org.ncssar.rid2caltopo.ui.BtrxPopupBack.closeOpenPopup()) return@BackHandler
                     when (appBackAction(activeScreen)) {
                         AppBackAction.REQUEST_EXIT_CONFIRMATION ->
                             requestAppExit(AppExitRequestSource.SYSTEM_BACK)
