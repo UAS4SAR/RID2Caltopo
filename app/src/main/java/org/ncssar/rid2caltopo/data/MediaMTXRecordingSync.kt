@@ -7,7 +7,6 @@ import android.media.MediaFormat
 import android.media.MediaMuxer
 import androidx.documentfile.provider.DocumentFile
 import java.io.File
-import java.io.FileInputStream
 import java.nio.ByteBuffer
 import java.text.SimpleDateFormat
 import java.time.DateTimeException
@@ -247,7 +246,7 @@ object MediaMTXRecordingSync {
                         resolver = context.contentResolver,
                         sourceFile = mergedFile,
                         targetDir = targetDir,
-                        targetName = availableTargetName(targetDir, preferredName),
+                        preferredName = preferredName,
                     )
                 } else {
                     CaltopoClient.CTWarn(
@@ -576,22 +575,52 @@ object MediaMTXRecordingSync {
         resolver: ContentResolver,
         sourceFile: File,
         targetDir: DocumentFile,
-        targetName: String = sourceFile.name,
+        preferredName: String,
     ) {
-        val existing = targetDir.findFile(targetName)
-        val target = existing ?: targetDir.createFile(mimeTypeFor(targetName), targetName)
-        if (target == null) {
-            throw IllegalStateException("Unable to create recording file '$targetName'")
+        val appContext = org.ncssar.rid2caltopo.app.R2CApplication.getAppCtxt()
+        val folder = DocumentArchiveFolder(resolver, targetDir)
+        val result = RecordingArchiveCopy.copy(
+            source = sourceFile,
+            folder = folder,
+            preferredName = preferredName,
+            availableName = { availableTargetName(targetDir, it) },
+            beforeWrite = { bytes -> appContext?.let { org.ncssar.rid2caltopo.app.FlightStorage.prepareWrite(it, bytes) } },
+        )
+        when (result.placement) {
+            RecordingArchiveCopy.Placement.ALREADY_COMPLETE ->
+                CaltopoClient.CTInfo(TAG, "Recording already in the archive file=${result.name} bytes=${sourceFile.length()}")
+            RecordingArchiveCopy.Placement.REPLACE_SHORTER ->
+                CaltopoClient.CTWarn(TAG, "Replaced an incomplete archive copy file=${result.name} bytes=${result.bytesCopied}")
+            else ->
+                CaltopoClient.CTDebug(TAG, "Copied recording to the archive file=${result.name} bytes=${result.bytesCopied}")
         }
+        if (result.placement != RecordingArchiveCopy.Placement.NEW_NAME && result.name != preferredName) {
+            CaltopoClient.CTWarn(TAG, "Archive renamed the recording to ${result.name} instead of $preferredName")
+        }
+        val document = folder.renamed ?: targetDir.findFile(result.name)
+        if (appContext != null && document != null) {
+            org.ncssar.rid2caltopo.app.FlightStorage.documentChanged(appContext, document)
+        }
+    }
 
-        org.ncssar.rid2caltopo.app.R2CApplication.getAppCtxt()?.let { org.ncssar.rid2caltopo.app.FlightStorage.prepareWrite(it, sourceFile.length()) }
-        FileInputStream(sourceFile).use { input ->
-            resolver.openOutputStream(target.uri, "w")?.use { output ->
-                input.copyTo(output)
-            } ?: throw IllegalStateException("Unable to open output stream for '$targetName'")
-        }
-        org.ncssar.rid2caltopo.app.R2CApplication.getAppCtxt()?.let { context ->
-            org.ncssar.rid2caltopo.app.FlightStorage.documentChanged(context, target)
+    /** The track archive folder (Storage Access Framework) as a [RecordingArchiveFolder]. */
+    private class DocumentArchiveFolder(
+        private val resolver: ContentResolver,
+        private val dir: DocumentFile,
+    ) : RecordingArchiveFolder {
+        var renamed: DocumentFile? = null
+            private set
+
+        override fun length(name: String): Long? = dir.findFile(name)?.takeIf { it.isFile }?.length()
+        // octet-stream keeps the hidden partial name exactly as given.
+        override fun create(name: String): Boolean = dir.createFile("application/octet-stream", name) != null
+        override fun openOutput(name: String) = dir.findFile(name)?.let { resolver.openOutputStream(it.uri, "w") }
+        override fun delete(name: String): Boolean = dir.findFile(name)?.delete() ?: true
+        override fun rename(from: String, to: String): String? {
+            val document = dir.findFile(from) ?: return null
+            if (!document.renameTo(to)) return null
+            renamed = document
+            return document.name ?: to
         }
     }
 

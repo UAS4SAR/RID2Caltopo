@@ -530,6 +530,25 @@ private fun ConfirmAppExitDialog(
     )
 }
 
+/** Shown after Close is confirmed while a recording is still being saved. */
+@Composable
+private fun SavingVideoBeforeQuitDialog(onCloseNow: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = {},
+        properties = DialogProperties(
+            dismissOnBackPress = false,
+            dismissOnClickOutside = false,
+        ),
+        title = { Text(RecordingQuitPolicy.SAVING_TITLE) },
+        text = { Text(RecordingQuitPolicy.SAVING_MESSAGE) },
+        confirmButton = {
+            TextButton(onClick = onCloseNow) {
+                Text(RecordingQuitPolicy.CLOSE_NOW)
+            }
+        },
+    )
+}
+
 @Composable
 private fun BluetoothDisabledDialog(
     onOpenBluetoothSettings: () -> Unit,
@@ -1409,6 +1428,9 @@ class R2CActivity :
         // the process after Quit. Rotation/restoration preserves the current session.
         if (savedInstanceState == null) {
             org.opendroneid.android.bluetooth.DroneScoutBridgeMonitor.setAudioMuted(false)
+            // Recordings an earlier run left half-finished (frozen or killed mid-copy) are
+            // finished at every launch, not only when the video relay starts.
+            MediaMTXService.RecoverLeftoverRecordingsAtAppStart(applicationContext)
         }
         // Developer location simulation is deliberately process/task scoped.
         // Android can retain this process after the task is dismissed, so a
@@ -1525,18 +1547,33 @@ class R2CActivity :
                         null,
                     )
                 }
-                val confirmAppExit = {
-                    val source = pendingAppExitSource
-                    pendingAppExitSource = null
+                var savingVideoBeforeQuit by remember { mutableStateOf(false) }
+                val quitNow: (String) -> Unit = { reason ->
+                    savingVideoBeforeQuit = false
                     // Request Activity removal before archive logging. A stalled SAF-backed
                     // diagnostic stream must never prevent the operator from closing the app.
                     CaltopoClient.QuitApplication()
-                    CaltopoClient.CTEventAsync(
-                        TAG,
-                        "QuitConfirmed source=${source?.logValue ?: "unknown"}",
-                        null,
-                    )
+                    CaltopoClient.CTEventAsync(TAG, reason, null)
                 }
+                val confirmAppExit = {
+                    val source = pendingAppExitSource
+                    pendingAppExitSource = null
+                    val confirmed = "QuitConfirmed source=${source?.logValue ?: "unknown"}"
+                    if (savingVideoBeforeQuit) {
+                        Unit
+                    } else if (MediaMTXService.NeedsToFinishRecordingsBeforeQuit()) {
+                        // Keep the activity and the relay's foreground service alive until the
+                        // recording is remuxed and copied; Android freezes a cached app mid-copy.
+                        savingVideoBeforeQuit = true
+                        CaltopoClient.CTEventAsync(TAG, "$confirmed; saving video first", null)
+                        MediaMTXService.FinishRecordingsBeforeQuit(applicationContext) {
+                            if (savingVideoBeforeQuit) quitNow("QuitAfterVideoSaved")
+                        }
+                    } else {
+                        quitNow(confirmed)
+                    }
+                }
+                val closeBeforeVideoSaved = { quitNow("QuitBeforeVideoSaved (finished at next launch)") }
                 if (!launchDisclaimerAccepted) {
                     LaunchDisclaimerScreen(
                         onAgree = ::acceptLaunchDisclaimer,
@@ -1551,6 +1588,9 @@ class R2CActivity :
                             onCancel = cancelAppExit,
                             onConfirm = confirmAppExit,
                         )
+                    }
+                    if (savingVideoBeforeQuit) {
+                        SavingVideoBeforeQuitDialog(onCloseNow = closeBeforeVideoSaved)
                     }
                     return@content
                 }
@@ -2066,6 +2106,9 @@ class R2CActivity :
                         onCancel = cancelAppExit,
                         onConfirm = confirmAppExit,
                     )
+                }
+                if (savingVideoBeforeQuit) {
+                    SavingVideoBeforeQuitDialog(onCloseNow = closeBeforeVideoSaved)
                 }
                 }
                 // Outside adaptive map/video composition, after all ordinary dialogs, behind the access gate.

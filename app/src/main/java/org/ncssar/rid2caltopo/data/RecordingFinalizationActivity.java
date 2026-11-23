@@ -23,6 +23,11 @@ public final class RecordingFinalizationActivity {
         return false;
     }
 
+    /** True while any recording is being finalized or is queued to be. */
+    public synchronized boolean isAnyActive() {
+        return !pending.isEmpty();
+    }
+
     private static String normalize(String value) {
         String trimmed = value == null ? "" : value.trim().toLowerCase(Locale.ROOT);
         return trimmed.substring(trimmed.lastIndexOf('/') + 1);

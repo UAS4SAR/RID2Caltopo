@@ -133,6 +133,56 @@ public enum LeftoverRecordingRecovery {
         if !sawMedia { return .noMediaData }
         return .playable
     }
+
+    /// True when the top-level boxes end exactly at the end of the file and a whole `moov`
+    /// is present. A copy cut off mid-write fails this even when its `moov` comes first.
+    public static func isComplete(_ url: URL) -> Bool {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return false }
+        defer { try? handle.close() }
+        guard let length = try? handle.seekToEnd(), length >= 16 else { return false }
+        var offset: UInt64 = 0
+        var sawMovie = false
+        while offset + 8 <= length {
+            guard (try? handle.seek(toOffset: offset)) != nil,
+                  let header = try? handle.read(upToCount: 16), header.count >= 8 else { return false }
+            var size = UInt64(header[0]) << 24 | UInt64(header[1]) << 16 | UInt64(header[2]) << 8 | UInt64(header[3])
+            var headerSize: UInt64 = 8
+            if size == 1 {
+                guard header.count >= 16 else { return false }
+                size = header[8..<16].reduce(UInt64(0)) { $0 << 8 | UInt64($1) }
+                headerSize = 16
+            } else if size == 0 {
+                size = length - offset
+            }
+            guard size >= headerSize, offset + size <= length else { return false }
+            if String(decoding: header[4..<8], as: UTF8.self) == "moov" { sawMovie = true }
+            offset += size
+        }
+        return offset == length && sawMovie
+    }
+
+    /// Where a completed or recovered recording goes in its local-day folder.
+    public enum Destination: Equatable, Sendable {
+        /// Nothing usable has the name (or it is another recording: a "-2" style name).
+        case new(URL)
+        /// A shorter, incomplete file has the name: a copy that was cut off. It is replaced
+        /// rather than leaving it beside a "-2" copy (Android parity, 2026-11-23).
+        case replaceIncomplete(URL)
+    }
+
+    public static func destination(
+        preferred: URL,
+        sourceSize: Int64,
+        fileExists: (String) -> Bool,
+        size: (URL) -> Int64?,
+        isComplete: (URL) -> Bool
+    ) -> Destination {
+        guard fileExists(preferred.path) else { return .new(preferred) }
+        if let existing = size(preferred), existing < sourceSize, !isComplete(preferred) {
+            return .replaceIncomplete(preferred)
+        }
+        return .new(ManagedVideoRecordingIdentity.availableRecordingURL(preferred: preferred, fileExists: fileExists))
+    }
 }
 
 /// Remembers leftovers that could not be recovered so each launch does not retry the

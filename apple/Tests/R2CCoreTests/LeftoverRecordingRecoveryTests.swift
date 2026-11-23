@@ -155,4 +155,64 @@ struct LeftoverRecordingRecoveryTests {
         let names = LeftoverRecordingRecovery.candidates(root: root, notTouchedSince: Date()).map(\.url.lastPathComponent)
         #expect(names == ["p_2026-11-13_01-40-13-393436.mp4", "p_2026-11-13_01-43-28-695232.mp4"])
     }
+
+    // Field 2026-11-23 (Android): a copy cut off at 44 MB of 1.1 GB kept the final name.
+    private func faststart(truncateTail: Int = 0) -> Data {
+        var data = box("ftyp", payload: 16) + box("moov", payload: 64) + box("mdat", payload: 4096)
+        if truncateTail > 0 { data.removeLast(truncateTail) }
+        return data
+    }
+
+    @Test func completenessRequiresBoxesToEndAtTheEndOfTheFile() throws {
+        let root = try tempRoot()
+        let now = Date()
+        #expect(LeftoverRecordingRecovery.isComplete(try write(root, "a.mp4", faststart(), modified: now)))
+        #expect(LeftoverRecordingRecovery.isComplete(try write(root, "b.mp4", fmp4(), modified: now)))
+        // moov first but the media cut off: playable header, yet not a complete copy.
+        let cut = try write(root, "c.mp4", faststart(truncateTail: 1000), modified: now)
+        #expect(LeftoverRecordingRecovery.checkHeader(cut) == .playable)
+        #expect(!LeftoverRecordingRecovery.isComplete(cut))
+        #expect(!LeftoverRecordingRecovery.isComplete(try write(root, "d.mp4", fmp4(truncateTail: 10), modified: now)))
+        #expect(!LeftoverRecordingRecovery.isComplete(try write(root, "e.mp4", fmp4(moov: false), modified: now)))
+    }
+
+    @Test func shorterIncompleteFileIsReplacedInsteadOfAddingADashTwoName() throws {
+        let root = try tempRoot()
+        let now = Date()
+        let preferred = try write(root, "day/x/x_23Nov2026_131404_PST.mp4", faststart(truncateTail: 2000), modified: now)
+        let destination = LeftoverRecordingRecovery.destination(
+            preferred: preferred,
+            sourceSize: Int64(faststart().count),
+            fileExists: FileManager.default.fileExists(atPath:),
+            size: { url in (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize.map(Int64.init) },
+            isComplete: LeftoverRecordingRecovery.isComplete
+        )
+        #expect(destination == .replaceIncomplete(preferred))
+    }
+
+    @Test func completeOrLongerFileKeepsItsNameAndTheNewOneGetsADashName() throws {
+        let root = try tempRoot()
+        let now = Date()
+        let size: (URL) -> Int64? = { url in (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize.map(Int64.init) }
+        // Complete but smaller (normalized output is often smaller than the raw fMP4).
+        let complete = try write(root, "day/x/x_1.mp4", faststart(), modified: now)
+        #expect(LeftoverRecordingRecovery.destination(
+            preferred: complete, sourceSize: 1_000_000,
+            fileExists: FileManager.default.fileExists(atPath:), size: size,
+            isComplete: LeftoverRecordingRecovery.isComplete
+        ) == .new(root.appendingPathComponent("day/x/x_1-2.mp4")))
+        // Incomplete but not shorter: another recording, never replaced.
+        let longer = try write(root, "day/x/x_2.mp4", faststart(truncateTail: 10), modified: now)
+        #expect(LeftoverRecordingRecovery.destination(
+            preferred: longer, sourceSize: 100,
+            fileExists: FileManager.default.fileExists(atPath:), size: size,
+            isComplete: LeftoverRecordingRecovery.isComplete
+        ) == .new(root.appendingPathComponent("day/x/x_2-2.mp4")))
+        let fresh = root.appendingPathComponent("day/x/x_3.mp4")
+        #expect(LeftoverRecordingRecovery.destination(
+            preferred: fresh, sourceSize: 100,
+            fileExists: FileManager.default.fileExists(atPath:), size: size,
+            isComplete: LeftoverRecordingRecovery.isComplete
+        ) == .new(fresh))
+    }
 }

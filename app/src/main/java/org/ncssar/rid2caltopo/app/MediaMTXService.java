@@ -118,6 +118,124 @@ public class MediaMTXService extends Service {
 
     public static boolean IsRunning() { return serviceRunning; }
 
+    /** The live service, so Quit can finish recordings while it is still in the foreground. */
+    private static volatile MediaMTXService activeInstance;
+    /** Set once Quit asked for recordings to be finished: the server must not start again. */
+    private boolean finishingForQuit = false;
+    private static final long QUIT_FINALIZATION_POLL_MS = 250L;
+
+    /**
+     * Quit must wait while a recording can still be finishing: the native server holds an open
+     * segment (only closed when it stops) or a completed segment is being remuxed and copied.
+     * Field 2026-11-23: quitting 11 s into a 1.1 GB copy let Android freeze the app mid-copy.
+     */
+    public static boolean NeedsToFinishRecordingsBeforeQuit() {
+        return RecordingQuitPolicy.mustFinishBeforeQuit(
+                activeInstance != null,
+                CaltopoClient.GetCaptureVideoStreamsFlag(),
+                org.ncssar.rid2caltopo.data.RecordingFinalizationActivity.shared.isAnyActive());
+    }
+
+    /**
+     * Stops the media server (closing the open segment) and waits for every recording to be
+     * remuxed and copied while this service is still in the foreground and the activity is
+     * still on screen, then runs [onDone] on the main thread. Quit itself happens afterwards.
+     */
+    public static void FinishRecordingsBeforeQuit(Context context, Runnable onDone) {
+        final Context appContext = context.getApplicationContext();
+        final android.os.Handler main = new android.os.Handler(android.os.Looper.getMainLooper());
+        final Runnable finished = () -> main.post(onDone);
+        MediaMTXService service = activeInstance;
+        if (service == null || !service.finishRecordingsForQuit(appContext, finished)) {
+            new Thread(() -> {
+                awaitRecordingFinalization();
+                finished.run();
+            }, "recording-quit-wait").start();
+        }
+    }
+
+    private boolean finishRecordingsForQuit(Context appContext, Runnable finished) {
+        synchronized (nativeControlLock) {
+            if (serviceDestroying || nativeControlExecutor.isShutdown()) return false;
+            finishingForQuit = true;
+            pendingNativeControlAction = null;
+        }
+        CTInfo(TAG, "Quit requested: finishing recordings before stopping");
+        updateForegroundText("Saving video\u2026");
+        org.ncssar.rid2caltopo.video.StreamRegistry.onServerStopped();
+        recordingReconciler.onServerStopped();
+        nativeControlExecutor.execute(() -> {
+            try (org.ncssar.rid2caltopo.data.RecordingFinalizationActivity.Lease ignored =
+                         org.ncssar.rid2caltopo.data.RecordingFinalizationActivity.shared.begin("quit")) {
+                int pid = MediaMTXNative.currentPid();
+                MediaMTXNative.stop();
+                waitForNativeServerStop(pid);
+                guardedStorageJob("Recording sync before quit", () -> MediaMTXRecordingSync.syncAll(appContext, null)).run();
+            } finally {
+                awaitRecordingFinalization();
+                CTInfo(TAG, "Recordings finished; quitting");
+                finished.run();
+            }
+        });
+        return true;
+    }
+
+    /** Waits for queued and running recording syncs. Never call on the recording sync thread. */
+    static void awaitRecordingFinalization() {
+        // A completion reported while draining queues another sync, so drain until idle.
+        for (int round = 0; round < 10_000; round++) {
+            try {
+                recordingSyncExecutor.submit(() -> { }).get();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            } catch (java.util.concurrent.ExecutionException | java.util.concurrent.RejectedExecutionException e) {
+                return;
+            }
+            if (!org.ncssar.rid2caltopo.data.RecordingFinalizationActivity.shared.isAnyActive()) return;
+            try {
+                sleep(QUIT_FINALIZATION_POLL_MS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+        }
+    }
+
+    /**
+     * Every app start (not only a media server start) finishes recordings an earlier run left
+     * behind: staged segments are remuxed and copied again, and a shorter (cut-off) archive copy
+     * is replaced. Segments modified within the last 30 s may still be recording and are left.
+     */
+    public static void RecoverLeftoverRecordingsAtAppStart(Context context) {
+        final Context appContext = context.getApplicationContext();
+        final org.ncssar.rid2caltopo.data.RecordingFinalizationActivity.Lease recovering =
+                org.ncssar.rid2caltopo.data.RecordingFinalizationActivity.shared.begin("startup-recovery");
+        try {
+            recordingSyncExecutor.execute(guardedStorageJob("Leftover recording recovery at app start", () -> {
+                try {
+                    MediaMTXRecordingSync.syncSettledStagedRecordings(appContext);
+                } finally {
+                    recovering.close();
+                }
+            }));
+        } catch (RuntimeException error) {
+            recovering.close();
+            CaltopoClient.CTError(TAG, "Unable to queue leftover recording recovery", error);
+        }
+    }
+
+    private void updateForegroundText(String text) {
+        if (!foregroundStarted) return;
+        try {
+            NotificationManager manager = getSystemService(NotificationManager.class);
+            if (manager == null) return;
+            manager.notify(MEDIA_MTX_NOTIFICATION_ID, buildNotification(text));
+        } catch (RuntimeException e) {
+            CTDebug(TAG, "Notification update ignored: " + e.getMessage());
+        }
+    }
+
     public static int findNativeServerPid() {
         if (android.os.Looper.getMainLooper() != null
                 && android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) {
@@ -213,23 +331,31 @@ public class MediaMTXService extends Service {
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
         );
 
-        Notification notification = new NotificationCompat.Builder(this, CHANNEL_ID)
-                .setContentTitle("Drone Video Relay")
-                .setContentText("Streaming active")
-                .setSmallIcon(R.drawable.ic_notification_drone)
-                .setContentIntent(pendingIntent)
-                .setAutoCancel(false)
-                .setOngoing(true)
-                .build();
+        contentIntent = pendingIntent;
+        Notification notification = buildNotification("Streaming active");
 
         if (startForegroundSafely(notification)) {
             serviceRunning = true;
+            activeInstance = this;
         } else {
             serviceRunning = false;
             foregroundStartBlocked = true;
             MediaMTXStatus.onServerExited("foreground start blocked by Android");
             stopSelf();
         }
+    }
+
+    private PendingIntent contentIntent;
+
+    private Notification buildNotification(String text) {
+        return new NotificationCompat.Builder(this, CHANNEL_ID)
+                .setContentTitle("Drone Video Relay")
+                .setContentText(text)
+                .setSmallIcon(R.drawable.ic_notification_drone)
+                .setContentIntent(contentIntent)
+                .setAutoCancel(false)
+                .setOngoing(true)
+                .build();
     }
 
     private boolean settingsStopRequested;
@@ -327,6 +453,7 @@ public class MediaMTXService extends Service {
             pendingNativeControlAction = null;
         }
         serviceRunning = false;
+        if (activeInstance == this) activeInstance = null;
         foregroundStartBlocked = false;
         processPid = 0;
         stopForegroundSafely();
@@ -344,7 +471,7 @@ public class MediaMTXService extends Service {
 
     private void enqueueNativeControl(NativeControlAction requestedAction) {
         synchronized (nativeControlLock) {
-            if (serviceDestroying || nativeControlExecutor.isShutdown()) {
+            if (serviceDestroying || finishingForQuit || nativeControlExecutor.isShutdown()) {
                 CTInfo(TAG, "Ignoring " + requestedAction + " request while service is stopping.");
                 return;
             }
@@ -380,7 +507,7 @@ public class MediaMTXService extends Service {
         while (true) {
             final NativeControlAction action;
             synchronized (nativeControlLock) {
-                if (serviceDestroying || pendingNativeControlAction == null) {
+                if (serviceDestroying || finishingForQuit || pendingNativeControlAction == null) {
                     activeNativeControlAction = null;
                     nativeControlWorkerScheduled = false;
                     return;

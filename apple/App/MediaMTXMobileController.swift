@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import UIKit
 import Darwin
 import MediaMTXMobile
 import R2CCore
@@ -300,7 +301,9 @@ final class MediaMTXViewModel: ObservableObject {
     /// chain, so it never delays the UI, publishers or this run's own finalization.
     /// Matches Android's startup orphan sync (1c366086).
     private func scheduleLeftoverRecordingRecovery(cutoff: Date) {
+        let backgroundTime = AppleRecordingBackgroundTime(name: "Recover leftover recordings")
         leftoverRecovery.enqueue(priority: .background) { [weak self, storageControl] in
+            defer { Task { @MainActor in backgroundTime.end() } }
             let ledger = LeftoverRecordingFailureLedger()
             let found = LeftoverRecordingRecovery.candidates(
                 root: AppleFlightStorage.root,
@@ -375,7 +378,11 @@ final class MediaMTXViewModel: ObservableObject {
 
     private func enqueueRecordingFinalization(_ event: MediaServerEvent) {
         guard case let .recordFileCompleted(path, filePath, _) = event else { return }
+        // Started while the app is still active, so leaving the app cannot suspend the
+        // rename and conversion before they finish.
+        let backgroundTime = AppleRecordingBackgroundTime(name: "Save recording")
         recordingFinalization.enqueue(priority: .utility) { [weak self, controller, storageControl] in
+            defer { Task { @MainActor in backgroundTime.end() } }
             let storageOwner = "finalize-" + UUID().uuidString
             if let date = ManagedVideoRecordingIdentity.recordingStartedAt(forPath: filePath) {
                 await storageControl.perform { AppleFlightStorage.protect(AppleFlightStorage.dayName(date), owner: storageOwner) }
@@ -406,11 +413,24 @@ final class MediaMTXViewModel: ObservableObject {
             let localDay = AppleFlightStorage.root.appendingPathComponent(AppleFlightStorage.dayName(startedAt))
                 .appendingPathComponent(sourceURL.deletingLastPathComponent().lastPathComponent)
             try FileManager.default.createDirectory(at: localDay, withIntermediateDirectories: true)
-            let availableURL = ManagedVideoRecordingIdentity.availableRecordingURL(
+            let sourceSize = Int64((try? sourceURL.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0)
+            let destination = LeftoverRecordingRecovery.destination(
                 preferred: localDay.appendingPathComponent(localizedURL.lastPathComponent),
-                fileExists: FileManager.default.fileExists(atPath:)
+                sourceSize: sourceSize,
+                fileExists: FileManager.default.fileExists(atPath:),
+                size: { url in (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize.map(Int64.init) },
+                isComplete: LeftoverRecordingRecovery.isComplete
             )
-            try FileManager.default.moveItem(at: sourceURL, to: availableURL)
+            let availableURL: URL
+            switch destination {
+            case let .new(url):
+                availableURL = url
+                try FileManager.default.moveItem(at: sourceURL, to: availableURL)
+            case let .replaceIncomplete(url):
+                availableURL = url
+                _ = try FileManager.default.replaceItemAt(url, withItemAt: sourceURL, backupItemName: nil, options: [])
+                AppleLog.error("MediaMTX", "Replaced an incomplete recording with the same name file=\(url.lastPathComponent)")
+            }
             AppleLog.info(
                 "MediaMTX",
                 "Localized recording filename from=\(sourceURL.lastPathComponent) to=\(availableURL.lastPathComponent)"
@@ -744,4 +764,31 @@ final class AppleStreamsServerStatus: ObservableObject {
     static let shared = AppleStreamsServerStatus()
     @Published var version = "Unavailable"
     @Published var startedAt: Date?
+}
+
+/// Background time for recording work, so iOS does not suspend the app mid-rename or
+/// mid-conversion after it leaves the foreground (Android froze a 1.1 GB copy on
+/// 2026-11-23). Each step keeps the original until an atomic replace, so if the time runs
+/// out the work is only delayed until the app runs again.
+@MainActor
+final class AppleRecordingBackgroundTime {
+    private var identifier = UIBackgroundTaskIdentifier.invalid
+    private let name: String
+
+    init(name: String) {
+        self.name = name
+        identifier = UIApplication.shared.beginBackgroundTask(withName: name) { [weak self] in
+            // Must end before returning or iOS terminates the app.
+            MainActor.assumeIsolated {
+                if let self { AppleLog.error("MediaMTX", "Background time ran out: \(self.name)") }
+                self?.end()
+            }
+        }
+    }
+
+    func end() {
+        guard identifier != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(identifier)
+        identifier = .invalid
+    }
 }
