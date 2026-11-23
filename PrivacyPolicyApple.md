@@ -194,8 +194,8 @@ operator disables it, other devices on the reachable local network can access
 the media server's viewing interfaces without the tracker approval flow. This
 setting is separate from managed remote viewing authorization.
 
-Map-package exports contain permitted cached contour/terrain data, reconstructed
-mapping results and associated metadata, without credential profiles. Public OSM
+Map-package exports contain permitted cached USGS and USFS basemaps, contours,
+terrain data, reconstructed mapping results and associated metadata, without credential profiles. Public OSM
 and Esri basemap tiles are excluded. They are
 sent through the selected transfer/share workflow. Recipients can retain copies;
 map packages are not promised to be encrypted. Older packages with credential

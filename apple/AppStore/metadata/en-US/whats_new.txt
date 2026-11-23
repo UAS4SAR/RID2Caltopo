@@ -1,7 +1,2 @@
 Latest changes:
-- This device's location is used to place you on the map only while an app screen is visible.
-- The privacy policy explains how this device's location is used.
-- Turning off Capture Streams now asks first.
-- A short notice on the map shows when a live stream is not being recorded, with one tap to start recording.
-- Turning stream capture on or off no longer interrupts live video.
-- Flight storage problems no longer interrupt live video or repeat the same pop-up.
+- Map packages now include available USGS and USFS basemaps, contours, terrain, and obstacle data for the selected area.

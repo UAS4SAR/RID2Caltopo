@@ -19,6 +19,16 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import org.ncssar.rid2caltopo.data.MutualAidPackageShareSession
 import org.ncssar.rid2caltopo.ui.MutualAidPackageShareDialog
+import org.ncssar.rid2caltopo.video.mapcache.MapTileSourceRegistry
+
+internal val mapPackageTileLabels: List<String> =
+    MapTileSourceRegistry.offlineAllowedSources.map { it.label } + listOf("DEM", "AOL")
+
+internal fun mapPackageSources(selectedTiles: Set<String>) = offlinePrepTileSources(
+    includeUsgsScannedTopo = "USGS Scanned Topo" in selectedTiles,
+    includeUsfsTopo = "USFS Topo" in selectedTiles,
+    includeContours = "Contours" in selectedTiles,
+)
 
 @Composable
 internal fun MapPaneMutualAidDialogs(
@@ -47,7 +57,7 @@ internal fun MapPaneMutualAidDialogs(
                         fontSize = 12.sp
                     )
                     Spacer(Modifier.height(12.dp))
-                    (listOf("Contours", "DEM", "AOL") +
+                    (mapPackageTileLabels +
                         if (availableMappingLayers > 0) listOf("R2C Mapping layers") else emptyList()).forEach { tile ->
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Checkbox(checked = tile in selectedTiles, onCheckedChange = { checked ->

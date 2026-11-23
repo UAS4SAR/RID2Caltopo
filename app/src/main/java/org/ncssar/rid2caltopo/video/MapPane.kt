@@ -939,7 +939,7 @@ internal fun SplitMapPane(
         mapScaleBar.value = mapScaleBarState(distance[0].toDouble() / samplePx, samplePx.toDouble())
     }
 
-    var maPackageTiles by remember { mutableStateOf(setOf("Contours", "DEM", "AOL")) }
+    var maPackageTiles by remember { mutableStateOf(mapPackageTileLabels.toSet()) }
     val activeShareSession by MutualAidPackageTransferManager.shareSession.collectAsState()
     var preparingMutualAidShare by remember { mutableStateOf(false) }
     // Offline download concurrency is deliberately conservative for all suppliers.
@@ -1920,6 +1920,8 @@ internal fun SplitMapPane(
             CaltopoClient.ShowToast("Map package export needs visible map bounds.")
             return
         }
+        val selectedTiles = maPackageTiles.toSet()
+        val mappingLayers = displayedMappingLayers.toList()
         preparingMutualAidShare = true
         uiScope.launch(Dispatchers.IO) {
             val packageName = "Map_Package_${System.currentTimeMillis()}"
@@ -1927,12 +1929,10 @@ internal fun SplitMapPane(
                 context = context,
                 packageName = packageName,
                 bounds = prepBounds,
-                tileSources = buildList {
-                    if ("Contours" in maPackageTiles) add(UsgsContoursTileSource)
-                },
-                includeDem = "DEM" in maPackageTiles,
-                includeAol = "AOL" in maPackageTiles,
-                mappingLayers = if ("R2C Mapping layers" in maPackageTiles) displayedMappingLayers else emptyList(),
+                tileSources = mapPackageSources(selectedTiles),
+                includeDem = "DEM" in selectedTiles,
+                includeAol = "AOL" in selectedTiles,
+                mappingLayers = if ("R2C Mapping layers" in selectedTiles) mappingLayers else emptyList(),
             )
             val result = if (exportResult.first && exportResult.second != null) {
                 MutualAidPackageTransferManager.startShareSession(context, exportResult.second!!, packageName)
@@ -1947,7 +1947,7 @@ internal fun SplitMapPane(
     }
 
     fun openMutualAidPackageDialog() {
-        maPackageTiles = setOf("Imagery", "Contours", "DEM", "AOL") +
+        maPackageTiles = mapPackageTileLabels.toSet() +
             if (displayedMappingLayers.isNotEmpty()) setOf("R2C Mapping layers") else emptySet()
         showMutualAidPackageDialog = true
     }

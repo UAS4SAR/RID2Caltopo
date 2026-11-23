@@ -2,6 +2,11 @@ import Foundation
 
 /// Geographic overlap for cache export, independent of preparation presets.
 public enum MapPackageRegion {
+    /// The same source descriptors drive the export options and cache traversal.
+    public static func selectedSources(labels: Set<String>) -> [OperationalMapTileSourceDescriptor] {
+        OperationalMapTileSourceRegistry.offlineAllowedSources.filter { labels.contains($0.label) }
+    }
+
     public static func overlaps(_ a: OperationalMapBounds, _ b: OperationalMapBounds) -> Bool {
         guard a.north > b.south, a.south < b.north else { return false }
         func segments(_ v: OperationalMapBounds) -> [(Double, Double)] {

@@ -1,0 +1,2 @@
+Latest changes:
+- Map packages now include available USGS and USFS basemaps, contours, terrain, and obstacle data for the selected area.

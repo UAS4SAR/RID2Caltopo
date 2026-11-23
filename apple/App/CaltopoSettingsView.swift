@@ -822,7 +822,7 @@ private struct AppleDeveloperToolsView: View {
                     Label("Proximity Pairs", systemImage: "point.3.connected.trianglepath.dotted")
                 }
                 Toggle("Immediate ack retry (legacy)", isOn: $legacyImmediateAckRetry)
-                Text("Off is the default on iPhone, iPad, and Mac. A late hello_ack stays on the open socket for 30 seconds, then reconnects on the 2/4/8/10 second ladder. That ladder resets only after hello_ack. On closes at 10 seconds and redials immediately, which is the 2.5.8 Android retry storm. Websocket messages are unchanged.")
+                Text("Off is the default. A late hello_ack stays on the open socket for 30 seconds, then reconnects on the 2/4/8/10 second ladder. That ladder resets only after hello_ack. On closes at 10 seconds and redials immediately, which can cause a retry storm. Websocket messages are unchanged.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                 Toggle("Reconnect jitter", isOn: $reconnectJitterEnabled)

@@ -106,22 +106,19 @@ final class AppleConfigurationTransferManager: ObservableObject {
             var tileManifest: [[String: Any]] = []
             var mappingManifest: [[String: Any]] = []
             var mappingSurfaces: [[String: Any]] = []
-            let sources: [(label: String, key: String, ext: String, source: String)] = [
-                ("Contours", "usgsContours", "png", "USGS-Contours"),
-            ]
-            for selected in sources where selectedTiles.contains(selected.label) && OperationalMapTilePolicy.allowsPackageExport(source: selected.source) {
+            for selected in MapPackageRegion.selectedSources(labels: selectedTiles) where OperationalMapTilePolicy.allowsPackageExport(source: selected.id) {
                 let tiles = try MapPackageRegion.cachedTiles(
-                    root: AppleMapCachePaths.root.appendingPathComponent(selected.key),
-                    fileExtension: selected.ext, bounds: bounds)
+                    root: AppleMapCachePaths.root.appendingPathComponent(selected.cacheKey),
+                    fileExtension: selected.format, bounds: bounds)
                 for tile in tiles {
-                    let source = AppleMapCachePaths.tile(tile, layerKey: selected.key, fileExtension: selected.ext)
-                    guard let data = AppleMapCacheAccess.synchronized({ try? Data(contentsOf: source) }) else { continue }
+                    let source = AppleMapCachePaths.tile(tile, layerKey: selected.cacheKey, fileExtension: selected.format)
+                    let data = try Data(contentsOf: source)
                     guard data.count <= maximumPackageBytes - packageBytes else { throw TransferError.packageBytesTooLarge }
                     packageBytes += data.count
-                    let path = "tiles/\(selected.source.lowercased())/\(tile.zoom)/\(tile.x)/\(tile.y).bin"
+                    let path = "tiles/\(selected.id.lowercased())/\(tile.zoom)/\(tile.x)/\(tile.y).bin"
                     entries.append(.init(path: path, data: data))
                     tileManifest.append([
-                        "source": selected.source,
+                        "source": selected.id,
                         "z": tile.zoom, "x": tile.x, "y": tile.y,
                         "expires_at_epoch_ms": 0, "path": path,
                     ])
@@ -147,7 +144,7 @@ final class AppleConfigurationTransferManager: ObservableObject {
                     }
                     for tile in tiles {
                         let source=AppleMappingTileCache.tile(layerID:layer.id,zoom:tile.zoom,x:tile.x,y:tile.y)
-                        guard let bytes=AppleMapCacheAccess.synchronized({try? Data(contentsOf:source)}) else {continue}
+                        let bytes = try Data(contentsOf: source)
                         guard bytes.count<=maximumPackageBytes-packageBytes else {throw TransferError.packageBytesTooLarge}
                         packageBytes+=bytes.count
                         let path="mapping-layers/\(layer.id)/\(tile.zoom)/\(tile.x)/\(tile.y).png"
@@ -165,7 +162,7 @@ final class AppleConfigurationTransferManager: ObservableObject {
                     guard ["tif", "tiff"].contains(source.pathExtension.lowercased()),
                           let b = GeoTiffElevationSource.tileBounds(fileName: fileName),
                           MapPackageRegion.overlaps(bounds, .init(north: b.north, south: b.south, west: b.west, east: b.east)) else { continue }
-                    guard let data = AppleMapCacheAccess.synchronized({ try? Data(contentsOf: source) }) else { continue }
+                    let data = try Data(contentsOf: source)
                     guard data.count <= maximumPackageBytes - packageBytes else { throw TransferError.packageBytesTooLarge }
                     packageBytes += data.count
                     let path = "dem/\(fileName)"
@@ -643,7 +640,7 @@ struct AppleMutualAidExportView: View {
     let bounds: OperationalMapBounds
     let incidentID: String
     @StateObject private var manager = AppleConfigurationTransferManager()
-    @State private var selectedTiles: Set<String> = ["Contours", "DEM", "AOL"]
+    @State private var selectedTiles: Set<String> = Set(OperationalMapTileSourceRegistry.offlineAllowedSources.map(\.label) + ["DEM", "AOL"])
     @State private var packageName = "Map Package"
 
     var body: some View {
@@ -655,7 +652,7 @@ struct AppleMutualAidExportView: View {
                 }
                 Section("Package") {
                     TextField("Package name", text: $packageName)
-                    ForEach(["Contours", "DEM", "AOL"] + (AppleMappingLayerStore.shared.layers.contains(where:{$0.incidentId==incidentID}) ? ["R2C Mapping layers"] : []), id: \.self) { tile in
+                    ForEach(OperationalMapTileSourceRegistry.offlineAllowedSources.map(\.label) + ["DEM", "AOL"] + (AppleMappingLayerStore.shared.layers.contains(where:{$0.incidentId==incidentID}) ? ["R2C Mapping layers"] : []), id: \.self) { tile in
                         Toggle(isOn: Binding(
                             get: { selectedTiles.contains(tile) },
                             set: { checked in
@@ -682,6 +679,11 @@ struct AppleMutualAidExportView: View {
             .disabled(manager.isWorking)
             .onChange(of: selectedTiles) { _, _ in manager.discardPreparedPackage() }
             .onChange(of: packageName) { _, _ in manager.discardPreparedPackage() }
+            .onAppear {
+                if AppleMappingLayerStore.shared.layers.contains(where: { $0.incidentId == incidentID }) {
+                    selectedTiles.insert("R2C Mapping layers")
+                }
+            }
             .navigationTitle("Export Map Package")
         }
     }
