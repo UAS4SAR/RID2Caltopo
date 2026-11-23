@@ -36,14 +36,16 @@ class CaltopoClientUnknownPromotionTest {
     fun unresolvedPilotRetainsTeamFlightForTrackerWithoutInventingCallsign() {
         val remoteId = "UNRESOLVED1"
         CaltopoClient.SaveDroneSpecUnknownConfirmation(remoteId)
-        CaltopoClient.SaveDroneSpecConfirmation(remoteId, "NCSSAR", "Matrice", "", "AIRCRAFT1")
+        assertFalse(CaltopoClient.SaveDroneSpecConfirmation(remoteId, "NCSSAR", "Matrice", "", "AIRCRAFT1"))
+        assertFalse(CaltopoClient.SaveDroneSpecConfirmation(remoteId, "NCSSAR", "Matrice", "   ", "AIRCRAFT1"))
         val drone = CaltopoClient.GetDroneSpec(remoteId)!!
-        drone.setFlightReadinessJson(FlightReadiness(aircraft = AircraftReadiness(), payloadDescription = "water bottle").confirmed().toJSON().toString())
+        assertTrue(drone.isLocalArchiveOnly)
+        assertTrue(CaltopoClient.IsSessionUnknownDrone(remoteId))
+        assertEquals("", drone.owner)
+        assertTrue(CaltopoClient.SaveDroneSpecConfirmation(remoteId, "NCSSAR", "Matrice", "1SAR7", "AIRCRAFT1"))
         assertFalse(drone.isLocalArchiveOnly)
         assertFalse(CaltopoClient.IsSessionUnknownDrone(remoteId))
-        assertEquals("", drone.owner)
-        assertEquals("water bottle", org.json.JSONObject(drone.flightReadinessJson).getString("payloadDescription"))
-        assertEquals(0, org.json.JSONObject(drone.flightReadinessJson).getJSONObject("pilot").length())
+        assertEquals("1SAR7", drone.owner)
     }
 
     @Test

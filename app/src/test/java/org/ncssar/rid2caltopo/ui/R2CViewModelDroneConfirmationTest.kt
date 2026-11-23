@@ -199,6 +199,7 @@ class R2CViewModelDroneConfirmationTest {
         model.onDroneSpecsChanged(listOf(nextFlight))
         assertEquals(remoteId, model.pendingDroneConfirmation.value?.remoteId)
         assertEquals(ActiveScreen.STREAMS, model.activeScreen.value)
+        model.updatePendingDroneConfirmation("NCSSAR", "1SAR7", "DJI Matrice 4TD")
         model.savePendingDroneConfirmation()
         assertTrue(CaltopoClient.IsCurrentPeerDroneConfirmed(remoteId))
         model.onDroneSpecsChanged(listOf(drone))
@@ -280,7 +281,10 @@ class R2CViewModelDroneConfirmationTest {
 
             assertNotNull(model.pendingDroneConfirmation.value)
             assertEquals(ActiveScreen.STREAMS, model.activeScreen.value)
-            if (save) model.savePendingDroneConfirmation() else model.markPendingDroneConfirmationUnknown()
+            if (save) {
+                model.updatePendingDroneConfirmation("NCSSAR", "1SAR7", "DJI Matrice 4TD")
+                model.savePendingDroneConfirmation()
+            } else model.markPendingDroneConfirmationUnknown()
             assertNull(model.pendingDroneConfirmation.value)
             assertEquals(ActiveScreen.STREAMS, model.activeScreen.value)
         }
@@ -756,10 +760,56 @@ class R2CViewModelDroneConfirmationTest {
         viewModel.onDroneSpecsChanged(listOf(drone))
         viewModel.updatePendingDroneConfirmation(organization = "", pilotCallsign = "", droneDescription = "")
         viewModel.savePendingDroneConfirmation()
+        assertNotNull(viewModel.pendingDroneConfirmation.value)
+        assertFalse(CaltopoClient.IsCurrentPeerDroneConfirmed("INCOMPLETE"))
+        assertTrue(CaltopoClient.GetDroneSpec("INCOMPLETE")?.owner.isNullOrEmpty())
+    }
+
+    @Test
+    fun savePendingDroneConfirmation_rejectsWhitespaceCallsignAndLeavesPanelOpen() {
+        val drone = activeDrone("BLANKPILOT", waypointTimestampMsec = 91011L)
+        val viewModel = R2CViewModel(SimpleTimer())
+        CaltopoClient.SetHomeOrgName("NCSSAR")
+        viewModel.onDroneSpecsChanged(listOf(drone))
+        viewModel.updatePendingDroneConfirmation(
+            organization = "NCSSAR",
+            pilotCallsign = "   ",
+            droneDescription = "DJI Matrice 4TD"
+        )
+        viewModel.savePendingDroneConfirmation()
+        viewModel.savePendingDroneConfirmation(recordUnresolvedPilot = true)
+        assertNotNull(viewModel.pendingDroneConfirmation.value)
+        assertFalse(CaltopoClient.IsCurrentPeerDroneConfirmed("BLANKPILOT"))
+        assertTrue(CaltopoClient.GetDroneSpec("BLANKPILOT")?.owner.isNullOrEmpty())
+    }
+
+    @Test
+    fun recordUnresolvedPilot_keepsEnteredCallsign() {
+        val drone = activeDrone("UNRESOLVEDPILOT", waypointTimestampMsec = 91011L)
+        val viewModel = R2CViewModel(SimpleTimer())
+        CaltopoClient.SetHomeOrgName("NCSSAR")
+        viewModel.onDroneSpecsChanged(listOf(drone))
+        viewModel.updatePendingDroneConfirmation(
+            organization = "NCSSAR",
+            pilotCallsign = "1SAR7",
+            droneDescription = "DJI Matrice 4TD"
+        )
+        viewModel.savePendingDroneConfirmation(recordUnresolvedPilot = true)
         assertNull(viewModel.pendingDroneConfirmation.value)
-        assertTrue(CaltopoClient.IsCurrentPeerDroneConfirmed("INCOMPLETE"))
-        assertFalse(CaltopoClient.GetDroneSpec("INCOMPLETE")!!.isLocalArchiveOnly)
-        assertEquals("", CaltopoClient.GetDroneSpec("INCOMPLETE")!!.owner)
+        assertTrue(CaltopoClient.IsCurrentPeerDroneConfirmed("UNRESOLVEDPILOT"))
+        assertEquals("1SAR7", CaltopoClient.GetDroneSpec("UNRESOLVEDPILOT")!!.owner)
+    }
+
+    @Test
+    fun markPendingDroneConfirmationUnknown_doesNotRequireCallsign() {
+        val drone = activeDrone("NOTMINE", waypointTimestampMsec = 91011L)
+        val viewModel = R2CViewModel(SimpleTimer())
+        viewModel.onDroneSpecsChanged(listOf(drone))
+        viewModel.updatePendingDroneConfirmation(organization = "NCSSAR", pilotCallsign = "", droneDescription = "DJI Matrice 4TD")
+        viewModel.markPendingDroneConfirmationUnknown()
+        assertNull(viewModel.pendingDroneConfirmation.value)
+        assertFalse(CaltopoClient.IsCurrentPeerDroneConfirmed("NOTMINE"))
+        assertTrue(CaltopoClient.GetDroneSpec("NOTMINE")!!.isLocalArchiveOnly)
     }
 
     @Test

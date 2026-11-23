@@ -1050,8 +1050,13 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
         }
         val remoteId = current.remoteId.trim()
         val organization = if (current.bootstrapDesignator != null) "" else current.organization.trim().ifEmpty { CaltopoClient.GetHomeOrgName() }
-        val callsign = if (recordUnresolvedPilot) "" else current.pilotCallsign.trim()
-        if (current.bootstrapDesignator != null && callsign.isBlank()) return
+        // recordUnresolvedPilot means the roster did not verify the entered callsign.
+        // It must not wipe or invent a callsign, and Mine still requires one.
+        val callsign = current.pilotCallsign.trim()
+        if (!DroneSpecConfirmationLogic.hasRequiredPilotCallsign(callsign)) {
+            CTDebug(tag, "savePendingDroneConfirmation(): blocked by blank callsign remoteId=${current.remoteId.trim()} recordUnresolvedPilot=$recordUnresolvedPilot")
+            return
+        }
         val droneDescription = current.droneDescription.trim()
         CTDebug(
             tag,
@@ -1107,7 +1112,7 @@ class R2CViewModel(val uptimeTimer: SimpleTimer) : ViewModel(),
             CaltopoClient.ShowToast("This RID or stream designator already has an entry. Reopen pairing to review it.")
             return
         }
-        R2CApplication.getAppCtxt()?.let { TabletPilotCallsignPrefs.save(it, callsign) }
+        R2CApplication.getAppCtxt()?.let { TabletPilotCallsignPrefs.save(it, callsign) } // save() ignores blank
         confirmedCurrentFlightRemoteIds.add(remoteId)
         saveAwaitingGrantRemoteIds.add(remoteId)
         saveAwaitingGrantSessions[remoteId] = confirmationVideoSessions[remoteId].orEmpty()

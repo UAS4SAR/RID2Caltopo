@@ -18,6 +18,11 @@ data class DroneSpecConfirmationUiState(
 )
 
 object DroneSpecConfirmationLogic {
+    const val PILOT_CALLSIGN_REQUIRED_HINT = "Pilot callsign required"
+
+    /** Mine and Save mapping require a non-blank callsign. Not Mine and session pairing do not. */
+    fun hasRequiredPilotCallsign(callsign: String): Boolean = callsign.trim().isNotEmpty()
+
     fun buildInitialState(
         drone: CtDroneSpec,
         defaultOrganization: String,

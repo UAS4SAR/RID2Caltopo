@@ -689,7 +689,8 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
 
     /** Add a previously unknown aircraft locally without changing organization-owned entries. */
     public static boolean SaveLocalPairedDrone(String remoteId, String designator, String model, String callsign) {
-        if (RejectNonCanonicalRemoteId("SaveLocalPairedDrone()", remoteId) || designator.trim().isEmpty()) return false;
+        if (RejectNonCanonicalRemoteId("SaveLocalPairedDrone()", remoteId) || designator.trim().isEmpty()
+                || callsign == null || callsign.trim().isEmpty()) return false;
         for (CtDroneSpec existing : GetPersistedDroneSpecs()) {
             if (existing.getRemoteId().equalsIgnoreCase(remoteId) || existing.getMappedId().equalsIgnoreCase(designator.trim())) return false;
         }
@@ -2949,14 +2950,14 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
         UpdateDroneSpecs();
     }
 
-    public static void SaveDroneSpecConfirmation(
+    public static boolean SaveDroneSpecConfirmation(
             @NonNull String remoteId,
             @NonNull String org,
             @NonNull String model,
             @NonNull String owner,
             @NonNull String mappedId
     ) {
-        SaveDroneSpecConfirmation(remoteId, org, model, owner, mappedId, null, 0, null);
+        return SaveDroneSpecConfirmation(remoteId, org, model, owner, mappedId, null, 0, null);
     }
 
     public static boolean SaveDroneSpecConfirmation(
@@ -2966,6 +2967,7 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
     ) {
         ClientClassState ccs = GetState();
         if (RejectNonCanonicalRemoteId("SaveDroneSpecConfirmation()", remoteId)) return false;
+        if (owner == null || owner.trim().isEmpty()) return false;
         CtDroneSpec activeDs = ccs.droneSpecTable.get(remoteId);
         if (expectedSpec != null && activeDs != expectedSpec) return false;
         if (activeDs == null) {

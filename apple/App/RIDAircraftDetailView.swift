@@ -1,45 +1,6 @@
 import CoreLocation
 import R2CCore
 import SwiftUI
-import UIKit
-
-private struct RPICSelectedTextField: UIViewRepresentable {
-    @Binding var text: String
-    func makeCoordinator() -> Coordinator { Coordinator(text: $text) }
-    func makeUIView(context: Context) -> UITextField {
-        let field = InitialFocusTextField()
-        field.placeholder = "Callsign"
-        field.textAlignment = .right
-        field.font = .preferredFont(forTextStyle: .body)
-        field.adjustsFontForContentSizeCategory = true
-        field.autocapitalizationType = .allCharacters
-        field.text = text
-        field.addTarget(context.coordinator, action: #selector(Coordinator.changed(_:)), for: .editingChanged)
-        return field
-    }
-    func updateUIView(_ field: UITextField, context: Context) {
-        context.coordinator.text = $text
-        if field.text != text { field.text = text }
-    }
-    @MainActor final class Coordinator: NSObject {
-        var text: Binding<String>
-        init(text: Binding<String>) { self.text = text }
-        @objc func changed(_ field: UITextField) { text.wrappedValue = field.text ?? "" }
-    }
-    final class InitialFocusTextField: UITextField {
-        private var selectedInitially = false
-        override func didMoveToWindow() {
-            super.didMoveToWindow()
-            guard window != nil, !selectedInitially else { return }
-            selectedInitially = true
-            DispatchQueue.main.async { [weak self] in
-                guard let self, self.window != nil else { return }
-                self.becomeFirstResponder()
-                self.selectAll(nil)
-            }
-        }
-    }
-}
 
 struct RIDAircraftSummaryRow: View {
     @AppStorage(DisplayUnits.storageKey) private var displayUnitsPreference = DisplayUnits.imperial.rawValue
@@ -468,11 +429,10 @@ final class AppleDroneConfirmationStore: ObservableObject {
     var importedMappingCount: Int { importedIdentities.count }
 
     func setPreferredPilotCallsign(_ value: String) {
-        preferredPilotCallsign = value
-        defaults.set(
-            PilotDisplayPreference.normalizePilotCallsign(value) ?? "",
-            forKey: Self.preferredPilotCallsignDefaultsKey
-        )
+        // Never overwrite a remembered callsign with a blank or whitespace-only value.
+        guard let normalized = DroneConfirmationPolicy.preferredCallsignToPersist(value) else { return }
+        preferredPilotCallsign = normalized
+        defaults.set(normalized, forKey: Self.preferredPilotCallsignDefaultsKey)
     }
 
     /// O(1) immutable snapshot; sorting/encoding must happen on a worker.
@@ -527,6 +487,7 @@ final class AppleDroneConfirmationStore: ObservableObject {
 
     /// A local pairing is operator-owned and never grants organization authority.
     func saveLocalPairing(_ identity: RidAircraftIdentity) async -> Bool {
+        guard DroneConfirmationPolicy.hasRequiredPilotCallsign(identity.pilotCallsign) else { return false }
         let revision = mappingRevision
         let existing = editableImportedMappings, records = mappingRecords
         let snapshot = await Task.detached(priority: .utility) { () -> AircraftMappingSnapshot? in
@@ -563,7 +524,8 @@ final class AppleDroneConfirmationStore: ObservableObject {
 
     func confirm(_ identity: RidAircraftIdentity, recordUnresolvedPilot: Bool = false) {
         // Recording incomplete evidence never establishes pilot qualification.
-        guard identity.isComplete || (recordUnresolvedPilot && !identity.remoteID.isEmpty) else { return }
+        // An unresolved (unverified) pilot still requires a non-blank callsign.
+        guard DroneConfirmationPolicy.canConfirmIdentity(identity, recordUnresolvedPilot: recordUnresolvedPilot) else { return }
         ignoredRemoteIDs.remove(identity.remoteID)
         saveAwaitingGrantRemoteIDs.insert(identity.remoteID)
         saveAwaitingGrantSessions[identity.remoteID] = seenVideoSessions[identity.remoteID] ?? []
@@ -773,7 +735,14 @@ struct DroneConfirmationView: View {
                 }
                 Section {
                     LabeledContent("Pilot Callsign / RPIC") {
-                        RPICSelectedTextField(text: $pilotCallsign)
+                        TextField("Callsign", text: $pilotCallsign)
+                            .multilineTextAlignment(.trailing)
+                            .textInputAutocapitalization(.characters)
+                    }
+                    if !DroneConfirmationPolicy.hasRequiredPilotCallsign(pilotCallsign) {
+                        Text(DroneConfirmationPolicy.pilotCallsignRequiredHint)
+                            .font(.caption)
+                            .foregroundStyle(.red)
                     }
                     LabeledContent("Drone model") {
                         TextField("Model", text: $droneDescription).multilineTextAlignment(.trailing)
@@ -836,37 +805,33 @@ struct DroneConfirmationView: View {
             .onChange(of: pilotCallsign) { _, _ in matchReportedPilot() }
             .navigationTitle(existingIdentity == nil ? "Add New Drone" : "Drone Ownership")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    if pairingOnly {
-                        Button("Cancel") { dismiss() }
-                    } else if let onIgnore {
-                        Button("Not Mine") {
-                            onIgnore()
-                            dismiss()
-                        }
-                    } else {
-                        Button("Cancel") { dismiss() }
-                    }
-                }
-                if pairingOnly, let onIgnore {
-                    ToolbarItem(placement: .bottomBar) {
-                        Button("Pair for this session") { onIgnore(); dismiss() }
-                    }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button(pairingOnly ? "Save mapping" : "Mine") {
+            .safeAreaInset(edge: .top) {
+                DroneConfirmationActionBar(
+                    pairingOnly: pairingOnly,
+                    hasNotMineAction: onIgnore != nil,
+                    saving: savingPairing,
+                    canConfirmCallsign: DroneConfirmationPolicy.hasRequiredPilotCallsign(pilotCallsign),
+                    onMine: {
                         beginConfirmation(replacing: pairingOnly ? nil : identityStore.peerClaim(for: remoteID))
+                    },
+                    onNotMine: {
+                        onIgnore?()
+                        dismiss()
+                    },
+                    onCancelPairing: { dismiss() },
+                    onPairSession: {
+                        onIgnore?()
+                        dismiss()
                     }
-                    .onDisappear { pairingTask?.cancel() }
-                    .disabled(savingPairing || (bootstrapDesignator != nil && pilotCallsign.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty))
-                }
+                )
+                .onDisappear { pairingTask?.cancel() }
             }
         }
     }
 
     private func beginConfirmation(replacing claim: TrackerCoordinationIdentity?) {
         guard !savingPairing else { return }
+        guard DroneConfirmationPolicy.hasRequiredPilotCallsign(pilotCallsign) else { return }
         savingPairing = true
         pairingTask = Task { @MainActor in
                         defer { savingPairing = false }
@@ -1044,6 +1009,43 @@ struct DroneConfirmationView: View {
 
     private var pilotCallsignConflict: RidAircraftIdentity? {
         identityStore.activePilotCallsignConflict(remoteID: remoteID, callsign: pilotCallsign)
+    }
+}
+
+private struct DroneConfirmationActionBar: View {
+    let pairingOnly: Bool
+    let hasNotMineAction: Bool
+    let saving: Bool
+    let canConfirmCallsign: Bool
+    let onMine: () -> Void
+    let onNotMine: () -> Void
+    let onCancelPairing: () -> Void
+    let onPairSession: () -> Void
+
+    var body: some View {
+        HStack {
+            if pairingOnly {
+                Button("Cancel", action: onCancelPairing)
+                    .disabled(saving)
+                Spacer()
+                Button("Pair for this session", action: onPairSession)
+                    .disabled(saving)
+                Spacer()
+                Button("Save mapping", action: onMine)
+                    .buttonStyle(.borderedProminent)
+                    .disabled(saving || !canConfirmCallsign)
+            } else {
+                Button(hasNotMineAction ? "Not Mine" : "Cancel", action: onNotMine)
+                    .disabled(saving)
+                Spacer()
+                Button("Mine", action: onMine)
+                    .buttonStyle(.borderedProminent)
+                    .disabled(saving || !canConfirmCallsign)
+            }
+        }
+        .padding(.horizontal)
+        .padding(.vertical, 8)
+        .background(.bar)
     }
 }
 

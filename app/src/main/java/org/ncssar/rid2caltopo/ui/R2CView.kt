@@ -25,8 +25,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
@@ -453,9 +451,9 @@ fun DroneSpecConfirmationDialog(
     val saveScope = rememberCoroutineScope()
     var saving by remember(state.remoteId) { mutableStateOf(false) }
     var saveError by remember(state.remoteId) { mutableStateOf<String?>(null) }
-    val pilotFocus = remember(state.remoteId) { FocusRequester() }
-    var pilotText by remember(state.remoteId) { mutableStateOf(TextFieldValue(state.pilotCallsign, TextRange(0, state.pilotCallsign.length))) }
-    LaunchedEffect(state.remoteId) { pilotFocus.requestFocus() }
+    // Cursor at the end, not a full selection: a later tap must not wipe a prefilled callsign
+    // with the first delete/space.
+    var pilotText by remember(state.remoteId) { mutableStateOf(TextFieldValue(state.pilotCallsign, TextRange(state.pilotCallsign.length))) }
     LaunchedEffect(state.pilotCallsign) {
         if (pilotText.text != state.pilotCallsign) pilotText = TextFieldValue(state.pilotCallsign, TextRange(state.pilotCallsign.length))
     }
@@ -468,6 +466,7 @@ fun DroneSpecConfirmationDialog(
         org.json.JSONObject(readiness.pilotJson).optString("callsign").equals(pilotCallsign, true)
 
     fun prepareClaim(replacing: org.ncssar.rid2caltopo.data.PeerCoordinator.DroneClaim?) {
+                    if (!DroneSpecConfirmationLogic.hasRequiredPilotCallsign(pilotCallsign)) return
                     if (state.pairingOnly) { onSave(null); return }
                     val input = readiness
                     val confirmation = state
@@ -512,21 +511,47 @@ fun DroneSpecConfirmationDialog(
                     }
     }
 
-    AlertDialog(
+    val canConfirmCallsign = DroneSpecConfirmationLogic.hasRequiredPilotCallsign(pilotCallsign)
+    Dialog(
         onDismissRequest = {},
-        properties = DialogProperties(dismissOnBackPress = false, dismissOnClickOutside = false),
-        title = {
-            Text(
-                if (state.pairingOnly || state.mappedIdIsRemoteId) "Add New Drone" else "Drone Ownership"
-            )
-        },
-        text = {
+        properties = DialogProperties(dismissOnBackPress = false, dismissOnClickOutside = false)
+    ) {
+        Surface(
+            shape = AlertDialogDefaults.shape,
+            color = AlertDialogDefaults.containerColor,
+            tonalElevation = AlertDialogDefaults.TonalElevation
+        ) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
+                    .padding(24.dp)
             ) {
+                Text(
+                    text = if (state.pairingOnly || state.mappedIdIsRemoteId) "Add New Drone" else "Drone Ownership",
+                    style = MaterialTheme.typography.headlineSmall,
+                    color = AlertDialogDefaults.titleContentColor
+                )
+                Spacer(modifier = Modifier.height(12.dp))
+                DroneConfirmationActionRow(
+                    pairingOnly = state.pairingOnly,
+                    saving = saving,
+                    canConfirmCallsign = canConfirmCallsign,
+                    onMine = {
+                        val claim = if (state.pairingOnly) null else R2cRuntimeRegistry.getDefaultRuntime().peerCoordinator.claimForRemoteId(state.remoteId)
+                        prepareClaim(claim)
+                    },
+                    onNotMine = onUnknown,
+                    onCancelPairing = { onCancelPairing?.invoke() },
+                    onPairSession = { onPairSession?.invoke() }
+                )
+                Spacer(modifier = Modifier.height(16.dp))
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 420.dp)
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
                 onInspect?.let { inspect -> TextButton(onClick = inspect) { Text("Inspect") } }
                 state.bootstrapDesignator?.let { designator ->
                     Text("Remote ID: ${state.remoteId}\nStream designator: $designator")
@@ -553,10 +578,15 @@ fun DroneSpecConfirmationDialog(
                     value = pilotText,
                     onValueChange = { pilotText = it; onFieldChange(null, it.text, null) },
                     label = { Text(if (managedAircraft) "RPIC callsign" else "Pilot Callsign") },
-                    supportingText = state.pilotCallsignWarning?.let { message ->
-                        { Text(message) }
+                    supportingText = {
+                        if (!canConfirmCallsign) {
+                            Text(DroneSpecConfirmationLogic.PILOT_CALLSIGN_REQUIRED_HINT)
+                        } else {
+                            state.pilotCallsignWarning?.let { Text(it) }
+                        }
                     },
-                    modifier = Modifier.fillMaxWidth().focusRequester(pilotFocus),
+                    isError = !canConfirmCallsign,
+                    modifier = Modifier.fillMaxWidth(),
                     singleLine = true
                 )
                 OutlinedTextField(
@@ -567,32 +597,36 @@ fun DroneSpecConfirmationDialog(
                     singleLine = true
                 )
                 if (!state.pairingOnly) FlightReadinessFields(state.remoteId, pilotCallsign, readiness, { readiness = it.copy(operatingProfileJson = it.operatingProfileJson ?: readiness.operatingProfileJson) }) { onFieldChange(null, it, null) }
-            }
-        },
-        confirmButton = {
-            TextButton(
-                enabled = !saving && (state.bootstrapDesignator == null || pilotCallsign.isNotBlank()),
-                onClick = {
-                    val claim = if (state.pairingOnly) null else R2cRuntimeRegistry.getDefaultRuntime().peerCoordinator.claimForRemoteId(state.remoteId)
-                    prepareClaim(claim)
-                }
-            ) {
-                Text(if (state.pairingOnly) "Save mapping" else "Mine")
-            }
-        },
-        dismissButton = {
-            if (state.pairingOnly) {
-                androidx.compose.foundation.layout.Row {
-                    TextButton(enabled = !saving, onClick = { onCancelPairing?.invoke() }) { Text("Cancel") }
-                    TextButton(enabled = !saving, onClick = { onPairSession?.invoke() }) { Text("Pair for this session") }
-                }
-            } else {
-                TextButton(enabled = !saving, onClick = onUnknown) {
-                    Text("Not Mine")
                 }
             }
-        },
-    )
+        }
+    }
+}
+
+@Composable
+private fun DroneConfirmationActionRow(
+    pairingOnly: Boolean,
+    saving: Boolean,
+    canConfirmCallsign: Boolean,
+    onMine: () -> Unit,
+    onNotMine: () -> Unit,
+    onCancelPairing: () -> Unit,
+    onPairSession: () -> Unit
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        if (pairingOnly) {
+            TextButton(enabled = !saving, onClick = onCancelPairing) { Text("Cancel") }
+            TextButton(enabled = !saving, onClick = onPairSession) { Text("Pair for this session") }
+            Button(enabled = !saving && canConfirmCallsign, onClick = onMine) { Text("Save mapping") }
+        } else {
+            TextButton(enabled = !saving, onClick = onNotMine) { Text("Not Mine") }
+            Button(enabled = !saving && canConfirmCallsign, onClick = onMine) { Text("Mine") }
+        }
+    }
 }
 
 data class PreparedDroneConfirmation(val state: DroneSpecConfirmationUiState, val settingsRevision: Long, val mapId: String, val sourceSpec: CtDroneSpec?, val readinessRevision: Long, val readiness: String, val replacing: org.ncssar.rid2caltopo.data.PeerCoordinator.DroneClaim? = null)

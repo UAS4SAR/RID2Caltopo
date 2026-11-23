@@ -94,7 +94,8 @@ object TabletPilotCallsignPrefs {
     ).orEmpty()
 
     fun save(context: Context, pilotCallsign: String) {
-        val normalized = normalizePilotCallsign(pilotCallsign).orEmpty()
+        // Never overwrite a remembered callsign with a blank or whitespace-only value.
+        val normalized = normalizePilotCallsign(pilotCallsign) ?: return
         context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .edit()
             .putString(KEY_PILOT_CALLSIGN, normalized)

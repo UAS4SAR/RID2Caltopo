@@ -194,4 +194,14 @@ class DroneSpecConfirmationLogicTest {
             )
         )
     }
+
+    @Test
+    fun hasRequiredPilotCallsign_rejectsBlankAndWhitespace() {
+        assertEquals(false, DroneSpecConfirmationLogic.hasRequiredPilotCallsign(""))
+        assertEquals(false, DroneSpecConfirmationLogic.hasRequiredPilotCallsign("   "))
+        assertEquals(false, DroneSpecConfirmationLogic.hasRequiredPilotCallsign("\t"))
+        assertEquals(true, DroneSpecConfirmationLogic.hasRequiredPilotCallsign("1SAR7"))
+        assertEquals(true, DroneSpecConfirmationLogic.hasRequiredPilotCallsign(" 1sar7 "))
+        assertEquals("Pilot callsign required", DroneSpecConfirmationLogic.PILOT_CALLSIGN_REQUIRED_HINT)
+    }
 }
