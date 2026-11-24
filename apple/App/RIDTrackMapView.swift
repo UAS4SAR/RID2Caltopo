@@ -5624,9 +5624,10 @@ private struct OperationalMKMapView: UIViewRepresentable {
             })
             let statusLabels = Dictionary(uniqueKeysWithValues: tracks.map { track in
                 let altitude = altitudeDisplay[track.aircraftID]
+                // Fixed digit slots (Ken, Nov 23: the label jittered as ATO/AGL digits came and went).
                 return (
                     track.aircraftID,
-                    OperationalAircraftDisplay.statusLabel(
+                    fixedWidthStatusLabel(OperationalAircraftDisplay.statusLabel(
                         atoFeet: altitude?.atoFeet,
                         aglFeet: altitude?.aglFeet,
                         aglStale: altitude?.aglStale == true,
@@ -5636,7 +5637,7 @@ private struct OperationalMKMapView: UIViewRepresentable {
                         },
                         positionStale: (positionIconAlphaByAircraftID[track.aircraftID] ?? 1) < 1,
                         aol: altitude?.aol,atoStatus:altitude?.atoStatus ?? .unknown,aglStatus:altitude?.aglStatus ?? .unknown,telemetryStale:altitude?.positionStale == true
-                    )
+                    ))
                 )
             })
             let labelLayouts: [String: MapAircraftLabelLayout]
@@ -5644,7 +5645,11 @@ private struct OperationalMKMapView: UIViewRepresentable {
                 labelLayouts = [:]
             } else {
                 let nameFont = UIFont.boldSystemFont(ofSize: 16)
-                let statusFont = UIFont.boldSystemFont(ofSize: 13)
+                let statusFont = UIFont.monospacedDigitSystemFont(ofSize: 13, weight: .bold)
+                // As wide as the usual widest values, so the strip does not resize as digits change.
+                let statusReserve = max(
+                    (fixedWidthStatusLabel(statusLabelReserve) as NSString).size(withAttributes: [.font: statusFont]).width,
+                    ("ATO:POS? AGL:POS? AOL:POS? RNG:POS? HDG:POS?" as NSString).size(withAttributes: [.font: statusFont]).width)
                 let inputs = tracks.compactMap { track -> MapAircraftLabelInput? in
                     guard let coordinate = renderCoordinates[track.aircraftID] else { return nil }
                     let anchor = map.convert(coordinate, toPointTo: map)
@@ -5657,7 +5662,7 @@ private struct OperationalMKMapView: UIViewRepresentable {
                         anchor: MapScreenPoint(x: anchor.x, y: anchor.y),
                         nameWidth: nameSize.width + 12,
                         nameHeight: nameSize.height + 6,
-                        statusWidth: statusSize.width + 10,
+                        statusWidth: max(statusSize.width, statusReserve) + 10,
                         statusHeight: statusSize.height + 5
                     )
                 }
@@ -6552,6 +6557,7 @@ private final class AircraftAnnotationView: MKAnnotationView {
         layer.addSublayer(leaderLayer)
         configureLabel(nameLabel, fontSize: 16, cornerRadius: 6)
         configureLabel(statusLabel, fontSize: 13, cornerRadius: 5)
+        statusLabel.font = .monospacedDigitSystemFont(ofSize: 13, weight: .bold)
         addSubview(nameLabel)
         addSubview(statusLabel)
     }

@@ -286,3 +286,31 @@ public func stableVideoTelemetryText(_ text: String) -> String {
         return String(token[...separator]) + String(repeating: " ", count: max(0, width - value.count)) + value + (uncertain ? "?" : " ")
     }.joined(separator: " ")
 }
+
+/// Map label slots (sign included): same as Android's fixedWidthStatusLabel.
+private let statusLabelSlots: [String: Int] = ["ATO:": 4, "AGL:": 4, "AOL:": 4, "RNG:": 4, "HDG:": 3, "TRK:": 3, "CAM:": 3]
+
+/// U+2007 FIGURE SPACE: as wide as a monospaced digit.
+public let figureSpace: Character = "\u{2007}"
+
+/// Widest usual map label: the status label keeps this width so it does not resize as values change.
+public let statusLabelReserve = "ATO:-999' AGL:-999' AOL:-999' RNG:9999' HDG:359°"
+
+/// Ken, Nov 23 (Timberland screen recording): the drone telemetry label under the aircraft
+/// jittered as ATO/AGL went from one digit to two and back. Each numeric value is right-aligned
+/// in a fixed slot with figure spaces (ATO, AGL, AOL, RNG: sign + 3 digits; HDG/TRK/CAM: 3), and
+/// the label is drawn with monospaced digits, so the fields stay put. Longer values just take
+/// more room; status tokens (POS?, Unk, --, CAL) are left alone. Text only: the values are
+/// unchanged. Same as Android (test-fixtures/map-label/fixed-width-status.tsv).
+public func fixedWidthStatusLabel(_ text: String) -> String {
+    text.components(separatedBy: " ").map { token -> String in
+        guard let colon = token.firstIndex(of: ":"),
+              let slots = statusLabelSlots[String(token[...colon])] else { return token }
+        let value = Array(token[token.index(after: colon)...])
+        var run = 0
+        while run < value.count, value[run].isASCII,
+              value[run].isNumber || value[run] == "." || value[run] == "," || (run == 0 && value[run] == "-") { run += 1 }
+        if run == 0 || (run == 1 && value[0] == "-") { return token }
+        return String(token[...colon]) + String(repeating: figureSpace, count: max(0, slots - run)) + String(value)
+    }.joined(separator: " ")
+}

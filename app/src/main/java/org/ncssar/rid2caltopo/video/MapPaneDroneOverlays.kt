@@ -664,10 +664,39 @@ internal fun negativeAolRange(text: String): IntRange? {
     return if (feet.isFinite() && feet < 0) start until end else null
 }
 
+/** U+2007 FIGURE SPACE: as wide as a tabular digit. */
+internal const val FIGURE_SPACE = '\u2007'
+
+/** Map label: tokens padded to these digit slots (sign included). Same as the iPad. */
+private val STATUS_LABEL_SLOTS = mapOf("ATO:" to 4, "AGL:" to 4, "AOL:" to 4, "RNG:" to 4, "HDG:" to 3, "TRK:" to 3, "CAM:" to 3)
+
+/**
+ * Ken, Nov 23 (Timberland screen recording): the drone telemetry label under the aircraft
+ * jittered as ATO/AGL went from one digit to two and back. Each numeric value is right-aligned
+ * in a fixed slot with figure spaces (ATO, AGL, AOL, RNG: sign + 3 digits; HDG/TRK/CAM: 3), and
+ * the label is drawn with tabular digits, so the fields stay put. Longer values (RNG over 999,
+ * say) just take more room; status tokens (POS?, Unk, --, CAL) are left alone. Text only: the
+ * values are unchanged. Same as the iPad (test-fixtures/map-label/fixed-width-status.tsv).
+ */
+internal fun fixedWidthStatusLabel(text: String): String = text.split(' ').joinToString(" ") { token ->
+    val colon = token.indexOf(':')
+    val slots = if (colon < 0) null else STATUS_LABEL_SLOTS[token.substring(0, colon + 1)]
+    if (slots == null) return@joinToString token
+    val value = token.substring(colon + 1)
+    var run = 0
+    while (run < value.length && (value[run].isDigit() || value[run] == '.' || value[run] == ',' || (run == 0 && value[run] == '-'))) run++
+    if (run == 0 || (run == 1 && value[0] == '-')) token
+    else token.substring(0, colon + 1) + FIGURE_SPACE.toString().repeat((slots - run).coerceAtLeast(0)) + value
+}
+
+/** Widest usual label: the strip keeps this width so it does not resize as values change. */
+private const val STATUS_LABEL_RESERVE = "ATO:-999' AGL:-999' AOL:-999' RNG:9999' HDG:359°"
+
 internal fun buildDroneStatusLabelDrawable(
     resources: Resources,
-    text: String
+    rawText: String
 ): Drawable {
+    val text = fixedWidthStatusLabel(rawText)
     val density = resources.displayMetrics.density
     val scaledDensity = density * resources.configuration.fontScale
     val textSizePx = 13f * scaledDensity
@@ -680,6 +709,7 @@ internal fun buildDroneStatusLabelDrawable(
         textSize = textSizePx
         typeface = android.graphics.Typeface.DEFAULT_BOLD
         style = Paint.Style.FILL
+        fontFeatureSettings = "tnum"
     }
     val haloPaint = Paint(fillPaint).apply {
         color = AndroidColor.parseColor("#CC000000")
@@ -692,8 +722,10 @@ internal fun buildDroneStatusLabelDrawable(
         style = Paint.Style.FILL
     }
     val fm = fillPaint.fontMetrics
-    // Keep the strip anchored when numeric values temporarily become status tokens.
-    val reservedStatusWidth = fillPaint.measureText("ATO:POS? AGL:POS? AOL:POS? RNG:POS? HDG:POS?")
+    // Keep the strip anchored when numeric values temporarily become status tokens, and as wide
+    // as the usual widest values (Nov 23) so it does not resize as digits come and go.
+    val reservedStatusWidth = maxOf(fillPaint.measureText("ATO:POS? AGL:POS? AOL:POS? RNG:POS? HDG:POS?"),
+        fillPaint.measureText(fixedWidthStatusLabel(STATUS_LABEL_RESERVE)))
     val textWidth = maxOf(fillPaint.measureText(text), reservedStatusWidth)
     val textHeight = fm.descent - fm.ascent
     val width = maxOf(1, (textWidth + (horizontalPaddingPx * 2f)).toInt())

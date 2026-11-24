@@ -1,0 +1,11 @@
+# Drone telemetry label under the aircraft on the map (Ken, Nov 23: ATO/AGL jittered as digits came and went).
+# Shared by Android FixedWidthStatusLabelTest and iOS FixedWidthStatusLabelTests. _ = U+2007 FIGURE SPACE.
+# Numeric values right-aligned in slots: ATO, AGL, AOL, RNG sign + 3 digits; HDG, TRK, CAM 3 digits. Status tokens unchanged.
+# input	expected
+ATO:-6' AGL:29' AOL:-- RNG:423' HDG:267°	ATO:__-6' AGL:__29' AOL:-- RNG:_423' HDG:267°
+ATO:6' AGL:129' AOL:-12' RNG:1,234' TRK:7°	ATO:___6' AGL:_129' AOL:_-12' RNG:1,234' TRK:__7°
+ATO:POS? AGL:POS? AOL:POS? RNG:POS? HDG:POS?	ATO:POS? AGL:POS? AOL:POS? RNG:POS? HDG:POS?
+ATO:Unk AGL:-- AOL:-- RNG:Unk HDG:Unk	ATO:Unk AGL:-- AOL:-- RNG:Unk HDG:Unk
+ATO:-999' AGL:999'? AOL:CAL RNG:12345' CAM:359°	ATO:-999' AGL:_999'? AOL:CAL RNG:12345' CAM:359°
+ATO:9 m AGL:-3 m	ATO:___9 m AGL:__-3 m
+ATO:0' AGL:1000'	ATO:___0' AGL:1000'
