@@ -752,10 +752,15 @@ public final class BtrxDeskPodCenter: ObservableObject {
 
     @Published public private(set) var snapshot = Model.Snapshot()
     @Published public private(set) var bluetoothEnabled: Bool
-    /// Steering overlay card shown on the stream tile (hide/show; persisted). Same as Android.
-    @Published public private(set) var overlayShown: Bool
+    /// Where BTRX telemetry is drawn (Ken, Nov 23): the map's bearing layer or the stream's
+    /// steering overlay, whichever window is primary (BtrxTelemetryRoute). Always shown while
+    /// BTRX is enabled; there is no on/off (the old "Show steering overlay on the stream" and
+    /// "Show bearing layer on map" switches are gone, and the saved overlay choice is dropped).
+    /// Same as Android.
+    @Published public private(set) var telemetryWindow: BtrxTelemetryWindow = .map
 
     private static let keyEnabled = "btrx.desk_pod.ble_enabled"
+    /// Old "Show steering overlay on the stream" choice; removed at launch (Nov 23).
     private static let keyOverlayShown = "btrx.steer_overlay_shown"
     private static let keyPeripheral = "btrx.desk_pod.peripheral"
     private static let keyName = "btrx.desk_pod.name"
@@ -769,7 +774,11 @@ public final class BtrxDeskPodCenter: ObservableObject {
     public init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         bluetoothEnabled = defaults.bool(forKey: Self.keyEnabled)
-        overlayShown = defaults.object(forKey: Self.keyOverlayShown) as? Bool ?? true
+        // Ken, Nov 23: no way to hide BTRX telemetry any more; drop the old saved choice.
+        if let old = defaults.object(forKey: Self.keyOverlayShown) as? Bool {
+            defaults.removeObject(forKey: Self.keyOverlayShown)
+            OperationalBridgePacketLog.write?("INFO", "Btrx", "steering overlay: dropped the saved show/hide choice (\(old)); telemetry follows the primary window")
+        }
         bearingSettings = (defaults.data(forKey: Self.keyBearingSettings).flatMap { try? JSONDecoder().decode(BtrxBearingSettings.self, from: $0) } ?? BtrxBearingSettings()).clamped()
         bearingLagTrace = defaults.bool(forKey: Self.keyBearingLagTrace)
         bearingDisplay = (defaults.data(forKey: Self.keyBearingDisplay).flatMap { try? JSONDecoder().decode(BtrxBearingDisplay.self, from: $0) } ?? BtrxBearingDisplay()).clamped()
@@ -837,12 +846,14 @@ public final class BtrxDeskPodCenter: ObservableObject {
 
     public var rememberedPeripheral: UUID? { defaults.string(forKey: Self.keyPeripheral).flatMap(UUID.init(uuidString:)) }
 
-    /// Hide or show the steering overlay card on the stream tile. Only the card: the link,
-    /// STEER and DETECT handling, mutes and the Steering section keep working. Persisted.
-    public func setOverlayShown(_ shown: Bool) {
-        overlayShown = shown
-        defaults.set(shown, forKey: Self.keyOverlayShown)
-        OperationalBridgePacketLog.write?("INFO", "Btrx", "steering overlay \(shown ? "shown" : "hidden") (link, STEER and mutes unaffected)")
+    /// The live view reports its panes' on-screen areas (0 = not shown) on every layout change
+    /// and divider drag; telemetry moves to the larger one, with BtrxTelemetryRoute.hysteresis.
+    public func reportPaneAreas(mapArea: Double, streamArea: Double) {
+        let next = BtrxTelemetryRoute.primary(mapArea: mapArea, streamArea: streamArea, previous: telemetryWindow)
+        guard next != telemetryWindow else { return }
+        telemetryWindow = next
+        OperationalBridgePacketLog.write?("INFO", "Btrx", String(format: "BTRX telemetry now on the %@ (primary view; map area %.0f, stream area %.0f)",
+                                                                  BtrxTelemetryRoute.windowName(next).lowercased(), mapArea, streamArea))
     }
 
     public func setBluetoothEnabled(_ on: Bool) {
@@ -969,9 +980,9 @@ public final class BtrxDeskPodCenter: ObservableObject {
     private static let keyBearingLagTrace = "btrx.bearing.lag_trace"
     private static let keyBearingDisplay = "btrx.bearing.display"
 
-    /// "Show bearing layer on map". Ken, Nov 23: on by default, turned on whenever BTRX is enabled
-    /// (at launch with the link on, and when the link is turned on); the switch still turns it
-    /// off for the session. Not persisted, so no install keeps it off.
+    /// The bearing engine. Ken, Nov 23: on whenever BTRX is enabled (at launch with the link on,
+    /// and when the link is turned on), with no switch; the map draws it only while the map is
+    /// the primary window (`telemetryWindow`). Not persisted, so no install keeps it off.
     @Published public private(set) var bearingOn = false
     @Published public private(set) var bearingSettings = BtrxBearingSettings()
     @Published public private(set) var bearingLagTrace = false
@@ -984,7 +995,14 @@ public final class BtrxDeskPodCenter: ObservableObject {
     /// The layer itself, for the map's tap query, mute and render notes (main-thread calls).
     public var bearing: BtrxBearingLayer { central.bearing }
 
-    public func setBearingOn(_ on: Bool) {
+    /// "Try again" after the bearing layer failed to start (its error shows in the Desk Pod
+    /// view). Only turns it on: there is no way to turn BTRX telemetry off (Ken, Nov 23).
+    public func retryBearingLayer() {
+        OperationalBridgePacketLog.write?("INFO", "Btrx", "bearing layer on: try again after: \(bearingError ?? "no error")")
+        setBearingOn(true)
+    }
+
+    private func setBearingOn(_ on: Bool) {
         bearingOn = on
         central.setBearing(on, settings: bearingSettings, trace: bearingLagTrace, steering: bearingSteeringStreamID,
             liveStreams: liveSteeringStreams.count,

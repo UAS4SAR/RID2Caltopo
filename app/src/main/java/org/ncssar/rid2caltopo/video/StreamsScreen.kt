@@ -355,6 +355,14 @@ fun StreamsScreen(
         ExternalDisplayContentMode.Split -> StreamsLayoutMode.Both
         null -> persistedLayoutMode
     }
+    // BTRX telemetry follows the primary window (Ken, Nov 23): report the panes' areas on every
+    // layout change and divider drag. Only the device's own screen, not an external display.
+    if (externalContentMode == null) {
+        LaunchedEffect(layoutMode, splitFraction) {
+            val (mapArea, streamArea) = btrxPaneAreas(layoutMode, splitFraction)
+            org.ncssar.rid2caltopo.btrx.BtrxManager.reportPaneAreas(mapArea, streamArea)
+        }
+    }
     var showNotamPanel by remember { mutableStateOf(false) }
     var showLandRestrictionPanel by remember { mutableStateOf(false) }
     var showPendingClueUploads by remember { mutableStateOf(false) }
@@ -1132,6 +1140,22 @@ internal fun portraitSplitDividerTouchOffsetPx(
     if (fraction < MAX_SPLIT_FRACTION) return normalOffset
     return (normalOffset - mandatoryBottomGestureInsetPx.coerceAtLeast(0f) -
         bottomClearancePx.coerceAtLeast(0f)).coerceAtLeast(0f)
+}
+
+/**
+ * On-screen areas (shares of the live view) of the map and stream panes, for BTRX telemetry
+ * routing ([org.ncssar.rid2caltopo.btrx.BtrxTelemetryRoute]). Full-screen Map or Streams is the
+ * whole view whether or not the other shows as a picture-in-picture inset (an inset never counts
+ * and never shows telemetry); Both splits by [streamFraction] (the streams pane's share of the
+ * width side by side, or of the height top and bottom).
+ */
+internal fun btrxPaneAreas(layoutMode: StreamsLayoutMode, streamFraction: Float): Pair<Double, Double> = when (layoutMode) {
+    StreamsLayoutMode.Map -> 1.0 to 0.0
+    StreamsLayoutMode.Streams -> 0.0 to 1.0
+    StreamsLayoutMode.Both -> {
+        val f = streamFraction.coerceIn(MIN_SPLIT_FRACTION, MAX_SPLIT_FRACTION).toDouble()
+        (1.0 - f) to f
+    }
 }
 
 internal fun layoutModeForSplitFraction(fraction: Float): StreamsLayoutMode =

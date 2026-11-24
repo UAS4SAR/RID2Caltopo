@@ -40,6 +40,7 @@ import org.ncssar.rid2caltopo.btrx.BtrxDeskPodText
 import org.ncssar.rid2caltopo.btrx.BtrxImuCal
 import org.ncssar.rid2caltopo.btrx.BtrxDeskPodText.StepStatus
 import org.ncssar.rid2caltopo.btrx.BtrxManager
+import org.ncssar.rid2caltopo.btrx.BtrxTelemetryRoute
 
 /**
  * Main menu > BTRX: the btrx Desk Pod link (Bluetooth, or USB for debugging),
@@ -55,7 +56,7 @@ fun DeskPodScreen(onDismiss: () -> Unit) {
     val s by BtrxManager.snapshot.collectAsState()
     val bluetoothOn by BtrxManager.bluetoothEnabled.collectAsState()
     val usbDebugOn by BtrxManager.usbDebugEnabled.collectAsState()
-    val overlayShown by BtrxManager.overlayShown.collectAsState()
+    val telemetryWindow by BtrxManager.telemetryWindow.collectAsState()
     val config = LocalConfiguration.current
     var replacing by remember { mutableStateOf<Replacing?>(null) }
     replacing?.let { r ->
@@ -160,11 +161,9 @@ fun DeskPodScreen(onDismiss: () -> Unit) {
 
                     HorizontalDivider(Modifier.padding(vertical = 6.dp))
                     SectionTitle("Steering")
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(BtrxDeskPodText.OVERLAY_TOGGLE, Modifier.weight(1f))
-                        Switch(checked = overlayShown, onCheckedChange = { BtrxManager.setOverlayShown(it) })
-                    }
-                    Text(BtrxDeskPodText.OVERLAY_TOGGLE_HINT, style = MaterialTheme.typography.bodySmall)
+                    // Ken, Nov 23: read only; telemetry follows the primary window and cannot be turned off.
+                    Text(BtrxTelemetryRoute.shownOnLine(telemetryWindow), fontWeight = FontWeight.SemiBold)
+                    Text(BtrxTelemetryRoute.HINT, style = MaterialTheme.typography.bodySmall)
                     val st = s.lastSteer
                     if (st == null) {
                         Text(BtrxDeskPodText.STEER_NONE, style = MaterialTheme.typography.bodySmall)

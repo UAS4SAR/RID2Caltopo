@@ -105,6 +105,6 @@ final class BtrxStalenessTests: XCTestCase {
         let c = try String(contentsOf: Self.root.appendingPathComponent("apple/Sources/R2CAppleRadios/BtrxBleCentral.swift"), encoding: .utf8)
         XCTAssertTrue(c.contains("if bluetoothEnabled { autoBearingOn(\"BTRX enabled at launch\") }"))
         XCTAssertTrue(c.contains("if on { autoBearingOn(\"Desk Pod Bluetooth link turned on\") }"))
-        XCTAssertFalse(BtrxBearingText.layerSwitchHint.contains("Off at every launch"))
+        XCTAssertFalse(BtrxBearingText.layerHint.contains("Off at every launch"))
     }
 }

@@ -50,6 +50,7 @@ object BtrxManager {
     /** src ids the paired Drone Pod saved on its ignore list (build 0x0106), hex, comma separated. */
     private const val KEY_SAVED_IGNORES = "paired_pod_saved_ignores"
     private const val KEY_USB_DEBUG = "usb_debug"
+    /** Old "Show steering overlay on the stream" choice; removed at launch (Nov 23). */
     private const val KEY_OVERLAY_SHOWN = "steer_overlay_shown"
     /** "Talking": a Desk Pod frame within this long (STEER arrives about once a second). */
     private const val KEY_BEARING_FADE_S = "bearing_fade_total_s"
@@ -93,9 +94,26 @@ object BtrxManager {
     /** Desk Pod screen state, refreshed about once a second while a link or Bluetooth is on. */
     val snapshot: StateFlow<BtrxDeskPodModel.Snapshot> = _snapshot.asStateFlow()
 
-    private val _overlayShown = MutableStateFlow(true)
-    /** Steering overlay card shown on the stream tile (hide/show; persisted). */
-    val overlayShown: StateFlow<Boolean> = _overlayShown.asStateFlow()
+    private val _telemetryWindow = MutableStateFlow(BtrxTelemetryWindow.MAP)
+    /**
+     * Where BTRX telemetry is drawn (Ken, Nov 23): the map's bearing layer or the stream's
+     * steering overlay, whichever window is primary ([BtrxTelemetryRoute]). Always shown while
+     * BTRX is enabled; there is no on/off (the old "Show steering overlay on the stream" and
+     * "Show bearing layer on map" switches are gone, and the saved overlay choice is dropped).
+     */
+    val telemetryWindow: StateFlow<BtrxTelemetryWindow> = _telemetryWindow.asStateFlow()
+
+    /**
+     * The live view reports its panes' on-screen areas (0 = not shown) on every layout change
+     * and divider drag; telemetry moves to the larger one, with [BtrxTelemetryRoute.HYSTERESIS].
+     */
+    fun reportPaneAreas(mapArea: Double, streamArea: Double) {
+        val before = _telemetryWindow.value
+        val next = BtrxTelemetryRoute.primary(mapArea, streamArea, before)
+        if (next == before) return
+        _telemetryWindow.value = next
+        logger.info("BTRX telemetry now on the ${BtrxTelemetryRoute.windowName(next).lowercase()} (primary view; map area ${"%.0f".format(java.util.Locale.US, mapArea)}, stream area ${"%.0f".format(java.util.Locale.US, streamArea)})")
+    }
     private val _bluetoothEnabled = MutableStateFlow(false)
     val bluetoothEnabled: StateFlow<Boolean> = _bluetoothEnabled.asStateFlow()
 
@@ -117,9 +135,9 @@ object BtrxManager {
     )
     private val _bearingOn = MutableStateFlow(false)
     /**
-     * "Show bearing layer on map" (Developer Tools > BTRX). Ken, Nov 23: on by default, turned on
-     * whenever BTRX is enabled (at launch with a link on, and when a link is turned on); the
-     * switch still turns it off for the session. Not persisted, so no install keeps it off.
+     * The bearing engine. Ken, Nov 23: on whenever BTRX is enabled (at launch with a link on, and
+     * when a link is turned on), with no switch; the map draws it only while the map is the
+     * primary window ([telemetryWindow]). Not persisted, so no install keeps it off.
      */
     val bearingOn: StateFlow<Boolean> = _bearingOn.asStateFlow()
     private val _bearingSettings = MutableStateFlow(BtrxBearingSettings())
@@ -135,10 +153,11 @@ object BtrxManager {
         bearing.onPosition(mappedId, lat, lng, timestampMsec)
     }
 
-    fun setBearingOn(on: Boolean) {
-        _bearingOn.value = on
-        worker.execute { applyBearingOn(on) }
-    }
+    /**
+     * "Try again" after the bearing layer failed to start (its error shows in the Desk Pod
+     * screen). Only turns it on: there is no way to turn BTRX telemetry off (Ken, Nov 23).
+     */
+    fun retryBearingLayer() = worker.execute { autoBearingOn("try again after: ${bearing.lastError ?: "no error"}") }
 
     /** Worker: BTRX enabled, so the bearing layer goes on (unless it already is). */
     private fun autoBearingOn(reason: String) {
@@ -339,7 +358,11 @@ object BtrxManager {
             _bluetoothEnabled.value = enabled
             val usbDebug = p.getBoolean(KEY_USB_DEBUG, false)
             _usbDebugEnabled.value = usbDebug
-            _overlayShown.value = p.getBoolean(KEY_OVERLAY_SHOWN, true)
+            // Ken, Nov 23: no way to hide BTRX telemetry any more; drop the old saved choice.
+            if (p.contains(KEY_OVERLAY_SHOWN)) {
+                logger.info("steering overlay: dropped the saved show/hide choice (${p.getBoolean(KEY_OVERLAY_SHOWN, true)}); telemetry follows the primary window")
+                p.edit().remove(KEY_OVERLAY_SHOWN).apply()
+            }
             _bearingSettings.value = BtrxBearingSettings(
                 p.getFloat(KEY_BEARING_FADE_S, BtrxBearingSettings.DEFAULT_TOTAL_S),
                 p.getFloat(KEY_BEARING_FADE_P, BtrxBearingSettings.DEFAULT_SHAPE_P),
@@ -363,18 +386,6 @@ object BtrxManager {
     }
 
     // ---- Desk Pod screen actions (post to the worker; never block the caller) ----
-
-    /**
-     * Hide or show the steering overlay card on the stream tile. Only the card: the link,
-     * STEER and DETECT handling, mutes and the Steering section keep working. Persisted.
-     */
-    fun setOverlayShown(shown: Boolean) {
-        _overlayShown.value = shown
-        worker.execute {
-            prefs().edit().putBoolean(KEY_OVERLAY_SHOWN, shown).apply()
-            logger.info("steering overlay ${if (shown) "shown" else "hidden"} (link, STEER and mutes unaffected)")
-        }
-    }
 
     fun setBluetoothEnabled(enabled: Boolean) = worker.execute {
         prefs().edit().putBoolean(KEY_BLE_ENABLED, enabled).apply()

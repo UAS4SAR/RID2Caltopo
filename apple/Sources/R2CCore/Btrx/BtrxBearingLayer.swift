@@ -881,8 +881,9 @@ public enum BtrxBearingText {
     public static let unmuteAll = "Unmute all"
     public static let done = "Done"
     public static let section = "Bearing map layer"
-    public static let layerSwitch = "Show bearing layer on map"
-    public static let layerSwitchHint = "On whenever BTRX is enabled. Shades where each BTRX source is likely to be; tap the shading to show or hide sources."
+    public static let layerTitle = "Bearing layer"
+    public static let layerHint = "Always on while BTRX is enabled, with no switch; drawn on the map while the map is the primary view. Shades where each BTRX source is likely to be; tap the shading to show or hide sources."
+    public static let layerRetry = "Try again"
     /// Nov 23: the panel's sources were all not heard for a minute (Show N older lists them).
     public static let panelAllStale = "Not heard in the last minute."
     public static let hideOlder = "Hide older"

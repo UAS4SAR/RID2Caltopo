@@ -446,15 +446,16 @@ public final class BtrxSteering {
 /// Android's BtrxSteeringTarget.
 public enum BtrxSteeringTarget {
     /// What a stream tile shows for the steering overlay.
-    public enum TileOverlay: Sendable, Equatable { case none, card, hiddenChip, pick }
+    public enum TileOverlay: Sendable, Equatable { case none, card, pick }
 
-    /// The tile's overlay: the card, or the small "BTRX hidden" chip while the operator has
-    /// hidden the overlay (only the card is hidden; link, STEER, mutes and the Steering
-    /// section keep working), or the "Drone Pod is on this drone" pick. Same as Android.
-    public static func tileOverlay(tile: String, live: Set<String>, chosen: String?, hasView: Bool, shown: Bool) -> TileOverlay {
+    /// The tile's overlay: the card while BTRX telemetry is routed to the stream (`onStream`:
+    /// the stream is the primary window, BtrxTelemetryRoute; Ken, Nov 23, there is no hide), or
+    /// the "Drone Pod is on this drone" pick, which is a setting and shows whichever window is
+    /// primary (the bearing layer needs it too). Same as Android.
+    public static func tileOverlay(tile: String, live: Set<String>, chosen: String?, hasView: Bool, onStream: Bool) -> TileOverlay {
         if !hasView { return .none }
-        if showsOverlay(tile: tile, live: live, chosen: chosen) { return shown ? .card : .hiddenChip }
-        if offersPick(tile: tile, live: live, chosen: chosen) { return shown ? .pick : .hiddenChip }
+        if showsOverlay(tile: tile, live: live, chosen: chosen) { return onStream ? .card : .none }
+        if offersPick(tile: tile, live: live, chosen: chosen) { return .pick }
         return .none
     }
 

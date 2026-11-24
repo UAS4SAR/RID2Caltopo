@@ -785,6 +785,23 @@ struct RIDTrackMapView: View {
 
     @State private var headerWidth: CGFloat = 0
 
+    /// Where BTRX telemetry is drawn now (mirrors the Desk Pod center's choice for this view).
+    @State private var btrxTelemetryWindow: BtrxTelemetryWindow = .map
+
+    private func reportBtrxPaneAreas() {
+        let a = BtrxTelemetryRoute.paneAreas(presentedLayout, videoFraction: Double(effectiveSplitFraction(for: presentedLayout)))
+        guard let btrxCenter else { return }
+        btrxCenter.reportPaneAreas(mapArea: a.map, streamArea: a.stream)
+        if btrxTelemetryWindow != btrxCenter.telemetryWindow {
+            btrxTelemetryWindow = btrxCenter.telemetryWindow
+            // Map popups belong to the map's telemetry; close them when it moves to the stream.
+            if btrxTelemetryWindow != .map { btrxPanel = nil; btrxInspect = nil }
+        }
+    }
+
+    /// The map draws BTRX (layer, chips, popups) only while it is the primary window.
+    private var btrxOnMap: Bool { btrxTelemetryWindow == .map }
+
     private var presentedLayout: OperationalMapVideoLayout {
         streamsFullScreen && !fullScreenDividerAdjusted
             ? layout.fullScreenPresentation(pictureInPictureEnabled: videoPipEnabled) : layout
@@ -800,6 +817,10 @@ struct RIDTrackMapView: View {
             }
             .onAppear { headerWidth = geometry.size.width }
             .onChange(of: geometry.size.width) { _, width in headerWidth = width }
+            // BTRX telemetry follows the primary window (Ken, Nov 23): report the panes' areas on
+            // every layout change and divider drag.
+            .onChange(of: presentedLayout, initial: true) { _, _ in reportBtrxPaneAreas() }
+            .onChange(of: splitFraction) { _, _ in reportBtrxPaneAreas() }
         }
         .safeAreaInset(edge: .top) {
             VStack(spacing: 0) {
@@ -1607,7 +1628,7 @@ struct RIDTrackMapView: View {
             )
             // Why the bearing layer draws nothing (main map only).
             .overlay(alignment: .top) {
-                if !inset, let btrxCenter { BtrxBearingStatusChip(center: btrxCenter) }
+                if !inset, btrxOnMap, let btrxCenter { BtrxBearingStatusChip(center: btrxCenter) }
             }
             // Double tap while the Desk Pod is talking opens its view (Ken, Nov 13).
             .sheet(isPresented: $showDeskPodFromMap) {
@@ -1616,7 +1637,7 @@ struct RIDTrackMapView: View {
             // "BTRX sources here" at the tap point (main map only).
             // Stays on the map and clear of the video PiP, flipping left or up (Ken, Nov 20 A5 test).
             .overlay {
-                if !inset, let request = btrxPanel, let btrxCenter {
+                if !inset, btrxOnMap, let request = btrxPanel, let btrxCenter {
                     GeometryReader { g in
                         BtrxPopupLayout(tapAt: request.point, obstacle: btrxPipObstacle(in: g), reservedBottom: mapAttributionHeight) {
                             BtrxBearingPanel(center: btrxCenter, rows: request.keys, onDismiss: { btrxPanel = nil },
@@ -1628,7 +1649,7 @@ struct RIDTrackMapView: View {
             }
             // Pinned-source inspect card, own-aircraft suggestion and the focus chip (Nov 16; main map only).
             .overlay {
-                if !inset, let key = btrxInspect, let btrxCenter {
+                if !inset, btrxOnMap, let key = btrxInspect, let btrxCenter {
                     GeometryReader { g in
                         BtrxPopupLayout(bottomStart: CGSize(width: 8, height: 72), obstacle: btrxPipObstacle(in: g), reservedBottom: mapAttributionHeight) {
                             BtrxPinnedInspectCard(center: btrxCenter, key: key,
@@ -1639,13 +1660,13 @@ struct RIDTrackMapView: View {
                 }
             }
             .overlay(alignment: .bottom) {
-                if !inset, let btrxCenter { BtrxOwnAircraftSuggestion(center: btrxCenter).padding(.bottom, 120).padding(.horizontal, 56) }
+                if !inset, btrxOnMap, let btrxCenter { BtrxOwnAircraftSuggestion(center: btrxCenter).padding(.bottom, 120).padding(.horizontal, 56) }
             }
             .overlay(alignment: .top) {
                 VStack(spacing: 6) {
                     // Compact: a live stream is not recorded because Capture Streams is off (Nov 18).
                     if !inset { NotCapturingStreamBanner() }
-                    if !inset, let btrxCenter { BtrxFocusChip(center: btrxCenter) }
+                    if !inset, btrxOnMap, let btrxCenter { BtrxFocusChip(center: btrxCenter) }
                 }
                 .padding(.top, 48)
                 .padding(.horizontal, 8)
@@ -7959,7 +7980,8 @@ final class BtrxBearingMapController: NSObject, UIGestureRecognizerDelegate {
 
     /// Camera crosshair target: the inspected source, else the focused one (its estimate, else strongest-here). Same as Android.
     func crosshairTarget() -> CLLocationCoordinate2D? {
-        guard let snap = snapshot, center?.bearingOn == true else { return nil }
+        guard let snap = snapshot, let center,
+              BtrxTelemetryRoute.mapShows(bearingOn: center.bearingOn, window: center.telemetryWindow) else { return nil }
         let key = crosshairKey ?? (snap.focusKey != 0 ? snap.focusKey : nil)
         guard let key, let s = snap.sources.first(where: { $0.key == key }) else { return nil }
         if let e = s.estimate { return CLLocationCoordinate2D(latitude: e.lat, longitude: e.lon) }
@@ -7977,9 +7999,13 @@ final class BtrxBearingMapController: NSObject, UIGestureRecognizerDelegate {
         self.map = map
         if center !== self.center {
             self.center = center
-            cancellable = center?.$bearingSnapshot.sink { [weak self] snap in
-                // @Published fires before the value is stored; apply on the next main turn.
-                DispatchQueue.main.async { self?.show(snap) }
+            // Ken, Nov 23: the map draws BTRX only while it is the primary window; while the
+            // stream is, the layer (and its taps) clear here and come back with the next snapshot.
+            cancellable = center.map { c in
+                c.$bearingSnapshot.combineLatest(c.$telemetryWindow).sink { [weak self] snap, window in
+                    // @Published fires before the value is stored; apply on the next main turn.
+                    DispatchQueue.main.async { self?.show(window == .map ? snap : nil) }
+                }
             }
             displayCancellable = center?.$bearingDisplay.sink { [weak self] d in
                 DispatchQueue.main.async {
@@ -8191,7 +8217,8 @@ struct BtrxBearingStatusChip: View {
     @ObservedObject var center: BtrxDeskPodCenter
     var body: some View {
         // While the BTRX status chip says Inactive it already explains the missing reports.
-        if center.bearingOn, center.mapStatus?.active != false, let line = center.bearingStatus?.line {
+        if BtrxTelemetryRoute.mapShows(bearingOn: center.bearingOn, window: center.telemetryWindow),
+           center.mapStatus?.active != false, let line = center.bearingStatus?.line {
             Text(line)
                 .font(.footnote)
                 .foregroundStyle(.white)

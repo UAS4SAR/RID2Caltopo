@@ -1,0 +1,30 @@
+# BTRX telemetry routing (Ken, Nov 23): primary window by on-screen area, 5 % hysteresis, tie = map.
+# Shared by BtrxTelemetryRouteTest.kt and BtrxTelemetryRouteTests.swift.
+# const	name	value
+const	hysteresis	0.05
+const	tie	map
+# area	map_area	stream_area	previous(- = none)	expected
+area	1	0	-	map
+area	0	1	-	stream
+area	0	0	-	map
+area	1	0	stream	map
+area	0	1	map	stream
+area	0.5	0.5	-	map
+area	0.5	0.5	map	map
+area	0.5	0.5	stream	stream
+area	0.48	0.52	-	stream
+area	0.48	0.52	map	map
+area	0.46	0.54	map	map
+area	0.45	0.55	map	stream
+area	0.44	0.56	map	stream
+area	0.52	0.48	-	map
+area	0.52	0.48	stream	stream
+area	0.54	0.46	stream	stream
+area	0.55	0.45	stream	map
+area	0.3	0.7	-	stream
+area	0.7	0.3	stream	map
+area	400	600	map	stream
+area	1200	800	stream	map
+# drag	start window	stream fractions in order	windows after each step
+drag	map	0.50,0.53,0.56,0.52,0.47,0.46,0.44,0.49,0.51	map,map,stream,stream,stream,stream,map,map,map
+drag	stream	0.50,0.46,0.45,0.48,0.54,0.55	stream,stream,map,map,map,stream

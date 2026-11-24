@@ -12,6 +12,20 @@ Project-only engineering record; do not package in the app, copy into store meta
 
 ## Cumulative release history
 
+### Unreleased — BTRX telemetry follows the primary window (November 23, 2026)
+
+- Both, same rule (`BtrxTelemetryRoute`, test-fixtures/btrx/telemetry-route.tsv): BTRX
+  telemetry is always shown while BTRX is enabled, on the primary window only: the bearing
+  layer when the map is primary, the steering card when the stream is. Full-screen map or
+  stream (PiP inset or not) is primary; in a split the larger pane is, and the other has to
+  reach 55 % to take over (holds between 45 and 55 %; an exact tie with nothing to hold is
+  the map). The compact stream PiP and an inset map never show it.
+- Removed: *Show steering overlay on the stream*, the card's **Hide** and the *BTRX hidden*
+  chip, and *Show bearing layer on map*. The saved overlay choice (Android `steer_overlay_shown`,
+  iPad `btrx.steer_overlay_shown`) is deleted at launch. A failed layer start offers only
+  **Try again**. The Desk Pod screen's Steering section shows the read-only line
+  *Telemetry shown on: Map (primary view)* / *Stream (primary view)*.
+
 ### Unreleased — BTRX STEER gyro yaw, format 2 (November 19, 2026)
 
 - Both (nothing goes to CalTopo; not in release notes): parse STEER extension

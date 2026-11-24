@@ -102,6 +102,6 @@ class BtrxStalenessTest {
         assertTrue(m.contains("if (enabled || usbDebug) autoBearingOn(\"BTRX enabled at launch\")"))
         assertTrue(m.contains("if (enabled) autoBearingOn(\"Desk Pod Bluetooth link turned on\")"))
         assertTrue(m.contains("if (enabled) autoBearingOn(\"Desk Pod USB debug link turned on\")"))
-        assertFalse(BtrxBearingText.LAYER_SWITCH_HINT.contains("Off at every launch"))
+        assertFalse(BtrxBearingText.LAYER_HINT.contains("Off at every launch"))
     }
 }

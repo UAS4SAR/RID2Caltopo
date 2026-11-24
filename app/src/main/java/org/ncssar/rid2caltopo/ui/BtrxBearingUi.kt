@@ -61,7 +61,7 @@ import org.ncssar.rid2caltopo.btrx.BtrxManager
 
 /**
  * Developer Tools > BTRX > "Bearing map layer" (docs/btrx/BEARING-LAYER-spec.md sections
- * 2.4, 3.4, 5.2, 7): the layer switch, fade time and shape sliders with the live
+ * 2.4, 3.4, 5.2, 7): where telemetry is shown (no switch, Nov 23), fade time and shape sliders with the live
  * "half strength at m:ss" readout, lost-count and lag lines, and every source's row.
  * Same controls, labels and order as the iPad's DeskPodView bearing section.
  */
@@ -73,12 +73,13 @@ fun BtrxBearingSection() {
     val snap by BtrxManager.bearing.snapshot.collectAsState()
     val status by BtrxManager.bearing.status.collectAsState()
     val pod by BtrxManager.snapshot.collectAsState()
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Text(BtrxBearingText.LAYER_SWITCH, Modifier.weight(1f))
-        Switch(checked = on, onCheckedChange = { BtrxManager.setBearingOn(it) })
+    // Ken, Nov 23: no on/off; the layer runs while BTRX is enabled and the map shows it while primary.
+    Text(BtrxBearingText.LAYER_TITLE, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold)
+    Text(BtrxBearingText.LAYER_HINT, style = MaterialTheme.typography.bodySmall)
+    BtrxManager.bearing.lastError?.takeIf { !on }?.let {
+        Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+        OutlinedButton(onClick = { BtrxManager.retryBearingLayer() }) { Text(BtrxBearingText.LAYER_RETRY) }
     }
-    Text(BtrxBearingText.LAYER_SWITCH_HINT, style = MaterialTheme.typography.bodySmall)
-    BtrxManager.bearing.lastError?.takeIf { !on }?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
 
     // Sliders keep a local value while dragging; the layer gets the value on release.
     var minutes by remember(settings.fadeTotalS) { mutableFloatStateOf(settings.fadeMinutes.toFloat()) }

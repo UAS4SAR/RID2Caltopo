@@ -287,17 +287,20 @@ final class BtrxSteeringTests: XCTestCase {
 
     // MARK: which tile (the drone carrying the pod)
 
-    func testHiddenOverlayShowsOnlyTheBtrxHiddenChip() {
-        func mode(_ tile: String, _ live: Set<String>, _ chosen: String?, _ hasView: Bool, shown: Bool) -> BtrxSteeringTarget.TileOverlay {
-            BtrxSteeringTarget.tileOverlay(tile: tile, live: live, chosen: chosen, hasView: hasView, shown: shown)
+    /// Ken, Nov 23: no "BTRX hidden" chip; the card shows only while the stream is primary, and the
+    /// "Drone Pod is on this drone" pick (a setting) shows whichever window is primary.
+    func testCardFollowsThePrimaryWindowAndThereIsNoHide() {
+        func mode(_ tile: String, _ live: Set<String>, _ chosen: String?, _ hasView: Bool, onStream: Bool) -> BtrxSteeringTarget.TileOverlay {
+            BtrxSteeringTarget.tileOverlay(tile: tile, live: live, chosen: chosen, hasView: hasView, onStream: onStream)
         }
-        XCTAssertEqual(.card, mode("A", ["A"], nil, true, shown: true))
-        XCTAssertEqual(.hiddenChip, mode("A", ["A"], nil, true, shown: false))
-        XCTAssertEqual(BtrxSteeringTarget.TileOverlay.none, mode("A", ["A"], nil, false, shown: false))
-        XCTAssertEqual(.pick, mode("A", ["A", "B"], nil, true, shown: true))
-        XCTAssertEqual(.hiddenChip, mode("A", ["A", "B"], nil, true, shown: false))
-        XCTAssertEqual(BtrxSteeringTarget.TileOverlay.none, mode("B", ["A", "B"], "A", true, shown: true))
-        XCTAssertEqual(BtrxSteeringTarget.TileOverlay.none, mode("B", ["A", "B"], "A", true, shown: false))
+        XCTAssertEqual(.card, mode("A", ["A"], nil, true, onStream: true))
+        XCTAssertEqual(BtrxSteeringTarget.TileOverlay.none, mode("A", ["A"], nil, true, onStream: false))
+        XCTAssertEqual(BtrxSteeringTarget.TileOverlay.none, mode("A", ["A"], nil, false, onStream: true))
+        XCTAssertEqual(.pick, mode("A", ["A", "B"], nil, true, onStream: true))
+        XCTAssertEqual(.pick, mode("A", ["A", "B"], nil, true, onStream: false))
+        XCTAssertEqual(.card, mode("A", ["A", "B"], "A", true, onStream: true))
+        XCTAssertEqual(BtrxSteeringTarget.TileOverlay.none, mode("B", ["A", "B"], "A", true, onStream: true))
+        XCTAssertEqual(BtrxSteeringTarget.TileOverlay.none, mode("B", ["A", "B"], "A", true, onStream: false))
     }
 
     func testOneLiveStreamShowsTheOverlayWithoutAPick() {

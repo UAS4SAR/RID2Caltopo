@@ -968,7 +968,12 @@ internal fun SplitMapPane(
     var positionFreshnessRefreshToken by remember { mutableIntStateOf(0) }
     val managedOverlays = remember { mutableListOf<Overlay>() }
     // BTRX bearing layer (Developer Tools > BTRX; docs/btrx/BEARING-LAYER-spec.md section 5).
-    val btrxBearingOn by org.ncssar.rid2caltopo.btrx.BtrxManager.bearingOn.collectAsState()
+    val btrxEngineOn by org.ncssar.rid2caltopo.btrx.BtrxManager.bearingOn.collectAsState()
+    val btrxTelemetryWindow by org.ncssar.rid2caltopo.btrx.BtrxManager.telemetryWindow.collectAsState()
+    // Ken, Nov 23: BTRX telemetry is drawn in the primary window only. While the stream is primary
+    // the map (full, split or inset) draws no bearing layer and its popups close; the engine keeps
+    // running, so nothing is lost when the map becomes primary again.
+    val btrxBearingOn = org.ncssar.rid2caltopo.btrx.BtrxTelemetryRoute.mapShows(btrxEngineOn, btrxTelemetryWindow)
     var btrxPanel by remember { mutableStateOf<Pair<List<Long>, androidx.compose.ui.unit.IntOffset>?>(null) }
     // Pinned-source inspect card (Nov 16): the tapped source key, null = closed.
     var btrxInspect by remember { mutableStateOf<Long?>(null) }

@@ -75,8 +75,9 @@ struct DeskPodView: View {
 
                     Divider().padding(.vertical, 6)
                     section("Steering")
-                    Toggle(Text_.overlayToggle, isOn: Binding(get: { center.overlayShown }, set: { center.setOverlayShown($0) }))
-                    Text(Text_.overlayToggleHint).font(.footnote).foregroundStyle(.secondary)
+                    // Ken, Nov 23: read only; telemetry follows the primary window and cannot be turned off.
+                    Text(BtrxTelemetryRoute.shownOnLine(center.telemetryWindow)).fontWeight(.semibold)
+                    Text(BtrxTelemetryRoute.hint).font(.footnote).foregroundStyle(.secondary)
                     if let st = s.lastSteer {
                         HStack {
                             SteeringMark(view: st, size: 36)
@@ -283,20 +284,11 @@ private struct AppleSteeringOverlayContent: View {
     var body: some View {
         let live = AppleStreamRegistry.shared.liveSteeringStreamIDs
         let chosen = center.steeringStreamID
+        // The card only while the stream is the primary window (Ken, Nov 23: no hide).
         let mode = BtrxSteeringTarget.tileOverlay(tile: tile, live: live, chosen: chosen,
-                                                  hasView: center.snapshot.steerOverlay != nil, shown: center.overlayShown)
-        if mode == .hiddenChip {
-            // Hidden by the operator: a small chip says so (the pod has not gone quiet); tap shows it again.
-            Button { center.setOverlayShown(true) } label: {
-                Text(BtrxDeskPodText.overlayHidden)
-                    .font(.system(size: 12))
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 5)
-                    .background(.black.opacity(0.55), in: RoundedRectangle(cornerRadius: 10))
-            }
-            .buttonStyle(.plain)
-        } else if mode == .pick {
+                                                  hasView: center.snapshot.steerOverlay != nil,
+                                                  onStream: BtrxTelemetryRoute.streamShows(center.telemetryWindow))
+        if mode == .pick {
             // Several live streams and none marked yet: offer the pick on each live tile.
             Button { center.chooseSteeringStream(tile) } label: {
                 Text(BtrxDeskPodText.steerPick)
@@ -309,14 +301,6 @@ private struct AppleSteeringOverlayContent: View {
             .buttonStyle(.plain)
         } else if mode == .card, let v = center.snapshot.steerOverlay {
             VStack(spacing: 2) {
-                // Hide only this card (link, STEER and mutes keep working); "BTRX hidden" brings it back.
-                HStack {
-                    Spacer(minLength: 0)
-                    Button(BtrxDeskPodText.overlayHide) { center.setOverlayShown(false) }
-                        .font(.system(size: 11))
-                        .foregroundStyle(.white.opacity(0.85))
-                        .buttonStyle(.plain)
-                }
                 // The arrow carries the meaning; the word is a small secondary label only.
                 SteeringMark(view: v, size: 132)
                     .contentShape(Circle())
@@ -482,9 +466,13 @@ struct BtrxBearingSection: View {
         let p = shape ?? Double(settings.fadeShapeP)
         let draft = BtrxBearingSettings(fadeTotalS: Float(m.rounded()) * 60, fadeShapeP: Float(p))
         VStack(alignment: .leading, spacing: 6) {
-            Toggle(BtrxBearingText.layerSwitch, isOn: Binding(get: { center.bearingOn }, set: { center.setBearingOn($0) }))
-            Text(BtrxBearingText.layerSwitchHint).font(.footnote).foregroundStyle(.secondary)
-            if !center.bearingOn, let error = center.bearingError { Text(error).font(.footnote).foregroundStyle(.red) }
+            // Ken, Nov 23: no on/off; the layer runs while BTRX is enabled and the map shows it while primary.
+            Text(BtrxBearingText.layerTitle).fontWeight(.semibold)
+            Text(BtrxBearingText.layerHint).font(.footnote).foregroundStyle(.secondary)
+            if !center.bearingOn, let error = center.bearingError {
+                Text(error).font(.footnote).foregroundStyle(.red)
+                Button(BtrxBearingText.layerRetry) { center.retryBearingLayer() }.buttonStyle(.bordered)
+            }
 
             Text("\(BtrxBearingText.fadeTime): \(BtrxBearingText.minutes(Int(m.rounded())))")
             Slider(value: Binding(get: { m }, set: { minutes = $0 }), in: 1...30, step: 1) { editing in
@@ -769,7 +757,7 @@ struct BtrxOwnAircraftSuggestion: View {
     @ObservedObject var center: BtrxDeskPodCenter
     @State private var collapsedKey: UInt64?
     var body: some View {
-        if center.bearingOn, let sources = center.bearingSnapshot?.sources,
+        if BtrxTelemetryRoute.mapShows(bearingOn: center.bearingOn, window: center.telemetryWindow), let sources = center.bearingSnapshot?.sources,
            let src = BtrxOwnSuggestion.pick(sources, answers: center.ownAnswers) {
             if collapsedKey == src.key {
                 Button { collapsedKey = nil } label: {
@@ -841,7 +829,7 @@ struct BtrxFocusChip: View {
     @ObservedObject var center: BtrxDeskPodCenter
     @State private var menu = false
     var body: some View {
-        let snap = center.bearingOn ? center.bearingSnapshot : nil
+        let snap = BtrxTelemetryRoute.mapShows(bearingOn: center.bearingOn, window: center.telemetryWindow) ? center.bearingSnapshot : nil
         let src = snap.flatMap { s in s.focusKey == 0 ? nil : s.sources.first(where: { $0.key == s.focusKey }) }
         let restore = !center.ignoredByAll.isEmpty || (center.snapshot.ignoreAll?.saved.isEmpty == false)
         let launch = (snap?.sources ?? []).filter { $0.launch && !$0.ignored }

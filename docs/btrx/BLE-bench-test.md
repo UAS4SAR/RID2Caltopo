@@ -303,10 +303,12 @@ Also check (next build):
 - **NO PORT.** With pod B off the board link (STEER port -128 and no `imu` flag)
   the hint reads *NO PORT* with a gray arrow and the last hint held, instead of a
   hard RIGHT. Unplug the board cable briefly to see it.
-- **Hide / show.** **Hide** on the card (or **Show steering overlay on the stream**
-  off in the Steering section) hides only the card: the tile shows *BTRX hidden*,
-  the link, STEER, mutes and the Steering section keep going. Tap *BTRX hidden* to
-  show the card again. The choice survives an app restart.
+- **Primary window (Nov 23).** There is no hide: BTRX telemetry is always shown while
+  BTRX is enabled, on the primary window only. The card shows on the stream while the
+  stream is full screen or the larger split pane; with the map primary the bearing
+  layer shows on the map instead. Drag the divider past 55 % either way to move it
+  (it holds between 45 and 55 %; an even split is the map). The Steering section
+  reads *Telemetry shown on: Stream (primary view)* or *Map (primary view)*.
 - **LEVEL on the bench.** The pod gates attitude at roll over 10° or pitch over
   15° (`btrx_types.h`). Keep it level: a pod propped up reads LEVEL with the last
   hint and arrow length frozen.

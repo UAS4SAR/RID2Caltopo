@@ -319,19 +319,24 @@ class BtrxSteeringTest {
     // ---- which tile (the drone carrying the pod) ----
 
     @Test
-    fun hiddenOverlayShowsOnlyTheBtrxHiddenChip() {
-        fun mode(tile: String, live: Set<String>, chosen: String?, hasView: Boolean, shown: Boolean) =
-            BtrxSteeringTarget.tileOverlay(tile, live, chosen, hasView, shown)
-        assertEquals(BtrxSteeringTarget.TileOverlay.CARD, mode("A", setOf("A"), null, true, shown = true))
-        assertEquals(BtrxSteeringTarget.TileOverlay.HIDDEN_CHIP, mode("A", setOf("A"), null, true, shown = false))
-        // No live steering (not paired, link down, STEER stopped): nothing, hidden or not.
-        assertEquals(BtrxSteeringTarget.TileOverlay.NONE, mode("A", setOf("A"), null, false, shown = false))
-        // Several live, none chosen: the pick, or the chip while hidden.
-        assertEquals(BtrxSteeringTarget.TileOverlay.PICK, mode("A", setOf("A", "B"), null, true, shown = true))
-        assertEquals(BtrxSteeringTarget.TileOverlay.HIDDEN_CHIP, mode("A", setOf("A", "B"), null, true, shown = false))
+    /**
+     * Ken, Nov 23: no "BTRX hidden" chip; the card shows only while the stream is primary, and the
+     * "Drone Pod is on this drone" pick (a setting) shows whichever window is primary.
+     */
+    fun cardFollowsThePrimaryWindowAndThereIsNoHide() {
+        fun mode(tile: String, live: Set<String>, chosen: String?, hasView: Boolean, onStream: Boolean) =
+            BtrxSteeringTarget.tileOverlay(tile, live, chosen, hasView, onStream)
+        assertEquals(BtrxSteeringTarget.TileOverlay.CARD, mode("A", setOf("A"), null, true, onStream = true))
+        assertEquals(BtrxSteeringTarget.TileOverlay.NONE, mode("A", setOf("A"), null, true, onStream = false))
+        // No live steering (not paired, link down, STEER stopped): nothing.
+        assertEquals(BtrxSteeringTarget.TileOverlay.NONE, mode("A", setOf("A"), null, false, onStream = true))
+        // Several live, none chosen: the pick, on either primary window.
+        assertEquals(BtrxSteeringTarget.TileOverlay.PICK, mode("A", setOf("A", "B"), null, true, onStream = true))
+        assertEquals(BtrxSteeringTarget.TileOverlay.PICK, mode("A", setOf("A", "B"), null, true, onStream = false))
+        assertEquals(BtrxSteeringTarget.TileOverlay.CARD, mode("A", setOf("A", "B"), "A", true, onStream = true))
         // The other drone's tile shows nothing either way.
-        assertEquals(BtrxSteeringTarget.TileOverlay.NONE, mode("B", setOf("A", "B"), "A", true, shown = true))
-        assertEquals(BtrxSteeringTarget.TileOverlay.NONE, mode("B", setOf("A", "B"), "A", true, shown = false))
+        assertEquals(BtrxSteeringTarget.TileOverlay.NONE, mode("B", setOf("A", "B"), "A", true, onStream = true))
+        assertEquals(BtrxSteeringTarget.TileOverlay.NONE, mode("B", setOf("A", "B"), "A", true, onStream = false))
     }
 
     @Test
