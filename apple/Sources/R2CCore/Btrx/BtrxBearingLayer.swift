@@ -305,6 +305,8 @@ public final class BtrxBearingLayer: @unchecked Sendable {
         cfg.fade_total_s = s.fadeTotalS
         cfg.fade_shape_p = s.fadeShapeP
         cfg.lag_trace = trace
+        cfg.stale_fade_start_s = Float(BTRX_BEARING_STALE_FADE_START_S)   // Nov 23: same as Android
+        cfg.stale_hide_s = Float(BTRX_BEARING_STALE_HIDE_S)
         cfg.launch_auto_mute = launchAutoMute
         cfg.callback_ctx = Unmanaged.passUnretained(logSink).toOpaque()
         cfg.log = { ctx, _, msg in
@@ -880,7 +882,11 @@ public enum BtrxBearingText {
     public static let done = "Done"
     public static let section = "Bearing map layer"
     public static let layerSwitch = "Show bearing layer on map"
-    public static let layerSwitchHint = "Off at every launch. Shades where each BTRX source is likely to be; tap the shading to show or hide sources."
+    public static let layerSwitchHint = "On whenever BTRX is enabled. Shades where each BTRX source is likely to be; tap the shading to show or hide sources."
+    /// Nov 23: the panel's sources were all not heard for a minute (Show N older lists them).
+    public static let panelAllStale = "Not heard in the last minute."
+    public static let hideOlder = "Hide older"
+    public static func showOlder(_ n: Int) -> String { "Show \(n) older (not heard for 1 min)" }
     public static let fadeTime = "Fade time"
     public static let fadeShape = "Fade shape"
     public static let lagTrace = "Lag trace log (restarts the layer)"

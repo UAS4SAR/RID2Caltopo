@@ -106,7 +106,7 @@ object BtrxManager {
 
     // ---- bearing map layer (Developer Tools; docs/btrx/BEARING-LAYER-spec.md) ----
 
-    /** The BTRX bearing layer. Off at every launch; only the worker starts, ticks and stops it. */
+    /** The BTRX bearing layer. On whenever BTRX is enabled (Nov 23); only the worker starts, ticks and stops it. */
     val bearing = BtrxBearingLayer(
         engine = BtrxBearingNative,
         monoUs = { android.os.SystemClock.elapsedRealtimeNanos() / 1000L },
@@ -116,7 +116,11 @@ object BtrxManager {
         traceLog = { logger.debug(it) },
     )
     private val _bearingOn = MutableStateFlow(false)
-    /** "Show bearing layer on map" (Developer Tools > BTRX); never on at launch. */
+    /**
+     * "Show bearing layer on map" (Developer Tools > BTRX). Ken, Nov 23: on by default, turned on
+     * whenever BTRX is enabled (at launch with a link on, and when a link is turned on); the
+     * switch still turns it off for the session. Not persisted, so no install keeps it off.
+     */
     val bearingOn: StateFlow<Boolean> = _bearingOn.asStateFlow()
     private val _bearingSettings = MutableStateFlow(BtrxBearingSettings())
     val bearingSettings: StateFlow<BtrxBearingSettings> = _bearingSettings.asStateFlow()
@@ -134,6 +138,14 @@ object BtrxManager {
     fun setBearingOn(on: Boolean) {
         _bearingOn.value = on
         worker.execute { applyBearingOn(on) }
+    }
+
+    /** Worker: BTRX enabled, so the bearing layer goes on (unless it already is). */
+    private fun autoBearingOn(reason: String) {
+        if (!BtrxBearingAutoOn.shouldTurnOn(btrxEnabled = true, bearingOn = _bearingOn.value)) return
+        logger.info("bearing layer on: $reason")
+        _bearingOn.value = true
+        applyBearingOn(true)
     }
 
     private fun applyBearingOn(on: Boolean) {
@@ -342,6 +354,7 @@ object BtrxManager {
             setAttachActivityEnabled(usbDebug)
             if (usbHost && usbDebug) scanAttached()
             applyArbiter(arbiter.update(bluetoothEnabled = enabled, usbDebugEnabled = usbDebug))
+            if (enabled || usbDebug) autoBearingOn("BTRX enabled at launch")
             publish()
         }
         worker.scheduleWithFixedDelay({
@@ -369,6 +382,7 @@ object BtrxManager {
         if (enabled) requestChipConnect() else forgetChipSession()
         logger.info("Desk Pod Bluetooth link turned ${if (enabled) "on" else "off"}")
         applyArbiter(arbiter.update(bluetoothEnabled = enabled))
+        if (enabled) autoBearingOn("Desk Pod Bluetooth link turned on")
         publish()
     }
 
@@ -389,6 +403,7 @@ object BtrxManager {
             }
         }
         applyArbiter(arbiter.update(usbDebugEnabled = enabled))
+        if (enabled) autoBearingOn("Desk Pod USB debug link turned on")
         if (enabled && usbHost) scanAttached()
         publish()
     }

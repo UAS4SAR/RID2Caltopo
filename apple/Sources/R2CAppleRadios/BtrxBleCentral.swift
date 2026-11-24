@@ -828,9 +828,11 @@ public final class BtrxDeskPodCenter: ObservableObject {
         deskPodScreenRequest += 1
     }
 
-    /// Call once at launch; connects only when the operator turned Bluetooth on.
+    /// Call once at launch; connects only when the operator turned Bluetooth on (and then
+    /// turns the bearing layer on, Nov 23).
     public func start() {
         if bluetoothEnabled { central.setEnabled(true, remembered: rememberedPeripheral) }
+        if bluetoothEnabled { autoBearingOn("BTRX enabled at launch") }
     }
 
     public var rememberedPeripheral: UUID? { defaults.string(forKey: Self.keyPeripheral).flatMap(UUID.init(uuidString:)) }
@@ -848,6 +850,14 @@ public final class BtrxDeskPodCenter: ObservableObject {
         defaults.set(on, forKey: Self.keyEnabled)
         central.setEnabled(on, remembered: rememberedPeripheral)
         if on { requestChipConnect() } else { forgetChipSession() }
+        if on { autoBearingOn("Desk Pod Bluetooth link turned on") }
+    }
+
+    /// BTRX enabled, so the bearing layer goes on (unless it already is). Ken, Nov 23.
+    private func autoBearingOn(_ reason: String) {
+        guard BtrxBearingAutoOn.shouldTurnOn(btrxEnabled: true, bearingOn: bearingOn) else { return }
+        OperationalBridgePacketLog.write?("INFO", "Btrx", "bearing layer on: \(reason)")
+        setBearingOn(true)
     }
 
     public func forgetDeskPod() {
@@ -959,7 +969,9 @@ public final class BtrxDeskPodCenter: ObservableObject {
     private static let keyBearingLagTrace = "btrx.bearing.lag_trace"
     private static let keyBearingDisplay = "btrx.bearing.display"
 
-    /// "Show bearing layer on map"; never on at launch.
+    /// "Show bearing layer on map". Ken, Nov 23: on by default, turned on whenever BTRX is enabled
+    /// (at launch with the link on, and when the link is turned on); the switch still turns it
+    /// off for the session. Not persisted, so no install keeps it off.
     @Published public private(set) var bearingOn = false
     @Published public private(set) var bearingSettings = BtrxBearingSettings()
     @Published public private(set) var bearingLagTrace = false

@@ -1,0 +1,28 @@
+# BTRX source staleness (Ken, Nov 23: old devices fade away and lose focus within 60 s, new sources get first billing;
+# the Nearby Sources panel lists by signal strength and freshness and re-sorts at most every 12 s while open).
+# Shared by Android BtrxStalenessTest and iOS BtrxStalenessTests; the engine (btrx_bearing.h) has the same fade and hide.
+# const	name	value
+const	fade_start_s	25
+const	hide_s	60
+const	new_s	10
+const	panel_resort_s	12
+const	age_penalty_db_per_s	0.5
+# presence	age_s	expected (1 up to fade_start_s, linear to 0 at hide_s)
+presence	0	1
+presence	25	1
+presence	30	0.857143
+presence	42.5	0.5
+presence	59	0.028571
+presence	60	0
+presence	300	0
+# rank	case	sources key:rssi(- = none):first_age_s:last_age_s	expected order (new, fresh, fading, stale; then rssi - 0.5 dB/s of age; then key)
+rank	r1	1:-60:100:2,2:-50:100:30,3:-80:5:1,4:-40:200:70,5:-70:300:0,6:-:50:3	3,1,5,6,2,4
+rank	r2	9:-65:9:26,8:-60:50:20,7:-70:50:0	7,8,9
+# panel	case	t_s	holding (a finger on the list)	show_older	sources key:rssi:first_s:last_s (absolute)	expected rows
+panel	p1	100	0	0	1:-60:0:99,2:-50:0:98,3:-80:0:60,4:-40:0:30	2,1,3
+panel	p1	105	0	0	1:-40:0:105,2:-50:0:104,3:-80:0:60,4:-40:0:30,5:-45:103:105	2,1,3,5
+panel	p1	112	1	0	1:-40:0:105,2:-50:0:104,3:-80:0:60,4:-40:0:30,5:-45:103:105	2,1,3,5
+panel	p1	113	0	0	1:-40:0:105,2:-50:0:104,3:-80:0:60,4:-40:0:30,5:-45:103:105	5,1,2,3
+panel	p1	114	0	1	1:-40:0:105,2:-50:0:104,3:-80:0:60,4:-40:0:30,5:-45:103:105	1,5,2,3,4
+panel	p1	120	0	1	1:-40:0:120,2:-30:0:120,3:-80:0:60,4:-40:0:30,5:-45:103:120	1,5,2,3,4
+panel	p1	121	0	1	1:-40:0:120,3:-80:0:60,4:-40:0:30,5:-45:103:120	1,5,3,4

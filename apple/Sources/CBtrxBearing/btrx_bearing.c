@@ -43,6 +43,7 @@ void btrx_bearing_config_default(btrx_bearing_config_t *c) {
     c->fine_cell_m = 2.5f; c->fine_grid_cells = 160; c->fine_footprint_m = 100;
     c->fine_max_agl_m = 30; c->fine_max_speed_mps = 4; c->fine_strong_dbm = -65; c->fine_tile_pool_tiles = 3072;
     c->ray_ambiguous_ll = 0.5f; c->focus_dim = 0.25f; c->pin_max_axis_2s_m = 30;
+    c->stale_fade_start_s = 0; c->stale_hide_s = 0;
     c->gate_on_attitude_flag = false; c->roll_correct = true;
     c->roll_full_weight_deg = 10; c->roll_max_deg = 45;
     c->avg_windows = 3; c->avg_span_ms = 2600;
@@ -90,6 +91,7 @@ static bool config_ok(const btrx_bearing_config_t *c) {
             || c->fine_grid_cells > 1024 || !(c->fine_footprint_m > 0) || c->fine_tile_pool_tiles < 1)) return false;
     if (!(c->range_exponent > 0) || !fin(c->range_ref_dbm) || !(c->range_margin >= 0)) return false;
     if (!(c->focus_dim >= 0 && c->focus_dim <= 1) || !(c->roll_max_deg > 0)) return false;
+    if (!(c->stale_fade_start_s >= 0) || !(c->stale_hide_s >= 0)) return false;
     if (!fin(c->range_cap_dbm) || !(c->range_cap_margin > 0) || !(c->range_cap_min_m > 0) || !(c->range_cap_nats_per_100m >= 0) || !fin(c->range_cap_max_agl_m)) return false;
     if (!(c->cover_free_m >= 0) || !(c->cover_nats_per_100m >= 0)) return false;
     if (!fin(c->launch_rssi_dbm) || !(c->launch_radius_m >= 0) || !fin(c->launch_max_agl_m) || !(c->launch_window_s >= 0)) return false;
@@ -827,6 +829,17 @@ btrx_bearing_status_t btrx_bearing_tick(btrx_bearing_t *h, int64_t now, bool *pu
     process_pending(h, now);
     if (bb_expire(h, now)) h->dirty = true;
     if (h->fine && bb_expire(h->fine, now)) h->dirty = true;
+    /* Nov 23: a focused source not heard for stale_hide_s loses focus (it no longer holds its
+     * slot against newcomers either: the eviction rule keeps focused sources). */
+    if (h->focus_key && h->cfg.stale_hide_s > 0) {
+        int32_t fs = bb_find_source(h, h->focus_key);
+        if (fs != BB_NONE && now - h->sources[fs].last_us >= (int64_t)((double)h->cfg.stale_hide_s * 1e6)) {
+            bb_log(h, 1, "BBFOCUS %016llx cleared: not heard for %.0f s",
+                (unsigned long long)h->focus_key, (now - h->sources[fs].last_us) / 1e6);
+            h->focus_key = 0;
+            h->force_publish = true;
+        }
+    }
     if (h->pose.pos_n > 0 && h->have_anchor) {
         const bb_pos_t *q = &h->pose.pos[(h->pose.pos_head - 1 + h->pose.pos_cap) % h->pose.pos_cap];
         double e, n;

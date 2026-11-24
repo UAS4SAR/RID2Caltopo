@@ -7753,7 +7753,14 @@ final class BtrxBearingMapRenderer: MKOverlayRenderer, @unchecked Sendable {
             let mode = BtrxBearingView.drawMode(s, snap)
             if mode == .hidden { continue }
             let dim = mode == .dim
-            let wantLabel = !dim && BtrxBearingView.labelShown(s, display, focusKey: snap.focusKey)
+            // Nov 23: not heard for 25 s fades out by 60 s (the engine fades the shading alike).
+            let presence = BtrxStaleness.presence(s, nowUs: snap.tUs)
+            let focused = snap.focusKey != 0 && s.key == snap.focusKey
+            let wantLabel = !dim && (focused || presence >= 0.5) && BtrxBearingView.labelShown(s, display, focusKey: snap.focusKey)
+            let labelText = BtrxBearingView.mapLabel(s, nowUs: snap.tUs)
+            ctx.saveGState()
+            defer { ctx.restoreGState() }
+            ctx.setAlpha(CGFloat(presence))
             let color = UIColor(red: CGFloat((s.rgb >> 16) & 0xFF) / 255, green: CGFloat((s.rgb >> 8) & 0xFF) / 255,
                                 blue: CGFloat(s.rgb & 0xFF) / 255, alpha: 1)
             if let ray = s.latestRay {
@@ -7800,15 +7807,15 @@ final class BtrxBearingMapRenderer: MKOverlayRenderer, @unchecked Sendable {
                     ctx.setFillColor(color.cgColor); ctx.fillEllipse(in: dot)
                     ctx.setStrokeColor(UIColor.white.withAlphaComponent(0.8).cgColor); ctx.setLineWidth(2 * px); ctx.strokeEllipse(in: dot)
                 }
-                if wantLabel { addLabel(s, BtrxBearingText.label(s), c) }
+                if wantLabel { addLabel(s, labelText, c) }
             } else if !wantLabel {
                 // no label
             } else if let lat = s.labelLat, let lon = s.labelLon {
                 // Inside the shading (Nov 16: labels sat 240 m out along a fixed 400 m ray).
-                addLabel(s, BtrxBearingText.label(s), point(for: MKMapPoint(CLLocationCoordinate2D(latitude: lat, longitude: lon))))
+                addLabel(s, labelText, point(for: MKMapPoint(CLLocationCoordinate2D(latitude: lat, longitude: lon))))
             } else if let ray = s.latestRay {
                 let end = point(for: MKMapPoint(Self.destination(ray.apexLat, ray.apexLon, Double(ray.centreTrueDeg), Double(ray.lengthM) * 0.6)))
-                addLabel(s, BtrxBearingText.label(s), end)
+                addLabel(s, labelText, end)
             }
         }
         // Labels last, placed clear of each other and of the drone labels (Nov 20). The layout
@@ -8164,7 +8171,10 @@ final class BtrxBearingMapController: NSObject, UIGestureRecognizerDelegate {
         let edge = map.convert(CGPoint(x: location.x + Self.touchRadiusPt, y: location.y), toCoordinateFrom: map)
         let radiusM = CLLocation(latitude: here.latitude, longitude: here.longitude)
             .distance(from: CLLocation(latitude: edge.latitude, longitude: edge.longitude))
+        // Nov 23: shading of sources not heard for a minute is gone from the map: not tappable either.
+        let nowUs = snapshot?.tUs ?? 0
         return layer.sourcesAt(lat: here.latitude, lon: here.longitude, radiusM: Float(radiusM))
+            .filter { !BtrxStaleness.stale($0, nowUs: nowUs) }
     }
 
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,

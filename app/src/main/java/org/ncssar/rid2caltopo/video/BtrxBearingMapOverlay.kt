@@ -18,6 +18,7 @@ import org.ncssar.rid2caltopo.btrx.BtrxBearingDisplay
 import org.ncssar.rid2caltopo.btrx.BtrxBearingDrawMode
 import org.ncssar.rid2caltopo.btrx.BtrxBearingSnapshot
 import org.ncssar.rid2caltopo.btrx.BtrxBearingView
+import org.ncssar.rid2caltopo.btrx.BtrxStaleness
 import org.ncssar.rid2caltopo.btrx.BtrxLabelLayout
 import org.ncssar.rid2caltopo.btrx.BtrxBearingSource
 import org.ncssar.rid2caltopo.btrx.BtrxBearingText
@@ -125,11 +126,14 @@ class BtrxBearingMapOverlay(
             val mode = BtrxBearingView.drawMode(s, snap)
             if (mode == BtrxBearingDrawMode.HIDDEN) continue
             val dim = mode == BtrxBearingDrawMode.DIM
+            // Nov 23: not heard for 25 s fades out by 60 s (the engine fades the shading alike).
+            val presence = BtrxStaleness.presence(s, snap.tUs)
+            haloPaint.alpha = (0xCC * presence).toInt()
             val color = 0xFF000000.toInt() or s.rgb
             s.latestRay?.let { ray ->
                 val age = nowUs - ray.tUs
                 if (age in 0 until RAY_FADE_US) {
-                    val a = ((if (dim) 90 else 255) * (1f - age.toFloat() / RAY_FADE_US)).toInt().coerceIn(0, 255)
+                    val a = ((if (dim) 90 else 255) * (1f - age.toFloat() / RAY_FADE_US) * presence).toInt().coerceIn(0, 255)
                     rayPaint.color = color; rayPaint.alpha = a
                     proj.toPixels(GeoPoint(ray.apexLat, ray.apexLon), pt)
                     val ax = pt.x.toFloat(); val ay = pt.y.toFloat()
@@ -160,34 +164,37 @@ class BtrxBearingMapOverlay(
                 }
             }
             val est = s.estimate?.takeIf { BtrxBearingView.estimateShown(s, d, snap.focusKey) }
-            val wantLabel = !dim && BtrxBearingView.labelShown(s, d, snap.focusKey)
+            val focused = snap.focusKey != 0L && s.key == snap.focusKey
+            val wantLabel = !dim && (focused || presence >= 0.5f) && BtrxBearingView.labelShown(s, d, snap.focusKey)
+            val labelText = BtrxBearingView.mapLabel(s, snap.tUs)
             if (est != null) {
                 for (k in 1..2) {
                     ellipsePath(proj, est.lat, est.lon, k * est.axisMajor1sM, k * est.axisMinor1sM, est.axisMajorDeg)
                     c.drawPath(path, haloPaint)
-                    ellipsePaint.color = color; ellipsePaint.alpha = (if (k == 1) 255 else 170) * (if (dim) 1 else 3) / 3
+                    ellipsePaint.color = color; ellipsePaint.alpha = ((if (k == 1) 255 else 170) * (if (dim) 1 else 3) / 3 * presence).toInt()
                     c.drawPath(path, ellipsePaint)
                 }
                 proj.toPixels(GeoPoint(est.lat, est.lon), pt)
-                if (s.pinned) drawPin(c, pt.x.toFloat(), pt.y.toFloat(), color, dim)
+                if (s.pinned) drawPin(c, pt.x.toFloat(), pt.y.toFloat(), color, dim, presence)
                 else {
-                    dotPaint.color = color
+                    dotPaint.color = color; dotPaint.alpha = (255 * presence).toInt()
                     c.drawCircle(pt.x.toFloat(), pt.y.toFloat(), 4f * density, haloPaint)
                     c.drawCircle(pt.x.toFloat(), pt.y.toFloat(), 4f * density, dotPaint)
                 }
-                if (wantLabel) addLabel(s.key, BtrxBearingText.label(s), pt.x.toFloat(), pt.y.toFloat(), BtrxBearingView.labelPriority(s, snap))
+                if (wantLabel) addLabel(s.key, labelText, pt.x.toFloat(), pt.y.toFloat(), BtrxBearingView.labelPriority(s, snap))
             } else if (!wantLabel) {
                 // no label
             } else if (s.labelLat != null && s.labelLon != null) {
                 // Inside the shading (Nov 16: labels sat 240 m out along a fixed 400 m ray).
                 proj.toPixels(GeoPoint(s.labelLat, s.labelLon), pt)
-                addLabel(s.key, BtrxBearingText.label(s), pt.x.toFloat(), pt.y.toFloat(), BtrxBearingView.labelPriority(s, snap))
+                addLabel(s.key, labelText, pt.x.toFloat(), pt.y.toFloat(), BtrxBearingView.labelPriority(s, snap))
             } else s.latestRay?.let { ray ->
                 val end = destination(ray.apexLat, ray.apexLon, ray.centreTrueDeg.toDouble(), ray.lengthM.toDouble() * 0.6)
                 proj.toPixels(end, pt)
-                addLabel(s.key, BtrxBearingText.label(s), pt.x.toFloat(), pt.y.toFloat(), BtrxBearingView.labelPriority(s, snap))
+                addLabel(s.key, labelText, pt.x.toFloat(), pt.y.toFloat(), BtrxBearingView.labelPriority(s, snap))
             }
         }
+        haloPaint.alpha = 0xCC
         val obstacles = ArrayList<BtrxLabelLayout.Box>(DroneLabelScreenRects.recent())
         // "Strongest here" for the focused source, on top.
         snap.sources.firstOrNull { it.key == snap.focusKey && snap.focusKey != 0L }?.let { f ->
@@ -219,14 +226,14 @@ class BtrxBearingMapOverlay(
     }
 
     /** Pinned source: a bold ring with a cross and a centre dot, distinct from the estimate dot. */
-    private fun drawPin(c: Canvas, x: Float, y: Float, color: Int, dim: Boolean) {
+    private fun drawPin(c: Canvas, x: Float, y: Float, color: Int, dim: Boolean, presence: Float = 1f) {
         val r = PIN_RADIUS_DP * density
         c.drawCircle(x, y, r, haloPaint)
-        pinPaint.color = color; pinPaint.alpha = if (dim) 120 else 255
+        pinPaint.color = color; pinPaint.alpha = ((if (dim) 120 else 255) * presence).toInt()
         c.drawCircle(x, y, r, pinPaint)
         c.drawLine(x - 1.6f * r, y, x - 0.5f * r, y, pinPaint); c.drawLine(x + 0.5f * r, y, x + 1.6f * r, y, pinPaint)
         c.drawLine(x, y - 1.6f * r, x, y - 0.5f * r, pinPaint); c.drawLine(x, y + 0.5f * r, x, y + 1.6f * r, pinPaint)
-        pinFill.color = color; pinFill.alpha = if (dim) 120 else 255
+        pinFill.color = color; pinFill.alpha = ((if (dim) 120 else 255) * presence).toInt()
         c.drawCircle(x, y, 3f * density, pinFill)
     }
 
@@ -288,7 +295,8 @@ class BtrxBearingMapOverlay(
         val here = proj.fromPixels(e.x.toInt(), e.y.toInt()) as GeoPoint
         val edge = proj.fromPixels((e.x + TOUCH_RADIUS_DP * density).toInt(), e.y.toInt()) as GeoPoint
         val radiusM = here.distanceToAsDouble(edge).toFloat()
-        val hits = sourcesAt(here.latitude, here.longitude, radiusM)
+        // Nov 23: shading of sources not heard for a minute is gone from the map: not tappable either.
+        val hits = sourcesAt(here.latitude, here.longitude, radiusM).filter { !BtrxStaleness.stale(it, snap.tUs) }
         if (hits.isEmpty()) return false
         onSourcesTapped(hits.map { it.key }, e.x, e.y)
         return true

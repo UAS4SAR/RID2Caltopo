@@ -10,6 +10,13 @@ float btrx_bearing_bucket_width_s(float total_s, float min_s, float max_s) {
     return w;
 }
 
+float btrx_bearing_presence(float fade_start_s, float hide_s, float age_s) {
+    if (!(hide_s > 0) || !(age_s > fade_start_s)) return 1.0f;
+    if (age_s >= hide_s) return 0.0f;
+    if (!(hide_s > fade_start_s)) return 1.0f;
+    return (hide_s - age_s) / (hide_s - fade_start_s);
+}
+
 float btrx_bearing_half_strength_s(float total_s, float shape_p) {
     if (!(shape_p > 0)) shape_p = 1;
     return total_s * powf(0.5f, 1.0f / shape_p);

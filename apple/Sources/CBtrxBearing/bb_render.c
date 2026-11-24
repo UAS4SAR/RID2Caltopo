@@ -82,6 +82,8 @@ static void publish_fine(btrx_bearing_t *h, bb_snap_t *sn, const int32_t *draw_s
         const bb_source_t *s = &h->sources[slot];
         float dim = 1.0f;
         if (bb_focus_active(h) && !bb_focus_match(h, s)) dim = h->focus_hide ? 0.0f : h->cfg.focus_dim;
+        dim *= btrx_bearing_presence(h->cfg.stale_fade_start_s, h->cfg.stale_hide_s, (float)((now_us - s->last_us) / 1e6));
+        if (!(dim > 0)) continue;
         composite_rgba(sn->fine_rgba, N, alpha, bb_palette(s->colour), dim);
     }
     if (!any) return;
@@ -252,6 +254,7 @@ void bb_publish(btrx_bearing_t *h, int64_t now_us) {
         draw_slot[d] = order[draw[d]];
         float dim = 1.0f;
         if (bb_focus_active(h) && !o->focus_match) dim = h->focus_hide ? 0.0f : h->cfg.focus_dim;
+        dim *= btrx_bearing_presence(h->cfg.stale_fade_start_s, h->cfg.stale_hide_s, (float)((now_us - o->last_heard_us) / 1e6));
         composite_rgba(sn->rgba, N, o->alpha, o->rgb, dim);
     }
     publish_fine(h, sn, draw_slot, nd, now_us);

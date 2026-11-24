@@ -1,4 +1,5 @@
 import Foundation
+import CBtrxBearing
 
 /// Focus by class and/or maker (Nov 20 back-deck test: 40 devices around the takeoff spot).
 /// `classMask`: bit (1 << class) per bearing class (1 phone, 2 watch, 3 hearing aid, 4 tag,
@@ -99,9 +100,11 @@ public enum BtrxBearingView {
 
     public static func sliderFromMaxPm(_ m: Int) -> Float { m <= 0 ? Float(BtrxBearingDisplay.maxPlusMinusLimitM + 10) : Float(m) }
 
-    /// Hidden: muted, ignored, or outside a "hide the others" focus; dimmed: outside any other focus.
+    /// Hidden: muted, ignored, not heard for ``BtrxStaleness/hideS`` (Nov 23), or outside a "hide
+    /// the others" focus; dimmed: outside any other focus.
     public static func drawMode(_ s: BtrxBearingSource, _ snap: BtrxBearingSnapshot) -> BtrxBearingDrawMode {
-        drawMode(s, focusKey: snap.focusKey, focusActive: snap.focusActive, hideOthers: snap.focusFilter.hideOthers)
+        if BtrxStaleness.stale(s, nowUs: snap.tUs) { return .hidden }
+        return drawMode(s, focusKey: snap.focusKey, focusActive: snap.focusActive, hideOthers: snap.focusFilter.hideOthers)
     }
 
     public static func drawMode(_ s: BtrxBearingSource, focusKey: UInt64, focusActive: Bool, hideOthers: Bool) -> BtrxBearingDrawMode {
@@ -122,9 +125,22 @@ public enum BtrxBearingView {
         (focusKey != 0 && s.key == focusKey) || s.pinned || s.reportsInWindow >= d.minReports
     }
 
-    /// Label placement priority: focused, pinned, valid estimate, then more reports.
+    /// Label placement priority: focused, pinned, valid estimate, then more reports. Nov 23: a
+    /// new source ranks with the focus matches (first billing), a fading one last.
     public static func labelPriority(_ s: BtrxBearingSource, _ snap: BtrxBearingSnapshot) -> Int {
-        labelPriority(s, focusKey: snap.focusKey, focusActive: snap.focusActive)
+        let base = labelPriority(s, focusKey: snap.focusKey, focusActive: snap.focusActive)
+        if snap.focusKey != 0 && s.key == snap.focusKey { return base }
+        let reports = min(max(s.reportsInWindow, 0), 99_999)
+        switch BtrxStaleness.tier(s, nowUs: snap.tUs) {
+        case BtrxStaleness.tierNew: return max(base, 3 * 100_000 + reports)
+        case BtrxStaleness.tierFading, BtrxStaleness.tierStale: return reports
+        default: return base
+        }
+    }
+
+    /// Map label with the "new" tag for a source first heard within ``BtrxStaleness/newS``.
+    public static func mapLabel(_ s: BtrxBearingSource, nowUs: Int64) -> String {
+        (BtrxStaleness.isNew(s, nowUs: nowUs) ? "\(BtrxStaleness.newTag) · " : "") + BtrxBearingText.label(s)
     }
 
     public static func labelPriority(_ s: BtrxBearingSource, focusKey: UInt64, focusActive: Bool) -> Int {
@@ -232,4 +248,100 @@ public enum BtrxLabelLayout {
         }
         return out
     }
+}
+
+/// Source staleness (Ken, Nov 23 Timberland flight: an iPhone and two "unknown" sources heard
+/// a few times early stayed on the map all flight). Presentation only: a source not heard for
+/// ``fadeStartS`` fades, by ``hideS`` it is off the map and out of the panel, and the engine
+/// drops its focus (btrx_bearing.h stale_*; the evidence, the snapshot's source list, replay
+/// and logs keep it). New sources (first heard within ``newS``) get a "new" tag and first place.
+/// Same as Android; both run test-fixtures/btrx/staleness.tsv.
+public enum BtrxStaleness {
+    public static let fadeStartS = Float(BTRX_BEARING_STALE_FADE_START_S)
+    public static let hideS = Float(BTRX_BEARING_STALE_HIDE_S)
+    public static let newS: Float = 10
+    /// The open Nearby Sources panel re-sorts at most this often (rows update in place between).
+    public static let panelResortS: Float = 12
+    /// Panel score: RSSI less this much per second since last heard.
+    public static let agePenaltyDbPerS: Float = 0.5
+    public static let newTag = "new"
+    public static let tierNew = 0, tierFresh = 1, tierFading = 2, tierStale = 3
+
+    public static func ageS(nowUs: Int64, thenUs: Int64) -> Float { Float(max(nowUs - thenUs, 0)) / 1e6 }
+
+    /// 1 up to ``fadeStartS``, then linear to 0 at ``hideS`` (the engine's btrx_bearing_presence).
+    public static func presence(ageS: Float) -> Float { btrx_bearing_presence(fadeStartS, hideS, ageS) }
+
+    public static func presence(_ s: BtrxBearingSource, nowUs: Int64) -> Float { presence(ageS: ageS(nowUs: nowUs, thenUs: s.lastHeardUs)) }
+
+    public static func tier(firstAgeS: Float, lastAgeS: Float) -> Int {
+        if lastAgeS >= hideS { return tierStale }
+        if lastAgeS > fadeStartS { return tierFading }
+        return firstAgeS <= newS ? tierNew : tierFresh
+    }
+
+    public static func tier(_ s: BtrxBearingSource, nowUs: Int64) -> Int {
+        tier(firstAgeS: ageS(nowUs: nowUs, thenUs: s.firstHeardUs), lastAgeS: ageS(nowUs: nowUs, thenUs: s.lastHeardUs))
+    }
+
+    public static func isNew(_ s: BtrxBearingSource, nowUs: Int64) -> Bool { tier(s, nowUs: nowUs) == tierNew }
+
+    public static func stale(_ s: BtrxBearingSource, nowUs: Int64) -> Bool { tier(s, nowUs: nowUs) == tierStale }
+
+    /// Signal strength and freshness: the latest RSSI (else the peak; none = -127) less 0.5 dB per second unheard.
+    public static func score(_ s: BtrxBearingSource, nowUs: Int64) -> Float {
+        Float(s.lastRssiDbm ?? s.maxRssiDbm ?? -127) - agePenaltyDbPerS * min(ageS(nowUs: nowUs, thenUs: s.lastHeardUs), hideS)
+    }
+
+    /// New, fresh, fading, stale; within each the higher score; then the key.
+    public static func rank(_ sources: [BtrxBearingSource], nowUs: Int64) -> [BtrxBearingSource] {
+        let ranked: [(source: BtrxBearingSource, tier: Int, score: Float)] =
+            sources.map { (source: $0, tier: tier($0, nowUs: nowUs), score: score($0, nowUs: nowUs)) }
+        return ranked.sorted { (a, b) -> Bool in
+            if a.tier != b.tier { return a.tier < b.tier }
+            if a.score != b.score { return a.score > b.score }
+            return a.source.key < b.source.key
+        }.map { $0.source }
+    }
+}
+
+/// Row order of the open Nearby Sources panel (Ken, Nov 23): ranked by ``BtrxStaleness/rank(_:nowUs:)``,
+/// but re-sorted at most every ``BtrxStaleness/panelResortS`` and never while a finger is on the
+/// list, so a row does not move under a tap. Between re-sorts rows keep their places (values
+/// update in place), newcomers join at the end, evicted sources leave. Stale sources are left
+/// out at a re-sort unless `showOlder`; changing `showOlder` re-sorts at once. Same as Android.
+public final class BtrxPanelOrder {
+    private var keys: [UInt64] = []
+    private var sortedAtUs: Int64?
+    private var older = false
+
+    public init() {}
+
+    public func arrange(_ sources: [BtrxBearingSource], nowUs: Int64, holding: Bool, showOlder: Bool) -> [BtrxBearingSource] {
+        let byKey = Dictionary(sources.map { ($0.key, $0) }, uniquingKeysWith: { a, _ in a })
+        let shown = { (s: BtrxBearingSource) in showOlder || !BtrxStaleness.stale(s, nowUs: nowUs) }
+        let due = sortedAtUs.map { showOlder != older || nowUs < $0 || nowUs - $0 >= Int64(BtrxStaleness.panelResortS * 1e6) } ?? true
+        if due && (!holding || sortedAtUs == nil) {
+            keys = BtrxStaleness.rank(sources.filter(shown), nowUs: nowUs).map(\.key)
+            sortedAtUs = nowUs
+            older = showOlder
+        } else {
+            let kept = keys.filter { byKey[$0] != nil }
+            let keptSet = Set(kept)
+            keys = kept + BtrxStaleness.rank(sources.filter { !keptSet.contains($0.key) && shown($0) }, nowUs: nowUs).map(\.key)
+        }
+        return keys.compactMap { byKey[$0] }
+    }
+
+    /// Sources left out as stale (the "Show N older" button).
+    public func olderCount(_ sources: [BtrxBearingSource], nowUs: Int64) -> Int {
+        sources.filter { BtrxStaleness.stale($0, nowUs: nowUs) }.count
+    }
+}
+
+/// Ken, Nov 23: "Show bearing layer on map" was off by default; it goes on whenever BTRX is
+/// enabled (a Desk Pod link on at launch, or turned on), unless it already is. Turning BTRX off
+/// leaves it as it is. Same as Android.
+public enum BtrxBearingAutoOn {
+    public static func shouldTurnOn(btrxEnabled: Bool, bearingOn: Bool) -> Bool { btrxEnabled && !bearingOn }
 }

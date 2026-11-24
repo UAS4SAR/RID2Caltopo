@@ -1,6 +1,13 @@
 package org.ncssar.rid2caltopo.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
+import org.ncssar.rid2caltopo.btrx.BtrxPanelOrder
+import org.ncssar.rid2caltopo.btrx.BtrxStaleness
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -244,7 +251,7 @@ fun BtrxBearingStatusChip(line: String, modifier: Modifier = Modifier) {
     }
 }
 
-/** One panel row: swatch, checkbox (checked = shown), short ID, class, last heard, reports in the fade window. */
+/** One panel row: swatch, checkbox (checked = shown), short ID, "new", class, last heard, reports in the fade window, RSSI. */
 @Composable
 fun BtrxBearingSourceRow(src: BtrxBearingSource, nowUs: Long, onShownChange: (Boolean) -> Unit) {
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -254,11 +261,19 @@ fun BtrxBearingSourceRow(src: BtrxBearingSource, nowUs: Long, onShownChange: (Bo
         )
         Checkbox(checked = !src.muted, onCheckedChange = onShownChange)
         Text(src.shortId, fontWeight = FontWeight.SemiBold, maxLines = 1)
+        // Nov 23: a source first heard in the last 10 s is tagged "new".
+        if (BtrxStaleness.isNew(src, nowUs)) {
+            Text(
+                BtrxStaleness.NEW_TAG, color = MaterialTheme.colorScheme.onPrimary, style = MaterialTheme.typography.labelSmall,
+                modifier = Modifier.background(MaterialTheme.colorScheme.primary, RoundedCornerShape(4.dp)).padding(horizontal = 4.dp),
+            )
+        }
         // Two lines (Nov 20 A5 test: in a narrow panel "136 rpt" wrapped one letter per line).
         Column {
             Text(src.className, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Text(
-                BtrxBearingText.lastHeard(nowUs, src.lastHeardUs) + " · " + BtrxBearingText.reports(src.reportsInWindow),
+                BtrxBearingText.lastHeard(nowUs, src.lastHeardUs) + " · " + BtrxBearingText.reports(src.reportsInWindow) +
+                    (src.lastRssiDbm?.let { " · $it dBm" } ?: ""),
                 style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis,
             )
             if (src.ownSuspect) Text(BtrxBearingText.OWN_SUSPECT_TAG, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
@@ -281,20 +296,47 @@ fun BtrxBearingPanel(
     val snap by BtrxManager.bearing.snapshot.collectAsState()
     val s = snap ?: return
     val byKey = s.sources.associateBy { it.key }
-    val listed = rows.mapNotNull { byKey[it] }
+    val here = rows.mapNotNull { byKey[it] }
+    // Nov 23 (Ken): strongest and freshest first, stale ones sink and leave; re-sorted at most
+    // every 12 s and never under a finger, so a row does not move as it is tapped.
+    val order = remember { BtrxPanelOrder() }
+    var holding by remember { mutableStateOf(false) }
+    var showOlder by rememberSaveable { mutableStateOf(false) }
+    val listed = order.arrange(here, s.tUs, holding, showOlder)
+    val older = order.olderCount(here, s.tUs)
     Surface(modifier.widthIn(max = 420.dp), shape = MaterialTheme.shapes.medium, tonalElevation = 6.dp, shadowElevation = 6.dp) {
         Column(Modifier.padding(12.dp)) {
         // Title and × stay put while the rows scroll (Ken, Nov 23: Done was below the fold).
         BtrxPopupHeader(onDismiss = onDismiss) {
             Text(BtrxBearingText.PANEL_TITLE, style = MaterialTheme.typography.titleMedium)
         }
-        Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Column(
+            Modifier.weight(1f, fill = false)
+                .pointerInput(Unit) {
+                    // Watch only (nothing consumed): a finger on the list holds the order.
+                    awaitEachGesture {
+                        awaitFirstDown(requireUnconsumed = false)
+                        holding = true
+                        do { val e = awaitPointerEvent(PointerEventPass.Initial) } while (e.changes.any { it.pressed })
+                        holding = false
+                    }
+                }
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            if (listed.isEmpty()) Text(BtrxBearingText.PANEL_ALL_STALE, style = MaterialTheme.typography.bodySmall)
             listed.forEach { src ->
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                val presence = BtrxStaleness.presence(src, s.tUs)
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.alpha(0.4f + 0.6f * presence)) {
                     Box(Modifier.weight(1f)) {
                         BtrxBearingSourceRow(src, s.tUs, onShownChange = { shown -> BtrxManager.bearing.setMuted(listOf(src.key), !shown) })
                     }
                     TextButton(onClick = { onFocus(src) }) { Text(BtrxBearingText.FOCUS, style = MaterialTheme.typography.bodySmall) }
+                }
+            }
+            if (older > 0 || showOlder) {
+                TextButton(onClick = { showOlder = !showOlder }) {
+                    Text(if (showOlder) BtrxBearingText.HIDE_OLDER else BtrxBearingText.showOlder(older), style = MaterialTheme.typography.bodySmall)
                 }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {

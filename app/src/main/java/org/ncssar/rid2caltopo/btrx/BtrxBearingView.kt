@@ -80,9 +80,13 @@ object BtrxBearingView {
 
     fun sliderFromMaxPm(m: Int): Float = if (m <= 0) (BtrxBearingDisplay.MAX_PLUS_MINUS_M + 10).toFloat() else m.toFloat()
 
-    /** Hidden: muted, ignored, or outside a "hide the others" focus; dimmed: outside any other focus. */
+    /**
+     * Hidden: muted, ignored, not heard for [BtrxStaleness.HIDE_S] (Nov 23), or outside a "hide
+     * the others" focus; dimmed: outside any other focus.
+     */
     fun drawMode(s: BtrxBearingSource, snap: BtrxBearingSnapshot): BtrxBearingDrawMode =
-        drawMode(s, snap.focusKey, snap.focusActive, snap.focusFilter.hideOthers)
+        if (BtrxStaleness.stale(s, snap.tUs)) BtrxBearingDrawMode.HIDDEN
+        else drawMode(s, snap.focusKey, snap.focusActive, snap.focusFilter.hideOthers)
 
     fun drawMode(s: BtrxBearingSource, focusKey: Long, focusActive: Boolean, hideOthers: Boolean): BtrxBearingDrawMode = when {
         s.muted || s.ignored -> BtrxBearingDrawMode.HIDDEN
@@ -102,8 +106,24 @@ object BtrxBearingView {
     fun labelShown(s: BtrxBearingSource, d: BtrxBearingDisplay, focusKey: Long): Boolean =
         (focusKey != 0L && s.key == focusKey) || s.pinned || s.reportsInWindow >= d.minReports
 
-    /** Label placement priority: focused, pinned, valid estimate, then more reports. */
-    fun labelPriority(s: BtrxBearingSource, snap: BtrxBearingSnapshot): Int = labelPriority(s, snap.focusKey, snap.focusActive)
+    /**
+     * Label placement priority: focused, pinned, valid estimate, then more reports. Nov 23: a
+     * new source ranks with the focus matches (first billing), a fading one last.
+     */
+    fun labelPriority(s: BtrxBearingSource, snap: BtrxBearingSnapshot): Int {
+        val base = labelPriority(s, snap.focusKey, snap.focusActive)
+        if (snap.focusKey != 0L && s.key == snap.focusKey) return base
+        val reports = s.reportsInWindow.coerceIn(0, 99_999)
+        return when (BtrxStaleness.tier(s, snap.tUs)) {
+            BtrxStaleness.TIER_NEW -> maxOf(base, 3 * 100_000 + reports)
+            BtrxStaleness.TIER_FADING, BtrxStaleness.TIER_STALE -> reports
+            else -> base
+        }
+    }
+
+    /** Map label with the "new" tag for a source first heard within [BtrxStaleness.NEW_S]. */
+    fun mapLabel(s: BtrxBearingSource, nowUs: Long): String =
+        (if (BtrxStaleness.isNew(s, nowUs)) "${BtrxStaleness.NEW_TAG} · " else "") + BtrxBearingText.label(s)
 
     fun labelPriority(s: BtrxBearingSource, focusKey: Long, focusActive: Boolean): Int {
         val tier = when {
@@ -199,4 +219,107 @@ object BtrxLabelLayout {
         }
         return out
     }
+}
+
+/**
+ * Source staleness (Ken, Nov 23 Timberland flight: an iPhone and two "unknown" sources heard
+ * a few times early stayed on the map all flight). Presentation only: a source not heard for
+ * [FADE_START_S] fades, by [HIDE_S] it is off the map and out of the panel, and the engine
+ * drops its focus (btrx_bearing.h stale_*; the evidence, the snapshot's source list, replay
+ * and logs keep it). New sources (first heard within [NEW_S]) get a "new" tag and first place.
+ * Same as the iPad; both run test-fixtures/btrx/staleness.tsv.
+ */
+object BtrxStaleness {
+    /** Same as BTRX_BEARING_STALE_FADE_START_S / _HIDE_S in btrx_bearing.h (BtrxStalenessTest checks). */
+    const val FADE_START_S = 25f
+    const val HIDE_S = 60f
+    const val NEW_S = 10f
+    /** The open Nearby Sources panel re-sorts at most this often (rows update in place between). */
+    const val PANEL_RESORT_S = 12f
+    /** Panel score: RSSI less this much per second since last heard. */
+    const val AGE_PENALTY_DB_PER_S = 0.5f
+    const val NEW_TAG = "new"
+    const val TIER_NEW = 0
+    const val TIER_FRESH = 1
+    const val TIER_FADING = 2
+    const val TIER_STALE = 3
+
+    fun ageS(nowUs: Long, thenUs: Long): Float = ((nowUs - thenUs).coerceAtLeast(0L)) / 1e6f
+
+    /** 1 up to [FADE_START_S], then linear to 0 at [HIDE_S] (btrx_bearing_presence). */
+    fun presence(ageS: Float): Float = when {
+        !(ageS > FADE_START_S) -> 1f
+        ageS >= HIDE_S -> 0f
+        else -> (HIDE_S - ageS) / (HIDE_S - FADE_START_S)
+    }
+
+    fun presence(s: BtrxBearingSource, nowUs: Long): Float = presence(ageS(nowUs, s.lastHeardUs))
+
+    fun tier(firstAgeS: Float, lastAgeS: Float): Int = when {
+        lastAgeS >= HIDE_S -> TIER_STALE
+        lastAgeS > FADE_START_S -> TIER_FADING
+        firstAgeS <= NEW_S -> TIER_NEW
+        else -> TIER_FRESH
+    }
+
+    fun tier(s: BtrxBearingSource, nowUs: Long): Int = tier(ageS(nowUs, s.firstHeardUs), ageS(nowUs, s.lastHeardUs))
+
+    fun isNew(s: BtrxBearingSource, nowUs: Long): Boolean = tier(s, nowUs) == TIER_NEW
+
+    fun stale(s: BtrxBearingSource, nowUs: Long): Boolean = tier(s, nowUs) == TIER_STALE
+
+    /** Signal strength and freshness: the latest RSSI (else the peak; none = -127) less 0.5 dB per second unheard. */
+    fun score(s: BtrxBearingSource, nowUs: Long): Float =
+        (s.lastRssiDbm ?: s.maxRssiDbm ?: -127).toFloat() - AGE_PENALTY_DB_PER_S * minOf(ageS(nowUs, s.lastHeardUs), HIDE_S)
+
+    /** New, fresh, fading, stale; within each the higher score; then the key. */
+    fun rank(sources: List<BtrxBearingSource>, nowUs: Long): List<BtrxBearingSource> =
+        sources.map { Triple(it, tier(it, nowUs), score(it, nowUs)) }
+            .sortedWith(compareBy<Triple<BtrxBearingSource, Int, Float>> { it.second }
+                .thenByDescending { it.third }
+                .thenComparator { a, b -> java.lang.Long.compareUnsigned(a.first.key, b.first.key) })
+            .map { it.first }
+}
+
+/**
+ * Row order of the open Nearby Sources panel (Ken, Nov 23): ranked by [BtrxStaleness.rank], but
+ * re-sorted at most every [BtrxStaleness.PANEL_RESORT_S] and never while a finger is on the list,
+ * so a row does not move under a tap. Between re-sorts rows keep their places (values update in
+ * place), newcomers join at the end, evicted sources leave. Stale sources are left out at a
+ * re-sort unless [showOlder]; changing [showOlder] re-sorts at once. Same as the iPad.
+ */
+class BtrxPanelOrder {
+    private var keys: List<Long> = emptyList()
+    private var sortedAtUs: Long? = null
+    private var older: Boolean = false
+
+    fun arrange(sources: List<BtrxBearingSource>, nowUs: Long, holding: Boolean, showOlder: Boolean): List<BtrxBearingSource> {
+        val byKey = sources.associateBy { it.key }
+        val at = sortedAtUs
+        val due = at == null || showOlder != older || nowUs < at ||
+            nowUs - at >= (BtrxStaleness.PANEL_RESORT_S * 1e6f).toLong()
+        fun shown(s: BtrxBearingSource) = showOlder || !BtrxStaleness.stale(s, nowUs)
+        if (due && (!holding || at == null)) {
+            keys = BtrxStaleness.rank(sources.filter(::shown), nowUs).map { it.key }
+            sortedAtUs = nowUs
+            older = showOlder
+        } else {
+            val kept = keys.filter { it in byKey }
+            val keptSet = kept.toHashSet()
+            keys = kept + BtrxStaleness.rank(sources.filter { it.key !in keptSet && shown(it) }, nowUs).map { it.key }
+        }
+        return keys.mapNotNull { byKey[it] }
+    }
+
+    /** Sources left out as stale (the "Show N older" button). */
+    fun olderCount(sources: List<BtrxBearingSource>, nowUs: Long): Int = sources.count { BtrxStaleness.stale(it, nowUs) }
+}
+
+/**
+ * Ken, Nov 23: "Show bearing layer on map" was off by default; it goes on whenever BTRX is
+ * enabled (a Desk Pod link on at launch, or turned on), unless it already is. Turning BTRX off
+ * leaves it as it is. Same as the iPad.
+ */
+object BtrxBearingAutoOn {
+    fun shouldTurnOn(btrxEnabled: Boolean, bearingOn: Boolean): Boolean = btrxEnabled && !bearingOn
 }

@@ -16,6 +16,9 @@ extern "C" {
 #endif
 
 #define BTRX_BEARING_ABI_VERSION 3u
+/* Nov 23 staleness shared by Android and the iPad (test-fixtures/btrx/staleness.tsv). */
+#define BTRX_BEARING_STALE_FADE_START_S 25
+#define BTRX_BEARING_STALE_HIDE_S 60
 /* 32 (was 8, Nov 16 watch test: an 8-slot LRU erased the watch's history). */
 #define BTRX_BEARING_MAX_SOURCES 32
 #define BTRX_BEARING_TRAIL_MAX 600            /* strength trail points of the focused source */
@@ -154,6 +157,13 @@ typedef struct {
     float ray_ambiguous_ll;          /* 0.5 */
     float focus_dim;                 /* 0.25: alpha of the other sources while one is focused */
     float pin_max_axis_2s_m;         /* 30: an estimate this tight is "pinned" (map marker) */
+    /* presentation staleness (Nov 23, Ken: old devices fade away and lose focus within 60 s):
+       a source not heard for stale_fade_start_s fades from the RGBA linearly to nothing at
+       stale_hide_s, and a focused source (by key) not heard for stale_hide_s loses focus.
+       Evidence, estimates and the snapshot's source list are unchanged (replay, logs, panel).
+       0 = off (the default; the apps set BTRX_BEARING_STALE_FADE_START_S / _HIDE_S). */
+    float stale_fade_start_s;        /* 0 (apps: 25) */
+    float stale_hide_s;              /* 0 (apps: 60) */
     /* attitude and averaging (pod build 0x010A, PROTOCOL.md "Attitude and the gate") */
     bool gate_on_attitude_flag;      /* false: STEER flags bit 3 is advice; true = old reject */
     bool roll_correct;               /* true: port-stbd + k(depression) * roll, no pitch term */
@@ -261,6 +271,10 @@ const char *btrx_bearing_status_string(btrx_bearing_status_t s);
 /* Fade helpers (settings readout): bucket width and the age at half strength. */
 float btrx_bearing_bucket_width_s(float total_s, float min_s, float max_s);
 float btrx_bearing_half_strength_s(float total_s, float shape_p);
+/* Presentation presence of a source last heard age_s ago: 1 up to fade_start_s, then linear
+ * to 0 at hide_s; hide_s <= 0 (off) or hide_s <= fade_start_s with age < hide_s: 1.
+ * The apps' panel and map use the same rule (test-fixtures/btrx/staleness.tsv). */
+float btrx_bearing_presence(float fade_start_s, float hide_s, float age_s);
 
 /* Inputs: any thread, O(1), short lock */
 btrx_bearing_status_t btrx_bearing_push_pose(btrx_bearing_t *h, const btrx_bearing_pose_t *p);

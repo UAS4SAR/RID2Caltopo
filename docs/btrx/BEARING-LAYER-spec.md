@@ -1621,6 +1621,16 @@ steering-report notes (btrx d74aaec). Works fully on Drone Pod 0x0109; nothing d
   reports, +1 if heard in 30 s; focused > with estimate > others), not the least recent. An
   extra is tracked only after 2 sightings within 60 s. Colours come from a 12-colour palette,
   remembered per source key, so a returning source keeps its colour.
+- **Staleness (Nov 23, Timberland flight).** Presentation only: a source not heard for 25 s
+  fades from the RGBA, estimates and labels, linearly to nothing at 60 s, and is off the map and
+  out of the tap panel from then on (the panel's "Show N older" lists it). A focused source not
+  heard for 60 s loses focus (`BBFOCUS ... cleared`), so it no longer holds its slot against
+  newcomers. Evidence, estimates and the snapshot's source list are unchanged (replay, logs).
+  Engine: `stale_fade_start_s` / `stale_hide_s` (default 0 = off; the apps set
+  `BTRX_BEARING_STALE_FADE_START_S` 25 / `_HIDE_S` 60). A source first heard within 10 s is
+  tagged "new" and its label ranks with the focus matches. The tap panel sorts new, fresh,
+  fading, stale, then latest RSSI less 0.5 dB per second unheard, re-sorting at most every 12 s
+  and never under a finger (test-fixtures/btrx/staleness.tsv, both platforms).
 - **On-drone suggestion.** Stronger than -40 dBm (reset below -46 dBm or after a 10 s gap)
   for 60 s while the drone moved 30 m sets `SRC_OWN_SUSPECT`: no estimate is drawn and the map
   asks "Own aircraft (saved)" / "Not on the drone" (`SRC_OWN_CLEARED`). Never a mute by itself.

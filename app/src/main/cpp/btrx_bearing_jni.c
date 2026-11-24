@@ -90,6 +90,8 @@ JNIEXPORT jlong JNICALL JFN(nativeCreate)(JNIEnv *env, jobject self, jbyteArray 
     cfg.fade_total_s = fade_total_s;
     cfg.fade_shape_p = fade_shape_p;
     cfg.lag_trace = lag_trace == JNI_TRUE;
+    cfg.stale_fade_start_s = BTRX_BEARING_STALE_FADE_START_S;   /* Nov 23: same as the iPad */
+    cfg.stale_hide_s = BTRX_BEARING_STALE_HIDE_S;
     cfg.log = bbn_lib_log;
     cfg.callback_ctx = w;
     w->cells = cfg.grid_cells;

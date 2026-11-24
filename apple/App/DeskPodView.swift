@@ -610,10 +610,16 @@ struct BtrxBearingSourceRow: View {
             .buttonStyle(.plain)
             .accessibilityLabel(source.muted ? "Show \(source.shortID)" : "Hide \(source.shortID)")
             Text(source.shortID).fontWeight(.semibold).lineLimit(1)
+            // Nov 23: a source first heard in the last 10 s is tagged "new". Same as Android.
+            if BtrxStaleness.isNew(source, nowUs: nowUs) {
+                Text(BtrxStaleness.newTag).font(.caption2.weight(.semibold)).foregroundStyle(.white)
+                    .padding(.horizontal, 4).background(Color.accentColor, in: RoundedRectangle(cornerRadius: 4))
+            }
             // Two lines (Nov 20 A5 test: in a narrow panel "136 rpt" wrapped one letter per line). Same as Android.
             VStack(alignment: .leading, spacing: 0) {
                 Text(source.className).lineLimit(1)
-                Text(BtrxBearingText.lastHeard(nowUs: nowUs, lastUs: source.lastHeardUs) + " · " + BtrxBearingText.reports(source.reportsInWindow))
+                Text(BtrxBearingText.lastHeard(nowUs: nowUs, lastUs: source.lastHeardUs) + " · " + BtrxBearingText.reports(source.reportsInWindow)
+                     + (source.lastRssiDbm.map { " · \($0) dBm" } ?? ""))
                     .font(.footnote).lineLimit(1)
                 if source.ownSuspect { Text(BtrxBearingText.ownSuspectTag).font(.footnote).foregroundStyle(.red) }
             }
@@ -700,21 +706,33 @@ struct BtrxBearingPanel: View {
     let rows: [UInt64]
     let onDismiss: () -> Void
     var onFocus: (BtrxBearingSource) -> Void = { _ in }
+    // Nov 23 (Ken): strongest and freshest first, stale ones sink and leave; re-sorted at most
+    // every 12 s and never under a finger, so a row does not move as it is tapped. Same as Android.
+    @State private var order = BtrxPanelOrder()
+    @GestureState private var holding = false
+    @State private var showOlder = false
 
     var body: some View {
         if let snap = center.bearingSnapshot {
             let byKey = Dictionary(snap.sources.map { ($0.key, $0) }, uniquingKeysWith: { a, _ in a })
-            let listed = rows.compactMap { byKey[$0] }
+            let here = rows.compactMap { byKey[$0] }
+            let listed = order.arrange(here, nowUs: snap.tUs, holding: holding, showOlder: showOlder)
+            let older = order.olderCount(here, nowUs: snap.tUs)
             VStack(alignment: .leading, spacing: 4) {
             // Title and × stay put while the rows scroll (Ken, Nov 23: Done was below the fold).
             BtrxPopupHeader(onDismiss: onDismiss) { Text(BtrxBearingText.panelTitle).font(.headline) }
             BtrxScrollsWhenCapped { VStack(alignment: .leading, spacing: 4) {
+                if listed.isEmpty { Text(BtrxBearingText.panelAllStale).font(.footnote) }
                 ForEach(listed) { src in
                     HStack {
                         BtrxBearingSourceRow(source: src, nowUs: snap.tUs) { shown in center.bearing.setMuted([src.key], muted: !shown) }
                         Spacer(minLength: 4)
                         Button(BtrxBearingText.focus) { onFocus(src) }.font(.footnote)
                     }
+                    .opacity(0.4 + 0.6 * Double(BtrxStaleness.presence(src, nowUs: snap.tUs)))
+                }
+                if older > 0 || showOlder {
+                    Button(showOlder ? BtrxBearingText.hideOlder : BtrxBearingText.showOlder(older)) { showOlder.toggle() }.font(.footnote)
                 }
                 HStack(spacing: 8) {
                     Button(BtrxBearingText.muteAll) { center.bearing.setMuted(listed.map(\.key), muted: true) }.buttonStyle(.bordered)
@@ -722,6 +740,8 @@ struct BtrxBearingPanel: View {
                     Button(BtrxBearingText.done, action: onDismiss)
                 }
             } }
+            // Watch only: a finger on the list holds the order (reset when the touch ends or is cancelled).
+            .simultaneousGesture(DragGesture(minimumDistance: 0).updating($holding) { _, state, _ in state = true })
             }
             .padding(12)
             .frame(maxWidth: 420, alignment: .leading)

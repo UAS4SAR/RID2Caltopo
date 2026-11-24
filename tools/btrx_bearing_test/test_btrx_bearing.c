@@ -1960,6 +1960,70 @@ static void test_nov20_units(void) {
     }
 }
 
+
+/* ================= Nov 23 staleness: fade, hide and focus loss (presentation only) ================= */
+static uint64_t rgba_alpha_sum(const btrx_bearing_snapshot_t *sn) {
+    uint64_t sum = 0;
+    for (int c = 0; sn && c < sn->width * sn->height; c++) sum += sn->rgba[c * 4 + 3];
+    return sum;
+}
+
+static void test_staleness(void) {
+    printf("staleness\n");
+    NEAR(btrx_bearing_presence(25, 60, 0), 1, 1e-6, "fresh: full");
+    NEAR(btrx_bearing_presence(25, 60, 25), 1, 1e-6, "fade starts at 25 s");
+    NEAR(btrx_bearing_presence(25, 60, 42.5f), 0.5, 1e-6, "half way");
+    NEAR(btrx_bearing_presence(25, 60, 60), 0, 1e-6, "gone at 60 s");
+    NEAR(btrx_bearing_presence(25, 60, 600), 0, 1e-6, "stays gone");
+    NEAR(btrx_bearing_presence(0, 0, 600), 1, 1e-6, "off: always full");
+    btrx_bearing_config_t c; btrx_bearing_config_default(&c);
+    CHECK(c.stale_fade_start_s == 0 && c.stale_hide_s == 0, "off by default (engine tests keep the 10 min fade)");
+    c.extra_min_sightings = 1;
+    c.stale_fade_start_s = BTRX_BEARING_STALE_FADE_START_S;
+    c.stale_hide_s = BTRX_BEARING_STALE_HIDE_S;
+    btrx_bearing_config_t off; btrx_bearing_config_default(&off); off.extra_min_sightings = 1;
+    btrx_bearing_t *h = mk(&c), *ho = mk(&off);
+    inj_t s = { 0, 0, 0 }, so = { 0, 0, 0 };
+    feed_two(h, &s, 10000000, 20);
+    feed_two(ho, &so, 10000000, 20);
+    btrx_bearing_set_focus(h, 0xA1);
+    btrx_bearing_set_focus(ho, 0xA1);
+    btrx_bearing_tick(h, 31000000, NULL);
+    btrx_bearing_tick(ho, 31000000, NULL);
+    const btrx_bearing_snapshot_t *sn = btrx_bearing_snapshot_acquire(h);
+    const btrx_bearing_source_t *a = snap_src(sn, 0xA1);
+    int64_t last = a ? a->last_heard_us : 0;
+    uint64_t full = rgba_alpha_sum(sn);
+    CHECK(sn && sn->focus_key == 0xA1 && full > 0, "fresh: focused and drawn");
+    btrx_bearing_snapshot_release(h, sn);
+    /* both fading: 45 s after A1's last report */
+    btrx_bearing_tick(h, last + 45000000, NULL);
+    sn = btrx_bearing_snapshot_acquire(h);
+    uint64_t fading = rgba_alpha_sum(sn);
+    CHECK(sn && sn->focus_key == 0xA1 && fading > 0 && fading < full, "fading: dimmer (%llu < %llu), still focused",
+        (unsigned long long)fading, (unsigned long long)full);
+    btrx_bearing_snapshot_release(h, sn);
+    /* 61 s: nothing drawn, focus gone, the sources and their evidence kept */
+    btrx_bearing_tick(h, last + 61000000, NULL);
+    btrx_bearing_tick(ho, last + 61000000, NULL);
+    sn = btrx_bearing_snapshot_acquire(h);
+    a = snap_src(sn, 0xA1);
+    CHECK(sn && rgba_alpha_sum(sn) == 0, "stale: nothing in the RGBA");
+    CHECK(sn && sn->focus_key == 0 && sn->trail_count == 0, "stale: focus lost");
+    CHECK(sn && sn->source_count == 2 && a && a->reports_used > 0 && a->peak_alpha > 0, "stale: sources and evidence kept");
+    btrx_bearing_snapshot_release(h, sn);
+    sn = btrx_bearing_snapshot_acquire(ho);
+    CHECK(sn && sn->focus_key == 0xA1 && rgba_alpha_sum(sn) > 0, "off: focused and drawn at 61 s");
+    btrx_bearing_snapshot_release(ho, sn);
+    /* heard again: drawn again (focus stays off until chosen again) */
+    feed_two(h, &s, last + 62000000, 3);
+    btrx_bearing_tick(h, last + 66000000, NULL);
+    sn = btrx_bearing_snapshot_acquire(h);
+    CHECK(sn && rgba_alpha_sum(sn) > 0 && sn->focus_key == 0, "heard again: drawn, not refocused");
+    btrx_bearing_snapshot_release(h, sn);
+    btrx_bearing_destroy(h); btrx_bearing_destroy(ho);
+}
+
 int main(int argc, char **argv) {
     setvbuf(stdout, NULL, _IONBF, 0);
     g_grid = malloc(sizeof(float) * 192 * 192);
@@ -1982,6 +2046,7 @@ int main(int argc, char **argv) {
     test_stats_without_view();
     test_watch_fixes();
     test_nov20_units();
+    test_staleness();
     test_nov20_fixture();
     test_threads();
     test_worker_and_abi();
