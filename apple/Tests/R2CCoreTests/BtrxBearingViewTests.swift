@@ -119,7 +119,7 @@ final class BtrxBearingViewTests: XCTestCase {
         let l = src(1, companyId: 0x0087, flags: launch | muted)
         let lines = BtrxBearingText.inspectLines(l, nowUs: 5_000_000)
         XCTAssertEqual(lines[0], "Source Q3x9Kd · watch · Garmin")
-        XCTAssertEqual(lines[1], "Heard strongly at the takeoff spot (muted)")
+        XCTAssertEqual(lines[1], "Heard strongly near the takeoff spot (muted)")
         XCTAssertTrue(l.launch)
     }
 

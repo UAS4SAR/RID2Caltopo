@@ -86,9 +86,12 @@ public enum BtrxBearingView {
     public static let launchHide = "Hide"
     public static let settingMaxPm = "Hide estimates wider than"
     public static let settingMinReports = "Hide labels with fewer reports than"
-    public static let settingLaunchMute = "Mute sources at the takeoff spot"
+    public static let settingLaunchMute = "Mute strong sources near the takeoff spot"
+    /// Nov 23 launch zone; numbers from the engine's BTRX_BEARING_LAUNCH_* (same as Android's BtrxLaunchZone).
     public static let settingLaunchMuteHint =
-        "Devices heard -70 dBm or stronger while the drone sits at its first position (before takeoff) are muted. Show them from the map chip."
+        "Devices heard \(BTRX_BEARING_LAUNCH_RSSI_DBM) dBm or stronger within \(BTRX_BEARING_LAUNCH_RADIUS_M) m of the takeoff spot in the first "
+        + "\(BTRX_BEARING_LAUNCH_WINDOW_S / 60) min, on the ground and through the initial climb (up to \(BTRX_BEARING_LAUNCH_ZONE_MAX_AGL_M) m AGL, "
+        + "until the drone first leaves that area), are muted: usually the team at the launch site. Show them from the map chip."
 
     public static func maxPlusMinusText(_ m: Int) -> String { m <= 0 ? "no limit" : "±\(m) m" }
 

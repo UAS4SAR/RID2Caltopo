@@ -37,8 +37,9 @@ void btrx_bearing_config_default(btrx_bearing_config_t *c) {
     c->range_cap_dbm = -55; c->range_cap_max_agl_m = 40; c->range_cap_margin = 4; c->range_cap_min_m = 25;
     c->range_cap_nats_per_100m = 20;
     c->cover_free_m = 60; c->cover_nats_per_100m = 3;
-    c->launch_rssi_dbm = -70; c->launch_radius_m = 15; c->launch_max_agl_m = 5; c->launch_window_s = 300;
-    c->launch_auto_mute = true;
+    c->launch_rssi_dbm = BTRX_BEARING_LAUNCH_RSSI_DBM; c->launch_radius_m = BTRX_BEARING_LAUNCH_RADIUS_M;
+    c->launch_max_agl_m = 5; c->launch_window_s = BTRX_BEARING_LAUNCH_WINDOW_S;
+    c->launch_auto_mute = true; c->launch_zone_max_agl_m = BTRX_BEARING_LAUNCH_ZONE_MAX_AGL_M;
     c->own_rssi_dbm = -40; c->own_hold_ms = 60000; c->own_moved_m = 30;
     c->fine_cell_m = 2.5f; c->fine_grid_cells = 160; c->fine_footprint_m = 100;
     c->fine_max_agl_m = 30; c->fine_max_speed_mps = 4; c->fine_strong_dbm = -65; c->fine_tile_pool_tiles = 3072;
@@ -94,7 +95,8 @@ static bool config_ok(const btrx_bearing_config_t *c) {
     if (!(c->stale_fade_start_s >= 0) || !(c->stale_hide_s >= 0)) return false;
     if (!fin(c->range_cap_dbm) || !(c->range_cap_margin > 0) || !(c->range_cap_min_m > 0) || !(c->range_cap_nats_per_100m >= 0) || !fin(c->range_cap_max_agl_m)) return false;
     if (!(c->cover_free_m >= 0) || !(c->cover_nats_per_100m >= 0)) return false;
-    if (!fin(c->launch_rssi_dbm) || !(c->launch_radius_m >= 0) || !fin(c->launch_max_agl_m) || !(c->launch_window_s >= 0)) return false;
+    if (!fin(c->launch_rssi_dbm) || !(c->launch_radius_m >= 0) || !fin(c->launch_max_agl_m) || !(c->launch_window_s >= 0)
+            || !fin(c->launch_zone_max_agl_m)) return false;
     return true;
 }
 
@@ -521,12 +523,17 @@ bool bb_launch_key(const btrx_bearing_t *h, uint64_t key) {
 }
 
 /* Nov 20: strong at the launch point before takeoff (Ken's back deck: phones and a laptop at
- * the pod read -18 dBm, then smeared 200 m along the rays). */
+ * the pod read -18 dBm, then smeared 200 m along the rays). Nov 23 (Timberland): also through
+ * the climb, near the takeoff point; XY_Rdy and ZA-hl- (-57 to -60 dBm at 6-13 m AGL, 2 m from
+ * it) were the launch site, first heard only once the drone lifted. */
 static void launch_check(btrx_bearing_t *h, bb_source_t *s, int64_t t, const bb_pose_at_t *pp, int8_t best) {
     if (!h->launch_set || (s->flags & (BTRX_BEARING_SRC_LAUNCH | BTRX_BEARING_SRC_IGNORED))) return;
-    if (best < h->cfg.launch_rssi_dbm || pp->agl_default || !(pp->agl <= h->cfg.launch_max_agl_m)) return;
+    /* on the ground at the takeoff point, or through the initial climb (until the drone first leaves the zone) */
+    float max_agl = h->launch_climb ? h->cfg.launch_zone_max_agl_m : h->cfg.launch_max_agl_m;
+    if (best < h->cfg.launch_rssi_dbm || pp->agl_default || !(pp->agl <= max_agl)) return;
     if (t - h->launch_t > (int64_t)((double)h->cfg.launch_window_s * 1e6)) return;
-    if (hypotf((float)pp->e - h->launch_e, (float)pp->n - h->launch_n) > h->cfg.launch_radius_m) return;
+    float d = hypotf((float)pp->e - h->launch_e, (float)pp->n - h->launch_n);
+    if (d > h->cfg.launch_radius_m) return;
     if (h->focus_key && s->key == h->focus_key) return;
     s->flags |= BTRX_BEARING_SRC_LAUNCH;
     if (h->launch_auto_mute) s->flags |= BTRX_BEARING_SRC_MUTED;
@@ -534,7 +541,8 @@ static void launch_check(btrx_bearing_t *h, bb_source_t *s, int64_t t, const bb_
     h->force_publish = true;
     char sid[8];
     btrx_bearing_short_id(s->key, sid);
-    bb_log(h, 1, "BBLAUNCH %s heard %d dBm at the launch point%s", sid, (int)best, h->launch_auto_mute ? ": muted" : "");
+    bb_log(h, 1, "BBLAUNCH %s heard %d dBm %.0f m from the launch point at %.0f m AGL, %.0f s after it%s", sid, (int)best,
+        (double)d, (double)pp->agl, (double)(t - h->launch_t) / 1e6, h->launch_auto_mute ? ": muted" : "");
 }
 
 /* Nov 20 range cap: where the drone heard the source strongest while low (strong only). An

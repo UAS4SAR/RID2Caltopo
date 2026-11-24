@@ -19,6 +19,15 @@ extern "C" {
 /* Nov 23 staleness shared by Android and the iPad (test-fixtures/btrx/staleness.tsv). */
 #define BTRX_BEARING_STALE_FADE_START_S 25
 #define BTRX_BEARING_STALE_HIDE_S 60
+/* Nov 23 launch zone (Ken: searchers around the takeoff point only appear as the drone lifts):
+   sources heard at least LAUNCH_RSSI_DBM while the drone is within LAUNCH_RADIUS_M of its
+   takeoff point and below LAUNCH_ZONE_MAX_AGL_M (the initial climb, until it first leaves that
+   zone), in the first LAUNCH_WINDOW_S, are muted.
+   Shared by Android and the iPad (the apps' settings text; test-fixtures/btrx/launch-zone.tsv). */
+#define BTRX_BEARING_LAUNCH_RSSI_DBM (-70)
+#define BTRX_BEARING_LAUNCH_RADIUS_M 30
+#define BTRX_BEARING_LAUNCH_ZONE_MAX_AGL_M 40
+#define BTRX_BEARING_LAUNCH_WINDOW_S 300
 /* 32 (was 8, Nov 16 watch test: an 8-slot LRU erased the watch's history). */
 #define BTRX_BEARING_MAX_SOURCES 32
 #define BTRX_BEARING_TRAIL_MAX 600            /* strength trail points of the focused source */
@@ -131,15 +140,19 @@ typedef struct {
        the drone flew this session (the grid cannot tell "far" from "beyond the track"). */
     float cover_free_m;              /* 60: no penalty within this distance of the track */
     float cover_nats_per_100m;       /* 3: penalty per 100 m beyond cover_free_m; 0 = off */
-    /* launch site (Nov 20, ABI 3): sources heard at least launch_rssi_dbm while the drone sits
-       within launch_radius_m of its first ground position (AGL <= launch_max_agl_m), during
-       the first launch_window_s of the session, get BTRX_BEARING_SRC_LAUNCH and, with
-       launch_auto_mute, BTRX_BEARING_SRC_MUTED (the app can unmute). */
-    float launch_rssi_dbm;           /* -70 */
-    float launch_radius_m;           /* 15 */
-    float launch_max_agl_m;          /* 5 */
-    float launch_window_s;           /* 300 */
+    /* launch site (Nov 20, ABI 3; zone Nov 23): the takeoff point is the first position with a
+       known AGL if that AGL <= launch_max_agl_m. Sources heard at least launch_rssi_dbm while
+       the drone is within launch_radius_m of it and at most launch_zone_max_agl_m AGL (on the
+       ground and through the initial climb, until the drone first leaves that zone; after
+       that at most launch_max_agl_m AGL), during the first launch_window_s after it, get
+       BTRX_BEARING_SRC_LAUNCH and, with launch_auto_mute, BTRX_BEARING_SRC_MUTED (the app can
+       unmute). Nov 20 was on the ground only (radius 15 m, AGL 5 m). */
+    float launch_rssi_dbm;           /* BTRX_BEARING_LAUNCH_RSSI_DBM, -70 */
+    float launch_radius_m;           /* BTRX_BEARING_LAUNCH_RADIUS_M, 30 (was 15) */
+    float launch_max_agl_m;          /* 5: the takeoff point only */
+    float launch_window_s;           /* BTRX_BEARING_LAUNCH_WINDOW_S, 300 */
     bool launch_auto_mute;           /* true */
+    float launch_zone_max_agl_m;     /* BTRX_BEARING_LAUNCH_ZONE_MAX_AGL_M, 40 (Nov 23) */
     /* own aircraft suggestion: stronger than own_rssi_dbm for own_hold_ms while the drone
        moved own_moved_m sets BTRX_BEARING_SRC_OWN_SUSPECT (a suggestion, never a mute) */
     float own_rssi_dbm;              /* -40 */

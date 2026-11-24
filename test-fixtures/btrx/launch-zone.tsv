@@ -1,0 +1,29 @@
+# Launch-zone auto mute (Ken, Nov 23): strong sources near the takeoff point, on the ground
+# and through the initial climb, are muted. Shared by test_btrx_bearing.c (engine) and the
+# Kotlin/Swift settings-text tests. Nov 23 Timberland replay (in.bbv1, not in the repo):
+# XY_Rdy -58 dBm 2 m / 6 m AGL / 41 s and ZA-hl- -60 dBm 2 m / 12 m AGL / 44 s muted; the
+# hearing aids 0AAyNX / TteXDe first heard -88 / -92 dBm 295-304 m from takeoff at 48 m AGL
+# (239-263 s) not muted.
+# const	name	value
+const	rssi_dbm	-70
+const	radius_m	30
+const	zone_max_agl_m	40
+const	window_s	300
+# The climb ends the first time the drone leaves the zone; after that only reports on the
+# ground (<= 5 m AGL) near the takeoff point count. via = out: the drone first flies to 100 m
+# east at 30 m AGL, 20 s before the report (Nov 20: the watch 16 m N of takeoff, heard on the
+# way back at 10 m AGL, stays unmuted).
+# case	name	seconds_after_takeoff_point	east_m	north_m	agl_m	rssi_dbm	expected	via
+case	on_the_ground	5	0	0	1	-60	muted
+case	xy_rdy_climb	41	2	0	6	-58	muted
+case	za_hl_climb	44	2	0	12	-60	muted
+case	climb_30m_agl	55	7	0	30	-67	muted
+case	inside_radius	60	0	29	20	-65	muted
+case	exactly_minus_70	40	2	0	12	-70	muted
+case	beyond_radius	60	35	0	10	-60	clear
+case	above_zone	60	2	0	45	-60	clear
+case	weak	40	2	0	12	-75	clear
+case	after_window	305	2	0	12	-58	clear
+case	hearing_aid	239	300	0	48	-88	clear
+case	nov20_watch_on_return	230	0	16	10	-48	clear	out
+case	landed_back_at_takeoff	240	2	0	2	-60	muted	out

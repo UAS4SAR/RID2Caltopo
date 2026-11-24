@@ -941,7 +941,7 @@ public enum BtrxBearingText {
     /// Inspect card of a pinned source: one line per field. Same as Android.
     public static func inspectLines(_ s: BtrxBearingSource, nowUs: Int64) -> [String] {
         var out = ["Source \(s.shortID)" + (s.srcId != 0 ? " (id \(s.srcId))" : "") + " · \(s.className)" + (s.maker.map { " · \($0)" } ?? "")]
-        if s.launch { out.append("Heard strongly at the takeoff spot" + (s.muted ? " (muted)" : "")) }
+        if s.launch { out.append("Heard strongly near the takeoff spot" + (s.muted ? " (muted)" : "")) }
         if let e = s.estimate {
             out.append(String(format: "Estimate %.6f, %.6f", e.lat, e.lon))
             out.append("Uncertainty ±\(Int(e.plusMinus2sM.rounded())) m (2σ)" + (e.ambiguous ? " · ambiguous" : ""))

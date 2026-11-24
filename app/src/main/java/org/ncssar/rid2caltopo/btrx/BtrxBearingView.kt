@@ -66,9 +66,12 @@ object BtrxBearingView {
     const val LAUNCH_HIDE = "Hide"
     const val SETTING_MAX_PM = "Hide estimates wider than"
     const val SETTING_MIN_REPORTS = "Hide labels with fewer reports than"
-    const val SETTING_LAUNCH_MUTE = "Mute sources at the takeoff spot"
-    const val SETTING_LAUNCH_MUTE_HINT =
-        "Devices heard -70 dBm or stronger while the drone sits at its first position (before takeoff) are muted. Show them from the map chip."
+    const val SETTING_LAUNCH_MUTE = "Mute strong sources near the takeoff spot"
+    /** Nov 23 launch zone; numbers from [BtrxLaunchZone] (the engine's BTRX_BEARING_LAUNCH_*). */
+    val SETTING_LAUNCH_MUTE_HINT =
+        "Devices heard ${BtrxLaunchZone.RSSI_DBM} dBm or stronger within ${BtrxLaunchZone.RADIUS_M} m of the takeoff spot in the first " +
+            "${BtrxLaunchZone.WINDOW_S / 60} min, on the ground and through the initial climb (up to ${BtrxLaunchZone.ZONE_MAX_AGL_M} m AGL, " +
+            "until the drone first leaves that area), are muted: usually the team at the launch site. Show them from the map chip."
 
     fun maxPlusMinusText(m: Int): String = if (m <= 0) "no limit" else "±$m m"
 
@@ -322,4 +325,16 @@ class BtrxPanelOrder {
  */
 object BtrxBearingAutoOn {
     fun shouldTurnOn(btrxEnabled: Boolean, bearingOn: Boolean): Boolean = btrxEnabled && !bearingOn
+}
+
+/**
+ * Launch-zone auto mute (Ken, Nov 23): searchers around the takeoff point only appear as the
+ * drone lifts. Same numbers as the engine's BTRX_BEARING_LAUNCH_* (btrx_bearing.h) and
+ * test-fixtures/btrx/launch-zone.tsv; the engine applies them (config defaults).
+ */
+object BtrxLaunchZone {
+    const val RSSI_DBM = -70
+    const val RADIUS_M = 30
+    const val ZONE_MAX_AGL_M = 40
+    const val WINDOW_S = 300
 }

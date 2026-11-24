@@ -1621,6 +1621,15 @@ steering-report notes (btrx d74aaec). Works fully on Drone Pod 0x0109; nothing d
   reports, +1 if heard in 30 s; focused > with estimate > others), not the least recent. An
   extra is tracked only after 2 sightings within 60 s. Colours come from a 12-colour palette,
   remembered per source key, so a returning source keeps its colour.
+- **Launch zone (Nov 23, Timberland flight).** Searchers around the takeoff point only appear
+  as the drone lifts (XY_Rdy -58 dBm at 6 m AGL and ZA-hl- -60 dBm at 12 m AGL, both 2 m from
+  takeoff, 41-44 s after it). A source heard -70 dBm or stronger within 30 m of the takeoff
+  point, on the ground or through the initial climb up to 40 m AGL, in the first 300 s, is
+  flagged and muted (`BTRX_BEARING_LAUNCH_*`, `launch_zone_max_agl_m`). The climb ends the
+  first time the drone leaves that zone; after that only reports at 5 m AGL or lower count
+  (Nov 20: the watch 16 m N of takeoff, heard on the way back at 10 m AGL, stays unmuted). The
+  Nov 23 replay mutes 8 (was 4), not the hearing aids (-88/-92 dBm, 300 m out) or the iPhone;
+  the Nov 20 replay mutes 7 (was 3), including the laptop on the back deck.
 - **Staleness (Nov 23, Timberland flight).** Presentation only: a source not heard for 25 s
   fades from the RGBA, estimates and labels, linearly to nothing at 60 s, and is off the map and
   out of the tap panel from then on (the panel's "Show N older" lists it). A focused source not

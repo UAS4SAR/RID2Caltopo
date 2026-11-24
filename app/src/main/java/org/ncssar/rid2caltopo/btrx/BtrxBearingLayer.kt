@@ -835,7 +835,7 @@ object BtrxBearingText {
         val est = s.estimate
         return listOfNotNull(
             "Source ${s.shortId}" + (if (s.srcId != 0) " (id ${s.srcId})" else "") + " · ${s.className}" + (s.maker?.let { " · $it" } ?: ""),
-            if (s.launch) "Heard strongly at the takeoff spot" + if (s.muted) " (muted)" else "" else null,
+            if (s.launch) "Heard strongly near the takeoff spot" + if (s.muted) " (muted)" else "" else null,
             est?.let { "Estimate %.6f, %.6f".format(java.util.Locale.US, it.lat, it.lon) },
             est?.let { "Uncertainty ±${it.plusMinus2sM.roundToInt()} m (2σ)" + if (it.ambiguous) " · ambiguous" else "" },
             "Reports ${s.reportsInWindow} in the fade window (${s.reportsUsed} used of ${s.reportsIn})",

@@ -129,7 +129,7 @@ class BtrxBearingViewTest {
         val launch = src(1, companyId = 0x0087, flags = BtrxBearingNative.SRC_LAUNCH or BtrxBearingNative.SRC_MUTED)
         val lines = BtrxBearingText.inspectLines(launch, 5_000_000L)
         assertEquals("Source Q3x9Kd · watch · Garmin", lines[0])
-        assertEquals("Heard strongly at the takeoff spot (muted)", lines[1])
+        assertEquals("Heard strongly near the takeoff spot (muted)", lines[1])
         assertTrue(launch.launch)
     }
 

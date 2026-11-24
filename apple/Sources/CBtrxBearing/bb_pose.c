@@ -79,9 +79,20 @@ void bb_pose_push(btrx_bearing_t *h, const btrx_bearing_pose_t *in) {
                 h->launch_done = true;
                 if (in->agl_m <= h->cfg.launch_max_agl_m) {
                     h->launch_set = true;
+                    h->launch_climb = true;
                     h->launch_e = (float)le; h->launch_n = (float)ln;
                     h->launch_t = in->t_us;
                 }
+            }
+            /* Nov 23: the climb ends the first time the drone leaves the launch zone; after that
+               only reports on the ground at the takeoff point count (Nov 20: the watch 16 m N of
+               takeoff was heard on the way back, at 10 m AGL, and is not a launch-site device). */
+            if (h->launch_climb && (in->mask & BTRX_BEARING_POSE_AGL) && isfinite(in->agl_m)
+                    && (in->agl_m > h->cfg.launch_zone_max_agl_m
+                        || hypot(le - h->launch_e, ln - h->launch_n) > h->cfg.launch_radius_m)) {
+                h->launch_climb = false;
+                bb_log(h, 1, "BBLAUNCH climb over: %.0f m from the launch point at %.0f m AGL, %.0f s after it",
+                    hypot(le - h->launch_e, ln - h->launch_n), (double)in->agl_m, (double)(in->t_us - h->launch_t) / 1e6);
             }
         }
         p->last_pos_push_us = in->push_us ? in->push_us : in->t_us;

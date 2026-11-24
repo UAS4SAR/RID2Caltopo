@@ -1804,6 +1804,9 @@ static void test_nov20_fixture(void) {
             printf("  %s with the old settings: %s %.1f m\n", sid, old && old->estimate.valid ? "valid" : "invalid", dold);
         } else if (!strcmp(kind, "launch")) {
             CHECK((s->flags & BTRX_BEARING_SRC_LAUNCH) && (s->flags & BTRX_BEARING_SRC_MUTED), "%s flagged at the launch point (flags %u)", sid, s->flags);
+        } else if (!strcmp(kind, "launchclass")) {
+            CHECK((int)s->dev_class == atoi(cls) && (int)s->company_id == atoi(comp), "%s class %d company %u", sid, s->dev_class, s->company_id);
+            CHECK((s->flags & BTRX_BEARING_SRC_LAUNCH) && (s->flags & BTRX_BEARING_SRC_MUTED), "%s flagged in the launch zone (flags %u)", sid, s->flags);
         } else if (!strcmp(kind, "class")) {
             CHECK((int)s->dev_class == atoi(cls) && (int)s->company_id == atoi(comp), "%s class %d company %u", sid, s->dev_class, s->company_id);
             CHECK(!(s->flags & BTRX_BEARING_SRC_LAUNCH), "%s not at the launch point", sid);
@@ -1968,6 +1971,55 @@ static uint64_t rgba_alpha_sum(const btrx_bearing_snapshot_t *sn) {
     return sum;
 }
 
+/* Nov 23 launch zone (Ken): strong sources near the takeoff point are muted on the ground and
+ * through the initial climb; cases and constants from test-fixtures/btrx/launch-zone.tsv. */
+static void test_launch_zone(void) {
+    printf("Nov 23 launch zone\n");
+    FILE *f = open_fixture("launch-zone.tsv");
+    CHECK(f != NULL, "launch-zone.tsv found");
+    if (!f) return;
+    btrx_bearing_config_t c; btrx_bearing_config_default(&c);
+    CHECK(c.launch_rssi_dbm == BTRX_BEARING_LAUNCH_RSSI_DBM && c.launch_radius_m == BTRX_BEARING_LAUNCH_RADIUS_M
+        && c.launch_zone_max_agl_m == BTRX_BEARING_LAUNCH_ZONE_MAX_AGL_M && c.launch_window_s == BTRX_BEARING_LAUNCH_WINDOW_S
+        && c.launch_max_agl_m == 5 && c.launch_auto_mute, "launch zone defaults from the shared constants");
+    char line[256];
+    int cases = 0;
+    while (fgets(line, sizeof line, f)) {
+        char kind[16], name[48], exp[16];
+        double a, e, n, agl, rssi;
+        if (line[0] == '#') continue;
+        if (sscanf(line, "%15s %47s", kind, name) == 2 && !strcmp(kind, "const")) {
+            double v = 0; sscanf(line, "%*s %*s %lf", &v);
+            if (!strcmp(name, "rssi_dbm")) CHECK(v == BTRX_BEARING_LAUNCH_RSSI_DBM, "fixture rssi_dbm %g", v);
+            if (!strcmp(name, "radius_m")) CHECK(v == BTRX_BEARING_LAUNCH_RADIUS_M, "fixture radius_m %g", v);
+            if (!strcmp(name, "zone_max_agl_m")) CHECK(v == BTRX_BEARING_LAUNCH_ZONE_MAX_AGL_M, "fixture zone_max_agl_m %g", v);
+            if (!strcmp(name, "window_s")) CHECK(v == BTRX_BEARING_LAUNCH_WINDOW_S, "fixture window_s %g", v);
+            continue;
+        }
+        char via[16] = "-";
+        if (sscanf(line, "%15s %47s %lf %lf %lf %lf %lf %15s %15s", kind, name, &a, &e, &n, &agl, &rssi, exp, via) < 8 || strcmp(kind, "case")) continue;
+        cases++;
+        btrx_bearing_t *h = mk(NULL);
+        inj_t s = { 0, 0, 0 };
+        /* the takeoff point: the first position, on the ground, with a faint other source */
+        btrx_bearing_report_source_t bg = entry(0xB0, 1, -95, -96, 3);
+        inject(h, &s, 10000000, 0, 0, 0, 0.5f, &bg, 1, true);
+        if (!strcmp(via, "out")) inject(h, &s, 10000000 + (int64_t)((a - 20) * 1e6), 100, 0, 0, 30, &bg, 1, true);
+        btrx_bearing_report_source_t g = entry(0xB1, 2, (int)rssi, (int)rssi - 4, 9);
+        inject(h, &s, 10000000 + (int64_t)(a * 1e6), e, n, 0, (float)agl, &g, 1, true);
+        const btrx_bearing_snapshot_t *sn;
+        const btrx_bearing_source_t *src = snap_src_now(h, &sn, 0xB1);
+        bool muted = src && (src->flags & BTRX_BEARING_SRC_LAUNCH) && (src->flags & BTRX_BEARING_SRC_MUTED);
+        CHECK(sn && sn->launch_valid, "%s: takeoff point set", name);
+        CHECK(src != NULL, "%s: source tracked", name);
+        CHECK(muted == !strcmp(exp, "muted"), "%s: %s (flags %u)", name, exp, src ? src->flags : 0);
+        btrx_bearing_snapshot_release(h, sn);
+        btrx_bearing_destroy(h);
+    }
+    fclose(f);
+    CHECK(cases >= 10, "launch zone cases (%d)", cases);
+}
+
 static void test_staleness(void) {
     printf("staleness\n");
     NEAR(btrx_bearing_presence(25, 60, 0), 1, 1e-6, "fresh: full");
@@ -2047,6 +2099,7 @@ int main(int argc, char **argv) {
     test_watch_fixes();
     test_nov20_units();
     test_staleness();
+    test_launch_zone();
     test_nov20_fixture();
     test_threads();
     test_worker_and_abi();

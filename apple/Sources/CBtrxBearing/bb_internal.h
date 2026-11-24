@@ -287,6 +287,9 @@ struct btrx_bearing {
     int32_t cover_vtx0, cover_vty0;
     /* launch point */
     bool launch_set, launch_done;
+    /* Nov 23: the initial climb; true from the takeoff point until the drone first leaves the
+       launch zone (beyond launch_radius_m or above launch_zone_max_agl_m) */
+    bool launch_climb;
     float launch_e, launch_n;
     int64_t launch_t;
     bool launch_auto_mute;
