@@ -667,30 +667,42 @@ internal fun negativeAolRange(text: String): IntRange? {
 /** U+2007 FIGURE SPACE: as wide as a tabular digit. */
 internal const val FIGURE_SPACE = '\u2007'
 
-/** Map label: tokens padded to these digit slots (sign included). Same as the iPad. */
-private val STATUS_LABEL_SLOTS = mapOf("ATO:" to 4, "AGL:" to 4, "AOL:" to 4, "RNG:" to 4, "HDG:" to 3, "TRK:" to 3, "CAM:" to 3)
+/** Map label: values padded to these slots (sign included). RNG is last and not padded. Same as the iPad. */
+private val STATUS_LABEL_SLOTS = mapOf("ATO:" to 3, "AGL:" to 3, "AOL:" to 3, "HDG:" to 3, "TRK:" to 3, "CAM:" to 3)
 
 /**
  * Ken, Nov 23 (Timberland screen recording): the drone telemetry label under the aircraft
  * jittered as ATO/AGL went from one digit to two and back. Each numeric value is right-aligned
- * in a fixed slot with figure spaces (ATO, AGL, AOL, RNG: sign + 3 digits; HDG/TRK/CAM: 3), and
- * the label is drawn with tabular digits, so the fields stay put. Longer values (RNG over 999,
- * say) just take more room; status tokens (POS?, Unk, --, CAL) are left alone. Text only: the
- * values are unchanged. Same as the iPad (test-fixtures/map-label/fixed-width-status.tsv).
+ * in a 3-character slot with figure spaces (ATO, AGL, AOL with their sign; HDG/TRK/CAM), and
+ * the label is drawn with tabular digits, so the fields stay put. RNG, which often runs past
+ * 999, goes last (as on the stream header) so its digits move nothing. A value longer than its
+ * slot (ATO 1000', AOL -120') still shows, just wider; status tokens (POS?, Unk, --, CAL) are
+ * left alone. A unit token after a value ("9 m") stays with it. Text only: the values are
+ * unchanged. Same as the iPad (test-fixtures/map-label/fixed-width-status.tsv).
  */
-internal fun fixedWidthStatusLabel(text: String): String = text.split(' ').joinToString(" ") { token ->
+internal fun fixedWidthStatusLabel(text: String): String {
+    // Fields: a "KEY:value" token and any unit tokens after it.
+    val fields = mutableListOf<MutableList<String>>()
+    for (token in text.split(' ')) {
+        if (token.contains(':') || fields.isEmpty()) fields.add(mutableListOf(token)) else fields.last().add(token)
+    }
+    val ordered = fields.filterNot { it[0].startsWith("RNG:") } + fields.filter { it[0].startsWith("RNG:") }
+    return ordered.joinToString(" ") { field -> (listOf(padStatusToken(field[0])) + field.drop(1)).joinToString(" ") }
+}
+
+private fun padStatusToken(token: String): String {
     val colon = token.indexOf(':')
     val slots = if (colon < 0) null else STATUS_LABEL_SLOTS[token.substring(0, colon + 1)]
-    if (slots == null) return@joinToString token
+    if (slots == null) return token
     val value = token.substring(colon + 1)
     var run = 0
     while (run < value.length && (value[run].isDigit() || value[run] == '.' || value[run] == ',' || (run == 0 && value[run] == '-'))) run++
-    if (run == 0 || (run == 1 && value[0] == '-')) token
+    return if (run == 0 || (run == 1 && value[0] == '-')) token
     else token.substring(0, colon + 1) + FIGURE_SPACE.toString().repeat((slots - run).coerceAtLeast(0)) + value
 }
 
 /** Widest usual label: the strip keeps this width so it does not resize as values change. */
-private const val STATUS_LABEL_RESERVE = "ATO:-999' AGL:-999' AOL:-999' RNG:9999' HDG:359°"
+private const val STATUS_LABEL_RESERVE = "ATO:999' AGL:999' AOL:-99' HDG:359° RNG:9999'"
 
 internal fun buildDroneStatusLabelDrawable(
     resources: Resources,

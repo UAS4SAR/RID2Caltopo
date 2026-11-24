@@ -287,30 +287,40 @@ public func stableVideoTelemetryText(_ text: String) -> String {
     }.joined(separator: " ")
 }
 
-/// Map label slots (sign included): same as Android's fixedWidthStatusLabel.
-private let statusLabelSlots: [String: Int] = ["ATO:": 4, "AGL:": 4, "AOL:": 4, "RNG:": 4, "HDG:": 3, "TRK:": 3, "CAM:": 3]
+/// Map label slots (sign included); RNG is last and not padded. Same as Android's fixedWidthStatusLabel.
+private let statusLabelSlots: [String: Int] = ["ATO:": 3, "AGL:": 3, "AOL:": 3, "HDG:": 3, "TRK:": 3, "CAM:": 3]
 
 /// U+2007 FIGURE SPACE: as wide as a monospaced digit.
 public let figureSpace: Character = "\u{2007}"
 
 /// Widest usual map label: the status label keeps this width so it does not resize as values change.
-public let statusLabelReserve = "ATO:-999' AGL:-999' AOL:-999' RNG:9999' HDG:359°"
+public let statusLabelReserve = "ATO:999' AGL:999' AOL:-99' HDG:359° RNG:9999'"
 
 /// Ken, Nov 23 (Timberland screen recording): the drone telemetry label under the aircraft
 /// jittered as ATO/AGL went from one digit to two and back. Each numeric value is right-aligned
-/// in a fixed slot with figure spaces (ATO, AGL, AOL, RNG: sign + 3 digits; HDG/TRK/CAM: 3), and
-/// the label is drawn with monospaced digits, so the fields stay put. Longer values just take
-/// more room; status tokens (POS?, Unk, --, CAL) are left alone. Text only: the values are
-/// unchanged. Same as Android (test-fixtures/map-label/fixed-width-status.tsv).
+/// in a 3-character slot with figure spaces (ATO, AGL, AOL with their sign; HDG/TRK/CAM), and
+/// the label is drawn with monospaced digits, so the fields stay put. RNG, which often runs past
+/// 999, goes last (as on the stream header) so its digits move nothing. A value longer than its
+/// slot still shows, just wider; status tokens (POS?, Unk, --, CAL) are left alone. A unit token
+/// after a value ("9 m") stays with it. Text only: the values are unchanged. Same as Android
+/// (test-fixtures/map-label/fixed-width-status.tsv).
 public func fixedWidthStatusLabel(_ text: String) -> String {
-    text.components(separatedBy: " ").map { token -> String in
-        guard let colon = token.firstIndex(of: ":"),
-              let slots = statusLabelSlots[String(token[...colon])] else { return token }
-        let value = Array(token[token.index(after: colon)...])
-        var run = 0
-        while run < value.count, value[run].isASCII,
-              value[run].isNumber || value[run] == "." || value[run] == "," || (run == 0 && value[run] == "-") { run += 1 }
-        if run == 0 || (run == 1 && value[0] == "-") { return token }
-        return String(token[...colon]) + String(repeating: figureSpace, count: max(0, slots - run)) + String(value)
-    }.joined(separator: " ")
+    // Fields: a "KEY:value" token and any unit tokens after it.
+    var fields: [[String]] = []
+    for token in text.components(separatedBy: " ") {
+        if token.contains(":") || fields.isEmpty { fields.append([token]) } else { fields[fields.count - 1].append(token) }
+    }
+    let ordered = fields.filter { !$0[0].hasPrefix("RNG:") } + fields.filter { $0[0].hasPrefix("RNG:") }
+    return ordered.map { field in ([padStatusToken(field[0])] + field.dropFirst()).joined(separator: " ") }.joined(separator: " ")
+}
+
+private func padStatusToken(_ token: String) -> String {
+    guard let colon = token.firstIndex(of: ":"),
+          let slots = statusLabelSlots[String(token[...colon])] else { return token }
+    let value = Array(token[token.index(after: colon)...])
+    var run = 0
+    while run < value.count, value[run].isASCII,
+          value[run].isNumber || value[run] == "." || value[run] == "," || (run == 0 && value[run] == "-") { run += 1 }
+    if run == 0 || (run == 1 && value[0] == "-") { return token }
+    return String(token[...colon]) + String(repeating: figureSpace, count: max(0, slots - run)) + String(value)
 }
