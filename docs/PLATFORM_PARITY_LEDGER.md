@@ -1971,3 +1971,30 @@ Both planners now expose independent Transit speed in the same ft/s or m/s units
 - The recording marker stays on every stream tile, including the compact PiP. The
   status-row REC chip is gone on both platforms (even if the map is full screen and the
   PiP is hidden: prefer no second chrome location).
+
+## 2026-11-25 — Stream PiP waiting label and confirmation Inspect hold (2.6.1, build 451)
+
+- Field 2026-11-25 (A5, 450, roughly 10:40–11:20 AM PT): Ken had PiP selected but saw only a
+  full-screen map at first; the stream PiP appeared later. Separately, an Inspect button on
+  the Drone Confirmation Panel opened the Drone Inspection panel, and cancelling inspection
+  dismissed the confirmation panel before Mine / Not Mine.
+- PiP delay was not caused by 450 (REC marker / BTRX route requiring READY). The compact
+  stream PiP inset is shown in Map mode as soon as PiP is on, but with no live stream the
+  compact tile was a black box plus the "Observation only" badge (the full "Waiting for
+  controller" / RTMP setup text is hidden in compact, by design). The first LIVE publisher
+  (`1sar7djmtrc4td`) arrived at 11:01:40 PT, about 84 s after the empty grid at 11:00:16 PT;
+  decode still logged "render waiting for surface" until about 11:02:27 PT. Both platforms
+  now show a short "Waiting for stream" label in the compact PiP immediately, still without
+  the setup text or RTMP URLs.
+- Inspect was added to the confirmation panel in 10d48b90 (2.5.0rc1, 8 Oct 2026) when the
+  operational workspace was unified. Opening Inspect called `dismissConfirmationForInspection()`
+  (Android) / set `pendingDroneConfirmation = nil` (iOS) and the remote ID was already in the
+  prompted-this-flight set, so the panel did not return when inspection was cancelled. Ken
+  confirmed the same Inspect dismiss on the iPad (450 session pid 2774, launched 11:20:39 AM PT).
+  Both platforms now keep the pending confirmation, hide the panel only while Inspect is open,
+  and restore it when inspection is cancelled until Mine or Not Mine is chosen. Pairing cancel
+  and pairing-only save still dismiss as before.
+- Evidence: host BTRX C tests 561 checks, 0 failures (Release and ASan/UBSan); anomaly ctest
+  7/7, 0 failed; Android unit tests 2,844 (1 skipped, 0 failed; was 2,841); Swift 616 XCTest
+  + 906 swift-testing, 0 failed (was 612 + 906; Mapping XCTest 74 with 1 skipped, unchanged).
+  Android debug APK and iOS Debug device build (generic iPhoneOS, not installed) succeeded.
