@@ -1925,3 +1925,33 @@ Both planners now expose independent Transit speed in the same ft/s or m/s units
     dialog (StandAloneOptionsDialog); a remembered personal selection whose credential is
     missing now opens the sign-in prompt instead of falling back to an empty team when no
     team is usable.
+
+## 2026-11-25 — Always-visible recording marker and connect warning (2.6.1, build 449)
+
+- Field 2026-11-22 and 2026-11-24 (S11 Ultra, 2.5.8): two search flights were not recorded
+  because Capture Streams had been off since 2026-11-18 and nothing on screen said so; the
+  10 MB session log cap also dropped the rest of the evening's log. Ken, 2026-11-25: "Yes,
+  add the safeguards and show the recording marker on the PiP too".
+- Shared logic, same names, strings and timings: `RecordingMarkerPolicy` (red "● REC" only
+  while MediaMTX's recorder is writing the path, grey "● REC…" for the first 10 s after a
+  publish or recorder stop, amber "NOT RECORDING" with a reason: Capture Streams off,
+  storage blocked, archive not writable, recording storage not ready, recorder not
+  started), `RecordingConnectWarningPolicy` (once per publish), recorder start/stop events
+  parsed from MediaMTX's `[recorder] recording N track(s)` / `recording stopped` /
+  `no supported tracks found` log lines, and `SessionLogRollover` (10 MB). Android:
+  `video/RecordingMarker.kt`, `video/RecordingStatus.kt`, `video/RecordingConnectWarning.kt`,
+  `ui/RecordingMarkerUi.kt`, `data/SessionLogRollover.kt`. Swift:
+  `R2CCore/RecordingMarkerPolicy.swift`, `R2CCore/SessionLogRollover.swift`,
+  `App/AppleRecordingStatus.swift`.
+- Both platforms: the marker sits top-right on every stream tile (full, split, inset and the
+  compact PiP — `StreamTileChrome.recordingMarker` is shown at every size) and a chip leads
+  the map status row while any stream is live. Tapping amber turns Capture Streams on when
+  that is the reason, otherwise explains why. When a publish is not recording, the app says
+  "Video not recording" and shows "Video is not being recorded" with "Turn on" as the
+  default button ("Not now" also confirms that publish's Not-capturing panel), or the
+  reason with OK when storage or the recorder is the problem. Session logs continue in a
+  new Log_ file at 10 MB.
+- Android only: a finished recording is synced whatever Capture Streams says now (the
+  capture-off early return in `MediaMTXService` is gone); every settings restore, import and
+  skipped backup is logged. iOS never had the early return or the 2.5.8 restore path; its
+  log had no size cap and now rolls over at the same 10 MB.

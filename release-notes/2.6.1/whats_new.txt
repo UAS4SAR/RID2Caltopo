@@ -1,6 +1,7 @@
 Latest changes:
 - Map packages now include available USGS and USFS basemaps, contours, terrain, and obstacle data for the selected area.
 - A short notice on the map shows when a live stream is not being recorded, with one tap to start recording.
+- Every live video view, including the small picture-in-picture, now always shows whether it is recording, and the app speaks a warning when a stream connects without being recorded.
 - Turning off Capture Streams now asks first, and turning it on or off no longer interrupts live video.
 - Recordings now finish saving before the app closes, and any recording interrupted by a crash or shutdown is recovered the next time the app opens.
 - Flight storage problems, including a read-only or swapped SD card, no longer interrupt live video or repeat the same pop-up.
