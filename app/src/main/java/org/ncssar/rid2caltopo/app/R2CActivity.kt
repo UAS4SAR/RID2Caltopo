@@ -113,6 +113,7 @@ import org.ncssar.rid2caltopo.ui.ControllerSignalStrengthAlertHost
 import org.ncssar.rid2caltopo.ui.DroneScoutBridgeAlertHost
 import org.ncssar.rid2caltopo.ui.DroneSignalLossAlertHost
 import org.ncssar.rid2caltopo.ui.DroneSpecConfirmationDialog
+import org.ncssar.rid2caltopo.ui.shouldPresentDroneConfirmation
 import org.ncssar.rid2caltopo.ui.ApplicationTerms
 import org.ncssar.rid2caltopo.ui.TermsAcceptance
 import org.ncssar.rid2caltopo.ui.TermsAcceptanceStore
@@ -1661,6 +1662,9 @@ class R2CActivity :
                 val pendingDroneConfirmation by localViewModel
                     .pendingDroneConfirmation
                     .collectAsState()
+                val activeInspectionRemoteId by streamsViewModel
+                    .activeInspectionRemoteId
+                    .collectAsState()
                 LaunchedEffect(Unit) {
                     streamsViewModel.streams.collect { streams ->
                         val livePublishers = streams.values.filter {
@@ -1935,7 +1939,11 @@ class R2CActivity :
                 // Defer ordinary dialogs while reconstruction owns the workspace; preserve access gates.
                 if (!waitingForSystemUnlock && mappingJob?.active != true) {
                 org.ncssar.rid2caltopo.ui.MapConnectionOverlayHost(localViewModel)
-                pendingDroneConfirmation?.let { confirmationState ->
+                if (shouldPresentDroneConfirmation(
+                        hasPendingConfirmation = pendingDroneConfirmation != null,
+                        activeInspectionRemoteId = activeInspectionRemoteId,
+                    )
+                ) pendingDroneConfirmation?.let { confirmationState ->
                     DroneSpecConfirmationDialog(
                         state = confirmationState,
                         onFieldChange = { organization, pilotCallsign, droneDescription ->
@@ -1957,7 +1965,6 @@ class R2CActivity :
                         onPairSession = localViewModel::pairPendingDroneForSession,
                         onCancelPairing = localViewModel::dismissConfirmationForInspection,
                         onInspect = {
-                            localViewModel.dismissConfirmationForInspection()
                             streamsViewModel.inspectDrone(confirmationState.remoteId)
                         },
                         onUnknown = {

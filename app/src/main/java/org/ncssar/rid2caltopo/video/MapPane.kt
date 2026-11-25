@@ -3114,9 +3114,9 @@ internal fun SplitMapPane(
         }
     }
     unavailableInspection?.let { remoteId ->
-        AlertDialog(onDismissRequest = { unavailableInspection = null }, title = { Text("Drone Inspector") },
+        AlertDialog(onDismissRequest = { unavailableInspection = null; viewModel.clearActiveInspection() }, title = { Text("Drone Inspector") },
             text = { Column { Text(remoteId); Text("Position unavailable. A bearing line needs a valid position and direction of travel.") } },
-            confirmButton = { TextButton(onClick = { unavailableInspection = null }) { Text("Close") } })
+            confirmButton = { TextButton(onClick = { unavailableInspection = null; viewModel.clearActiveInspection() }) { Text("Close") } })
     }
     openBubbleDesignator?.takeIf { colorPickerTarget == null }?.let { designator ->
         val point = dronePoints.firstOrNull { it.designator == designator }
@@ -3156,7 +3156,7 @@ internal fun SplitMapPane(
                 )
             }
             AlertDialog(
-                onDismissRequest = { openBubbleDesignator = null },
+                onDismissRequest = { openBubbleDesignator = null; viewModel.clearActiveInspection() },
                 title = { Text(point.droneSpec?.displayLabel ?: point.designator) },
                 text = {
                     Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
@@ -3238,7 +3238,7 @@ internal fun SplitMapPane(
                     }
                 },
                 confirmButton = {
-                    TextButton(onClick = { openBubbleDesignator = null }) { Text("Close") }
+                    TextButton(onClick = { openBubbleDesignator = null; viewModel.clearActiveInspection() }) { Text("Close") }
                 },
                 dismissButton = {}
             )

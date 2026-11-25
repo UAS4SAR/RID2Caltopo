@@ -95,6 +95,7 @@ import androidx.compose.ui.semantics.ProgressBarRangeInfo
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -1650,9 +1651,17 @@ private fun StreamsGrid(
         if (visibleEntries.isEmpty()) {
             CTDebug(tag, "No streams to show.")
             if (!streamTileShows(StreamTileChrome.WAITING_PLACEHOLDER, compactPip)) {
-                // Compact PiP with no stream: black and the badge, no setup text or RTMP URLs.
+                // Compact PiP with no stream: badge plus a short waiting label so the
+                // window is visible immediately. No setup text or RTMP URLs (Ken, Nov 25).
                 Box(Modifier.fillMaxSize().background(Color.Black)) {
                     VideoSafetyBadge(Modifier.align(Alignment.TopStart).padding(4.dp))
+                    Text(
+                        text = STREAM_PIP_WAITING_TEXT,
+                        color = Color.White,
+                        style = MaterialTheme.typography.bodyMedium,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.align(Alignment.Center).padding(8.dp)
+                    )
                 }
             } else Column(Modifier.fillMaxSize()) {
                 VideoSafetyNotice()

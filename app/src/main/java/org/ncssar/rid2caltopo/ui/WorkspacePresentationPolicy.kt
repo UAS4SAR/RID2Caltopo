@@ -19,3 +19,19 @@ internal fun workspaceDroneAction(known: Boolean, publishing: Boolean): Workspac
 internal fun workspaceSeparationCaution(horizontal: Double, vertical: Double?, threshold: Double): Boolean =
     threshold.isFinite() && threshold > 0 && horizontal.isFinite() && horizontal >= 0 &&
         horizontal <= threshold * 1.10 && (vertical == null || (vertical.isFinite() && vertical >= 0 && vertical <= threshold * 1.10))
+
+/**
+ * Hide the Drone Confirmation Panel while Inspect is open, but keep the pending
+ * confirmation so cancelling inspection brings the panel back until Mine or
+ * Not Mine (Ken, Nov 25 A5 test of 450).
+ */
+internal fun shouldPresentDroneConfirmation(
+    hasPendingConfirmation: Boolean,
+    activeInspectionRemoteId: String?,
+): Boolean = hasPendingConfirmation && activeInspectionRemoteId == null
+
+internal fun shouldRestoreHeldDroneConfirmation(
+    heldRemoteId: String?,
+    alreadyConfirmed: Boolean,
+    alreadyIgnored: Boolean,
+): Boolean = !heldRemoteId.isNullOrEmpty() && !alreadyConfirmed && !alreadyIgnored

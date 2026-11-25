@@ -523,7 +523,8 @@ struct AppleStreamsGridView: View {
     var registeredDroneDesignators: [String] = []
     var aircraftDetailsView: (() -> AnyView)? = nil
     var operationalAlertOverlay: AnyView? = nil
-    /// The video PiP over the map: only the "Observation only" badge and the video (Ken, Nov 20).
+    /// The video PiP over the map: the "Observation only" badge, a short waiting label when
+    /// there is no stream yet, the recording marker, and the video (Ken, Nov 20 / Nov 25).
     var compactPip = false
     @State private var showRegisteredDesignators = false
     @State private var showAircraftDetails = false
@@ -849,7 +850,7 @@ private struct AppleStreamTile: View {
                     if model.usesNativeVideoSurface { AppleLiveVideoSurface(model: model) }
                     else if let player = model.player { VideoPlayer(player: player) }
                     else if StreamTileChrome.shows(.waitingPlaceholder, compactPip: compactPip) { waitingForController }
-                    else { Color.black }
+                    else { compactWaitingForStream }
                     if model.anomalyMode != .off {
                         AnomalyBoxOverlay(boxes: model.anomalyBoxes)
                             .allowsHitTesting(false)
@@ -985,6 +986,15 @@ private struct AppleStreamTile: View {
                 try? await Task.sleep(for: .milliseconds(500))
             }
         }
+    }
+
+    private var compactWaitingForStream: some View {
+        Text(StreamTileChrome.compactWaitingText)
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(.white)
+            .multilineTextAlignment(.center)
+            .padding(8)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var waitingForController: some View {

@@ -33,6 +33,17 @@ final class StreamTileChromeTests: XCTestCase {
         XCTAssertEqual(StreamTileChrome.allCases.count, 11)
     }
 
+    func testCompactEmptyPipShowsShortWaitingLabel() throws {
+        XCTAssertEqual(StreamTileChrome.compactWaitingText, "Waiting for stream")
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent()
+        let tile = try String(contentsOf: root.appendingPathComponent("apple/App/AppleStreamRegistry.swift"), encoding: .utf8)
+        XCTAssertTrue(tile.contains("compactWaitingForStream"))
+        XCTAssertTrue(tile.contains("StreamTileChrome.compactWaitingText"))
+        // Compact empty PiP must not present the full controller/RTMP waiting view.
+        XCTAssertTrue(tile.contains("else { compactWaitingForStream }"))
+    }
+
     func testBadgeTextStartsTheFullNotice() {
         XCTAssertEqual(StreamTileChrome.badgeText, "Observation only")
         XCTAssertTrue(ApplicationLaunchDisclaimer.text.contains("Observation only — do not pilot using this video."))

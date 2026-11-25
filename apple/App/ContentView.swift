@@ -173,6 +173,7 @@ struct ContentView: View {
     @State private var selectedAircraftID: String?
     @State private var addRidMapRemoteID: String?
     @State private var confirmationPresentation = PendingFlightConfirmation()
+    @State private var confirmationHeldForInspection: String?
     @State private var inspectedAircraft: DroneConfirmationRequest?
     private var workspaceAboutHeader: some View {
         VStack(spacing: 14) {
@@ -283,6 +284,14 @@ struct ContentView: View {
             .onReceive(NotificationCenter.default.publisher(for: Notification.Name("workspaceInspectDrone"))) { event in
                 guard let remoteID = event.object as? String else { return }
                 addRidMapRemoteID = nil
+                // Keep the pending confirmation (the sheet just dismissed it from view)
+                // so cancelling inspection brings the panel back until Mine / Not Mine.
+                if let pending = pendingDroneConfirmation?.id {
+                    confirmationHeldForInspection = pending
+                } else if confirmationHeldForInspection == nil {
+                    confirmationHeldForInspection = remoteID
+                }
+                mapViewportMemory.inspectionSessionRemoteID = remoteID
                 pendingDroneConfirmation = nil
                 Task { @MainActor in
                     try? await Task.sleep(for: .milliseconds(300))
@@ -701,7 +710,13 @@ struct ContentView: View {
             .sheet(item: Binding(
                 get: { pendingDroneConfirmation },
                 set: { pendingDroneConfirmation = $0 }
-            ), onDismiss: queueNextDroneConfirmation) { request in
+            ), onDismiss: {
+                if DroneConfirmationInspection.shouldQueueNextConfirmation(
+                    heldRemoteID: confirmationHeldForInspection
+                ) {
+                    queueNextDroneConfirmation()
+                }
+            }) { request in
                 DroneConfirmationView(
                     remoteID: request.id,
                     existing: droneConfirmations.identity(for: request.id),
@@ -1355,6 +1370,10 @@ struct ContentView: View {
                     droneConfirmations.rearmAutomaticPrompt(remoteID: remoteID)
                     pendingDroneConfirmation = nil
                 }
+            }
+            .onChange(of: mapViewportMemory.inspectionSessionRemoteID) { _, newValue in
+                guard newValue == nil else { return }
+                restoreConfirmationAfterInspection()
             }
             // RID track snapshots are handled by AppleAlertCoordinator (handleTrackSnapshot),
             // which keeps running while this subtree is replaced by the access gate.
@@ -3228,8 +3247,29 @@ struct ContentView: View {
     }
 
     private func dismissEndedDroneConfirmation(_ remoteID: String) {
+        if confirmationHeldForInspection == remoteID {
+            confirmationHeldForInspection = nil
+        }
         if confirmationPresentation.endFlight(remoteID: remoteID) {
             AppleLog.info("DroneConfirmation", "Dismissed expired confirmation remoteId=\(remoteID)")
+        }
+    }
+
+    private func restoreConfirmationAfterInspection() {
+        guard confirmationHeldForInspection != nil else { return }
+        let held = confirmationHeldForInspection
+        let confirmed = held.map { droneConfirmations.isCurrentFlightConfirmed($0) } ?? false
+        let ignored = held.map { droneConfirmations.isIgnored($0) } ?? false
+        if DroneConfirmationInspection.shouldRestoreHeldConfirmation(
+            heldRemoteID: held,
+            alreadyConfirmed: confirmed,
+            alreadyIgnored: ignored
+        ), let held {
+            confirmationHeldForInspection = nil
+            pendingDroneConfirmation = DroneConfirmationRequest(id: held)
+        } else {
+            confirmationHeldForInspection = nil
+            queueNextDroneConfirmation()
         }
     }
 

@@ -8,6 +8,8 @@ public enum StreamTileChrome: CaseIterable, Sendable {
          requesterLabel, alertOverlay, clueButton, legend, waitingPlaceholder, recordingMarker
 
     public static let badgeText = "Observation only"
+    /// Short empty-PiP label only — not the full controller/RTMP setup text (Ken, Nov 25).
+    public static let compactWaitingText = "Waiting for stream"
 
     public static func shows(_ chrome: StreamTileChrome, compactPip: Bool) -> Bool {
         // Ken, Nov 25: "show the recording marker on the PiP too" — every tile size shows it.

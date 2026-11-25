@@ -20,4 +20,19 @@ class WorkspacePresentationPolicyTest {
         assertEquals(WorkspaceDroneAction.Confirm, workspaceDroneAction(true, false))
         assertEquals(WorkspaceDroneAction.Inspect, workspaceDroneAction(true, true))
     }
+
+    @Test fun confirmationStaysHiddenOnlyWhileInspectionIsOpen() {
+        assertTrue(shouldPresentDroneConfirmation(hasPendingConfirmation = true, activeInspectionRemoteId = null))
+        assertFalse(shouldPresentDroneConfirmation(hasPendingConfirmation = true, activeInspectionRemoteId = "ABC"))
+        assertFalse(shouldPresentDroneConfirmation(hasPendingConfirmation = false, activeInspectionRemoteId = null))
+        assertFalse(shouldPresentDroneConfirmation(hasPendingConfirmation = false, activeInspectionRemoteId = "ABC"))
+    }
+
+    @Test fun heldConfirmationReturnsUntilMineOrNotMine() {
+        assertTrue(shouldRestoreHeldDroneConfirmation("ABC", alreadyConfirmed = false, alreadyIgnored = false))
+        assertFalse(shouldRestoreHeldDroneConfirmation("ABC", alreadyConfirmed = true, alreadyIgnored = false))
+        assertFalse(shouldRestoreHeldDroneConfirmation("ABC", alreadyConfirmed = false, alreadyIgnored = true))
+        assertFalse(shouldRestoreHeldDroneConfirmation(null, alreadyConfirmed = false, alreadyIgnored = false))
+        assertFalse(shouldRestoreHeldDroneConfirmation("", alreadyConfirmed = false, alreadyIgnored = false))
+    }
 }

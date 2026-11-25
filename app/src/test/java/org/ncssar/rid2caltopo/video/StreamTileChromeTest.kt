@@ -41,6 +41,15 @@ class StreamTileChromeTest {
     }
 
     @Test
+    fun compactEmptyPipShowsShortWaitingLabel() {
+        assertEquals("Waiting for stream", STREAM_PIP_WAITING_TEXT)
+        val streams = File("src/main/java/org/ncssar/rid2caltopo/video/StreamsScreen.kt").readText()
+        assertTrue(streams.contains("STREAM_PIP_WAITING_TEXT"))
+        // Compact empty PiP must not dump controller setup / RTMP URLs into the inset.
+        assertFalse(streams.contains("EmptyStreamsView(") && streams.split("if (!streamTileShows(StreamTileChrome.WAITING_PLACEHOLDER, compactPip))")[1].split("else Column")[0].contains("EmptyStreamsView("))
+    }
+
+    @Test
     fun streamDoubleTapOpensDeskPodOnlyWhenConnectedAndNotOnThePip() {
         assertTrue(streamDoubleTapOpensDeskPod(compactPip = false, deskPodConnected = true))
         assertFalse(streamDoubleTapOpensDeskPod(compactPip = false, deskPodConnected = false))

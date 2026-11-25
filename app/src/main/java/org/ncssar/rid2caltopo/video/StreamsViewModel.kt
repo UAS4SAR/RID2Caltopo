@@ -1453,7 +1453,17 @@ class StreamsViewModel(
     // Map selection belongs to the aircraft, independently of video availability/focus.
     val inspectionRemoteId = MutableStateFlow<String?>(null)
     val droneActionRemoteId = MutableStateFlow<String?>(null)
-    fun inspectDrone(remoteId: String) { inspectionRemoteId.value = remoteId; setLayoutMode(StreamsLayoutMode.Both) }
+    // [inspectionRemoteId] is a one-shot request consumed by the map pane.
+    // This stays set until the inspector / details bubble is closed so the
+    // confirmation panel can hide without being discarded (Ken, Nov 25).
+    private val _activeInspectionRemoteId = MutableStateFlow<String?>(null)
+    val activeInspectionRemoteId: StateFlow<String?> = _activeInspectionRemoteId.asStateFlow()
+    fun inspectDrone(remoteId: String) {
+        inspectionRemoteId.value = remoteId
+        _activeInspectionRemoteId.value = remoteId
+        setLayoutMode(StreamsLayoutMode.Both)
+    }
+    fun clearActiveInspection() { _activeInspectionRemoteId.value = null }
 
     private val _mapFocusedDesignator = MutableStateFlow<String?>(null)
     val mapFocusedDesignator: StateFlow<String?> = _mapFocusedDesignator.asStateFlow()

@@ -213,6 +213,9 @@ final class AppleMapViewportMemory: ObservableObject {
     // Owned by ContentView so navigation cannot discard the operator's view.
     @Published var operatorAdjustedViewport = false
     @Published var inspectionRemoteID: String?
+    /// Stays set until the inspector / pilot-settings sheet is closed, unlike
+    /// [inspectionRemoteID] which is a one-shot request (Ken, Nov 25).
+    @Published var inspectionSessionRemoteID: String?
     var hasCenteredOnLocation = false
     var region = unresolvedAppleMapRegion
     var visibleMapRect: MKMapRect?
@@ -1027,7 +1030,9 @@ struct RIDTrackMapView: View {
             enabled: calibrationRemoteID.map { model.canCalibrateAltitude(remoteID: $0) } ?? false) {
                 if let id = calibrationRemoteID { model.manualCalibrateAltitude(remoteID: id) }
             }
-        .sheet(item: $selectedPilotSettings) { selection in
+        .sheet(item: $selectedPilotSettings, onDismiss: {
+            viewportMemory.inspectionSessionRemoteID = nil
+        }) { selection in
             PilotDisplaySettingsView(
                 selection: selection,
                 track: model.tracks.first { $0.aircraftID == selection.remoteID },
@@ -1824,7 +1829,8 @@ struct RIDTrackMapView: View {
 
     private var videoPane: some View { videoPaneView(compact: false) }
 
-    /// `compact`: the video PiP over the map shows only the "Observation only" badge and the video (Ken, Nov 20).
+    /// `compact`: the video PiP over the map shows the "Observation only" badge, a short
+    /// "Waiting for stream" label when empty, the recording marker, and the video (Ken, Nov 20 / Nov 25).
     private func videoPaneView(compact: Bool) -> some View {
         ZStack {
             Color.black

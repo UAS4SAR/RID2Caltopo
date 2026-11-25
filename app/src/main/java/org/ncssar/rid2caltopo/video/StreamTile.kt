@@ -2353,6 +2353,8 @@ internal fun VideoSafetyBadge(modifier: Modifier = Modifier) {
 }
 
 internal const val VIDEO_SAFETY_BADGE_TEXT = "Observation only"
+/** Short empty-PiP label only — not the full controller/RTMP setup text (Ken, Nov 25). */
+internal const val STREAM_PIP_WAITING_TEXT = "Waiting for stream"
 
 /**
  * Everything a stream tile can draw besides the video (Ken, Nov 20: "too much text in the PiP").
