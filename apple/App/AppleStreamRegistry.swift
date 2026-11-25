@@ -777,6 +777,12 @@ private struct AppleStreamTile: View {
         .overlay(alignment: .topLeading) {
             if StreamTileChrome.shows(.safetyBadge, compactPip: compactPip) { AppleVideoSafetyBadge().padding(4) }
         }
+        .overlay(alignment: .topTrailing) {
+            // Ken, Nov 25 2026: on every stream view, the compact PiP included.
+            if StreamTileChrome.shows(.recordingMarker, compactPip: compactPip) {
+                AppleStreamRecordingMarker(session: session).padding(4)
+            }
+        }
     }
 
     @Environment(\.colorScheme) private var colorScheme

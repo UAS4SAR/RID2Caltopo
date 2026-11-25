@@ -2520,6 +2520,7 @@ struct RIDTrackMapView: View {
 
     @ViewBuilder
     private var liveViewStatusItems: some View {
+        AppleRecordingStatusChip()
         if let btrxCenter { BtrxMapStatusChip(center: btrxCenter) }
         AppleProximityStatusChip(center: proximityAlerts, onSettings: onProximitySettings)
         operationalStatusChip(conciseAirspaceOrNotamChipLabel, tone: usesAirspaceRestrictionStatus ? airspaceTone : notamTone) {

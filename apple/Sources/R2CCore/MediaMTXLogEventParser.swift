@@ -27,6 +27,15 @@ public struct MediaMTXLogEventParser: Sendable {
             )
         }
 
+        if let captures = captures(#"\[path ([^\]]+)]\s+\[recorder]\s+(.+)"#, in: line) {
+            let message = captures[1].trimmingCharacters(in: .whitespaces)
+            if message == "recording stopped" || message.hasPrefix("no supported tracks found") {
+                return .recorderStopped(path: captures[0])
+            }
+            if message.hasPrefix("recording ") { return .recorderStarted(path: captures[0]) }
+            return nil
+        }
+
         if let captures = captures(#"\[path ([^\]]+)]\s+closing existing publisher"#, in: line) {
             return .streamPublisherHandoff(
                 path: captures[0],

@@ -23,6 +23,8 @@ actor AppleDiagnosticLogStore {
     /// roll over to a new file in the new day's folder, so the diagnostic-log
     /// protection follows today instead of holding yesterday's folder.
     private var currentDayEndsAt: Date?
+    /// Bytes in the current file; at SessionLogRollover.maxBytes the log continues in a new file.
+    private var bytesWritten = 0
 
     func start(metadata: String) throws -> URL {
         if let currentURL { return currentURL }
@@ -50,6 +52,7 @@ actor AppleDiagnosticLogStore {
         self.currentURL = destination
         AppleFlightStorage.protect(day, owner: "diagnostic-log")
         self.handle = handle
+        bytesWritten = 0
         currentDayEndsAt = Self.nextLocalMidnight(after: Date())
 
         try append("########################################################################\n")
@@ -82,6 +85,9 @@ actor AppleDiagnosticLogStore {
             return
         }
         if let currentDayEndsAt, date >= currentDayEndsAt { rollOver(at: date) }
+        else if SessionLogRollover.shouldRollOver(bytesWritten: bytesWritten, incomingBytes: line.utf8.count, fileAttached: true) {
+            rollOver(at: date, reason: "after reaching \(SessionLogRollover.maxBytes) bytes")
+        }
         try? append(line)
     }
 
@@ -162,26 +168,34 @@ actor AppleDiagnosticLogStore {
         return destination
     }
 
-    private func rollOver(at date: Date) {
+    private func rollOver(at date: Date, reason: String = "after local midnight") {
         guard let rootURL else { return }
         let day = Self.dayName(for: date)
         let directory = rootURL.appendingPathComponent(day, isDirectory: true)
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            let destination = directory.appendingPathComponent(
+            var destination = directory.appendingPathComponent(
                 "Log_\(OperationalDiagnosticLogFormat.filenameTimestamp(date)).txt"
             )
+            var suffix = 2
+            while FileManager.default.fileExists(atPath: destination.path) {
+                destination = directory.appendingPathComponent(
+                    "Log_\(OperationalDiagnosticLogFormat.filenameTimestamp(date))-\(suffix).txt"
+                )
+                suffix += 1
+            }
             FileManager.default.createFile(atPath: destination.path, contents: nil)
             let next = try FileHandle(forWritingTo: destination)
             let previous = currentURL?.lastPathComponent ?? "previous log"
             try? handle?.synchronize()
             try? handle?.close()
             handle = next
+            bytesWritten = 0
             currentURL = destination
             currentDayEndsAt = Self.nextLocalMidnight(after: date)
             // Same owner key: the previous day's folder is released.
             AppleFlightStorage.protect(day, owner: "diagnostic-log")
-            try? append("# Log continued from \(previous) after local midnight\n")
+            try? append("# Log continued from \(previous) \(reason)\n")
         } catch {
             // Keep writing to the current file; retry at the next write after a minute.
             currentDayEndsAt = date.addingTimeInterval(60)
@@ -193,7 +207,9 @@ actor AppleDiagnosticLogStore {
     }
 
     private func append(_ text: String) throws {
-        try handle?.write(contentsOf: Data(text.utf8))
+        let data = Data(text.utf8)
+        try handle?.write(contentsOf: data)
+        if handle != nil { bytesWritten += data.count }
         if let currentURL { AppleFlightStorage.fileChanged(currentURL) }
     }
 

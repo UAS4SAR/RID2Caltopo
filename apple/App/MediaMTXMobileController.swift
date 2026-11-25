@@ -157,7 +157,13 @@ private func mediaMTXSwiftLogCallback(
 
 @MainActor
 final class MediaMTXViewModel: ObservableObject {
-    @Published private(set) var isRunning = false
+    @Published private(set) var isRunning = false {
+        didSet {
+            guard isRunning != oldValue else { return }
+            let running = isRunning
+            AppleRecordingStatus.shared.updateInputs { $0.serverRunning = running }
+        }
+    }
     @Published private(set) var status = "Stopped"
     @Published private(set) var activePublisherPaths: Set<String> = []
     @Published var storageWarning: String?
@@ -196,12 +202,17 @@ final class MediaMTXViewModel: ObservableObject {
                     // (protect, localize, normalize, deliver, release) runs on its own
                     // serial chain so it can never hold up streamStarted/streamStopped.
                     switch event {
+                    case .recorderStarted, .recorderStopped:
+                        // Recorder state drives the "● REC" marker; nothing else listens.
+                        AppleRecordingStatus.shared.handle(event)
                     case let .serverStarted(version):
+                        AppleRecordingStatus.shared.handle(event)
                         AppleStreamsServerStatus.shared.version = version
                         AppleStreamsServerStatus.shared.startedAt = Date()
                         status = "Running \(version)"
                         eventHandler?(event)
                     case let .streamStarted(path, _):
+                        AppleRecordingStatus.shared.handle(event)
                         activePublisherPaths.insert(path)
                         status = "Streaming \(path)"
                         eventHandler?(event)
@@ -218,6 +229,7 @@ final class MediaMTXViewModel: ObservableObject {
                         AppleLog.info("MediaMTX", "Recording file complete path=\(filePath)")
                         enqueueRecordingFinalization(event)
                     default:
+                        if case .streamPublisherHandoff = event { AppleRecordingStatus.shared.handle(event) }
                         eventHandler?(event)
                     }
                 }
@@ -241,6 +253,11 @@ final class MediaMTXViewModel: ObservableObject {
                 // estimate and the sweep runs afterwards; recording follows via the API.
                 let storage = AppleFlightStorage.recordingStartEstimate()
                 recordingAllowed = !storage.blocked && rootChoice.recordable
+                AppleRecordingStatus.shared.updateInputs {
+                    $0.captureEnabled = captureStreams
+                    $0.storageBlocked = storage.blocked
+                    $0.recorderReady = rootChoice.recordable
+                }
                 reportStoragePressure(storage)
                 // No day-level "recorder" owner: it pinned the start day after
                 // midnight. Today is always protected, and incomplete segments are
@@ -562,6 +579,7 @@ final class MediaMTXViewModel: ObservableObject {
     private func handleStorageSnapshot(_ snapshot: AppleFlightStorage.Snapshot) {
         reportStoragePressure(snapshot)
         let allowed = !snapshot.blocked
+        AppleRecordingStatus.shared.updateInputs { $0.storageBlocked = snapshot.blocked }
         if allowed != recordingAllowed {
             recordingAllowed = allowed
             AppleLog.debug("MediaMTX", "Storage capture \(allowed ? "allowed" : "blocked"); updating recording via API")
@@ -576,6 +594,7 @@ final class MediaMTXViewModel: ObservableObject {
     /// Capture Streams changed: switch recording through the API without restarting the server.
     func updateCaptureEnabled(_ enabled: Bool) {
         AppleLog.info("MediaMTX", "Capture Streams \(enabled ? "ON" : "OFF"); updating recording via API (no restart)")
+        AppleRecordingStatus.shared.updateInputs { $0.captureEnabled = enabled }
         if isRunning, status.hasPrefix("Running") || status.hasPrefix("Capture paused") {
             status = enabled && recordingAllowed ? "Running • capturing streams" : (enabled ? "Capture paused: storage limit" : "Running")
         }

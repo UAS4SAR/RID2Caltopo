@@ -17,6 +17,10 @@ public enum MediaServerEvent: Equatable, Sendable {
     )
     case hlsStreamStarted(path: String)
     case recordFileCompleted(path: String, filePath: String, durationMilliseconds: Int)
+    /// MediaMTX's recorder began writing this path ("[recorder] recording N track(s)").
+    case recorderStarted(path: String)
+    /// The recorder stopped ("recording stopped", or "no supported tracks found").
+    case recorderStopped(path: String)
 }
 
 /// Lifecycle seam implemented by the future Go mobile bridge.

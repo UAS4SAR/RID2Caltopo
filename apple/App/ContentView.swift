@@ -494,6 +494,7 @@ struct ContentView: View {
             } message: {
                 Text(caltopoSettings.mapOptionsText(teamLabel: profileLifecycle.activeCredentialLabel))
             }
+            .modifier(AppleRecordingPromptHost())
             .alert("Update available", isPresented: updateAdvisoryPresented) {
                 if let updateURL = peerCoordinator.recommendedUpdateURL {
                     Button("Check App Store") { openURL(updateURL) }
@@ -865,6 +866,7 @@ struct ContentView: View {
                 }
                 if !ProcessInfo.processInfo.arguments.contains("--manual-mediamtx") {
                     CaptureStreamsCenter.shared.logLoad()
+                    AppleRecordingStatus.shared.start()
                     mediaMTX.start(captureStreams: captureStreams)
                 }
                 #if DEBUG
