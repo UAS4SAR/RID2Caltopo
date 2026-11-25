@@ -1955,3 +1955,19 @@ Both planners now expose independent Transit speed in the same ft/s or m/s units
   capture-off early return in `MediaMTXService` is gone); every settings restore, import and
   skipped backup is logged. iOS never had the early return or the 2.5.8 restore path; its
   log had no size cap and now rolls over at the same 10 MB.
+
+## 2026-11-25 — Bearing-layer notice and status-row REC chip (2.6.1, build 450)
+
+- Field 2026-11-25 (A5, 449): the map showed "Bearing layer: no reports from the paired
+  Drone Pod" with no Desk Pod powered or connected (the layer setting auto-enables with
+  BTRX, and a missing map-status chip was treated as "show the notice"). The Streams
+  screen also had a redundant "● REC" in the top status row next to the marker already on
+  the stream tile. Ken: the notice should not appear with no Desk Pod, and the tile
+  marker is adequate.
+- Shared rule, same on both platforms: `BtrxTelemetryRoute.mapShows` and `streamShows`
+  now also require the Desk Pod link to be READY (`mapStatus.active`). The auto-enable of
+  the bearing-layer setting is unchanged, but the layer, its status notice, popups and
+  the steering overlay stay hidden until the link is up.
+- The recording marker stays on every stream tile, including the compact PiP. The
+  status-row REC chip is gone on both platforms (even if the map is full screen and the
+  PiP is hidden: prefer no second chrome location).
