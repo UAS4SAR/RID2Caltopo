@@ -12,14 +12,24 @@ import org.junit.Test
  */
 class StreamTileChromeTest {
     @Test
-    fun compactPipShowsOnlyTheBadge() {
-        assertEquals(listOf(StreamTileChrome.SAFETY_BADGE), StreamTileChrome.entries.filter { streamTileShows(it, compactPip = true) })
+    fun compactPipShowsOnlyTheBadgeAndRecordingMarker() {
+        // Ken, Nov 25: "show the recording marker on the PiP too".
+        assertEquals(listOf(StreamTileChrome.SAFETY_BADGE, StreamTileChrome.RECORDING_MARKER),
+            StreamTileChrome.entries.filter { streamTileShows(it, compactPip = true) }.sortedBy { it.ordinal })
     }
 
     @Test
     fun fullSizeTileUnchanged() {
         assertEquals(listOf(StreamTileChrome.SAFETY_BADGE), StreamTileChrome.entries.filter { !streamTileShows(it, compactPip = false) })
-        assertEquals(10, StreamTileChrome.entries.size)
+        assertEquals(11, StreamTileChrome.entries.size)
+    }
+
+    @Test
+    fun everyTileSizeShowsTheRecordingMarker() {
+        assertTrue(streamTileShows(StreamTileChrome.RECORDING_MARKER, compactPip = true))
+        assertTrue(streamTileShows(StreamTileChrome.RECORDING_MARKER, compactPip = false))
+        val tile = File("src/main/java/org/ncssar/rid2caltopo/video/StreamTile.kt").readText()
+        assertTrue(tile.contains("StreamRecordingMarker(streamDesignator"))
     }
 
     @Test

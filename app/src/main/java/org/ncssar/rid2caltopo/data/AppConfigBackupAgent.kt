@@ -16,7 +16,7 @@ class AppConfigBackupAgent : BackupAgent() {
     private fun snapshot(): ByteArray? = snapshotOf(File(filesDir, "datastore/app_config.pb"))
 
     override fun onBackup(oldState: ParcelFileDescriptor?, data: BackupDataOutput, newState: ParcelFileDescriptor?) {
-        val bytes = snapshot() ?: return
+        val bytes = snapshot() ?: return logSkippedBackup("key/value")
         data.writeEntityHeader("app_config:datastore/app_config.pb", -1)
         data.writeEntityHeader(KEY, bytes.size)
         data.writeEntityData(bytes, bytes.size)
@@ -24,7 +24,11 @@ class AppConfigBackupAgent : BackupAgent() {
 
     override fun onRestore(data: BackupDataInput, appVersionCode: Int, newState: ParcelFileDescriptor?) {
         while (data.readNextHeader()) {
-            if (data.key != KEY || data.dataSize !in 0..MAX_BYTES) { data.skipEntityData(); continue }
+            if (data.key != KEY || data.dataSize !in 0..MAX_BYTES) {
+                CaltopoClient.CTInfo(TAG, "System restore skipped entry key=${data.key} size=${data.dataSize}")
+                data.skipEntityData(); continue
+            }
+            CaltopoClient.CTInfo(TAG, "System restore (key/value) of settings, ${data.dataSize} bytes, from app version $appVersionCode")
             val bytes = ByteArray(data.dataSize)
             var offset = 0
             while (offset < bytes.size) {
@@ -36,7 +40,7 @@ class AppConfigBackupAgent : BackupAgent() {
     }
 
     override fun onFullBackup(data: FullBackupDataOutput) {
-        val bytes = snapshot() ?: return
+        val bytes = snapshot() ?: return logSkippedBackup("full")
         val file = File(filesDir, SETTINGS_PATH)
         file.parentFile?.mkdirs()
         file.writeBytes(bytes)
@@ -45,7 +49,11 @@ class AppConfigBackupAgent : BackupAgent() {
 
     override fun onRestoreFile(data: ParcelFileDescriptor, size: Long, destination: File, type: Int, mode: Long, mtime: Long) {
         ParcelFileDescriptor.AutoCloseInputStream(data).use { input ->
-            if (type != TYPE_FILE || destination.canonicalFile != File(filesDir, SETTINGS_PATH).canonicalFile || size !in 0..MAX_BYTES.toLong()) return
+            if (type != TYPE_FILE || destination.canonicalFile != File(filesDir, SETTINGS_PATH).canonicalFile || size !in 0..MAX_BYTES.toLong()) {
+                CaltopoClient.CTInfo(TAG, "System restore skipped file ${destination.name} size=$size")
+                return
+            }
+            CaltopoClient.CTInfo(TAG, "System restore (full) of settings, $size bytes")
             val bytes = ByteArray(size.toInt())
             var offset = 0
             while (offset < bytes.size) {
@@ -56,7 +64,12 @@ class AppConfigBackupAgent : BackupAgent() {
         }
     }
 
+    private fun logSkippedBackup(kind: String) {
+        CaltopoClient.CTInfo(TAG, "System backup ($kind) skipped: no saved settings yet")
+    }
+
     companion object {
+        private const val TAG = "AppConfigBackupAgent"
         /** Null when [file] is missing or empty, so the default instance is never backed up. */
         @JvmStatic
         internal fun snapshotOf(file: File): ByteArray? {

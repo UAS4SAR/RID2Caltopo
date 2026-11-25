@@ -24,6 +24,8 @@ enum class SpokenWarningKind(val phrase: String) {
     ControllerSignalStrength("Stream Wi-Fi Signal Strength"),
     BridgeNotDetected("Bridge Not Detected"),
     VideoStreamRequest("Video Stream Request"),
+    /** A live stream is not being recorded (not mutable from the bell: it is a safeguard). */
+    VideoNotRecording("Video not recording"),
 }
 
 data class SpokenWarningRequest(

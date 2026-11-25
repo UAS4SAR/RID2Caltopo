@@ -2085,6 +2085,8 @@ fun MainScreen(
             onDismiss = { dismissArchiveAlerts() },
         )
     }
+    // "Video is not being recorded" at a live publish or from a tap on the amber marker.
+    RecordingPromptHost()
     val captureNotice by org.ncssar.rid2caltopo.data.CaptureStreamsNotice.pending.collectAsStateWithLifecycle()
     LaunchedEffect(Unit) { withContext(Dispatchers.IO) { org.ncssar.rid2caltopo.data.CaptureStreamsNotice.load(context) } }
     captureNotice?.let { notice ->

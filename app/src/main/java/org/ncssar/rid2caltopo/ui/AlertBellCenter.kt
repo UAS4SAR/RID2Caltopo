@@ -177,6 +177,7 @@ fun SpokenWarningKind.toAlertBellKind(): AlertBellKind? = when (this) {
     SpokenWarningKind.BridgeNotDetected -> AlertBellKind.BridgeSignalLoss
     SpokenWarningKind.ControllerSignalStrength -> AlertBellKind.WifiStrength
     SpokenWarningKind.VideoStreamRequest -> AlertBellKind.VideoRequest
+    SpokenWarningKind.VideoNotRecording -> null
 }
 
 /**

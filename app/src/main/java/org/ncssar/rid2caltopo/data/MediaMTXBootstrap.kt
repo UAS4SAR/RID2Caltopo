@@ -16,8 +16,10 @@ object MediaMTXBootstrap {
                         StreamRegistry.onStreamConnecting(event.path)
                     }
 
-                is MediaMTXEvent.StreamStarted ->
+                is MediaMTXEvent.StreamStarted -> {
+                    org.ncssar.rid2caltopo.video.RecordingStatus.onStreamStarted(event.path)
                     StreamRegistry.onStreamStarted(event.path, event.publisherConnId)
+                }
 
                 is MediaMTXEvent.StreamPublisherHandoff ->
                     StreamRegistry.onStreamPublisherHandoff(event.path, event.publisherConnId)
@@ -38,12 +40,15 @@ object MediaMTXBootstrap {
                     }
                 }
 
-                is MediaMTXEvent.ServerStarted ->
+                is MediaMTXEvent.ServerStarted -> {
+                    org.ncssar.rid2caltopo.video.RecordingStatus.onServerStarted()
                     MediaMTXStatus.onServerStarted(event.version)
+                }
 
                 is MediaMTXEvent.HlsStreamStarted -> {}
                 is MediaMTXEvent.RecordFileCompleted -> {}
                 //    StreamRegistry.onStreamStarted(event.path)
+                is MediaMTXEvent.RecorderStarted, is MediaMTXEvent.RecorderStopped -> {}
             }
         }
         // Raw log parsing is intentionally narrower: only use it for stop signals
@@ -59,6 +64,16 @@ object MediaMTXBootstrap {
                     if (shouldStopStreamForRtmpDiagnostic(event)) {
                         StreamRegistry.onStreamStopped(event.path, event.publisherConnId)
                     }
+                }
+
+                // The recorder's own lines are the only proof that a stream is being written.
+                is MediaMTXEvent.RecorderStarted -> {
+                    CTDebug(SIGNAL_TAG, "Recorder started path=${event.path}")
+                    org.ncssar.rid2caltopo.video.RecordingStatus.onRecorderStarted(event.path)
+                }
+                is MediaMTXEvent.RecorderStopped -> {
+                    CTDebug(SIGNAL_TAG, "Recorder stopped path=${event.path}")
+                    org.ncssar.rid2caltopo.video.RecordingStatus.onRecorderStopped(event.path)
                 }
 
                 else -> {}

@@ -1139,20 +1139,36 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
     }
 
     private static void WriteDiagnosticLog(String type, String tag, String msg, long eventTime) {
+        String rolledOverFrom = null;
         synchronized (DebugLogLock) {
             OutputStream os = DebugOutputStream;
             if (null == os) return;
+            if (null != type && null != tag) {
+                DateTimeFormatter formatter = DateTimeFormatter.ofPattern(
+                        "ddLLLHHmmss.SSS z XXX", Locale.US);
+                msg = String.format(Locale.US, "%s %s: %s %s\n  ", type,
+                        java.time.Instant.ofEpochMilli(eventTime).atZone(java.time.ZoneId.systemDefault()).format(formatter), tag,
+                        RedactLocationFromDiagnosticMessage(msg));
+            }
+            byte[] bytes = msg.getBytes();
+            // Field Nov 24 2026: the log stopped at 10 MB mid-search. A full log now continues
+            // in a new Log_ file instead of dropping everything after the cap.
+            if (SessionLogRollover.shouldRollOver(BytesWrittenToDebugOutputStream, bytes.length,
+                    MAX_SIZE_DEBUG_OUTPUT, DebugLogPath != null)) {
+                rolledOverFrom = LogFilePath;
+                try {
+                    os.write(SessionLogRollover.closingLine(MAX_SIZE_DEBUG_OUTPUT).getBytes());
+                    os.flush();
+                    os.close();
+                } catch (IOException e) {
+                    Log.e(TAG, "CTError: CTLog(): closing the full session log raised: " + e);
+                }
+                ResetDebugOutputStreamLocked();
+                os = DebugOutputStream;
+            }
             if (BytesWrittenToDebugOutputStream >= MAX_SIZE_DEBUG_OUTPUT) return;
 
             try {
-                if (null != type && null != tag) {
-                    DateTimeFormatter formatter = DateTimeFormatter.ofPattern(
-                            "ddLLLHHmmss.SSS z XXX", Locale.US);
-                    msg = String.format(Locale.US, "%s %s: %s %s\n  ", type,
-                            java.time.Instant.ofEpochMilli(eventTime).atZone(java.time.ZoneId.systemDefault()).format(formatter), tag,
-                            RedactLocationFromDiagnosticMessage(msg));
-                }
-                byte[] bytes = msg.getBytes();
                 BytesWrittenToDebugOutputStream += bytes.length;
                 // os is the app-private staging file; SessionLogCardSync copies it to the
                 // Archive Dir in batches and reports the card size to FlightStorage.
@@ -1161,9 +1177,16 @@ public class CaltopoClient implements CtDroneSpec.CtDroneSpecListener {
             } catch (IOException e) {
                 Log.e(TAG, String.format(Locale.US, "CTError: CTLog(): Not able to write '%s' - %s", LogFilePath, e));
             }
-            if (BytesWrittenToDebugOutputStream >= MAX_SIZE_DEBUG_OUTPUT) {
-                Log.e(TAG, "CTError: CTLog(): Sorry.  Maximum debugging output file size reached.  Future bits will be tossed on the floor.");
+            if (BytesWrittenToDebugOutputStream >= MAX_SIZE_DEBUG_OUTPUT && DebugLogPath == null) {
+                Log.e(TAG, "CTError: CTLog(): Maximum debugging output size reached before a log file was attached.");
             }
+        }
+        if (rolledOverFrom != null) {
+            // On the diagnostic writer, outside DebugLogLock: copy the full file's tail in the
+            // background and open the next Log_ file; lines meanwhile wait in the startup buffer.
+            SessionLogCardSync.finishRolledOver();
+            InitArchiveDir();
+            CTInfo(TAG, "Session log continued from " + rolledOverFrom + " (reached " + MAX_SIZE_DEBUG_OUTPUT + " bytes)");
         }
     }
 

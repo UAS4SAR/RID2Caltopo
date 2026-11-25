@@ -194,6 +194,18 @@ final class SessionLogCardSync {
      * the private file and is caught up on the next start.
      */
     static void finish() {
+        finish(true);
+    }
+
+    /**
+     * A full session log rolled over to a new file: copy the finished file's remainder in the
+     * background without waiting (the caller is the diagnostic log writer).
+     */
+    static void finishRolledOver() {
+        finish(false);
+    }
+
+    private static void finish(boolean wait) {
         Snapshot s;
         synchronized (lock) {
             if (active == null) return;
@@ -219,7 +231,7 @@ final class SessionLogCardSync {
             return;
         }
         Looper main = Looper.getMainLooper();
-        if (main != null && Looper.myLooper() == main) return;
+        if (!wait || (main != null && Looper.myLooper() == main)) return;
         try {
             done.get(FINAL_SYNC_WAIT_MSEC, TimeUnit.MILLISECONDS);
         } catch (Exception error) {

@@ -195,8 +195,15 @@ object AppConfigStore {
             CaptureStreamsNotice.record(context, source)
         } else if (old != new) {
             CaltopoClient.CTWarn(TAG, "Capture Streams changed old=$old new=$new source=$source")
+        } else {
+            // Every restore/import leaves a line, even when Capture Streams did not change
+            // (2.5.8 restores and imports were silent, so a flip could not be traced).
+            CaltopoClient.CTInfo(TAG, captureRestoreLogLine(source, old, new))
         }
     }
+
+    internal fun captureRestoreLogLine(source: String, old: Boolean, new: Boolean): String =
+        "Settings applied source=$source; Capture Streams unchanged old=$old new=$new"
 
     @JvmStatic
     fun resetState(context: Context, state: Any) {

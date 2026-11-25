@@ -91,7 +91,12 @@ public class MediaMTXService extends Service {
             new org.ncssar.rid2caltopo.data.MediaMTXRecordingReconciler(
                     new org.ncssar.rid2caltopo.data.MediaMTXHttpRecordingApi(),
                     recordingControlExecutor,
-                    () -> enqueueNativeControl(NativeControlAction.RESTART));
+                    () -> enqueueNativeControl(NativeControlAction.RESTART),
+                    inputs -> org.ncssar.rid2caltopo.video.RecordingStatus.INSTANCE.updateInputs(current ->
+                            new org.ncssar.rid2caltopo.video.RecordingInputs(
+                                    inputs.getServerRunning(), inputs.getCaptureEnabled(),
+                                    inputs.getStorageBlocked(), inputs.getRecorderReady(),
+                                    current.getArchiveWritable())));
     private static boolean listenersRegistered = false;
     private static boolean recordingListenerRegistered = false;
     private static int processPid = 0;
@@ -554,7 +559,8 @@ public class MediaMTXService extends Service {
         if (!recordingListenerRegistered) {
             final Context appContext = getApplicationContext();
             MediaMTXStructuredDispatcher.addListener(event -> {
-                if (!CaltopoClient.GetCaptureVideoStreamsFlag()) return Unit.INSTANCE;
+                // A finished file is saved whatever Capture Streams says now: it may have been
+                // turned off while the segment was still open (Nov 25 2026 field review).
                 if (event instanceof MediaMTXEvent.RecordFileCompleted) {
                     MediaMTXEvent.RecordFileCompleted completed =
                             (MediaMTXEvent.RecordFileCompleted) event;

@@ -13,6 +13,15 @@ data class MediaMTXRecordingState(val record: Boolean, val recordingRoot: File?)
     val recordPath: String? get() = recordingRoot?.let { MediaMTXConfig.recordPathFor(it) }
 }
 
+/** What recording depends on: the setting, storage, the recorder folder and the server. */
+data class MediaMTXRecordingInputs(
+    val serverRunning: Boolean,
+    val captureEnabled: Boolean,
+    val storageBlocked: Boolean,
+    val recorderReady: Boolean,
+    val recordApplied: Boolean,
+)
+
 /** Applies [MediaMTXRecordingState] to the running server through its local API. */
 fun interface MediaMTXRecordingApi {
     /** True once MediaMTX accepted the change. */
@@ -82,9 +91,18 @@ class MediaMTXRecordingReconciler(
     private val sleeper: (Long) -> Unit = { Thread.sleep(it) },
     private val retryDelaysMs: List<Long> = listOf(50, 100, 200, 400, 800, 1_600, 3_200),
     private val onDisableFailed: () -> Unit = {},
+    /** Every change of what recording depends on, for the REC marker (RecordingStatus). */
+    private val onInputsChanged: (MediaMTXRecordingInputs) -> Unit = {},
 ) {
     constructor(api: MediaMTXRecordingApi, executor: Executor, onDisableFailed: Runnable) :
         this(api, executor, onDisableFailed = { onDisableFailed.run() })
+
+    constructor(
+        api: MediaMTXRecordingApi,
+        executor: Executor,
+        onDisableFailed: Runnable,
+        onInputsChanged: java.util.function.Consumer<MediaMTXRecordingInputs>,
+    ) : this(api, executor, onDisableFailed = { onDisableFailed.run() }, onInputsChanged = { onInputsChanged.accept(it) })
 
     private val lock = Any()
     private var serverGeneration = 0L
@@ -103,16 +121,23 @@ class MediaMTXRecordingReconciler(
             this.storageBlocked = storageBlocked
             this.recordingRoot = recordingRoot
         }
+        publishInputs()
         reconcile()
     }
 
-    fun onServerStopped() = synchronized(lock) { serverGeneration++; applied = null }
+    fun onServerStopped() { synchronized(lock) { serverGeneration++; applied = null }; publishInputs() }
 
-    fun updateStorageBlocked(blocked: Boolean) { synchronized(lock) { storageBlocked = blocked }; reconcile() }
+    fun updateStorageBlocked(blocked: Boolean) { synchronized(lock) { storageBlocked = blocked }; publishInputs(); reconcile() }
 
-    fun updateRecorderRoot(root: File?) { synchronized(lock) { recordingRoot = root }; reconcile() }
+    fun updateRecorderRoot(root: File?) { synchronized(lock) { recordingRoot = root }; publishInputs(); reconcile() }
 
-    fun updateCaptureEnabled(enabled: Boolean) { synchronized(lock) { captureEnabled = enabled }; reconcile() }
+    fun updateCaptureEnabled(enabled: Boolean) { synchronized(lock) { captureEnabled = enabled }; publishInputs(); reconcile() }
+
+    fun inputs(): MediaMTXRecordingInputs = synchronized(lock) {
+        MediaMTXRecordingInputs(applied != null, captureEnabled, storageBlocked, recordingRoot != null, applied?.record == true)
+    }
+
+    private fun publishInputs() = onInputsChanged(inputs())
 
     fun desired(): MediaMTXRecordingState = synchronized(lock) { desiredLocked() }
 
@@ -158,6 +183,7 @@ class MediaMTXRecordingReconciler(
                     CaltopoClient.CTDebug(TAG, "Recording ${if (target.record) "on" else "off"} via API")
                 }
             }
+            if (accepted) publishInputs()
             if (!accepted && synchronized(lock) { serverGeneration == generation }) {
                 synchronized(lock) { queued = false }
                 CaltopoClient.CTError(TAG, "MediaMTX recording API did not accept record=${target.record}")

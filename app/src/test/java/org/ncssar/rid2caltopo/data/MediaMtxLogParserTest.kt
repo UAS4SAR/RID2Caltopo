@@ -253,3 +253,15 @@ class MediaMtxLogParserTest {
         assertNull(oldClosed.event)
     }
 }
+
+class MediaMtxRecorderLineTest {
+    private fun parse(line: String) = MediaMtxLogParser.parseLine(MediaMtxParserState(), line).event
+
+    @Test fun recorderStartStopAndSkip() {
+        assertEquals("alpha", (parse("[path alpha] [recorder] recording 2 tracks (H264, MPEG-4 Audio)") as MediaMTXEvent.RecorderStarted).path)
+        assertEquals("alpha", (parse("[path alpha] [recorder] recording 1 track (H265)") as MediaMTXEvent.RecorderStarted).path)
+        assertEquals("alpha", (parse("[path alpha] [recorder] recording stopped") as MediaMTXEvent.RecorderStopped).path)
+        assertEquals("alpha", (parse("[path alpha] [recorder] no supported tracks found, skipping recording") as MediaMTXEvent.RecorderStopped).path)
+        assertTrue(parse("[path alpha] [recorder] record file complete path=/r/a.mp4 durationMs=1") is MediaMTXEvent.RecordFileCompleted)
+    }
+}

@@ -37,6 +37,8 @@ object MediaMtxLogParser {
         Regex("""\[RTMP]\s+\[conn ([^\]]+)]\s+closed:\s*(.+)""")
     private val rtmpPublishCommandRegex =
         Regex("""\[RTMP]\s+\[conn ([^\]]+)]\s+RTMP control:\s+received command '([^']+)'\s+\(id=\d+\)\s+during publish on path '([^']+)'""")
+    /** MediaMTX recorder lifecycle (info level): the real recording state for the REC marker. */
+    private val recorderLineRegex = Regex("""\[path ([^\]]+)]\s+\[recorder]\s+(.+)""")
     private val recordFileCompleteRegex = Regex(
         """\[path ([^\]]+)]\s+\[recorder]\s+record file complete path=(.+) durationMs=(\d+)"""
     )
@@ -101,6 +103,19 @@ object MediaMtxLogParser {
                 ),
                 updatedState(),
             )
+        }
+
+        val recorderMatch = recorderLineRegex.find(line)
+        if (recorderMatch != null) {
+            val path = recorderMatch.groupValues[1]
+            val message = recorderMatch.groupValues[2].trim()
+            val event = when {
+                message == "recording stopped" -> MediaMTXEvent.RecorderStopped(path)
+                message.startsWith("no supported tracks found") -> MediaMTXEvent.RecorderStopped(path)
+                message.startsWith("recording ") -> MediaMTXEvent.RecorderStarted(path)
+                else -> null
+            }
+            if (event != null) return MediaMtxParserResult(event, updatedState())
         }
 
         val match = pathRegex.find(line)

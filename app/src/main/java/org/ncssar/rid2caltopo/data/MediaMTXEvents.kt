@@ -56,4 +56,14 @@ sealed class MediaMTXEvent {
         val durationMs: Long,
         val timestamp: Instant = Instant.now()
     ) : MediaMTXEvent()
+    /** "[path X] [recorder] recording N track(s)": the recorder is writing this path. */
+    data class RecorderStarted(
+        val path: String,
+        val timestamp: Instant = Instant.now()
+    ) : MediaMTXEvent()
+    /** "[path X] [recorder] recording stopped" or "... skipping recording": nothing is written. */
+    data class RecorderStopped(
+        val path: String,
+        val timestamp: Instant = Instant.now()
+    ) : MediaMTXEvent()
 }

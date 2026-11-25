@@ -77,6 +77,8 @@ object AlertSpeechCoordinator {
         val newScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
         scope = newScope
         SpokenWarningPlayer.start(appContext, newScope)
+        // A live stream that is not being recorded is announced at connect (Nov 25 2026).
+        org.ncssar.rid2caltopo.video.RecordingConnectWarning.start(newScope)
 
         // Proximity: new instance immediately, then every 30 s while active.
         newScope.launch {

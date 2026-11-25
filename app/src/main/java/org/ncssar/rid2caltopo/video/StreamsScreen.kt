@@ -439,6 +439,8 @@ fun StreamsScreen(
                 }
             if (!fullScreenChrome.showExitChip) {
                 Row(Modifier.fillMaxWidth().horizontalScroll(headerScrollState).padding(horizontal = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    // Whenever a stream is live: "● REC" or amber "NOT RECORDING" (Nov 25 2026).
+                    org.ncssar.rid2caltopo.ui.RecordingStatusChip()
                     org.ncssar.rid2caltopo.ui.BtrxMapStatusChip()
                     if (externalContentMode == null) org.ncssar.rid2caltopo.ui.ArchiveStorageMapChip()
                     ResumeProximityAlertButton(onSettings = { onProximitySettingsTap?.invoke() })

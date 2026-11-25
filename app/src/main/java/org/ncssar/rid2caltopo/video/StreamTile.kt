@@ -684,6 +684,10 @@ fun StreamTile(
                 .clipToBounds()
         ) {
         if (streamTileShows(StreamTileChrome.SAFETY_BADGE, compactPip)) VideoSafetyBadge(Modifier.align(Alignment.TopStart).padding(4.dp).zIndex(10f))
+        // Always visible, PiP included (Ken, Nov 25 2026): "● REC" or amber "NOT RECORDING".
+        if (streamTileShows(StreamTileChrome.RECORDING_MARKER, compactPip)) {
+            org.ncssar.rid2caltopo.ui.StreamRecordingMarker(streamDesignator, Modifier.align(Alignment.TopEnd).padding(4.dp).zIndex(10f))
+        }
         Box(
             modifier = Modifier
                 .matchParentSize()
@@ -2352,16 +2356,20 @@ internal const val VIDEO_SAFETY_BADGE_TEXT = "Observation only"
 
 /**
  * Everything a stream tile can draw besides the video (Ken, Nov 20: "too much text in the PiP").
- * The compact PiP over the map shows only [SAFETY_BADGE]; full-size tiles show the rest as
- * before. Same list as the iPad's StreamTileChrome (R2CCore).
+ * The compact PiP over the map shows only [SAFETY_BADGE] and [RECORDING_MARKER] (Ken, Nov 25:
+ * "show the recording marker on the PiP too"); full-size tiles show the rest. Same list as
+ * the iPad's StreamTileChrome (R2CCore).
  */
 internal enum class StreamTileChrome {
     SAFETY_NOTICE, SAFETY_BADGE, STATUS_ROW, STEERING_OVERLAY, CENTERPOINT_OVERLAY,
-    REQUESTER_LABEL, ALERT_OVERLAY, CLUE_BUTTON, LEGEND, WAITING_PLACEHOLDER,
+    REQUESTER_LABEL, ALERT_OVERLAY, CLUE_BUTTON, LEGEND, WAITING_PLACEHOLDER, RECORDING_MARKER,
 }
 
-internal fun streamTileShows(chrome: StreamTileChrome, compactPip: Boolean): Boolean =
-    if (compactPip) chrome == StreamTileChrome.SAFETY_BADGE else chrome != StreamTileChrome.SAFETY_BADGE
+internal fun streamTileShows(chrome: StreamTileChrome, compactPip: Boolean): Boolean = when {
+    chrome == StreamTileChrome.RECORDING_MARKER -> true
+    compactPip -> chrome == StreamTileChrome.SAFETY_BADGE
+    else -> chrome != StreamTileChrome.SAFETY_BADGE
+}
 
 /**
  * Ken, Nov 25: a double tap on the primary/full stream opens the Desk Pod panel when
