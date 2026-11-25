@@ -484,7 +484,7 @@ fun StreamTile(
             val bitmapSummary = bitmap?.let { " bitmap=${it.width}x${it.height}" } ?: ""
             CaltopoClient.CTWarn(
                 tag,
-                "clue double-tap slow step=$step elapsedMs=$elapsedMs " +
+                "clue capture slow step=$step elapsedMs=$elapsedMs " +
                     "designator=$streamDesignator reason=$reason zoom=$zoomScale offset=${zoomOffset.x},${zoomOffset.y}$bitmapSummary"
             )
         }
@@ -568,7 +568,7 @@ fun StreamTile(
         if (!currentIsFocused) {
             viewModel.ensureFocus(streamDesignator)
         }
-        // The camera control is disabled while a clue is pending; a double tap meanwhile is ignored.
+        // The camera control is disabled while a clue is pending.
         if (viewModel.pendingClue != null) {
             CTDebug(tag, "Clue capture ignored for $streamDesignator: a clue is pending.")
             return
@@ -886,7 +886,14 @@ fun StreamTile(
                                     openTelemetryPairingControl()
                                 },
                                 onDoubleTap = {
-                                    requestClueCapture("double-tap")
+                                    // Clue capture is the camera icon (Ken, Nov 25).
+                                    if (streamDoubleTapOpensDeskPod(
+                                            compactPip,
+                                            org.ncssar.rid2caltopo.btrx.BtrxManager.deskPodTalking(),
+                                        )
+                                    ) {
+                                        org.ncssar.rid2caltopo.btrx.BtrxManager.openDeskPodScreenFromMap()
+                                    }
                                 }
                             )
                         }
@@ -2355,6 +2362,14 @@ internal enum class StreamTileChrome {
 
 internal fun streamTileShows(chrome: StreamTileChrome, compactPip: Boolean): Boolean =
     if (compactPip) chrome == StreamTileChrome.SAFETY_BADGE else chrome != StreamTileChrome.SAFETY_BADGE
+
+/**
+ * Ken, Nov 25: a double tap on the primary/full stream opens the Desk Pod panel when
+ * BTRX is connected (same as a double tap on the map). It never fires on the compact
+ * PiP, and it no longer captures a clue — use the camera icon for that.
+ */
+internal fun streamDoubleTapOpensDeskPod(compactPip: Boolean, deskPodConnected: Boolean): Boolean =
+    !compactPip && deskPodConnected
 
 /** Shared guides for decoded video and the waiting-for-controller preview. */
 @Composable

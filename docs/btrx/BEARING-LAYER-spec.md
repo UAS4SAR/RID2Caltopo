@@ -1601,6 +1601,9 @@ Field test fixes (November 13, 2026, evening):
   on and draws nothing: first reason of no reports / no drone video / pick the
   stream / no SEI heading / no RID position / all hidden / nothing placed /
   too faint, plus the report counts. Same text on both apps.
+- Double tap on the primary or full-size stream opens the Desk Pod view while the
+  Desk Pod is connected, and does nothing when it is not; clue capture is the
+  camera icon. The compact stream PiP never opens the panel (Ken, Nov 25).
 - Double tap on the main map opens the Desk Pod view while the Desk Pod link is
   ready and a frame arrived in the last 10 s; otherwise the double tap zooms as
   before. Other tap rules unchanged.

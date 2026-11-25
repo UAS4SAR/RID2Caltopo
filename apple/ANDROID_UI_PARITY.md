@@ -24,7 +24,7 @@ different label, default, placement, gesture, or state transition is not.
 | Aircraft appearance | Active/archive track colors and bearing-line preference | Implemented. |
 | Tablet marker | Unlabeled antenna, one-statute-mile ring, device-name and tracker-health callout on selection | Implemented. |
 | Safety overlays | Airspace, NOTAM/TFR, protected-land state and map overlays | Implemented. |
-| Video clue | Double tap captures the displayed viewport; empty focused title, Android report template/telemetry, `Local Marker Only`, and `Submit` | Implemented. |
+| Video clue | The camera icon captures the displayed viewport; empty focused title, Android report template/telemetry, `Local Marker Only`, and `Submit`. A double tap on the stream opens the BTRX Desk Pod panel when connected (never on the PiP; no clue-capture fallback). | Implemented. |
 | Quit / idle shutdown | Main Screen menu confirmation and automatic close after the configured maximum idle time | Implemented with UIKit scene destruction after orderly operational cleanup. |
 
 ## Functional UI deltas still to close

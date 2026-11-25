@@ -12,6 +12,15 @@ Project-only engineering record; do not package in the app, copy into store meta
 
 ## Cumulative release history
 
+### Unreleased — Stream double-tap opens the BTRX panel (November 25, 2026)
+
+- Both: a double tap on the primary or full-size stream opens the Desk Pod
+  panel when the Desk Pod is connected (same panel as a double tap on the map).
+  It does nothing when BTRX is not connected, and it never fires on the compact
+  PiP. Clue capture is only the camera icon; the old double-tap clue snapshot
+  is gone (`streamDoubleTapOpensDeskPod`, StreamTileChrome). Single tap, long
+  press, pinch and pan are unchanged.
+
 ### Unreleased — BTRX telemetry follows the primary window (November 23, 2026)
 
 - Both, same rule (`BtrxTelemetryRoute`, test-fixtures/btrx/telemetry-route.tsv): BTRX

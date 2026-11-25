@@ -1840,13 +1840,11 @@ struct RIDTrackMapView: View {
                     AppleLog.info("Streams", "Manual telemetry pairing requested stream=\(streamID)")
                     pairingStreamID = streamID
                 },
-                onDoubleTapSession: { streamID, zoomScale, normalizedPan in
-                    expandedStreamID = streamID
-                    beginSnapshotCapture(
-                        streamID: streamID,
-                        zoomScale: zoomScale,
-                        normalizedPan: normalizedPan
-                    )
+                onDoubleTapSession: { _, _, _ in
+                    // Clue capture is the camera icon (Ken, Nov 25). A double tap
+                    // opens the Desk Pod panel when BTRX is connected; never on the PiP.
+                    guard !compact, btrxCenter?.openDeskPodScreenFromMap() == true else { return }
+                    showDeskPodFromMap = true
                 },
                 onCloseSession: { streamID in
                     streamRegistry.close(streamID)

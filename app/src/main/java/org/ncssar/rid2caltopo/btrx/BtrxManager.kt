@@ -222,10 +222,10 @@ object BtrxManager {
      */
     fun deskPodTalking(): Boolean = _snapshot.value.link.phase == LinkPhase.READY
 
-    /** Map double tap: opens the Desk Pod screen and returns true only while it is talking. */
+    /** Map or stream double tap: opens the Desk Pod screen and returns true only while it is talking. */
     fun openDeskPodScreenFromMap(): Boolean {
         if (!deskPodTalking()) return false
-        logger.debug("map double tap: Desk Pod screen")
+        logger.debug("double tap: Desk Pod screen")
         _deskPodScreenRequests.value = _deskPodScreenRequests.value + 1
         return true
     }

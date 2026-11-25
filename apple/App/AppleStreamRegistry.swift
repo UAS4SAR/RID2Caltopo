@@ -878,6 +878,8 @@ private struct AppleStreamTile: View {
             AppleStreamGestureSurface(
                 onTap: handleStreamTap,
                 onDoubleTap: { location in
+                    // The compact PiP never opens the Desk Pod panel (Ken, Nov 25).
+                    guard !compactPip else { return }
                     AppleLog.info("StreamGesture", "Double tap stream=\(session.id) x=\(Int(location.x)) y=\(Int(location.y))")
                     onDoubleTap(Double(zoom), CGPoint(
                         x: tileSize.width > 0 ? pan.width / tileSize.width : 0,

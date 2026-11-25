@@ -118,8 +118,9 @@ tap a confirmed aircraft to edit or reset those settings.
 MediaMTX publisher events admit up to four simultaneous controller streams.
 Live Streams provides a focused, status-labeled grid, while the focused stream
 feeds map/video presentation and clue capture. Stream tiles support tap focus,
-long-press telemetry pairing, bounded 1x-4x pinch/pan, and double-tap clue
-capture; snapshots preserve the current zoomed framing. Tile settings expose
+long-press telemetry pairing, bounded 1x-4x pinch/pan, and camera-icon clue
+capture; snapshots preserve the current zoomed framing. A double tap on the
+stream opens the BTRX Desk Pod panel when the Desk Pod is connected. Tile settings expose
 close/restart actions and decoder/anomaly performance diagnostics. Stream
 designators use Android's red/yellow/green telemetry-pairing state, and a
 mismatched manual selection requires explicit confirmation. Settings can

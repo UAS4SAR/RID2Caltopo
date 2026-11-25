@@ -958,18 +958,18 @@ public final class BtrxDeskPodCenter: ObservableObject {
     /// only live stream (the overlay's own rule, `BtrxSteeringTarget.effective`).
     public var bearingSteeringStreamID: String? { BtrxSteeringTarget.effective(steeringStreamID, live: liveSteeringStreams) }
 
-    /// Increments when the map asks for the Desk Pod view (double tap while it is talking).
+    /// Increments when a map or stream double tap asks for the Desk Pod view (while it is talking).
     @Published public private(set) var deskPodScreenRequest = 0
 
     /// The Desk Pod link is READY. (Until Nov 16 this also needed a Desk Pod frame within 10 s,
     /// which flapped with no Drone Pod reporting: the Desk Pod's own HEALTH comes every 30 s.)
     public func deskPodTalking() -> Bool { snapshot.link.phase == .ready }
 
-    /// Map double tap: opens the Desk Pod view and returns true only while it is talking.
+    /// Map or stream double tap: opens the Desk Pod view and returns true only while it is talking.
     @discardableResult
     public func openDeskPodScreenFromMap() -> Bool {
         guard deskPodTalking() else { return false }
-        OperationalBridgePacketLog.write?("DEBUG", "Btrx", "map double tap: Desk Pod view")
+        OperationalBridgePacketLog.write?("DEBUG", "Btrx", "double tap: Desk Pod view")
         deskPodScreenRequest += 1
         return true
     }
