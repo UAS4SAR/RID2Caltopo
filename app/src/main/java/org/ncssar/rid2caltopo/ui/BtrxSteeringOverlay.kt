@@ -48,8 +48,10 @@ import org.ncssar.rid2caltopo.btrx.BtrxTelemetryRoute
 fun BtrxSteeringOverlay(tile: String, liveTiles: Set<String>, chosenTile: String?, modifier: Modifier = Modifier) {
     val s by BtrxManager.snapshot.collectAsState()
     val window by BtrxManager.telemetryWindow.collectAsState()
+    val mapStatus by BtrxManager.mapStatus.collectAsState()
     val v = s.steerOverlay
-    val mode = BtrxSteeringTarget.tileOverlay(tile, liveTiles, chosenTile, v != null, onStream = BtrxTelemetryRoute.streamShows(window))
+    val mode = BtrxSteeringTarget.tileOverlay(tile, liveTiles, chosenTile, v != null,
+        onStream = BtrxTelemetryRoute.streamShows(window, mapStatus?.active == true))
     if (v == null || mode == BtrxSteeringTarget.TileOverlay.NONE) return
     if (mode != BtrxSteeringTarget.TileOverlay.CARD) {
         // Several live streams and none marked yet: offer the pick on each live tile.

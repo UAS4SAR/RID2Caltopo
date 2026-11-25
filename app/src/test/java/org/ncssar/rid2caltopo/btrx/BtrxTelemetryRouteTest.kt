@@ -10,9 +10,9 @@ import org.junit.Test
 import org.ncssar.rid2caltopo.video.btrxPaneAreas
 
 /**
- * Ken, Nov 23: BTRX telemetry is always shown while BTRX is enabled, in the primary window
- * only (the larger pane in a split, 5 % hysteresis, an exact tie goes to the map), and there
- * is no way to turn it off. Same cases as the iPad's BtrxTelemetryRouteTests, from the shared
+ * Ken, Nov 23: BTRX telemetry is shown while BTRX is enabled and the Desk Pod is READY, in
+ * the primary window only (the larger pane in a split, 5 % hysteresis, an exact tie goes to
+ * the map), and there is no way to turn it off. Same cases as the iPad's BtrxTelemetryRouteTests, from the shared
  * test-fixtures/btrx/telemetry-route.tsv.
  */
 class BtrxTelemetryRouteTest {
@@ -73,13 +73,31 @@ class BtrxTelemetryRouteTest {
 
     @Test fun telemetryIsAlwaysInExactlyOneWindow() {
         for (w in BtrxTelemetryWindow.entries) {
-            assertNotEquals(BtrxTelemetryRoute.mapShows(true, w), BtrxTelemetryRoute.streamShows(w))
-            assertFalse(BtrxTelemetryRoute.mapShows(false, w))
+            assertNotEquals(BtrxTelemetryRoute.mapShows(true, w, true), BtrxTelemetryRoute.streamShows(w, true))
+            assertFalse(BtrxTelemetryRoute.mapShows(false, w, true))
         }
         assertEquals("Telemetry shown on: Map (primary view)", BtrxTelemetryRoute.shownOnLine(BtrxTelemetryWindow.MAP))
         assertEquals("Telemetry shown on: Stream (primary view)", BtrxTelemetryRoute.shownOnLine(BtrxTelemetryWindow.STREAM))
         // The steering card has no hidden state left.
         assertEquals(listOf("NONE", "CARD", "PICK"), BtrxSteeringTarget.TileOverlay.entries.map { it.name })
+    }
+
+    @Test fun bearingLayerAndSteeringStayHiddenUntilTheDeskPodIsReady() {
+        // Ken, Nov 25 A5: "no reports from the paired Drone Pod" appeared with no Desk Pod on.
+        assertFalse(BtrxTelemetryRoute.mapShows(true, BtrxTelemetryWindow.MAP, false))
+        assertTrue(BtrxTelemetryRoute.mapShows(true, BtrxTelemetryWindow.MAP, true))
+        assertFalse(BtrxTelemetryRoute.mapShows(true, BtrxTelemetryWindow.STREAM, true))
+        assertFalse(BtrxTelemetryRoute.streamShows(BtrxTelemetryWindow.STREAM, false))
+        assertTrue(BtrxTelemetryRoute.streamShows(BtrxTelemetryWindow.STREAM, true))
+        for (w in BtrxTelemetryWindow.entries) {
+            assertFalse(BtrxTelemetryRoute.mapShows(true, w, false))
+            assertFalse(BtrxTelemetryRoute.streamShows(w, false))
+        }
+        val pane = src("src/main/java/org/ncssar/rid2caltopo/video/MapPane.kt")
+        assertTrue(pane.contains("btrxMapStatus?.active == true"))
+        assertTrue(pane.contains("BtrxTelemetryRoute.mapShows("))
+        // The map no longer treats a missing status chip (no session link) as "show the notice".
+        assertFalse(pane.contains("btrxMapStatus?.active != false"))
     }
 
     @Test fun thereIsNoWayToTurnBtrxTelemetryOff() {

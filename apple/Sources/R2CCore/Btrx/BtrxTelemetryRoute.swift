@@ -5,9 +5,9 @@ public enum BtrxTelemetryWindow: String, Sendable, Equatable {
     case map, stream
 }
 
-/// Where BTRX telemetry is drawn (Ken, Nov 23): always shown while BTRX is enabled, with no
-/// on/off, in the primary window only: the bearing layer when the map is primary, the steering
-/// overlay when the stream is. Full-screen map or video (with or without the other as a
+/// Where BTRX telemetry is drawn (Ken, Nov 23): shown while BTRX is enabled and the Desk Pod
+/// link is READY, with no on/off, in the primary window only: the bearing layer when the map
+/// is primary, the steering overlay when the stream is. Full-screen map or video (with or without the other as a
 /// picture-in-picture inset) is primary; in a split (side by side or top and bottom) the pane
 /// with the larger on-screen area is. The compact stream PiP never shows telemetry, and an
 /// inset map draws none either (the stream is primary then).
@@ -63,16 +63,23 @@ public enum BtrxTelemetryRoute {
         return primary(mapArea: a.map, streamArea: a.stream, previous: previous)
     }
 
-    /// The map draws the bearing layer, its chips and popups: the engine runs and the map is primary.
-    public static func mapShows(bearingOn: Bool, window: BtrxTelemetryWindow) -> Bool { bearingOn && window == .map }
+    /// The map draws the bearing layer, its chips and popups: the setting may already be on
+    /// (it auto-enables with BTRX), the map is primary, and the Desk Pod link is READY.
+    /// With no Desk Pod connected, nothing is drawn and no "no reports" status appears
+    /// (Ken, Nov 25 2026 field test on the A5). Same as Android.
+    public static func mapShows(bearingOn: Bool, window: BtrxTelemetryWindow, deskPodReady: Bool) -> Bool {
+        bearingOn && deskPodReady && window == .map
+    }
 
-    /// The stream tile may show the steering card: the stream is primary.
-    public static func streamShows(_ window: BtrxTelemetryWindow) -> Bool { window == .stream }
+    /// The stream tile may show the steering card: the stream is primary and the Desk Pod is READY.
+    public static func streamShows(_ window: BtrxTelemetryWindow, deskPodReady: Bool) -> Bool {
+        deskPodReady && window == .stream
+    }
 
     public static func windowName(_ w: BtrxTelemetryWindow) -> String { w == .map ? "Map" : "Stream" }
 
     /// Read-only line in the Desk Pod view (double tap on the map); there is no toggle.
     public static func shownOnLine(_ w: BtrxTelemetryWindow) -> String { "Telemetry shown on: \(windowName(w)) (primary view)" }
 
-    public static let hint = "BTRX telemetry is always shown while BTRX is enabled: the bearing layer on the map when the map is the primary view, the steering overlay on the stream when the stream is. In a split the larger pane is primary (the map on an even split); the picture-in-picture inset never shows it."
+    public static let hint = "BTRX telemetry is shown while the Desk Pod is connected: the bearing layer on the map when the map is the primary view, the steering overlay on the stream when the stream is. In a split the larger pane is primary (the map on an even split); the picture-in-picture inset never shows it. With no Desk Pod connected, nothing is drawn."
 }

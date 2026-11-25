@@ -17,8 +17,9 @@ final class StreamTileChromeTests: XCTestCase {
             .deletingLastPathComponent().deletingLastPathComponent()
         let tile = try String(contentsOf: root.appendingPathComponent("apple/App/AppleStreamRegistry.swift"), encoding: .utf8)
         XCTAssertTrue(tile.contains("AppleStreamRecordingMarker(session: session)"))
+        // Ken, Nov 25: the status-row chip was redundant; the tile marker is adequate.
         let map = try String(contentsOf: root.appendingPathComponent("apple/App/RIDTrackMapView.swift"), encoding: .utf8)
-        XCTAssertTrue(map.contains("AppleRecordingStatusChip()"))
+        XCTAssertFalse(map.contains("AppleRecordingStatusChip()"))
         let content = try String(contentsOf: root.appendingPathComponent("apple/App/ContentView.swift"), encoding: .utf8)
         XCTAssertTrue(content.contains(".modifier(AppleRecordingPromptHost())"))
         XCTAssertTrue(content.contains("AppleRecordingStatus.shared.start()"))

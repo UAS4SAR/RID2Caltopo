@@ -970,10 +970,13 @@ internal fun SplitMapPane(
     // BTRX bearing layer (Developer Tools > BTRX; docs/btrx/BEARING-LAYER-spec.md section 5).
     val btrxEngineOn by org.ncssar.rid2caltopo.btrx.BtrxManager.bearingOn.collectAsState()
     val btrxTelemetryWindow by org.ncssar.rid2caltopo.btrx.BtrxManager.telemetryWindow.collectAsState()
+    val btrxMapStatus by org.ncssar.rid2caltopo.btrx.BtrxManager.mapStatus.collectAsState()
     // Ken, Nov 23: BTRX telemetry is drawn in the primary window only. While the stream is primary
     // the map (full, split or inset) draws no bearing layer and its popups close; the engine keeps
     // running, so nothing is lost when the map becomes primary again.
-    val btrxBearingOn = org.ncssar.rid2caltopo.btrx.BtrxTelemetryRoute.mapShows(btrxEngineOn, btrxTelemetryWindow)
+    // Ken, Nov 25: the layer and its "no reports" notice stay off until the Desk Pod link is READY.
+    val btrxBearingOn = org.ncssar.rid2caltopo.btrx.BtrxTelemetryRoute.mapShows(
+        btrxEngineOn, btrxTelemetryWindow, btrxMapStatus?.active == true)
     var btrxPanel by remember { mutableStateOf<Pair<List<Long>, androidx.compose.ui.unit.IntOffset>?>(null) }
     // Pinned-source inspect card (Nov 16): the tapped source key, null = closed.
     var btrxInspect by remember { mutableStateOf<Long?>(null) }
@@ -1021,7 +1024,6 @@ internal fun SplitMapPane(
         }
     }
     val btrxBearingStatus by org.ncssar.rid2caltopo.btrx.BtrxManager.bearing.status.collectAsState()
-    val btrxMapStatus by org.ncssar.rid2caltopo.btrx.BtrxManager.mapStatus.collectAsState()
     val btrxDisplay by org.ncssar.rid2caltopo.btrx.BtrxManager.bearingDisplay.collectAsState()
     LaunchedEffect(btrxDisplay) {
         btrxOverlay.display = btrxDisplay
@@ -5009,9 +5011,9 @@ internal fun SplitMapPane(
             }
         )
 
-        // Why the bearing layer draws nothing (no drone pose, no reports, ...); hidden while it draws.
-        // While the BTRX status chip says Inactive it already explains the missing reports.
-        if (btrxBearingOn && !isInsetMode && btrxMapStatus?.active != false) btrxBearingStatus?.line?.let { line ->
+        // Why the bearing layer draws nothing (no drone pose, no reports, ...); hidden while it
+        // draws, and hidden until the Desk Pod link is READY (btrxBearingOn already requires that).
+        if (btrxBearingOn && !isInsetMode) btrxBearingStatus?.line?.let { line ->
             org.ncssar.rid2caltopo.ui.BtrxBearingStatusChip(
                 line = line,
                 modifier = Modifier.align(Alignment.TopCenter).padding(top = 8.dp, start = 56.dp, end = 56.dp),

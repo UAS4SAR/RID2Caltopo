@@ -2520,7 +2520,9 @@ struct RIDTrackMapView: View {
 
     @ViewBuilder
     private var liveViewStatusItems: some View {
-        AppleRecordingStatusChip()
+        // Ken, Nov 25: no status-row REC chip; the marker on the stream tile (and the
+        // compact PiP) is adequate. Left off even if the map is full screen with the PiP
+        // hidden: prefer no second chrome location.
         if let btrxCenter { BtrxMapStatusChip(center: btrxCenter) }
         AppleProximityStatusChip(center: proximityAlerts, onSettings: onProximitySettings)
         operationalStatusChip(conciseAirspaceOrNotamChipLabel, tone: usesAirspaceRestrictionStatus ? airspaceTone : notamTone) {
@@ -7980,7 +7982,8 @@ final class BtrxBearingMapController: NSObject, UIGestureRecognizerDelegate {
     /// Camera crosshair target: the inspected source, else the focused one (its estimate, else strongest-here). Same as Android.
     func crosshairTarget() -> CLLocationCoordinate2D? {
         guard let snap = snapshot, let center,
-              BtrxTelemetryRoute.mapShows(bearingOn: center.bearingOn, window: center.telemetryWindow) else { return nil }
+              BtrxTelemetryRoute.mapShows(bearingOn: center.bearingOn, window: center.telemetryWindow,
+                                          deskPodReady: center.mapStatus?.active == true) else { return nil }
         let key = crosshairKey ?? (snap.focusKey != 0 ? snap.focusKey : nil)
         guard let key, let s = snap.sources.first(where: { $0.key == key }) else { return nil }
         if let e = s.estimate { return CLLocationCoordinate2D(latitude: e.lat, longitude: e.lon) }
@@ -8215,9 +8218,10 @@ final class BtrxBearingMapController: NSObject, UIGestureRecognizerDelegate {
 struct BtrxBearingStatusChip: View {
     @ObservedObject var center: BtrxDeskPodCenter
     var body: some View {
-        // While the BTRX status chip says Inactive it already explains the missing reports.
-        if BtrxTelemetryRoute.mapShows(bearingOn: center.bearingOn, window: center.telemetryWindow),
-           center.mapStatus?.active != false, let line = center.bearingStatus?.line {
+        // Hidden until the Desk Pod link is READY (mapShows requires that).
+        if BtrxTelemetryRoute.mapShows(bearingOn: center.bearingOn, window: center.telemetryWindow,
+                                       deskPodReady: center.mapStatus?.active == true),
+           let line = center.bearingStatus?.line {
             Text(line)
                 .font(.footnote)
                 .foregroundStyle(.white)

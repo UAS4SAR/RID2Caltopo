@@ -287,7 +287,7 @@ private struct AppleSteeringOverlayContent: View {
         // The card only while the stream is the primary window (Ken, Nov 23: no hide).
         let mode = BtrxSteeringTarget.tileOverlay(tile: tile, live: live, chosen: chosen,
                                                   hasView: center.snapshot.steerOverlay != nil,
-                                                  onStream: BtrxTelemetryRoute.streamShows(center.telemetryWindow))
+                                                  onStream: BtrxTelemetryRoute.streamShows(center.telemetryWindow, deskPodReady: center.mapStatus?.active == true))
         if mode == .pick {
             // Several live streams and none marked yet: offer the pick on each live tile.
             Button { center.chooseSteeringStream(tile) } label: {
@@ -757,7 +757,7 @@ struct BtrxOwnAircraftSuggestion: View {
     @ObservedObject var center: BtrxDeskPodCenter
     @State private var collapsedKey: UInt64?
     var body: some View {
-        if BtrxTelemetryRoute.mapShows(bearingOn: center.bearingOn, window: center.telemetryWindow), let sources = center.bearingSnapshot?.sources,
+        if BtrxTelemetryRoute.mapShows(bearingOn: center.bearingOn, window: center.telemetryWindow, deskPodReady: center.mapStatus?.active == true), let sources = center.bearingSnapshot?.sources,
            let src = BtrxOwnSuggestion.pick(sources, answers: center.ownAnswers) {
             if collapsedKey == src.key {
                 Button { collapsedKey = nil } label: {
@@ -829,7 +829,7 @@ struct BtrxFocusChip: View {
     @ObservedObject var center: BtrxDeskPodCenter
     @State private var menu = false
     var body: some View {
-        let snap = BtrxTelemetryRoute.mapShows(bearingOn: center.bearingOn, window: center.telemetryWindow) ? center.bearingSnapshot : nil
+        let snap = BtrxTelemetryRoute.mapShows(bearingOn: center.bearingOn, window: center.telemetryWindow, deskPodReady: center.mapStatus?.active == true) ? center.bearingSnapshot : nil
         let src = snap.flatMap { s in s.focusKey == 0 ? nil : s.sources.first(where: { $0.key == s.focusKey }) }
         let restore = !center.ignoredByAll.isEmpty || (center.snapshot.ignoreAll?.saved.isEmpty == false)
         let launch = (snap?.sources ?? []).filter { $0.launch && !$0.ignored }

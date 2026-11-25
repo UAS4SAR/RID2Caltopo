@@ -1,9 +1,10 @@
 import XCTest
 @testable import R2CCore
 
-/// Swift copy of Android's BtrxTelemetryRouteTest.kt (Ken, Nov 23): BTRX telemetry is always
-/// shown while BTRX is enabled, in the primary window only (the larger pane in a split, 5 %
-/// hysteresis, an exact tie goes to the map), and there is no way to turn it off. Shared
+/// Swift copy of Android's BtrxTelemetryRouteTest.kt (Ken, Nov 23): BTRX telemetry is shown
+/// while BTRX is enabled and the Desk Pod is READY, in the primary window only (the larger
+/// pane in a split, 5 % hysteresis, an exact tie goes to the map), and there is no way to
+/// turn it off. Shared
 /// test-fixtures/btrx/telemetry-route.tsv.
 final class BtrxTelemetryRouteTests: XCTestCase {
     private static let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
@@ -68,11 +69,28 @@ final class BtrxTelemetryRouteTests: XCTestCase {
 
     func testTelemetryIsAlwaysInExactlyOneWindow() {
         for w in [BtrxTelemetryWindow.map, .stream] {
-            XCTAssertNotEqual(BtrxTelemetryRoute.mapShows(bearingOn: true, window: w), BtrxTelemetryRoute.streamShows(w))
-            XCTAssertFalse(BtrxTelemetryRoute.mapShows(bearingOn: false, window: w))
+            XCTAssertNotEqual(BtrxTelemetryRoute.mapShows(bearingOn: true, window: w, deskPodReady: true),
+                             BtrxTelemetryRoute.streamShows(w, deskPodReady: true))
+            XCTAssertFalse(BtrxTelemetryRoute.mapShows(bearingOn: false, window: w, deskPodReady: true))
         }
         XCTAssertEqual("Telemetry shown on: Map (primary view)", BtrxTelemetryRoute.shownOnLine(.map))
         XCTAssertEqual("Telemetry shown on: Stream (primary view)", BtrxTelemetryRoute.shownOnLine(.stream))
+    }
+
+    func testBearingLayerAndSteeringStayHiddenUntilTheDeskPodIsReady() throws {
+        // Ken, Nov 25 A5: "no reports from the paired Drone Pod" appeared with no Desk Pod on.
+        XCTAssertFalse(BtrxTelemetryRoute.mapShows(bearingOn: true, window: .map, deskPodReady: false))
+        XCTAssertTrue(BtrxTelemetryRoute.mapShows(bearingOn: true, window: .map, deskPodReady: true))
+        XCTAssertFalse(BtrxTelemetryRoute.mapShows(bearingOn: true, window: .stream, deskPodReady: true))
+        XCTAssertFalse(BtrxTelemetryRoute.streamShows(.stream, deskPodReady: false))
+        XCTAssertTrue(BtrxTelemetryRoute.streamShows(.stream, deskPodReady: true))
+        for w in [BtrxTelemetryWindow.map, .stream] {
+            XCTAssertFalse(BtrxTelemetryRoute.mapShows(bearingOn: true, window: w, deskPodReady: false))
+            XCTAssertFalse(BtrxTelemetryRoute.streamShows(w, deskPodReady: false))
+        }
+        let map = try src("apple/App/RIDTrackMapView.swift")
+        XCTAssertTrue(map.contains("deskPodReady: center.mapStatus?.active == true"))
+        XCTAssertFalse(map.contains("center.mapStatus?.active != false"))
     }
 
     func testThereIsNoWayToTurnBtrxTelemetryOff() throws {

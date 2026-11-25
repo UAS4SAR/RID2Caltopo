@@ -321,7 +321,8 @@ class BtrxPanelOrder {
 /**
  * Ken, Nov 23: "Show bearing layer on map" was off by default; it goes on whenever BTRX is
  * enabled (a Desk Pod link on at launch, or turned on), unless it already is. Turning BTRX off
- * leaves it as it is. Same as the iPad.
+ * leaves it as it is. The setting being on does not draw the layer or its status notice until
+ * the Desk Pod link is READY (Ken, Nov 25). Same as the iPad.
  */
 object BtrxBearingAutoOn {
     fun shouldTurnOn(btrxEnabled: Boolean, bearingOn: Boolean): Boolean = btrxEnabled && !bearingOn

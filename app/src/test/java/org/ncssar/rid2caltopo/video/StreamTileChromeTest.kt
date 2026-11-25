@@ -30,6 +30,9 @@ class StreamTileChromeTest {
         assertTrue(streamTileShows(StreamTileChrome.RECORDING_MARKER, compactPip = false))
         val tile = File("src/main/java/org/ncssar/rid2caltopo/video/StreamTile.kt").readText()
         assertTrue(tile.contains("StreamRecordingMarker(streamDesignator"))
+        // Ken, Nov 25: the status-row chip was redundant; the tile marker is adequate.
+        val streams = File("src/main/java/org/ncssar/rid2caltopo/video/StreamsScreen.kt").readText()
+        assertFalse(streams.contains("RecordingStatusChip()"))
     }
 
     @Test
