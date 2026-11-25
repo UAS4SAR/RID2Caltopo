@@ -1,2 +1,10 @@
 Latest changes:
 - Map packages now include available USGS and USFS basemaps, contours, terrain, and obstacle data for the selected area.
+- A short notice on the map shows when a live stream is not being recorded, with one tap to start recording.
+- Turning off Capture Streams now asks first, and turning it on or off no longer interrupts live video.
+- Recordings now finish saving before the app closes, and any recording interrupted by a crash or shutdown is recovered the next time the app opens.
+- Flight storage problems, including a read-only or swapped SD card, no longer interrupt live video or repeat the same pop-up.
+- This device's location is used to place you on the map only while an app screen is visible, and the privacy policy explains how it is used.
+- A pilot callsign is now required before a drone can be confirmed as yours, and the Mine and Not Mine buttons sit at the top of the panel.
+- Capturing a clue from a live stream now uses the camera button.
+- The drone status label on the map has fixed-width fields so it no longer jitters.
