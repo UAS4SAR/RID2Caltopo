@@ -6,7 +6,7 @@ repo_root="${script_dir:h}"
 if ! command -v cmake >/dev/null && [[ -x "$HOME/Library/Android/sdk/cmake/3.22.1/bin/cmake" ]]; then
     export PATH="$HOME/Library/Android/sdk/cmake/3.22.1/bin:$PATH"
 fi
-rebuild_native=true
+native_mode=cache
 archive_path=""
 bundle_id="org.ncssar.RID2CaltopoApple"
 version_major="$(sed -nE 's/^[[:space:]]*def versionMajor = ([0-9]+)$/\1/p' "$repo_root/app/build.gradle" | head -1)"
@@ -21,7 +21,10 @@ usage() {
 usage: apple/release-check.sh [options]
 
 Options:
-  --skip-native-rebuild   Verify existing XCFrameworks instead of rebuilding
+  --rebuild-native        Rebuild every native library even when the shared
+                          cache has a build of the current sources
+  --skip-native-rebuild   Verify the XCFrameworks already in apple/Build
+                          without consulting the cache or rebuilding
   --archive-path PATH     Keep the verified unsigned archive at PATH
   --bundle-id ID         Override CFBundleIdentifier for the archive
   --build-number NUMBER  Override CFBundleVersion for the archive (default: Android versionCode)
@@ -30,15 +33,24 @@ Options:
                          Ignore the weekly protected-land catalog check cache
   --help                  Show this help
 
-The default gate rebuilds all native XCFrameworks from current sources, runs
-shared/native tests and anomaly qualifications, performs a clean Simulator
-link, and verifies a fresh unsigned arm64 iPhone/iPad archive.
+The default gate restores the reproducible native XCFrameworks from the shared
+cache (tools/apple_native/native_cache.py) when their source fingerprint
+matches, rebuilds them only after a real source or toolchain change, and
+fails early unless each device library is the reviewed one recorded in
+tools/licenses/native-runtime-inputs.json. It then runs shared/native tests
+and anomaly qualifications, performs a clean Simulator link, and verifies a
+fresh unsigned arm64 iPhone/iPad archive.
+
+Set R2C_DEFER_RELINK_PUBLICATION=1 to verify the archive's relink materials
+without requiring the GitHub release yet (archive-for-testflight.sh publishes
+it before upload).
 USAGE
 }
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --skip-native-rebuild) rebuild_native=false; shift ;;
+        --skip-native-rebuild) native_mode=existing; shift ;;
+        --rebuild-native) native_mode=rebuild; shift ;;
         --archive-path) [[ $# -ge 2 ]] || { usage >&2; exit 2; }; archive_path="$2"; shift 2 ;;
         --bundle-id) [[ $# -ge 2 ]] || { usage >&2; exit 2; }; bundle_id="$2"; shift 2 ;;
         --build-number) [[ $# -ge 2 ]] || { usage >&2; exit 2; }; build_number="$2"; shift 2 ;;
@@ -81,12 +93,12 @@ $force_land_catalog_refresh && land_catalog_args+=(--force)
 python3 "$repo_root/tools/protected_land_catalog/refresh_catalog.py" "${land_catalog_args[@]}"
 
 echo "[3/10] Native Apple dependencies"
-if $rebuild_native; then
-    "$script_dir/Native/MediaMTX/build-xcframework.sh"
-    "$script_dir/Native/AnomalyCore/build-xcframework.sh"
-    "$script_dir/Native/FFmpeg/build-xcframework.sh"
-    "$script_dir/Native/Mapping/build-xcframework.sh"
-fi
+python3 -m unittest discover -s "$repo_root/tools/apple_native" -p 'test_*.py'
+case "$native_mode" in
+    cache) python3 "$repo_root/tools/apple_native/native_cache.py" ensure --require-reviewed ;;
+    rebuild) python3 "$repo_root/tools/apple_native/native_cache.py" ensure --rebuild --require-reviewed ;;
+    existing) echo "Using the native libraries already in apple/Build (not rebuilt)." ;;
+esac
 
 media_root="$script_dir/Build/MediaMTX"
 anomaly_root="$script_dir/Build/AnomalyCore"

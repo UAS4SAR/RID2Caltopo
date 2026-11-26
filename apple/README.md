@@ -38,12 +38,28 @@ The primary pre-release gate is:
 apple/release-check.sh
 ```
 
-It rebuilds the current MediaMTX, anomaly, and LGPL FFmpeg XCFramework device/Simulator
-slices, checks their exported C ABI, runs the portable anomaly regression and
-realtime qualification suites, runs all shared Swift tests, performs a clean
-arm64 Simulator link, and verifies a fresh unsigned arm64 iPhone/iPad archive. Use
-`--skip-native-rebuild` only for an intentional fast rerun after the native
-artifacts have already been rebuilt from the unchanged source trees.
+It brings the MediaMTX, anomaly, LGPL FFmpeg and mapping XCFramework
+device/Simulator slices up to date, checks their exported C ABI, runs the
+portable anomaly regression and realtime qualification suites, runs all shared
+Swift tests, performs a clean arm64 Simulator link, and verifies a fresh unsigned
+arm64 iPhone/iPad archive.
+
+The native libraries build reproducibly: every checkout and worktree compiles
+them under the fixed path `/Users/Shared/RID2Caltopo/native-work` (see
+`apple/Native/reproducible-build.sh`) with a fixed `SOURCE_DATE_EPOCH`,
+`ZERO_AR_DATE`, prefix maps, deterministic `libtool -D` archives and, for
+MediaMTX, the pinned Go toolchain with `-trimpath -buildvcs=false`. The same
+sources and toolchain therefore give byte-identical libraries, which must match
+the reviewed hashes in `tools/licenses/native-runtime-inputs.json`.
+
+Results are kept in the shared cache `/Users/Shared/RID2Caltopo/native-cache`,
+keyed by a fingerprint of the build scripts, the compiled sources, the pinned
+third-party and relink inputs and the Xcode/SDK/Go versions
+(`python3 tools/apple_native/native_cache.py status`). The gate restores a
+matching entry instead of rebuilding, rebuilds only after a real change, and
+stops early if a device library is not the reviewed one. Pass `--rebuild-native`
+to force a rebuild, or `--skip-native-rebuild` to verify whatever is already in
+`apple/Build` without the cache.
 
 The gate also validates the shared protected-land source catalog. Network
 verification is attempted at most once every seven days and its state is kept
