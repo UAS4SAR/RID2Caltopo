@@ -411,7 +411,11 @@ verified cache entries are reused without recompressing or uploading them.
 Re-signing or reinstalling alone does not require a new material release. A
 change to relevant source or build inputs requires matching new materials.
 
-Before distributing a new referring app build, publish its prepared artifacts:
+`apple/archive-for-testflight.sh --upload` does this automatically before the
+upload: it tags the release at `--relink-target` (default `HEAD`, which must
+already be on GitHub), reuses or verifies an existing release for the same
+materials, and uploads only after the public download is verified. For any
+other distribution, publish the prepared artifacts first:
 
 ```bash
 python3 tools/licenses/publish_apple_relink.py --app /path/to/RID2CaltopoApple.app --target REMOTE_COMMIT
@@ -429,6 +433,18 @@ its corresponding material set has not yet been published. Public downloads
 must work without authentication. Retain every referenced release for at least
 three years after its last referring build is distributed, and fulfill requests
 at kjt@uas4sar.com if GitHub is unavailable. Keep an independent retained copy.
+
+To see which releases could eventually be removed, run the list-only helper:
+
+```bash
+python3 tools/licenses/list_relink_releases.py
+```
+
+It marks a release live while a non-expired TestFlight build or an App Store
+build refers to it, otherwise shows the date three years after its last
+referring build was distributed (or after publication when no build is
+found). It never deletes anything; delete a release only once it is listed as
+eligible and the deletion is approved.
 
 Native dependency changes require a new license review before refreshing the
 reviewed native input hashes. Repeat the recipient replacement/relink test when

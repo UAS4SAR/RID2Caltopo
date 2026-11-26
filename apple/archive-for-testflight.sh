@@ -20,6 +20,8 @@ upload=false
 internal_only=false
 preflight=false
 skip_release_check=false
+rebuild_native=false
+relink_target=""
 force_land_catalog_refresh=false
 api_key_id="${R2C_APPSTORE_API_KEY_ID:-}"
 api_issuer="${R2C_APPSTORE_API_ISSUER:-}"
@@ -41,13 +43,19 @@ Options:
   --api-issuer UUID        App Store Connect issuer ID (or R2C_APPSTORE_API_ISSUER)
   --preflight              Print configuration/signing readiness without building
   --skip-release-check     Reuse a release gate that just passed on unchanged sources
+  --rebuild-native         Rebuild the native libraries instead of using the cache
+  --relink-target COMMIT   Commit on GitHub to tag the relink release at
+                            (default: HEAD; must already be pushed)
   --force-land-catalog-refresh
                             Ignore the weekly protected-land catalog check cache
   --help                   Show this help
 
 The script first creates and verifies an unsigned archive, then asks Xcode to
 export a locally signed App Store IPA. It never stores Apple credentials and
-uploads only when --upload is explicitly supplied.
+uploads only when --upload is explicitly supplied. Before an upload it runs
+tools/licenses/publish_apple_relink.py, which publishes the build's hosted
+relink materials (or verifies the existing release) on GitHub; the upload
+does not start unless that release is verified.
 USAGE
 }
 
@@ -70,6 +78,8 @@ while [[ $# -gt 0 ]]; do
         --api-issuer) [[ $# -ge 2 ]] || { usage >&2; exit 2; }; api_issuer="$2"; shift 2 ;;
         --preflight) preflight=true; shift ;;
         --skip-release-check) skip_release_check=true; shift ;;
+        --rebuild-native) rebuild_native=true; shift ;;
+        --relink-target) [[ $# -ge 2 ]] || { usage >&2; exit 2; }; relink_target="$2"; shift 2 ;;
         --force-land-catalog-refresh) force_land_catalog_refresh=true; shift ;;
         --help|-h) usage; exit 0 ;;
         *) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
@@ -126,6 +136,20 @@ xcodebuild -quiet \
 # Runs even with --skip-release-check: App Review rejects store text naming other platforms.
 python3 "$repo_root/tools/store_notes/check_store_notes.py" --version "$marketing_version"
 
+relink_repo="UAS4SAR/RID2Caltopo"
+if $upload; then
+    relink_target="$(git -C "$repo_root" rev-parse --verify "${relink_target:-HEAD}^{commit}")"
+    if ! gh api "repos/$relink_repo/commits/$relink_target" --silent 2>/dev/null; then
+        echo "Relink target $relink_target is not on GitHub ($relink_repo)." >&2
+        echo "Push the release commit first, or pass --relink-target with a pushed commit." >&2
+        exit 1
+    fi
+    echo "  relink target: $relink_target"
+fi
+# The hosted relink release is published just before upload, so the archive
+# gates verify the materials locally and the published check runs after it.
+export R2C_DEFER_RELINK_PUBLICATION=1
+
 if $preflight; then
     echo "Preflight completed without changing Apple or App Store Connect state."
     exit 0
@@ -140,10 +164,19 @@ if ! $skip_release_check; then
         --marketing-version "$marketing_version"
     )
     $force_land_catalog_refresh && release_check_args+=(--force-land-catalog-refresh)
+    $rebuild_native && release_check_args+=(--rebuild-native)
     "$script_dir/release-check.sh" "${release_check_args[@]}"
 else
     echo "Reusing the caller-confirmed Apple release gate for unchanged sources only."
     "$script_dir/verify-unsigned-archive.sh" "$archive_path" "$bundle_id" "$build_number" "$marketing_version"
+fi
+
+if $upload; then
+    archived_app="$archive_path/Products/Applications/RID2CaltopoApple.app"
+    # Idempotent: an existing release for these materials is verified, never replaced.
+    python3 "$repo_root/tools/licenses/publish_apple_relink.py" --app "$archived_app" --target "$relink_target"
+    unset R2C_DEFER_RELINK_PUBLICATION
+    python3 "$repo_root/tools/licenses/prepare_apple_relink.py" --verify-app "$archived_app" --require-published
 fi
 
 [[ ! -e "$export_path" ]] || { echo "Export path already exists: $export_path" >&2; exit 1; }
@@ -175,6 +208,7 @@ ipa="${ipas[1]}"
 
 if ! $upload; then
     echo "Distribution-signed IPA is ready: $ipa"
+    echo "Its relink release is not published yet; --upload publishes it before uploading."
     echo "Re-run with --upload only when the App Store Connect record and metadata are ready."
     exit 0
 fi

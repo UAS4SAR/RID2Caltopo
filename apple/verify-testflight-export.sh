@@ -32,7 +32,13 @@ profile="$app/embedded.mobileprovision"
 plutil -lint "$info" "$privacy"
 python3 "${0:A:h}/../tools/privacy/check_apple_privacy.py" --app "$app"
 python3 "${0:A:h}/../tools/licenses/prepare_legal.py" --check --artifact "$app"
-python3 "${0:A:h}/../tools/licenses/prepare_apple_relink.py" --verify-app "$app" --require-published
+if [ "${R2C_DEFER_RELINK_PUBLICATION:-0}" = 1 ]; then
+    # archive-for-testflight.sh publishes the relink release before any upload.
+    echo "Relink materials verified locally; GitHub publication is checked before upload."
+    python3 "${0:A:h}/../tools/licenses/prepare_apple_relink.py" --verify-app "$app"
+else
+    python3 "${0:A:h}/../tools/licenses/prepare_apple_relink.py" --verify-app "$app" --require-published
+fi
 file "$binary" | grep -q 'Mach-O 64-bit executable arm64'
 "${0:A:h}/verify-webrtc-framework.sh" "$app"
 codesign --verify --deep --strict --verbose=2 "$app"

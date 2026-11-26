@@ -48,7 +48,13 @@ echo "$schemes" | grep -q "r2cmapkg1"
 
 python3 "$(dirname "$0")/../tools/privacy/check_apple_privacy.py" --app "$app"
 python3 "$(dirname "$0")/../tools/licenses/prepare_legal.py" --check --artifact "$app"
-python3 "$(dirname "$0")/../tools/licenses/prepare_apple_relink.py" --verify-app "$app" --require-published
+if [ "${R2C_DEFER_RELINK_PUBLICATION:-0}" = 1 ]; then
+    # archive-for-testflight.sh publishes the relink release before any upload.
+    echo "Relink materials verified locally; GitHub publication is checked before upload."
+    python3 "$(dirname "$0")/../tools/licenses/prepare_apple_relink.py" --verify-app "$app"
+else
+    python3 "$(dirname "$0")/../tools/licenses/prepare_apple_relink.py" --verify-app "$app" --require-published
+fi
 
 if codesign -dv "$app" >/dev/null 2>&1; then
     echo "expected an unsigned archive, but the app is signed" >&2
